@@ -141,28 +141,22 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
                 return JobResult.Fail(JobErrors.FromStorage(ex));
             }
 
-            if (outcome.InterruptedJobId is { } interrupted)
+            if (outcome is Accepted { InterruptedJobId: { } interrupted })
             {
                 // The cancellation and child intent are already durable. The
                 // daemon holds the claim gate until this owned run is stopped.
                 cancelRunning?.Invoke(interrupted);
             }
 
-            switch (outcome.Kind)
+            return outcome switch
             {
-                case AcceptKind.Accepted:
-                    return JobResult.Ok(GetJob.ToView(outcome.Job!), "accepted");
-                case AcceptKind.Existing:
-                    return JobResult.Ok(GetJob.ToView(outcome.Job!), "existing");
-                case AcceptKind.Conflict:
-                    return JobResult.Fail(JobErrors.IdempotencyConflict);
-                case AcceptKind.ParentNotReady:
-                    return JobResult.Fail(JobErrors.ParentNotReady);
-                case AcceptKind.ParentNotFound:
-                    return JobResult.Fail(JobErrors.NotFound);
-                default:
-                    return JobResult.Fail(JobErrors.QueueFull);
-            }
+                Accepted accepted => JobResult.Ok(GetJob.ToView(accepted.Job), "accepted"),
+                Existing existing => JobResult.Ok(GetJob.ToView(existing.Job), "existing"),
+                Conflict => JobResult.Fail(JobErrors.IdempotencyConflict),
+                ParentNotReady => JobResult.Fail(JobErrors.ParentNotReady),
+                ParentNotFound => JobResult.Fail(JobErrors.NotFound),
+                QueueFull => JobResult.Fail(JobErrors.QueueFull),
+            };
         }
         finally
         {

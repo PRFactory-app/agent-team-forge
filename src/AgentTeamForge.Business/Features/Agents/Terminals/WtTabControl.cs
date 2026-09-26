@@ -61,6 +61,13 @@ internal sealed class WtTabControl : IWtTabControl
             await StartConsoleAsync(launch, wrapper, sidecar, cancellationToken);
             return;
         }
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (localAppData.Length > 0 && Path.GetFullPath(wrapper).StartsWith(
+            Path.TrimEndingDirectorySeparator(localAppData) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        {
+            // Windows Terminal is MSIX-packaged; its tabs see a virtualized AppData\Local and cannot find the wrapper.
+            throw new IOException($"state directory is under {localAppData}, which Windows Terminal tabs cannot read; use a --state-dir outside it");
+        }
         var start = new ProcessStartInfo("wt.exe") { UseShellExecute = false, CreateNoWindow = true };
         foreach (var arg in new[] { "-w", "wt-atf", "nt", "--title", launch.AgentName,
             "--suppressApplicationTitle", "--", "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", wrapper })
@@ -108,16 +115,27 @@ internal sealed class WtTabControl : IWtTabControl
     async Task AwaitTabAsync(InteractiveLaunch launch, string wrapper, string sidecar, Func<(bool Exited, int Code)> status, CancellationToken cancellationToken)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(InteractiveStartup.Timeout);
+        var timeout = InteractiveStartup.Timeout;
+        deadline.CancelAfter(timeout);
+        try
+        {
+            await PollTabAsync(launch, wrapper, sidecar, status, deadline.Token);
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new IOException($"interactive agent did not report its PID within {timeout.TotalSeconds:0} seconds (wrapper {wrapper})", ex);
+        }
+    }
+
+    async Task PollTabAsync(InteractiveLaunch launch, string wrapper, string sidecar, Func<(bool Exited, int Code)> status, CancellationToken token)
+    {
         while (true)
         {
             if (TryReadOwned(sidecar, wrapper) is { } tab && TryIdentity(tab.Pid) == tab.Created)
             {
                 _tabs[launch.AgentName] = tab;
                 WindowsTabJob.Assign(tab.Pid);
-                try { await Task.Delay(TimeSpan.FromSeconds(2), deadline.Token); }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                { throw new IOException("interactive tab readiness timed out"); }
+                await Task.Delay(TimeSpan.FromSeconds(2), token);
                 if (!IsAlive(launch))
                 {
                     _tabs.TryRemove(launch.AgentName, out _);
@@ -130,9 +148,7 @@ internal sealed class WtTabControl : IWtTabControl
             {
                 throw new IOException($"interactive launcher exited {code}");
             }
-            try { await Task.Delay(100, deadline.Token); }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            { throw new IOException("interactive tab readiness timed out"); }
+            await Task.Delay(100, token);
         }
     }
 

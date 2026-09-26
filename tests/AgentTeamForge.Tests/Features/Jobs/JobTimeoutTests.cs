@@ -77,8 +77,11 @@ public sealed class JobTimeoutTests
         await Task.Delay(TimeSpan.FromMilliseconds(1100), TestContext.Current.CancellationToken);
 
         var accepted = f.Store.AcceptOrGet(job, f.Limits.QueueLimit);
-        Assert.Equal(AcceptKind.Accepted, accepted.Kind);
-        Assert.Equal(accepted.Job!.JobId, f.Store.BeginNextAttempt()!.Job.JobId);
+        if (accepted is not Accepted acceptedCase)
+        {
+            throw new InvalidOperationException("expected acceptance");
+        }
+        Assert.Equal(acceptedCase.Job.JobId, f.Store.BeginNextAttempt()!.Job.JobId);
     }
 
     [Fact]

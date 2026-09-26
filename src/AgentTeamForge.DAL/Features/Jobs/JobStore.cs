@@ -83,7 +83,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     /// in one commit, or returns the existing job, a conflict, or queue-full.
     /// The unique scoped-key constraint is the final arbiter.
     /// </summary>
-    public AcceptOutcome AcceptOrGet(NewJob job, int queueLimit) => Write(connection =>
+    public AcceptOutcome AcceptOrGet(NewJob job, int queueLimit) => Write<AcceptOutcome>(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         var existing = QuerySingle(connection, tx,
@@ -91,15 +91,15 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             ("$p", job.Principal), ("$t", job.Team), ("$o", job.Operation), ("$k", job.IdempotencyKey));
         if (existing is not null)
         {
-            return new AcceptOutcome(
-                existing.Value.Fingerprint == job.Fingerprint ? AcceptKind.Existing : AcceptKind.Conflict,
-                existing.Value.Job);
+            return existing.Value.Fingerprint == job.Fingerprint
+                ? new Existing(existing.Value.Job)
+                : new Conflict();
         }
 
         var active = Scalar(connection, tx, "SELECT count(*) FROM jobs WHERE status IN ('queued','running')");
         if (active >= queueLimit)
         {
-            return new AcceptOutcome(AcceptKind.QueueFull, null);
+            return new QueueFull();
         }
 
         JobRecord? parent = null;
@@ -108,7 +108,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             parent = GetJob(connection, tx, parentId);
             if (parent is null || parent.Principal != job.Principal || parent.Team != job.Team)
             {
-                return new AcceptOutcome(AcceptKind.ParentNotFound, null);
+                return new ParentNotFound();
             }
 
             // Failed/needs_reconciliation parents were checked idle by the caller while
@@ -116,7 +116,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             if (parent.SessionId is null || SessionFenced(connection, tx, parent.JobId) || !(parent.Status is JobStatus.Completed or JobStatus.Cancelled
                 || (job.InterruptParent ? parent.Status == JobStatus.Running : parent.Status is JobStatus.Failed or JobStatus.NeedsReconciliation)))
             {
-                return new AcceptOutcome(AcceptKind.ParentNotReady, null);
+                return new ParentNotReady();
             }
         }
 
@@ -159,7 +159,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
         // The committed row as written, without a post-commit read: a read failure
         // here would otherwise be reported as a storage error for an accepted job.
-        return new AcceptOutcome(AcceptKind.Accepted, new JobRecord(jobId, job.Principal, job.Team, job.TargetAgent,
+        return new Accepted(new JobRecord(jobId, job.Principal, job.Team, job.TargetAgent,
             job.IdempotencyKey, job.Instruction, job.Options, JobStatus.Queued, null, null, 0,
             job.Backend, job.Cwd, job.ParentJobId, null)
         {

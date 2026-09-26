@@ -1,6 +1,5 @@
 using AgentTeamForge.DAL.Files;
 using System.Diagnostics;
-using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -9,6 +8,7 @@ using System.Runtime.Versioning;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Host.Hosting;
+using AgentTeamForge.Host.Transport;
 
 namespace AgentTeamForge.Host.Features.Setup;
 
@@ -46,6 +46,16 @@ public static class SetupCommand
             return 64;
         }
         var dir = ResolveStateDir(options);
+        if (LegacyWindowsStateDir(options, dir) is { } legacy)
+        {
+            // Never silently orphan jobs, keys and registrations left in the old default.
+            Console.Error.WriteLine($"{(check ? "warning" : "error")}: existing state is in the old default {legacy}; the default is now {dir}.");
+            Console.Error.WriteLine($"Stop its daemon (atf stop --state-dir \"{legacy}\"), move the directory to {dir}, then rerun setup; or pass --state-dir \"{legacy}\" (not usable with --mode wt).");
+            if (!check)
+            {
+                return 64;
+            }
+        }
         var mode = options.GetValueOrDefault("mode");
         var configuredMode = Directory.Exists(dir) ? ConfiguredMode(StateDirectory.Open(dir)) : null;
         mode ??= configuredMode;
@@ -408,10 +418,18 @@ public static class SetupCommand
         for (var i = 0; i < 200; i++)
         {
             var pid = DaemonLock.ReadOwnerPid(state.LockFile);
-            if (pid is > 0 && (launched is null || pid != launched.Id || OperatingSystem.IsWindows() || ReadyLogged(state, pid.Value))
-                && await EndpointReadyAsync(state))
+            try
             {
-                return PrintRunningPid(state, quiet);
+                if (pid is > 0 && (launched is null || pid != launched.Id || OperatingSystem.IsWindows() || ReadyLogged(state, pid.Value))
+                    && await EndpointReadyAsync(state))
+                {
+                    return PrintRunningPid(state, quiet);
+                }
+            }
+            catch (UnauthorizedAccessException) when (OperatingSystem.IsWindows())
+            {
+                Console.Error.WriteLine($"error: {WindowsPipe.AccessDeniedMessage}");
+                return 1;
             }
             if (launched?.HasExited == true)
             {
@@ -445,7 +463,7 @@ public static class SetupCommand
     {
         try
         {
-            return File.Exists(Path.Combine(state.Path, "daemon.log")) && File.ReadLines(Path.Combine(state.Path, "daemon.log"))
+            return File.Exists(Path.Combine(state.Path, "daemon.log")) && LiveFiles.ReadLines(Path.Combine(state.Path, "daemon.log"))
                 .Any(line => line == $"[atf-daemon] ready pid={pid}");
         }
         catch (IOException) { return false; }
@@ -457,8 +475,8 @@ public static class SetupCommand
         {
             if (OperatingSystem.IsWindows())
             {
-                using var pipe = new NamedPipeClientStream(".", state.Socket, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-                await pipe.ConnectAsync(50);
+                using var timeout = new CancellationTokenSource(50);
+                using var pipe = await WindowsPipe.ConnectAsync(state.Socket, timeout.Token);
             }
             else
             {
@@ -597,10 +615,23 @@ public static class SetupCommand
 
     internal static string ResolveStateDir(IReadOnlyDictionary<string, string> options) => Path.GetFullPath(
         options.TryGetValue("state-dir", out var specified) ? specified :
-        OperatingSystem.IsWindows()
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentTeamForge")
-            : Path.Combine(Environment.GetEnvironmentVariable("XDG_STATE_HOME") is { Length: > 0 } xdg ? xdg :
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state"), "agentteamforge"));
+        // One home-based default on every OS. Not %LOCALAPPDATA% on Windows: Windows Terminal is a
+        // packaged (MSIX) app whose tabs see a virtualized AppData\Local where directories created by
+        // unpackaged processes are invisible, so `wt ... powershell -File <state>\wt\*.ps1` fails.
+        Path.Combine(Environment.GetEnvironmentVariable("XDG_STATE_HOME") is { Length: > 0 } xdg ? xdg :
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state"), "agentteamforge"));
+
+    /// <summary>The pre-move Windows default (%LOCALAPPDATA%\AgentTeamForge) when it holds state and the new default does not.</summary>
+    static string? LegacyWindowsStateDir(IReadOnlyDictionary<string, string> options, string dir)
+    {
+        if (!OperatingSystem.IsWindows() || options.ContainsKey("state-dir") || Directory.Exists(dir))
+        {
+            return null;
+        }
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var legacy = localAppData.Length > 0 ? Path.Combine(localAppData, "AgentTeamForge") : null;
+        return legacy is not null && File.Exists(Path.Combine(legacy, "profile.json")) ? legacy : null;
+    }
 
     static int PrintRunningPid(StateDirectory state, bool quiet = false)
     {

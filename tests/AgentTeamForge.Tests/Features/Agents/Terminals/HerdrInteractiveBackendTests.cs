@@ -277,7 +277,12 @@ public sealed class HerdrInteractiveBackendTests
         Assert.True(f.Store.RecordSession(new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation), "native-1"));
         var child = f.Store.AcceptOrGet(new NewJob(JobFixture.Operator.Principal, JobFixture.Operator.Team,
             JobFixture.Operator.Agent, FollowUpJob.Operation, "child", "fingerprint", "second", "")
-        { ParentJobId = parent.JobId, InterruptParent = true }, f.Limits.QueueLimit).Job!;
+        { ParentJobId = parent.JobId, InterruptParent = true }, f.Limits.QueueLimit);
+        if (child is not Accepted acceptedChild)
+        {
+            throw new InvalidOperationException("expected acceptance");
+        }
+        var childJob = acceptedChild.Job;
         var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null,
             Path.Combine(state.Path, "herdr", "atftest.bootstrap"));
         Directory.CreateDirectory(Path.GetDirectoryName(launch.BootstrapPath)!);
@@ -290,12 +295,12 @@ public sealed class HerdrInteractiveBackendTests
 
         Assert.Empty(recovered);
         Assert.True(File.Exists(HerdrOwnedSessions.PathFor(launch)));
-        Assert.True(f.Store.IsSessionFenced(child.JobId));
+        Assert.True(f.Store.IsSessionFenced(childJob.JobId));
         Assert.Null(f.Store.BeginNextAttempt());
         var unrelated = f.Submit("unrelated");
         Assert.Equal(unrelated.JobId, f.Store.BeginNextAttempt()!.Job.JobId);
         f.Store.ReconcileStoppedSession(parent.JobId);
-        Assert.Equal(child.JobId, f.Store.BeginNextAttempt()!.Job.JobId);
+        Assert.Equal(childJob.JobId, f.Store.BeginNextAttempt()!.Job.JobId);
     }
 
     [Fact]
