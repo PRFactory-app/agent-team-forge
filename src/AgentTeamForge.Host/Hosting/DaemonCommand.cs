@@ -37,6 +37,8 @@ public static class DaemonCommand
             return 75;
         }
 
+        daemonLock.WriteOwnerPid();
+
         var limits = profile.Limits;
         var checkpoints = new DurabilityCheckpoints(point =>
         {

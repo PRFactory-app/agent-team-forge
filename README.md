@@ -27,6 +27,27 @@ Product name: **AgentTeamForge**. Repository name: **`agent-team-forge`**.
 GitHub publication and licensing remain owner decisions. Keep raw evidence,
 session state, credentials and runtime databases out of commits.
 
+## Quick start (Linux)
+
+Build `atf` with the pinned SDK, then select a launch mode explicitly:
+
+```bash
+DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet
+export DOTNET_ROOT="$(dirname "$DOTNET")"
+"$DOTNET" build src/AgentTeamForge.Host/AgentTeamForge.Host.csproj -c Release
+ATF="$(pwd)/src/AgentTeamForge.Host/bin/Release/net11.0/atf"
+"$ATF" setup --mode headless --apply
+"$ATF" start
+```
+
+Use `--mode herdr` to record an interactive Herdr choice. Omit `--apply` to print
+the Claude Code and Codex MCP registration commands for review. `setup` creates
+private state under `$XDG_STATE_HOME/agentteamforge`, or
+`~/.local/state/agentteamforge`; `--state-dir DIR` overrides it. `start` prints
+the daemon PID and is safe to repeat. `atf stop` prints the `kill -TERM` command
+for the running daemon. This checkpoint still dispatches the fake backend; the
+selected mode is persisted for subsequent real-agent implementation.
+
 ## Run the bounded checkpoint
 
 From the repository root, with the pinned .NET SDK and Linux native build
