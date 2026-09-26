@@ -5,17 +5,13 @@
   const $ = (id) => document.getElementById(id);
   const tokenKey = 'atf.web.token';
   let token = null;
-  let selected = null;
-  let selectedJob = null;
+  let expandedKey = null;
   let pageCursors = [null];
   let pageIndex = 0;
   let nextCursor = null;
-  let logOffset = 0;
-  let logDecoder = new TextDecoder();
-  let logBusy = false;
-  let logTimer = null;
   const composers = new Map();
   const cardLogs = new Map();
+  const jobDetails = new Map();
   let timer = null;
 
   function setStatus(text, cls) {
@@ -57,7 +53,6 @@
     token = null;
     sessionStorage.removeItem(tokenKey);
     clearInterval(timer);
-    clearInterval(logTimer);
     $('console').hidden = true;
     $('login').hidden = false;
     setStatus(message, 'error');
@@ -105,7 +100,7 @@
     return composers.get(key);
   }
 
-  function composer(container, key, targets, lead = false) {
+  function composer(container, key, targets, lead = false, stopTarget = null) {
     const state = composerState(key);
     if (!targets.some(j => j.job_id === state.targetJobId)) state.targetJobId = targets[0]?.job_id || null;
     const target = targets.find(j => j.job_id === state.targetJobId);
@@ -165,10 +160,11 @@
     send.disabled = !target || !state.draft.trim() || state.sending || !!state.pending;
     const stop = element('button', 'danger-action', 'Stop');
     stop.type = 'button';
-    stop.disabled = !target || (target.status !== 'queued' && target.status !== 'running' && target.backend === 'fake');
+    const stoppable = stopTarget || target;
+    stop.disabled = !stoppable || (stoppable.status !== 'queued' && stoppable.status !== 'running' && stoppable.backend === 'fake');
     stop.addEventListener('click', () => {
-      const chosen = targets.find(j => j.job_id === state.targetJobId);
-      if (chosen) stopJob(chosen.job_id, chosen.status);
+      const chosen = stopTarget || targets.find(j => j.job_id === state.targetJobId);
+      if (chosen) stopJob(chosen.job_id, chosen.status, key);
     });
     const retry = element('button', '', 'Retry same message');
     retry.type = 'button';
@@ -258,27 +254,53 @@
   }
 
   function cardLogState(key) {
-    if (!cardLogs.has(key)) cardLogs.set(key, { open: false, text: '', offset: 0, decoder: new TextDecoder(), busy: false, node: null });
+    if (!cardLogs.has(key)) cardLogs.set(key, { text: '', offset: 0, decoder: new TextDecoder(), busy: false, node: null });
     return cardLogs.get(key);
   }
 
-  function cardLog(container, key, jobId, label = 'Logs') {
+  function cardLog(container, key, jobId) {
     const state = cardLogState(key);
-    const details = element('details', 'card-logs');
-    details.open = state.open;
-    const summary = element('summary', '', label);
+    const section = element('section', 'card-logs');
+    const heading = element('h4', '', 'Transcript / logs');
     const refresh = element('button', '', 'Read new logs');
     refresh.type = 'button';
     refresh.addEventListener('click', () => loadCardLogs(key, jobId));
     const output = element('pre', '', state.text);
     state.node = output;
-    details.addEventListener('toggle', () => {
-      state.open = details.open;
-      if (details.open) loadCardLogs(key, jobId);
-    });
-    details.append(summary, refresh, output);
-    container.append(details);
-    if (state.open) loadCardLogs(key, jobId);
+    section.append(heading, refresh, output);
+    container.append(section);
+  }
+
+  function cardDetail(container, jobId) {
+    const section = element('section', 'card-result');
+    section.append(element('h4', '', 'Result'));
+    const meta = element('p', 'result-meta');
+    const output = element('pre');
+    const cached = jobDetails.get(jobId);
+    if (cached) showDetail(cached, meta, output);
+    else output.textContent = 'Loading result…';
+    section.append(meta, output);
+    container.append(section);
+    return () => loadCardDetail(jobId, meta, output);
+  }
+
+  function showDetail(job, meta, output) {
+    meta.textContent = [job.status, job.reason_code, job.backend, job.session_id,
+      job.parent_job_id ? 'parent ' + job.parent_job_id : null,
+      job.cwd, 'attempts ' + job.attempts].filter(Boolean).join(' · ');
+    output.textContent = job.result == null
+      ? (job.status === 'queued' || job.status === 'running' ? 'No result yet.' : 'Result unavailable.')
+      : job.result === '' ? '(empty result)' : job.result;
+  }
+
+  async function loadCardDetail(jobId, meta, output) {
+    const r = await api('GET', '/api/jobs/' + encodeURIComponent(jobId));
+    if (!r?.ok || !r.job) {
+      if (output.isConnected) output.textContent = 'Result unavailable: ' + (r?.error || 'network');
+      return;
+    }
+    jobDetails.set(jobId, r.job);
+    if (output.isConnected) showDetail(r.job, meta, output);
   }
 
   async function loadCardLogs(key, jobId) {
@@ -307,6 +329,42 @@
     }
   }
 
+  function cardPanel(card, key, targets, lead = false, stopTarget = null) {
+    const panel = element('div', 'card-expanded');
+    panel.dataset.expandKey = key;
+    panel.id = 'panel-' + key.replaceAll(/[^a-zA-Z0-9-]/g, '-');
+    panel.hidden = expandedKey !== key;
+    composer(panel, key, targets, lead, stopTarget);
+    const jobId = composerState(key).targetJobId || stopTarget?.job_id;
+    if (jobId) {
+      const refreshDetail = cardDetail(panel, jobId);
+      cardLog(panel, key + ':logs:' + jobId, jobId);
+      panel.openCard = () => {
+        refreshDetail();
+        loadCardLogs(key + ':logs:' + jobId, jobId);
+      };
+    }
+    card.append(panel);
+    return panel;
+  }
+
+  function toggleCard(key) {
+    const scroll = window.scrollY;
+    expandedKey = expandedKey === key ? null : key;
+    for (const panel of document.querySelectorAll('.card-expanded')) {
+      const open = panel.dataset.expandKey === expandedKey;
+      panel.hidden = !open;
+      panel.parentElement.classList.toggle('selected', open);
+      const button = panel.parentElement.querySelector('[data-toggle-key]');
+      if (button) {
+        button.setAttribute('aria-expanded', String(open));
+        button.setAttribute('aria-label', (open ? 'Collapse ' : 'Expand ') + button.dataset.toggleLabel);
+      }
+      if (open) panel.openCard?.();
+    }
+    window.scrollTo(0, scroll);
+  }
+
   function connect(value) {
     token = value.trim();
     if (!token) return;
@@ -331,9 +389,11 @@
       return;
     }
     setStatus('updated ' + new Date().toLocaleTimeString());
+    const scroll = window.scrollY;
     const active = document.activeElement;
-    const focus = active?.dataset?.composerKey ? {
-      key: active.dataset.composerKey, role: active.dataset.composerRole,
+    const focusKey = active?.dataset?.composerKey || active?.dataset?.toggleKey;
+    const focus = focusKey ? {
+      key: focusKey, role: active.dataset.composerRole || 'toggle',
       start: active.selectionStart, end: active.selectionEnd,
     } : null;
     const overview = $('jobs');
@@ -369,7 +429,9 @@
       const groupQueued = groupJobs.filter(j => j.status === 'queued').length;
       const groupFailed = groupJobs.filter(j => j.light === 'red').length;
       const groupColor = groupFailed ? 'red' : groupRunning ? 'green' : groupQueued ? 'yellow' : 'grey';
-      const leadCard = element('div', 'lead-card ' + (groupFailed ? 'is-failed' : groupQueued && !groupRunning ? 'is-waiting' : ''));
+      const leadKey = 'lead:' + lead;
+      const leadCard = element('div', 'lead-card ' + (groupFailed ? 'is-failed' : groupQueued && !groupRunning ? 'is-waiting' : '')
+        + (expandedKey === leadKey ? ' selected' : ''));
       const leadDot = light(groupColor, groupFailed ? 'Needs attention' : groupRunning ? 'Running' : groupQueued ? 'Waiting' : 'Done');
       leadDot.classList.add('lead-state');
       const leadBody = element('div', 'lead-body');
@@ -382,20 +444,30 @@
       if (firstAccepted) meta.append(element('span', '', 'first shown job accepted ' + age(firstAccepted) + ' ago'));
       if (groupJobs[0].updated_at) meta.append(element('span', '', 'latest update ' + age(groupJobs[0].updated_at) + ' ago'));
       leadBody.append(identity, activity, meta);
-      leadCard.append(leadDot, leadBody, element('span', 'lead-count', groupJobs.length + (groupJobs.length === 1 ? ' job' : ' jobs')));
+      const leadToggle = element('button', 'lead-toggle');
+      leadToggle.type = 'button';
+      leadToggle.dataset.toggleKey = leadKey;
+      leadToggle.dataset.toggleLabel = 'lead session ' + lead;
+      leadToggle.setAttribute('aria-label', (expandedKey === leadKey ? 'Collapse' : 'Expand') + ' lead session ' + lead);
+      leadToggle.setAttribute('aria-expanded', String(expandedKey === leadKey));
+      leadToggle.addEventListener('click', () => toggleCard(leadKey));
+      leadToggle.append(leadDot, leadBody, element('span', 'lead-count', groupJobs.length + (groupJobs.length === 1 ? ' job' : ' jobs')));
+      leadCard.append(leadToggle);
       const leadTargets = groupJobs.filter(j => j.session_id);
-      const leadKey = 'lead:' + lead;
-      composer(leadCard, leadKey, leadTargets, true);
-      const leadTarget = leadTargets.find(j => j.job_id === composerState(leadKey).targetJobId);
-      if (leadTarget) cardLog(leadCard, leadKey + ':' + leadTarget.job_id, leadTarget.job_id, 'Logs for selected member');
+      const leadPanel = cardPanel(leadCard, leadKey, leadTargets, true);
+      leadToggle.setAttribute('aria-controls', leadPanel.id);
       section.append(leadCard);
       const tree = element('div', 'agent-tree');
       for (const j of groupJobs) {
-        const card = element('article', 'agent-node' + (j.job_id === selected ? ' selected' : ''));
+        const key = 'job:' + j.job_id;
+        const card = element('article', 'agent-node' + (key === expandedKey ? ' selected' : ''));
         const open = element('button', 'card-main');
         open.type = 'button';
-        open.setAttribute('aria-label', 'Open job ' + j.job_id);
-        open.addEventListener('click', () => select(j.job_id));
+        open.dataset.toggleKey = key;
+        open.dataset.toggleLabel = 'job ' + j.job_id;
+        open.setAttribute('aria-label', (key === expandedKey ? 'Collapse' : 'Expand') + ' job ' + j.job_id);
+        open.setAttribute('aria-expanded', String(key === expandedKey));
+        open.addEventListener('click', () => toggleCard(key));
         const row = element('span', 'card-identity');
         row.append(light(Object.hasOwn(counts, j.light) ? j.light : 'red', j.status.replaceAll('_', ' ')),
           element('strong', 'node-name', j.target_agent || 'Agent'),
@@ -413,111 +485,32 @@
         open.append(row, chips, cardMeta);
         const side = element('div', 'card-side');
         side.append(element('span', 'elapsed', age(j.accepted_at)), state);
-        const actions = element('div', 'card-actions');
-        if (!j.session_id && (j.status === 'queued' || j.status === 'running')) {
-          const stop = element('button', 'danger-action', j.status === 'queued' || j.status === 'running' ? 'Stop job' : 'Stop agent');
-          stop.type = 'button';
-          stop.addEventListener('click', () => stopJob(j.job_id, j.status));
-          actions.append(stop);
-        }
-        side.append(actions);
         card.append(open, side);
-        composer(card, 'job:' + j.job_id, j.session_id ? [j] : []);
-        cardLog(card, 'job:' + j.job_id, j.job_id);
+        const panel = cardPanel(card, key, j.session_id ? [j] : [], false, j);
+        open.setAttribute('aria-controls', panel.id);
         tree.append(card);
       }
       section.append(tree);
       overview.append(section);
     }
     if (!jobs.length) overview.textContent = 'No jobs on this page.';
+    const openPanel = [...overview.querySelectorAll('.card-expanded')].find(panel => !panel.hidden);
+    if (!openPanel) expandedKey = null;
     if (focus) {
-      const same = [...document.querySelectorAll('[data-composer-key]')]
-        .find(node => node.dataset.composerKey === focus.key && node.dataset.composerRole === focus.role && !node.disabled);
+      const same = [...document.querySelectorAll('[data-composer-key], [data-toggle-key]')]
+        .find(node => (node.dataset.composerKey || node.dataset.toggleKey) === focus.key
+          && (node.dataset.composerRole || 'toggle') === focus.role && !node.disabled);
       if (same) {
         same.focus();
         if (focus.start != null && same.setSelectionRange) same.setSelectionRange(focus.start, focus.end);
       }
     }
+    window.scrollTo(0, scroll);
+    openPanel?.openCard?.();
     refreshDeliveries();
   }
 
-  async function select(jobId) {
-    clearInterval(logTimer);
-    logTimer = null;
-    selected = jobId;
-    selectedJob = null;
-    logOffset = 0;
-    logDecoder = new TextDecoder();
-    $('d-logs').textContent = '';
-    $('stop-state').textContent = '';
-    $('detail').hidden = false;
-    await loadDetail();
-  }
-
-  async function loadDetail() {
-    const id = selected;
-    const r = await api('GET', '/api/jobs/' + encodeURIComponent(id));
-    if (id !== selected) return;
-    if (!r) return;
-    $('d-id').textContent = selected;
-    if (!r.ok) {
-      $('d-status').textContent = 'error: ' + r.error;
-      return;
-    }
-    const j = r.job;
-    selectedJob = j;
-    $('d-status').textContent = j.status;
-    $('d-reason').textContent = j.reason_code || '';
-    $('d-backend').textContent = j.backend || '';
-    $('d-session').textContent = j.session_id || '';
-    $('d-parent').textContent = j.parent_job_id || '';
-    $('d-cwd').textContent = j.cwd || '';
-    $('d-attempts').textContent = String(j.attempts);
-    $('d-result').textContent = j.result == null
-      ? (j.status === 'queued' || j.status === 'running' ? 'No result yet.' : 'Result unavailable.')
-      : j.result === '' ? '(empty result)' : j.result;
-    $('stop-job').textContent = j.status === 'queued' || j.status === 'running' ? 'Stop job' : 'Stop agent';
-    $('stop-job').disabled = j.status !== 'queued' && j.status !== 'running' && (!j.session_id || j.backend === 'fake');
-    await loadLogs();
-    if (id !== selected) return;
-    const active = j.status === 'running' || j.status === 'queued';
-    if (active && !logTimer) logTimer = setInterval(loadDetail, 1500);
-    if (!active && logTimer) {
-      clearInterval(logTimer);
-      logTimer = null;
-    }
-  }
-
-  async function loadLogs() {
-    if (!selected || logBusy) return;
-    const id = selected;
-    logBusy = true;
-    try {
-      for (let page = 0; page < 160; page++) {
-        const r = await api('GET', '/api/jobs/' + encodeURIComponent(id) + '/output?offset=' + logOffset);
-        if (id !== selected || !r) return;
-        if (!r.ok || !r.output) {
-          setStatus('logs failed: ' + (r.error || 'missing output'), 'error');
-          return;
-        }
-        const output = r.output;
-        if (output.truncated) {
-          $('d-logs').textContent += '\n[Earlier log bytes were trimmed]\n';
-          logDecoder = new TextDecoder();
-        }
-        const raw = atob(output.data_base64 || '');
-        const bytes = Uint8Array.from(raw, (c) => c.charCodeAt(0));
-        $('d-logs').textContent += logDecoder.decode(bytes, { stream: true });
-        logOffset = output.next_offset;
-        if (logOffset >= output.end_offset) return;
-      }
-    } finally {
-      logBusy = false;
-      if (id !== selected) loadLogs();
-    }
-  }
-
-  async function stopJob(jobId, status) {
+  async function stopJob(jobId, status, cardKey) {
     const active = status === 'queued' || status === 'running';
     const action = active ? 'Stop job ' : 'Stop agent for job ';
     if (!window.confirm(action + jobId + '?')) return;
@@ -529,13 +522,13 @@
       ? 'Outcome: ' + (r.outcome || 'unknown') + '; status: ' + (r.job?.status || 'unknown')
         + '; reason_code: ' + (r.job?.reason_code || 'none')
       : 'Stop failed: ' + r.error;
-    await loadJobs();
-    if (selected === jobId) {
-      $('stop-state').textContent = message;
-      await loadDetail();
-    } else {
-      setStatus(message, r.ok ? '' : 'error');
+    const state = cardKey && composerState(cardKey);
+    if (state) {
+      state.result = message;
+      state.resultClass = r.ok ? '' : 'error';
     }
+    setStatus(message, r.ok ? '' : 'error');
+    await loadJobs();
   }
 
   document.addEventListener('DOMContentLoaded', () => {
@@ -560,10 +553,8 @@
     $('page-next').addEventListener('click', () => {
       if (nextCursor) { pageCursors[++pageIndex] = nextCursor; loadJobs(); }
     });
-    $('logs-refresh').addEventListener('click', loadLogs);
-    $('stop-job').addEventListener('click', async () => {
-      if (!selected || !selectedJob) return;
-      await stopJob(selected, selectedJob.status);
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && expandedKey) { e.preventDefault(); toggleCard(expandedKey); }
     });
   });
 })();

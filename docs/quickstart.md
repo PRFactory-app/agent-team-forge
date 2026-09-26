@@ -65,7 +65,8 @@ for follow-up. Use **Stop agent** in the console to close that tab; **Stop job**
 cancels a queued or running job. The console labels an absent result separately
 from an empty result.
 
-Each agent card has an inline message composer. Press Enter to send, or
+Click a lead or agent card to expand its inline composer, result, and logs.
+Click it again or press Escape to collapse it. Press Enter to send, or
 Shift+Enter for a newline. Check **Interrupt** to interrupt a running turn.
 The lead-session card lets you choose which of its member agents to message;
 the lead session itself is an MCP binding, not a managed agent. Message delivery
