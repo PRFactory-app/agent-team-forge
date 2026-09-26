@@ -38,6 +38,9 @@ public sealed class ExternalJoinScenarios
         var tools = await member.ListToolsAsync(cancellationToken: TestContext.Current.CancellationToken);
         Assert.Contains(tools, tool => tool.Name == "join_team");
         Assert.DoesNotContain(tools, tool => tool.Name == "create_join_ticket");
+        var leadTools = await lead.ListToolsAsync(cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Contains(leadTools, tool => tool.Name == "send_message");
+        Assert.Equal("member_not_found", (await SpikeRig.CallAsync(lead, "send_message", new() { ["text"] = "self" })).Error);
 
         var ticketCall = await lead.CallToolAsync("create_join_ticket", new Dictionary<string, object?> { ["name"] = "visitor" },
             cancellationToken: TestContext.Current.CancellationToken);
@@ -59,11 +62,11 @@ public sealed class ExternalJoinScenarios
             Assert.True(joinJson.RootElement.TryGetProperty("member_token", out _));
         }
         var joined = JsonSerializer.Deserialize(joinText, IpcJson.Default.IpcResponse)!.Member!;
-        Assert.Equal("invalid_or_expired_ticket", (await SpikeRig.CallAsync(member, "join_team", new()
+        Assert.Equal(joined, (await SpikeRig.CallAsync(member, "join_team", new()
         {
             ["session_id"] = ticket.SessionId,
             ["token"] = ticket.Token
-        })).Error);
+        })).Member);
         Assert.True((await SpikeRig.CallAsync(member, "external_set_wake", new()
         {
             ["member_token"] = joined.MemberToken,
@@ -76,15 +79,33 @@ public sealed class ExternalJoinScenarios
         Assert.Contains("external_read", File.ReadAllText(wakeLog));
         Assert.Equal("work", Assert.Single((await SpikeRig.CallAsync(member, "external_read", new()
         {
-            ["member_token"] = joined.MemberToken
+            ["member_token"] = $"wam1:{ticket.SessionId}:{joined.MemberToken}"
         })).Inbox!.Messages).Text);
         Assert.True((await SpikeRig.CallAsync(member, "external_send", new()
         {
             ["member_token"] = joined.MemberToken,
             ["text"] = "done"
         })).Ok);
-        Assert.Equal("done", Assert.Single((await SpikeRig.CallAsync(lead, "read_messages", [])).Inbox!.Messages).Text);
-        Assert.True((await SpikeRig.CallAsync(member, "leave_team", new() { ["member_token"] = joined.MemberToken })).Ok);
+        var readCall = await lead.CallToolAsync("read_messages", new Dictionary<string, object?>
+        {
+            ["from_agent"] = joined.Name,
+            ["since_seq"] = 0,
+            ["max_chars"] = 2
+        }, cancellationToken: TestContext.Current.CancellationToken);
+        using (var readJson = JsonDocument.Parse(Assert.IsType<TextContentBlock>(Assert.Single(readCall.Content)).Text))
+        {
+            var root = readJson.RootElement;
+            Assert.Equal(JsonValueKind.Null, root.GetProperty("cursors").ValueKind);
+            Assert.Equal(1, root.GetProperty("seq").GetInt64());
+            Assert.Equal(1, root.GetProperty("unread_count").GetInt32());
+            Assert.False(root.GetProperty("has_more").GetBoolean());
+            var message = Assert.Single(root.GetProperty("messages").EnumerateArray());
+            Assert.Equal("do", message.GetProperty("text").GetString());
+            Assert.True(message.GetProperty("truncated").GetBoolean());
+            Assert.Equal(4, message.GetProperty("full_len").GetInt32());
+        }
+        Assert.False((await SpikeRig.CallAsync(member, "leave_team", new() { ["member_token"] = joined.MemberToken })).AlreadyLeft);
+        Assert.True((await SpikeRig.CallAsync(member, "leave_team", new() { ["member_token"] = joined.MemberToken })).AlreadyLeft);
         Assert.Equal("membership_revoked", (await SpikeRig.CallAsync(member, "external_read", new()
         {
             ["member_token"] = joined.MemberToken

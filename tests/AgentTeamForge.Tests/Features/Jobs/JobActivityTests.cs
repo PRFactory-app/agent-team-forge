@@ -52,4 +52,49 @@ public sealed class JobActivityTests
         write("stdout", Encoding.UTF8.GetBytes("""{"type":"item.completed","item":{"type":"agent_message","text":"line1\nline2"}}""" + "\n"));
         Assert.Equal("line1 line2", logs.LastActivity("job-1", "codex"));
     }
+
+    [Theory]
+    [InlineData("claude")]
+    [InlineData("codex")]
+    [InlineData("pi")]
+    public void Stderr_is_visible_and_interleaved_stdout_json_stays_intact(string backend)
+    {
+        using var state = new TempStateDir();
+        var logs = new JobLogs(state.Path);
+        var write = logs.BeginRun("job", "run", backend);
+        var json = backend switch
+        {
+            "claude" => """{"type":"result","result":"done"}""",
+            "codex" => """{"type":"item.completed","item":{"type":"agent_message","text":"done"}}""",
+            _ => """{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}""",
+        };
+        var split = json.Length / 2;
+        write("stdout", Encoding.UTF8.GetBytes(json[..split]));
+        write("stderr", "authentication failed\n"u8.ToArray());
+        write("stdout", Encoding.UTF8.GetBytes(json[split..] + "\n"));
+        write("stderr", "partial diagnostic"u8.ToArray());
+        write("stderr", ReadOnlyMemory<byte>.Empty);
+
+        var entries = logs.ReadActivity("job", backend).Entries;
+        Assert.Equal(["error", backend == "claude" ? "result" : "assistant_text", "error"], entries.Select(e => e.Kind));
+        Assert.Equal(["authentication failed", "done", "partial diagnostic"], entries.Select(e => e.Text));
+        var raw = logs.Read("job").Text;
+        Assert.Contains(json + "\n", raw);
+        Assert.DoesNotContain(json[..split] + "\n[stderr]", raw);
+    }
+
+    [Fact]
+    public void Cursor_taken_between_tag_and_line_keeps_the_stream()
+    {
+        using var state = new TempStateDir();
+        var logs = new JobLogs(state.Path);
+        logs.BeginRun("job", "run", "codex");
+        var path = System.IO.Path.Combine(state.Path, "logs", "job.log");
+        File.AppendAllText(path, "[stderr]\n");
+
+        var cursor = logs.ReadActivity("job", "codex").NextCursor;
+        File.AppendAllText(path, "boom\n");
+        var next = logs.ReadActivity("job", "codex", cursor).Entries;
+        Assert.Equal("error", Assert.Single(next).Kind);
+    }
 }

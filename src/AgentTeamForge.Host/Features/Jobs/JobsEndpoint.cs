@@ -97,7 +97,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     : MapExternal(external.SendFromLead(request.LeadSessionId, request.Workspace, request.MemberName, request.Text));
             case IpcProtocol.ExternalLeadRead:
                 return external is null ? new IpcResponse(false, JobErrors.InvalidRequest)
-                    : MapExternal(external.ReadLead(request.LeadSessionId, request.Workspace, request.SinceSeq, request.Limit));
+                    : MapExternal(external.ReadLead(request.LeadSessionId, request.Workspace, request.SinceSeq, request.Limit,
+                        request.FromAgent, request.Full, request.MaxChars));
             case IpcProtocol.JobSubmit:
                 return Accepted(accept.Execute(new SubmitJobRequest(request.IdempotencyKey ?? string.Empty, request.Instruction ?? string.Empty, request.Behavior, request.Hold)
                 {
@@ -216,5 +217,5 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
 
     static IpcResponse MapExternal(ExternalResult result) => new(result.Ok, result.Error,
         result.Ok ? "ok" : null, WakeGeneration: result.WakeGeneration, Ticket: result.Ticket,
-        Member: result.Member, Inbox: result.Inbox);
+        Member: result.Member, Inbox: result.Inbox, AlreadyLeft: result.AlreadyLeft);
 }

@@ -102,6 +102,39 @@ public sealed class PiBackendTests : IDisposable
     }
 
     [Fact]
+    public void Settled_turn_without_assistant_message_has_empty_result_unless_a_line_was_skipped()
+    {
+        var settled = System.Text.Encoding.UTF8.GetBytes("""{"type":"agent_settled"}""");
+        var empty = new PiBackend.TurnState();
+        Assert.Equal([new BackendEvidence.Result("c1", "")], empty.Observe(settled, "c1"));
+
+        var skipped = new PiBackend.TurnState();
+        skipped.MarkSkippedLine();
+        Assert.Equal([new BackendEvidence.ProtocolError("backend_malformed_output")], skipped.Observe(settled, "c1"));
+    }
+
+    [Fact]
+    public async Task Oversized_tool_event_does_not_hide_final_answer()
+    {
+        var output = _dir.File("large.jsonl");
+        File.WriteAllLines(output,
+        [
+            """{"type":"session","id":"s1"}""",
+            """{"type":"agent_start"}""",
+            "{\"type\":\"tool_execution_end\",\"result\":\"" + new string('x', PiBackend.MaxLineBytes) + "\"}",
+            """{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}""",
+            """{"type":"agent_settled"}""",
+        ]);
+        var script = _dir.File("pi-large");
+        File.WriteAllText(script, "#!/usr/bin/env bash\ncat >/dev/null\ncat '" + output + "'\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        var evidence = await RunAsync(Request("x"), new PiBackend(script));
+
+        Assert.Contains(new BackendEvidence.Result("c1", "done"), evidence);
+    }
+
+    [Fact]
     public async Task Terminate_kills_the_owned_process_tree()
     {
         await using var run = _backend.Start(Request("x", "model=hang"));
