@@ -1,3 +1,5 @@
+using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Tests.Support;
@@ -85,5 +87,35 @@ public sealed class ModelSelectionTests
             fixture.Get().Execute(result.Job.JobId).Job!.Effort));
         Assert.Equal(("gpt-6-sol", "high"), (fixture.List().Execute(new ListJobsRequest()).Page!.Jobs.Single().Model,
             fixture.List().Execute(new ListJobsRequest()).Page!.Jobs.Single().Effort));
+    }
+
+    [Fact]
+    public async Task Follow_up_inherits_resolved_selection_and_resolves_overrides()
+    {
+        using var fixture = new JobFixture();
+        var accept = new AcceptJob(fixture.Store, JobFixture.Operator, fixture.Limits, fixture.TestProfile,
+            fixture.Admission, ["fake", "codex"], AllModels);
+        var parent = accept.Execute(new SubmitJobRequest("parent", "task", null, false) { Backend = "codex", Model = "cheapest" }).Job!;
+        var backend = new ScriptedBackend(r =>
+        [
+            new BackendEvidence.Ack(r.Correlation),
+            new BackendEvidence.Session(r.Correlation, "session-1"),
+            new BackendEvidence.Result(r.Correlation, "done"),
+            new BackendEvidence.EndOfOutput(),
+        ]);
+        using var dispatcher = new DispatchJob(fixture.Store, new BackendCatalog().Register("codex", () => backend), fixture.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
+        Assert.Equal(JobStatus.Completed, fixture.Store.GetJob(parent.JobId)!.Status);
+
+        var followUp = new FollowUpJob(fixture.Store, JobFixture.Operator, accept);
+        var inherited = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f1")).Job!;
+        var effortOnly = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f2") { Effort = "low" }).Job!;
+        var tier = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f3") { Model = "max", Effort = "low" }).Job!;
+        var unavailable = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f4") { Model = "gpt-7" });
+
+        Assert.Equal(("gpt-6-luna", "high"), (inherited.Model, inherited.Effort));
+        Assert.Equal(("gpt-6-luna", "low"), (effortOnly.Model, effortOnly.Effort));
+        Assert.Equal(("gpt-6-astra", "medium"), (tier.Model, tier.Effort));
+        Assert.Contains("not available", unavailable.Error);
     }
 }

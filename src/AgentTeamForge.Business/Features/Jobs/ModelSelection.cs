@@ -84,9 +84,10 @@ public static class ModelSelection
             }
             process.Start();
             var outputTask = process.StandardOutput.ReadToEndAsync();
+            _ = process.StandardError.ReadToEndAsync(); // Drain so a chatty CLI cannot block on a full pipe.
             if (!process.WaitForExit(20_000))
             {
-                process.Kill();
+                process.Kill(entireProcessTree: true);
                 return [];
             }
             var output = outputTask.GetAwaiter().GetResult();
