@@ -132,7 +132,15 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
                 return;
             }
 
-            using var claimPause = beforeRequest?.Invoke(request);
+            IDisposable? claimPause;
+            try { claimPause = beforeRequest?.Invoke(request); }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                log($"request failed: {ex}");
+                await TryWriteAsync(stream, new IpcResponse(false, IpcProtocol.InternalError));
+                return;
+            }
+            using var claim = claimPause;
 
             // Business work is synchronous and not tied to this connection;
             // a vanished client cannot cancel a committed job.
@@ -155,18 +163,18 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
         catch (OperationCanceledException)
         {
         }
-        catch (IOException)
+        catch (IOException ex)
         {
-            log("client connection dropped");
+            log($"client connection dropped: {ex}");
         }
-        catch (SocketException)
+        catch (SocketException ex)
         {
-            log("client connection dropped");
+            log($"client connection dropped: {ex}");
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             // E.g. a storage or injected failure: report no acceptance, keep serving.
-            log($"request failed: {ex.GetType().Name}");
+            log($"request failed: {ex}");
             await TryWriteAsync(stream, new IpcResponse(false, IpcProtocol.InternalError));
         }
     }
@@ -180,7 +188,7 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
         }
         catch (Exception ex) when (ex is not (OutOfMemoryException or OperationCanceledException))
         {
-            log($"request failed: {ex.GetType().Name}");
+            log($"request failed: {ex}");
             return new IpcResponse(false, IpcProtocol.InternalError);
         }
     }

@@ -225,18 +225,37 @@ public static class SetupCommand
         }
         // Concurrent starters (several MCP bridges) queue here so only one probes and
         // launches; a probe must never overlap a starting daemon's own lock attempt.
-        using var gate = await AcquireStartGateAsync(state);
+        DaemonLock? gate;
+        try
+        {
+            // Check the endpoint before taking a start lock: an existing daemon may
+            // belong to another user, whose state directory also denies the lock.
+            _ = await EndpointReadyAsync(state);
+            gate = await AcquireStartGateAsync(state);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"error: {IpcProtocol.AccessDenied}: {IpcClient.AccessDeniedDetail}");
+            return 1;
+        }
+        using var acquiredGate = gate;
         if (gate is null)
         {
             Console.Error.WriteLine($"error: another daemon start did not finish; see {state.Path}/daemon.log");
             return 1;
         }
-        using (var probe = DaemonLock.TryAcquire(state.LockFile))
+        try
         {
+            using var probe = DaemonLock.TryAcquire(state.LockFile);
             if (probe is null)
             {
                 return await WaitForReadyAsync(state, quiet);
             }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"error: {IpcProtocol.AccessDenied}: {IpcClient.AccessDeniedDetail}");
+            return 1;
         }
 
         var binary = Path.GetFullPath(executablePath ?? Environment.ProcessPath
@@ -426,9 +445,9 @@ public static class SetupCommand
                     return PrintRunningPid(state, quiet);
                 }
             }
-            catch (UnauthorizedAccessException) when (OperatingSystem.IsWindows())
+            catch (UnauthorizedAccessException)
             {
-                Console.Error.WriteLine($"error: {WindowsPipe.AccessDeniedMessage}");
+                Console.Error.WriteLine($"error: {IpcProtocol.AccessDenied}: {IpcClient.AccessDeniedDetail}");
                 return 1;
             }
             if (launched?.HasExited == true)
@@ -436,7 +455,9 @@ public static class SetupCommand
                 using var other = DaemonLock.TryAcquire(state.LockFile);
                 if (other is not null)
                 {
-                    Console.Error.WriteLine($"error: daemon exited ({launched.ExitCode}); see {state.Path}/daemon.log");
+                    Console.Error.WriteLine(OperatingSystem.IsWindows()
+                        ? $"error: daemon exited; see {state.Path}/daemon.log"
+                        : $"error: daemon exited ({launched.ExitCode}); see {state.Path}/daemon.log");
                     return 1;
                 }
             }
@@ -485,6 +506,10 @@ public static class SetupCommand
                 await socket.ConnectAsync(new System.Net.Sockets.UnixDomainSocketEndPoint(state.Socket), timeout.Token);
             }
             return true;
+        }
+        catch (System.Net.Sockets.SocketException ex) when (ex.SocketErrorCode == System.Net.Sockets.SocketError.AccessDenied)
+        {
+            throw new UnauthorizedAccessException(IpcClient.AccessDeniedDetail, ex);
         }
         catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or OperationCanceledException or TimeoutException) { return false; }
     }

@@ -127,12 +127,14 @@ public sealed class WindowsPipeTests
             {
                 var response = await new IpcClient(state, new SpikeLimits()).SendAsync(new IpcRequest { Op = "job_list" }, CancellationToken.None);
                 Assert.False(response.Ok);
-                Assert.Equal(WindowsPipe.AccessDeniedMessage, response.Error);
+                Assert.Equal(IpcProtocol.AccessDenied, response.Error);
+                Assert.NotNull(response.ErrorDetail);
             }
             using (var server = NamedPipeServerStreamAcl.Create(state.Socket, PipeDirection.InOut, 1,
                 PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 0, 0, security))
             {
                 Assert.Equal(1, await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = path }, quiet: true));
+                Assert.False(File.Exists(Path.Combine(path, "start.lock")));
             }
         }
         finally { if (Directory.Exists(path)) { Directory.Delete(path, recursive: true); } }

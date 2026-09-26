@@ -5,6 +5,7 @@
     <RootNamespace>AgentTeamForge.Host</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PublishAot>true</PublishAot>
+    <Version Condition="'$(Version)' == ''">0.0.1-dev</Version>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../AgentTeamForge.Business/AgentTeamForge.Business.csproj" />

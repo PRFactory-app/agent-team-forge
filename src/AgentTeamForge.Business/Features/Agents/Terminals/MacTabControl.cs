@@ -148,8 +148,10 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
     {
         var args = WtTabControl.AgentArguments(launch, prompt);
         var command = string.Join(' ', new[] { FindExecutable(args[0]) ?? args[0] }.Concat(args.Skip(1)).Select(ShellQuote));
+        var trust = InteractiveAgentCommand.WorkspaceTrustEnvironment(launch.Kind);
         return "#!/bin/sh\nset -eu\n" +
             "unset CLAUDECODE CLAUDE_PID CODEX_THREAD_ID CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN\n" +
+            (trust is { } env ? "export " + env.Name + "=" + ShellQuote(env.Value) + "\n" : "") +
             "cd " + ShellQuote(launch.WorkingDirectory) + "\n" +
             "export ATF_RUN_CORRELATION=" + ShellQuote(launch.AgentName) + "\n" +
             ShellQuote(atfBinary) + " terminal-token --pid \"$$\" --sidecar " + ShellQuote(sidecar) + "\n" +

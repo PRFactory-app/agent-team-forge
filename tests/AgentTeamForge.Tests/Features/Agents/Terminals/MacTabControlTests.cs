@@ -47,6 +47,16 @@ public sealed class MacTabControlTests
     }
 
     [Fact]
+    public void ClaudeTerminalWrapperExportsPerLaunchWorkspaceTrust()
+    {
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", "/tmp/new dir", null, null, "/tmp/atf.launch.sh");
+        var wrapper = MacTabControl.WrapperText(launch, "task", "/tmp/atf.pid", "/tmp/atf");
+
+        Assert.Contains("export CLAUDE_CODE_SANDBOXED='1'", wrapper);
+        Assert.Contains("'--settings' '{\"skipDangerousModePermissionPrompt\":true}'", wrapper);
+    }
+
+    [Fact]
     public void UnixCodexLaunchKeepsUserHooks()
     {
         if (OperatingSystem.IsWindows())
