@@ -82,6 +82,19 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
+    /// <summary>Stops the current turn while preserving an interactive agent's live tab.</summary>
+    public void InterruptRunning(string jobId)
+    {
+        if (_running.TryGetValue(jobId, out var active))
+        {
+            // Own the stop effect before cancellation wakes RunAttemptAsync's
+            // catch path, which otherwise wins and kills an interactive TUI.
+            active.TerminateOnce(TryInterrupt);
+            try { active.Stop.Cancel(); }
+            catch (ObjectDisposedException) { }
+        }
+    }
+
     /// <summary>Commits a daemon-owned cancellation, then interrupts the running attempt.</summary>
     void CancelOwned(string jobId, string reason)
     {
@@ -385,7 +398,8 @@ public sealed class DispatchJob : IDisposable
         {
             // Spike-only policy: kill our own direct child through its held handle.
             // A possible surviving child or failed kill stays uncertain, never retried.
-            TryTerminate(backendRun);
+            // Once-only, so a concurrent interrupt keeps its live interactive tab.
+            active.TerminateOnce(TryTerminate);
             End(run, JobStatus.NeedsReconciliation, "backend_timeout");
         }
         catch (Exception) when (stopRequested.IsCancellationRequested)
@@ -398,14 +412,15 @@ public sealed class DispatchJob : IDisposable
             // Unanticipated fault after the attempt commit: the effect is unknown, so
             // quarantine (never failed, never requeued) and stop claiming work.
             log($"dispatcher fault for {run.RunId}: {ex.GetType().Name}");
-            TryTerminate(backendRun);
+            active.TerminateOnce(TryTerminate);
             End(run, JobStatus.NeedsReconciliation, "dispatcher_fault");
             Halt("dispatcher_fault");
         }
         finally
         {
             _running.TryRemove(run.JobId, out _);
-            if (stopRequested.IsCancellationRequested)
+            // An interrupt kills before it cancels, so the turn can end first.
+            if (stopRequested.IsCancellationRequested || active.Terminated)
             {
                 // Descendants reparented away from the owned child escape a tree kill;
                 // this run's unique marker still identifies them.
@@ -464,6 +479,16 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
+    void TryInterrupt(IBackendRun? backendRun)
+    {
+        try { backendRun?.InterruptTurn(); }
+        catch (Exception ex)
+        {
+            log($"owned turn interruption failed: {ex.GetType().Name}; stopping owned backend");
+            TryTerminate(backendRun);
+        }
+    }
+
     sealed class ActiveRun(CancellationTokenSource stop)
     {
         int _terminated;
@@ -471,6 +496,8 @@ public sealed class DispatchJob : IDisposable
         public CancellationTokenSource Stop { get; } = stop;
 
         public IBackendRun? BackendRun;
+
+        public bool Terminated => Volatile.Read(ref _terminated) != 0;
 
         public void TerminateOnce(Action<IBackendRun?> terminate)
         {
