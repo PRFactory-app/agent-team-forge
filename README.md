@@ -58,6 +58,7 @@ fixed output directory. Only Linux x64 has recorded checkpoint evidence.
 | Document | Contents |
 | --- | --- |
 | [Handoff](HANDOFF.md) | Current status, constraints, validation boundaries, and starting context. |
+| [Linux MVP project status](docs/project-status.html) | Current mainline progress, ordered lanes, dependencies and blockers. |
 | [Contributor instructions](AGENTS.md) | Authoritative project and review policy. |
 | README (this file) | Short project orientation and status. |
 | [Setup choices and terminal requirements](docs/terminal-modes.md) | Mandatory choice of interactive or headless execution; Herdr, Windows, and macOS. |
