@@ -4,8 +4,8 @@ using AgentTeamForge.Host.Transport;
 
 namespace AgentTeamForge.Host.Features.Jobs;
 
-/// <summary>Thin IPC mapping for job_submit/job_get; all rules live in Business.</summary>
-public sealed class JobsEndpoint(AcceptJob accept, GetJob get, DurabilityCheckpoints checkpoints)
+/// <summary>Thin IPC mapping for job_submit/job_get/job_list; all rules live in Business.</summary>
+public sealed class JobsEndpoint(AcceptJob accept, GetJob get, ListJobs list, DurabilityCheckpoints checkpoints)
 {
     public IpcResponse Handle(IpcRequest request)
     {
@@ -15,12 +15,24 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, DurabilityCheckpo
                 var submitted = accept.Execute(new SubmitJobRequest(request.IdempotencyKey ?? string.Empty, request.Instruction ?? string.Empty, request.Behavior, request.Hold));
                 if (submitted.Outcome == "accepted")
                 {
-                    checkpoints.Hit(DurabilityCheckpoints.AcceptAfterCommit);
+                    try
+                    {
+                        checkpoints.Hit(DurabilityCheckpoints.AcceptAfterCommit);
+                    }
+                    catch (Exception ex) when (ex is not OutOfMemoryException)
+                    {
+                        // Acceptance is committed but no reply can be produced: never
+                        // report "not accepted". The caller recovers by same-key retry.
+                        return new IpcResponse(false, IpcProtocol.OutcomeUnknown);
+                    }
                 }
 
                 return Map(submitted);
             case IpcProtocol.JobGet:
                 return Map(get.Execute(request.JobId ?? string.Empty));
+            case IpcProtocol.JobList:
+                var listed = list.Execute(new ListJobsRequest(request.Status, request.Limit, request.Cursor));
+                return listed.Error is null ? new IpcResponse(true, Outcome: "listed", Page: listed.Page) : new IpcResponse(false, listed.Error);
             default:
                 return new IpcResponse(false, IpcProtocol.UnknownOp);
         }

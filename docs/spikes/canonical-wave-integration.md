@@ -59,3 +59,147 @@ longer existed on immediate read-only inspection. No cleanup was performed.
 These checks establish this combined fake-core checkpoint on Linux only.
 Legacy interactive tests, real backends, Windows/macOS behavior, and publication
 gates were not run or approved by this integration.
+
+## Tooling fix integration after independent re-review
+
+The Claude-authored caller-cwd fix `68a5e6b` was independently approved by
+Codex in `review/canonical-tooling` at `74f0f53`. The fix branch merged into
+`integration/canonical-wave` at `b547d99`; the review branch merged at
+`9d8d783`. Both merges were conflict-free. The review records the resolved
+blocking finding and the scratch-merge gate evidence.
+
+I reran all combined gates from this integration worktree on Linux
+7.2.5-3-omarchy x86_64 with the isolated
+`/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet`
+(`11.0.100-rc.1.26425.128`). `verify.sh`, `check-caller-cwd.sh`, and the
+published demo were invoked from `/tmp`; the demo used caller-relative `DOTNET`
+and `ATF_DEMO_BIN` paths.
+
+```bash
+# From the canonical-wave worktree:
+git diff --check 2d6d0c9..HEAD
+bash -n scripts/verify.sh scripts/published-smoke.sh scripts/demo.sh scripts/check-caller-cwd.sh
+# From /tmp:
+DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet /home/mikael/code/github/agent-team-forge/.worktrees/canonical-wave/scripts/check-caller-cwd.sh
+DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet /home/mikael/code/github/agent-team-forge/.worktrees/canonical-wave/scripts/verify.sh
+# Still from /tmp, using caller-relative SDK and binary paths:
+DOTNET=../home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet ATF_DEMO_BIN=../home/mikael/code/github/agent-team-forge/.worktrees/canonical-wave/artifacts/linux-x64-20260926T145755Z-0IzbQH/atf /home/mikael/code/github/agent-team-forge/.worktrees/canonical-wave/scripts/demo.sh
+```
+
+| Gate | Actual result |
+| --- | --- |
+| `git diff --check`; `bash -n` | Passed |
+| Caller-cwd decoy regression | 5/5 passed; missing caller paths rejected |
+| Restore and format check | Passed |
+| Release build `-warnaserror` | Passed, 0 warnings and 0 errors |
+| Full tests | 61/61 passed, 0 failed, 0 skipped |
+| Linux x64 Native AOT publish | Passed; native `atf`, 9,788,576 bytes |
+| Published-binary process scenarios | 19/19 passed, 0 failed, 0 skipped |
+| Published-binary demo | 1/1 passed; no new state dirs reported |
+
+The new AOT binary is in ignored directory
+`artifacts/linux-x64-20260926T145755Z-0IzbQH/` (SHA-256
+`b79406d24060b3f13ef23f2a7d5fda18b7e2e61008467e1a50833d020c022893`).
+The scenario manifest is in ignored
+`evidence/published-20260926T145807Z-mNsOnP/`; demo TRX and logs are in
+`.run/demo-20260926T145817Z-hDN7yh/`. `shellcheck` was unavailable. This
+requalification covers the Linux fake-core checkpoint only.
+
+## P2 private reads and D2 Herdr characterization
+
+The two Claude-authored slices and their independent Codex review records were
+merged without squash or conflicts, in this order:
+
+| Input | Source commit | Integration merge commit |
+| --- | --- | --- |
+| `feature/port-p2-private-reads` | `a7fbea1` | `970ac18` |
+| `review/port-p2` (approval) | `5033256` | `c0c3896` |
+| `feature/char-d2-herdr-launch` | `fc5e37f` | `30ac16d` |
+| `review/char-d2` (approval) | `d2ef9cc` | `40d7ebb` |
+
+The P2 review approved Linux x64 descriptor-bound private reads with two
+non-blocking source limitations recorded in `port-p2-review.md`. The D2 review
+approved only offline, test-only Herdr launch characterization; no live Herdr
+adapter or platform behavior was approved. The combined diff from `c39124e`
+adds these slices and their review records without altering the reviewed
+tooling fix. `git diff --check c39124e..40d7ebb` and `bash -n` on all four root
+scripts passed.
+
+On Linux 7.2.5-3-omarchy x86_64, with
+`DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet`
+(`11.0.100-rc.1.26425.128`), I ran root `scripts/verify.sh`, then
+`ATF_DEMO_BIN=<published atf> scripts/demo.sh` using the same SDK. The first
+`verify.sh` run passed restore, format, warning-free Release build, all **76/76**
+managed tests, and Native AOT publish, but one of **22** published scenarios
+failed: `Dispatcher_fault_stops_admission_instead_of_leaving_a_ready_daemon`
+received a null outcome where it expected `accepted`. Its result was **21/22**.
+I did not change source or tests. A direct rerun of `published-smoke.sh` against
+that same binary passed **22/22**, and its published-binary demo passed **1/1**.
+
+A fresh, complete `scripts/verify.sh` then passed restore, format, Release build
+with 0 warnings and 0 errors, **76/76** full tests (0 failed/skipped), Linux x64
+Native AOT publish, and **22/22** published process scenarios (0 failed/skipped).
+The published-binary demo against this second binary passed **1/1**. This
+intermittent published-scenario failure remains a test reliability follow-up;
+the successful reruns do not erase the first result.
+
+The final native `atf` is in ignored
+`artifacts/linux-x64-20260926T150211Z-EXAuQJ/` (9,792,752 bytes; SHA-256
+`16804f207f70a783ecb253d4d7d25d35295979d040fb2532c8d4c1384cbef61b`).
+Its scenario manifest is in ignored
+`evidence/published-20260926T150222Z-c7246Z/`; final demo logs and TRX are in
+ignored `.run/demo-20260926T150233Z-WpVrX8/`. The failed first run's TRX is in
+`evidence/published-20260926T150113Z-vqfU6A/`. All of this qualifies only the
+Linux fake-core checkpoint.
+
+## Queue conformance, D3 characterization, and promotion documents
+
+After `main` promoted the earlier checkpoint at `d7d24ae`, this integration
+worktree fast-forwarded from `e2340dd` to `main`. The approved inputs then
+merged in order, without squash or conflicts:
+
+| Input | Reviewed tip | Integration merge |
+| --- | --- | --- |
+| `feature/port-queue-conformance` | `8b85cfc` | `657ba34` |
+| `review/port-queue-conformance` | `8787863` | `0a86cd4` |
+| `feature/char-d3-claude-hook` | `77c024d` | `6225144` |
+| `review/char-d3` | `51f43fc` | `912cd8d` |
+| `review/canonical-promotion-docs` | `c72a286` | `f0508ec` |
+
+The queue and D3 reviews approve bounded offline test characterization, not
+native Codex/Claude adapters. The promotion-docs branch includes its Claude
+review. No semantic merge correction or runtime source change was needed.
+
+Fresh combined checks ran on Linux 7.2.5-3-omarchy x86_64 with
+`DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet`
+(SDK `11.0.100-rc.1.26425.128`):
+
+```bash
+DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet ./scripts/verify.sh
+DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet ATF_DEMO_BIN=/home/mikael/code/github/agent-team-forge/.worktrees/canonical-wave/artifacts/linux-x64-20260926T150745Z-wg5L7U/atf ./scripts/demo.sh
+git diff --check d7d24ae..HEAD
+bash -n scripts/verify.sh scripts/published-smoke.sh scripts/demo.sh scripts/check-caller-cwd.sh
+```
+
+| Gate | Result |
+| --- | --- |
+| Restore and `dotnet format --verify-no-changes --no-restore` | Passed |
+| Release build, `-warnaserror` | Passed, 0 warnings and 0 errors |
+| Full tests | **95/95** passed, 0 failed/skipped |
+| Linux x64 Native AOT publish | Passed; native `atf`, 9,792,752 bytes |
+| Published process scenarios | **22/22** passed, 0 failed/skipped |
+| Published-binary fake-core demo | **1/1** passed |
+| `git diff --check` and `bash -n` | Passed |
+
+The native binary SHA-256 is
+`34a3265c141fb766acbbc1e9ef5ac173ed14527dadc48b1c2723d8ad739b7937`.
+The published-scenario manifest and TRX are in ignored
+`evidence/published-20260926T150755Z-GLW0kz/`; demo logs and TRX are in
+ignored `.run/demo-20260926T150808Z-2ty1J1/`. No scenario flaked in this
+combined run, so no five-run scenario retry was triggered. The demo reported
+five new `/tmp/atf-*` state directories; all five were gone on immediate
+read-only inspection. No cleanup was performed.
+
+These gates qualify the combined Linux fake-core checkpoint and offline tests.
+They do not qualify live agents, native wake, interactive terminals, Windows,
+or macOS.

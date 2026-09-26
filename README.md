@@ -10,29 +10,48 @@ must be explicitly opt-in.
 
 ## Status
 
-This is a **planning and M0 exploration directory**, not a working product.
-The first interactive-control spike is being developed under `spikes/` in
-C#/.NET. Earlier non-.NET exploratory code does not qualify as M0 implementation;
-its observations require verification. This architecture/documentation update
-makes no claim that the concurrent spike's runtime tests passed.
+The repository root now contains a **Linux fake-core checkpoint**, not a
+finished agent-team product. `AgentTeamForge.slnx` contains the three production
+projects **Host → Business → DAL**, plus tests. The checkpoint exercises a
+.NET 11 daemon, SQLite persistence, private IPC, a thin MCP bridge and a fake
+child process; it does not launch Claude Code, Codex or Pi.
 
-The selected architecture is feature-first **Host → Business → DAL**, with
-three production projects, not Clean Architecture. The next durable-core spike
-is planned, not implemented by this documentation work. No production service,
-working product CLI or external orchestrator integration is claimed. Local Git
-is initialized on `main`; GitHub publication awaits the selected organization's
-creation. The full-product waterfall plan now covers
-P01–P08 from requirements/design through public release; these are planned
-phases, not completed capabilities.
-
-The initial publication scope is documentation and ignore rules only. Local
-spike source remains outside that first commit pending review; sanitized spike
-reports describe experiments, not supported product capabilities. Raw evidence,
-session state, credentials and runtime databases must never be staged by default.
+The reviewed checkpoint promoted to `main` (`d7d24ae`) passed 76 tests, 22
+published Native AOT scenarios and one published-binary demo on Linux x64; one
+earlier run had an intermittent 21/22 scenario failure under investigation. See the
+[source-bound gate record](docs/spikes/canonical-wave-integration.md). No full roadmap phase, real-agent
+E2E, Windows/macOS support or production service is claimed.
 
 Product name: **AgentTeamForge**. Repository name: **`agent-team-forge`**.
-The CLI name will be decided later; `atf` is a working name in these documents,
-not an available command yet.
+`atf` is the checkpoint executable name, not an installed system command.
+GitHub publication and licensing remain owner decisions. Keep raw evidence,
+session state, credentials and runtime databases out of commits.
+
+## Run the bounded checkpoint
+
+From the repository root, with the pinned .NET SDK and Linux native build
+prerequisites already available:
+
+```bash
+./scripts/demo.sh    # Build the JIT apphost and run one fake-core scenario
+./scripts/verify.sh  # Restore, format check, Release build, tests, AOT and smoke
+
+# Optional: run the demo against the exact native binary printed by verify.sh
+ATF_DEMO_BIN="/path/printed/by/verify/atf" ./scripts/demo.sh
+```
+
+Scripts discover `.tools/dotnet11/dotnet` through Git's common directory,
+including from linked worktrees. The pinned SDK is
+`11.0.100-rc.1.26425.128`. Override with `DOTNET=/path/to/pinned/dotnet` when
+needed; scripts do not install an SDK or alter global PATH. AOT requires the
+platform's native compiler/linker prerequisites. Package restore may need
+network access. A fresh checkout must provision these prerequisites first.
+
+The demo covers MCP submission, bridge death, fresh-client result retrieval,
+same-key replay and daemon-restart recovery using a fake backend. It does not
+contact models, install a service or control Herdr. Native artifacts use a
+unique directory per verification run; use the printed path, not a guessed
+fixed output directory. Only Linux x64 has recorded checkpoint evidence.
 
 ## Reading order
 
@@ -49,7 +68,7 @@ not an available command yet.
 | [Waterfall roadmap](docs/roadmap.md) | Eight ordered phases, phase plans, dependencies, gates, early demo and full release. |
 | [Phase planning brief](docs/planning/full-product/README.md) | Shared requirements and phase-document ownership. |
 | [Operator console plan](docs/ui/operator-console-plan.md) / [HTML mockup](docs/ui/operator-console-mockup.html) | Planned local text-only agent status, human follow-up and confirmed stop; static mockup, not a working runtime UI. |
-| [Next M0 spike plan](docs/spikes/m0-durable-core-plan.md) | Bounded fake-backend MCP/IPC/SQLite/AOT slice, TDD and crash gates; implementation awaits plan review and authorization. |
+| [Durable-core spike plan](docs/spikes/m0-durable-core-plan.md) | Original bounded fake-backend scope and crash gates; see the integration record for implemented checkpoint evidence. |
 | [Independent plan review](docs/plan-review.md) | Original Claude Opus findings and re-review for the earlier M0 plan; not approval of later architecture/spike documents. |
 | [Review resolutions](docs/review-resolutions.md) | Per-finding dispositions, corrections, and document-validation boundaries. |
 
@@ -78,8 +97,9 @@ not an available command yet.
 - SQLite for jobs, messages, and the delivery journal. Files for large logs,
   worktrees, artifacts, and files required by the backends themselves.
 - **.NET 11** is the selected target. [RC1 process-API research](docs/research/net11-process-api.md)
-  confirms the release and candidate SDK; package, platform, and Native AOT
-  tests remain. Existing .NET 10 experiments do not establish .NET 11 support.
+  confirms the release and SDK. The bounded Linux x64 checkpoint has .NET 11
+  Native AOT evidence; other platforms and real backends still need qualification.
+  Existing .NET 10 experiments do not establish .NET 11 support.
 - No automatic cloud connections, mandatory external orchestrator integration,
   or silent upload of prompts or code.
 
@@ -97,36 +117,27 @@ roadmap gates pass with recorded evidence.
 
 ## Next steps
 
-Implementation runs in separate feature worktrees with Claude coding and Codex
-GPT-6 Sol high verifying/integrating; see [the active M0 lanes](docs/spikes/m0-integration-plan.md).
-The new core uses `AgentTeamForge.slnx`. Its isolated .NET 11 RC1 SDK is available;
-the existing interactive experiment remains .NET 10 until explicitly migrated.
-The operator web console is currently plan/mockup only and does not delay the
-first durable execution checkpoint.
+Fix the intermittent published-scenario failure and continue reviewed slices
+through milestone integration branches. See [implementation status](docs/implementation-status.md)
+for the bounded snapshot and [the roadmap](docs/roadmap.md) for full-product gates.
+Separate lanes cover inspection/hardening, native-control qualification and the
+operator console. The console remains a reviewed design and static mockup at
+this checkpoint, not a runtime capability. Real-agent E2E remains a separate gate.
 
-Baseline and review the [complete product scope](docs/product-scope.md) and
-[ordered phase plans](docs/roadmap.md). Continue the separately authorized
-interactive-spike safety repairs and re-review before promoting its adapters.
-The [durable-core spike](docs/spikes/m0-durable-core-plan.md) and
-[real Linux demo](docs/spikes/e2e-demo-plan.md) are early checkpoints in P02/P03,
-not substitutes for the full product. The first spike's plan-review exemption
-does not extend to later persistence/lifetime design changes.
-
-## Development rules for a future implementation
+## Development rules
 
 - Local Git and `main` are initialized. Create a feature branch and dedicated
   worktree for each major change; public repository creation/push remains an
   explicitly authorized action.
 - Follow [AGENTS.md](AGENTS.md) for project vision and contributor rules.
-- Plans normally come from Claude Opus or GPT-6 Astra. Independent plan review
+- Plans normally come from GPT-6 Astra (Pi tier max); Claude Opus writes code;
+  Codex (tier high) reviews and integrates. Independent plan review
   is required only for major changes; small changes need code review, not a
   separate plan review.
 - Implementation → red/green/refactor → opposite-family code review
   (Claude code reviewed by GPT/Codex; GPT code reviewed by Claude) → full gates.
 - Test the published binary, not only `dotnet run`.
 - Keep platform-specific process rules and backend versions visible in tests.
-- Proposed gates: `dotnet format --verify-no-changes`, a build with warnings as
-  errors, the full test suite, and AOT publish/smoke. Exact commands will be
-  added to the relevant solution when implemented; these proposed product gates
-  are not claims about concurrent spike tooling.
-- Add reproducible Markdown linting and link checks when build tooling is set up.
+- Run `./scripts/verify.sh` for format, warnings-as-errors build, tests and
+  published AOT smoke gates. Use the printed binary path for the AOT demo.
+- Reproducible Markdown linting and link checks remain a tooling follow-up.

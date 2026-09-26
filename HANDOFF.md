@@ -2,48 +2,49 @@
 
 > **Latest orchestration transfer:** read
 > [the Claude orchestrator handoff](docs/claude-orchestrator-handoff.md) first.
-> It supersedes the historical branch, agent and implementation status below.
+> Section 1 below records the newer canonical integration snapshot; the transfer
+> remains the authority for orchestration ownership and historical lane handoffs.
 > The user requested a new orchestrator; do not restart the old coordinator's
-> dispatch loop. Keep source-bound review and integration gates intact.
+> dispatch loop. The simplicity principles at the top of `AGENTS.md` override
+> any heavier review/planning ceremony described below.
 
 ## 1. Start here
 
 Work from the root of your `agent-team-forge` checkout. All paths in this
 handoff are repository-relative unless explicitly marked otherwise.
 
-This is a **planning and M0 exploration directory**, not a working product.
-The user authorized the first interactive-control spike in C#/.NET, using Claude
-Opus at medium effort, with no plan review for that spike. An initial Python
-implementation attempt was stopped and redirected to C#/.NET. Earlier non-.NET
-snippets do not qualify as M0 implementation. The concurrent spike's runtime
-results are not validated by this architecture/documentation update.
+The root solution is now an implemented **Linux fake-core checkpoint**, not a
+finished product. `AgentTeamForge.slnx` contains Host → Business → DAL and tests.
+It was promoted to `main` at `d7d24ae` from integration tip `e2340dd`, which adds
+reviewed P2 descriptor-bound private-file reads and offline D2 Herdr launch
+characterization. The [gate record](docs/spikes/canonical-wave-integration.md)
+reports 76/76 tests, 22/22 published Native AOT scenarios and 1/1 published demo
+on a clean rerun; the first run hit an intermittent 21/22 published-scenario
+failure that remains under investigation. These are source-bound results, not live status.
 
-The **complete waterfall product plan** has one GPT-6 Astra/medium-authored
-plan per phase. Current priority is continuous bounded implementation toward a
-runnable E2E checkpoint: roughly six parallel lanes, Claude writing code and
-Codex GPT-6 Sol high verifying/reviewing/integrating separate worktrees. See
-[the execution allocation](docs/spikes/m0-integration-plan.md). A later user
-addition requests a small text-only operator web console; Pi Astra/medium owns
-its plan and static HTML mockup first, not production UI implementation. The near-term real Linux demo remains a
-checkpoint, not the full scope. Interactive-spike safety repairs are separately
-in progress after independent GPT review; no adapter safety approval is implied.
-The full-product phase plans do not by themselves authorize implementation or
-Git initialization/publication. No production service or working product CLI is
-claimed. `atf` remains a provisional CLI name, not an installed command.
+Use the root commands in [README](README.md#run-the-bounded-checkpoint):
+`./scripts/demo.sh` for the fake scenario, `./scripts/verify.sh` for full gates.
+Scripts discover the isolated `.tools/dotnet11/dotnet` through Git's common
+directory, including linked worktrees, or accept an explicit `DOTNET` override.
+SDK `11.0.100-rc.1.26425.128` and native AOT prerequisites must already exist;
+no global SDK installation or PATH change is performed.
 
-The user subsequently authorized Git initialization and a public GitHub repository.
-Local Git now uses `main`; initial staging is documentation plus ignore rules,
-not unreviewed spike source or raw evidence. GitHub creation/push is waiting for
-the owner to create the selected organization. Do not publish under the earlier
-personal-account destination without a new decision. No license has been selected. `.tools/dotnet11/` contains the separately
-user-authorized SDK `11.0.100-rc.1.26425.128` with official SHA-512 verified;
-command-scoped `DOTNET_ROOT`/`PATH` are required, global SDK configuration is
-unchanged. The old M0 writer was killed at the user's request; its live test
-sessions and source remain preserved. Fresh feature workers own the repairs.
+No real Claude/Codex/Pi control, runtime web console, native wake, Windows/macOS
+acceptance, production service or completed product phase follows from this
+checkpoint. The [implementation snapshot](docs/implementation-status.md) separates
+canonical gates from later legacy-branch work. The complete P01–P08 roadmap and
+F27 console design remain delivery requirements, not implemented capability.
 
-All project documentation must be in **English**. The conversation with the user
-may remain in Swedish. The user specifically requested a **Sol subagent** for the
-translation of the initial Swedish planning documents.
+The Claude Code orchestrator owns orchestration and does no hands-on work. Per
+`AGENTS.md`, all workers are spawned through win-agent-teams (up to 14): Pi tier
+max plans, Claude Opus writes code, Codex tier high reviews and integrates, each in
+a dedicated worktree; do not revive retired workers
+or infer live activity from historical dispatch tables below. Preserve legacy
+source, live sessions and unique recovery evidence until explicitly safe to retire.
+
+GitHub publication still requires the selected organization/account and license
+decisions. Do not publish to a different destination without authorization.
+All project documentation is **English**; user conversation may remain Swedish.
 
 ## 2. User decisions — preserve these
 
@@ -73,16 +74,14 @@ translation of the initial Swedish planning documents.
     Business references DAL directly; do not impose Clean Architecture or
     Business-owned repository ports. Host includes setup presentation, CLI,
     MCP/IPC, and daemon composition, so it is not named UI.
-12. Use pragmatic TDD for business-critical behavior, not a large suite asserting
-    prose or implementation details. Code reviews use the opposite model family.
-    Plans normally come from Claude Opus or GPT-6 Astra; independent plan reviews
-    are for major changes. See `AGENTS.md` for binding rules.
-13. Use the P01–P08 waterfall roadmap for the complete product. Planning/reviews
-    may be parallel; phase implementation consumes accepted predecessor
-    contracts. Scope and options are explicit in `docs/product-scope.md`.
-14. Spawn Pi planning/review agents through `subagent_spawn`; Claude Code
-    coordination may continue through its configured agent-team tools.
-15. Managed/spawned Pi is first-class alongside Claude Code/Codex in P03, not
+12. Keep it simple: a few focused tests on critical behavior, one
+    opposite-family code review per slice, plan review only for genuinely risky
+    changes. See the working principles in `AGENTS.md`.
+13. The P01–P08 roadmap is background ordering, not a gate. Build the Linux tool
+    in small slices; don't wait on accepted contracts for normal features.
+14. Spawn all workers (Pi planning, Claude implementation, Codex review/
+    integration) through win-agent-teams `spawn_agent`; see `AGENTS.md`.
+15. Managed/spawned Pi is first-class alongside Claude Code/Codex (Linux first), not
     deferred to P06 or satisfied by attached/lead-only Pi. Native Windows Pi
     spawn/follow-up/results/interrupt/stop/reconnect must pass in selected
     interactive and explicit headless modes; Linux/cross-builds are not proof.

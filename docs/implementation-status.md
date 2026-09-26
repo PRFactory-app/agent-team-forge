@@ -1,115 +1,91 @@
 # Implementation checkpoint — 2026-09-26
 
-This is an evidence-bound coordination snapshot, not release approval. Runtime
-work remains on local feature/integration branches, not promoted to `main`.
-No full phase is complete. Public GitHub creation still awaits the owner's
-organization confirmation; no remote or push exists.
+Evidence-bound snapshot, not release approval or live worker telemetry. No full
+product phase is complete. The canonical root solution is on `main` at `d7d24ae`.
 
-## Latest integration and active wave — 14:10 UTC
+## Canonical Linux fake-core checkpoint
 
-**Reviewed fake-core checkpoint integrated at `81a11b2`.** Core admission fix,
-IPC deadline and demo wrapper merged with original ancestry, no conflicts.
-Combined gates: 61/61 tests, 19/19 published Native AOT scenarios, 1/1 AOT demo.
-[Checkpoint and commands](spikes/m0-fake-core-integration.md). Still Linux fake
-backend only, not real-agent E2E or runtime promotion to `main`.
+`main` at **`d7d24ae`** promotes `integration/canonical-wave` tip `e2340dd`:
+canonical source `3f0b0c3`, reviewed tooling fix, P2 private-file reads and D2
+offline Herdr launch characterization. The root `AgentTeamForge.slnx` contains
+Host → Business → DAL plus tests, targeting .NET 11 RC1.
 
-Inspection `9fb08b6` and fake probe `5dc3631` passed bounded independent
-re-reviews. Inspection integration is assigned; neither holds the approved demo.
-
-Current six assignments (dispatch snapshot, not live telemetry):
-
-- Claude: `m0-private-file-bounds`, `m0-acceptance-recovery` — independent core hardening.
-- Codex: `inspection-integration-and-promotion-check`, `teardown-status-rereview`.
-- Pi: `codex-queue-admission-research`, `product-core-consolidation-plan`.
-
-The preceding Claude teardown writer committed `85f3fdd` and was stopped with
-`kill_agent`. Public [downstream-delivery research](research/native-downstream-delivery.md)
-is complete; native queue admission needs further source qualification. The
-approved checkpoint does not wait for this research or consolidation planning.
-
-The earlier source-by-source records below retain their historical review state;
-this latest update and newer pinned reviews supersede their pending labels.
-
-## Earlier delivered snapshots and gates
-
-| Snapshot | Observable output | Qualification / next gate |
-| --- | --- | --- |
-| Durable core `55d3c054`, fault repair `1d3c409` | Real `AgentTeamForge.slnx`, Host → Business → DAL, .NET 11 daemon/SQLite/private IPC/MCP and fake child. | Independent repair verification: 47 tests, Linux AOT, 19 published scenarios pass. **Still blocked:** halt/admission race F1; [re-review](spikes/m0-core-fault-fix-code-review.md). Repair `a8e4352` committed and under focused re-review; conditional integration assigned. |
-| Safety/transport/Claude refusal integration `1f68da5` | Three reviewed legacy primitive repairs integrated; 149 tests pass. | Bounded approval only; full adapters not approved. [Review](spikes/m0-safety-lanes-review.md). |
-| Demo runner `aba651b` | One-command fake-core bridge-death/fresh-client-result demonstration with guarded test result and private state. | [Approved wrapper](spikes/m0-demo-runner-review.md), conditional on core approval. Not a real-agent demo. |
-| Job inspection `d54ff3a` | Authorized read-only CLI/IPC/MCP job listing. | [Changes required](spikes/m0-job-inspection-review.md): live paging overclaim and malformed MCP types. Repair `9fb08b6` under re-review. DB work remains unbounded despite output cap; small-checkpoint qualification, not scalable inspection. |
-| IPC client deadlines `6850c0f` | Whole IPC budget, conservative uncertain acceptance after possible write, cancellation does not cancel daemon work. | [Independent bounded approval](spikes/m0-client-deadlines-review.md): 58 tests and 19 published scenarios pass. Does not close core F1 or bound synchronous private-file reads/serialization. |
-| Teardown refusal `22e3598` | Refuses destructive Herdr name-based operations without identity-bound provider destruction. | [Review](spikes/m0-teardown-fence-review.md): refusal sound, structured CLI status needs correction; 159 tests pass. Refusal is not working automated teardown. |
-| Codex control probe `73dab8d` | C# fake history/turn-race fixtures; no native model call. | [Changes required](spikes/codex-control-probe-review.md): required item fields and conservative pause/fence semantics. Fix `5dc3631` under re-review. Strict human-wins and visible TUI binding remain unproven. |
-| Web plan revision `32fc8cc` | F27 English plan, static HTML mockup, explicit delegated authority and reload recovery. | [Design corrections approved](ui/operator-console-plan-rereview.md) as contracts only; user mockup feedback and runtime prerequisites still required. No runtime web UI. |
-
-Review reports distinguish author evidence from independent reproduction. Their
-exact source hashes remain authoritative; later fixes require their own review.
-The legacy `AtfSpike` is an isolated experimental baseline. Consolidate reviewed
-reusable behavior/tests into the real solution and retire superseded runtime
-projects; do not delete live sessions or unique recovery evidence as file cleanup.
-
-## Previous dispatch wave (superseded above)
-
-This table records assignments, **not a live activity indicator**. Finished
-workers must be retired after their handoff; waiting does not count as active.
-
-| Agent / route | Bounded handoff |
+| Gate | Recorded result at this snapshot |
 | --- | --- |
-| Codex `core-review-and-integration` / native subagents | Re-review `a8e4352`; if approved, merge core + approved IPC + demo into milestone integration and run combined published gates. Do not wait for independent inspection/probe/web lanes. |
-| Codex `job-inspection-rereview` / native subagents | Re-review `9fb08b6` for the output-bounded, best-effort fake-checkpoint scope. |
-| Codex `codex-probe-rereview` / native subagents | Re-review fake-only probe correction `5dc3631`. |
-| Claude `m0-teardown-status` / win-agent-teams | Add structured refusal error status and correct operator instructions, without enabling unsafe teardown. |
-| Pi Astra `native-downstream-delivery-research` / native subagents | Inspect user-supplied public commit `5149f3e1280749b52988a26952573cee61d2daff` on `feat/native-downstream-delivery`; assess fit, not implementation approval. |
+| Restore, format, Release warnings-as-errors build | Passed |
+| Full tests | 76/76 passed |
+| Linux x64 Native AOT publish | Passed |
+| Published process scenarios | 22/22 on clean rerun; one earlier run 21/22 (intermittent, under investigation) |
+| Published-binary fake demo | 1/1 passed |
+| Source review | Approved at `a86dbe4` |
+| Tooling, P2 and D2 reviews | Approved (separate Codex records) |
+| Promotion to `main` | Done at `d7d24ae` |
 
-[Whole-project HTML report](project-status.html) is now available locally; its
-timestamped update distinguishes later handoffs from the original capture.
-The admission, inspection and probe writers have committed their handoffs and
-were stopped with `kill_agent`.
+See the [combined gate record](spikes/canonical-wave-integration.md) for exact
+inputs and evidence, and [README commands](../README.md#run-the-bounded-checkpoint)
+for SDK discovery, verification and demo execution. This document update does
+not rerun or independently approve those runtime gates.
 
-The four previously waiting MCP workers were stopped using `kill_agent`,
-including the two legacy Codex workers. New Codex/Pi workers use native
-subagents; only Claude uses win-agent-teams. Target five to six useful lanes
-when independent work exists; do not create busywork or extend huge contexts.
-Semantic runtime fixes remain Claude work followed by independent Codex review.
+The fake demo exercises durable MCP acceptance, bridge death, fresh-client
+result retrieval, same-key replay and daemon-restart recovery. It does **not**
+launch a real coding agent, prove interactive terminal control or qualify
+Windows/macOS. The published executable is a checkpoint, not an installed service.
 
-## Next testable checkpoint
+## Full-product phases
 
-The initial four steps — repair/re-review F1, merge core/IPC/demo, run combined
-published gates, and expose the labelled checkpoint — are now satisfied on the
-integration branch. Use the commands in the checkpoint ledger linked above.
-Next: integrate reviewed inspection, check safe source promotion, and resolve
-real native admission/binding contracts in parallel. Semantic conflict fixes
-remain Claude work followed by Codex verification.
+| Phase | Current qualification |
+| --- | --- |
+| P01 — requirements and design | In progress; plans exist, not all product gates closed. |
+| P02 — core platform | Bounded fake-core checkpoint implemented; full phase incomplete. |
+| P03 — native execution | Isolated spikes and contract research; real-agent E2E unqualified. |
+| P04–P08 — remaining product delivery and release | Not started as completed runtime phases; planning documents are not implementation. |
 
-The real-agent E2E goal still requires a proven-owned visible native TUI, durable
-MCP submission, bridge death, fresh-client result and same-conversation follow-up.
-A fake child and a green test suite do not establish this goal.
+The [roadmap](roadmap.md) defines the complete ordered gates. The
+[HTML report](project-status.html) is a separately timestamped visualization;
+its historical integration status is not live telemetry.
 
-## Important boundaries and external dependencies
+## Other lanes: do not confuse baselines
 
-- `.tools/dotnet11/` is the authorized isolated SDK
-  `11.0.100-rc.1.26425.128`; select per command. Global SDK/PATH unchanged.
-  Legacy experiment remains .NET 10 until deliberately retired/migrated.
-- [Codex protocol evidence](spikes/codex-native-control-verification.md):
-  `turn/start` can steer an active human turn and has no expected-idle guard.
-  A second local idle read is not a fix. Public TUI-client/thread attestation
-  was not found. Missing native contracts block that capability, not fake-core work.
-- Managed Claude, Codex and Pi remain required; native Windows Pi and actual
-  visible interactive versus explicit headless modes require their own evidence.
-  Linux tests/cross-builds do not qualify Windows/macOS. No such native platform
-  acceptance is claimed by this checkpoint.
-- Native wake is standard. The public merged PR #70 reports upstream concept
-  evidence, not complete local implementation; Windows-Claude safe refusal is
-  not working wake support. Pi and remaining native transports need qualification.
-- F27 console stays within Host and existing daemon authority. The static HTML
-  mockup is not a service, scheduler or runtime capability. User visual feedback
-  and design review remain separate gates.
-- GitHub organization, publication/license and release signing decisions remain
-  owner-dependent. No public release date follows from a planned wave diagram.
-- Queued MCP follow-ups have no background dispatcher. Drain only the intended
-  pending key; never blindly drain old messages to retired workers. Re-arm the
-  one-shot handoff watcher after each consumed notification. Prefer committed
-  artifacts over unsupported activity claims or repeated progress polling.
-- Keep raw state, transcripts, credentials, evidence, build outputs and worktrees
-  ignored. Review staged docs/source for personal paths before publication.
+- The earlier approved fake checkpoint `81a11b2` is the canonical source's
+  behavioral baseline. Its [original record](spikes/m0-fake-core-integration.md)
+  remains historical evidence, not a second product runtime to preserve forever.
+- Later legacy integration `cd60824` combines inspection and hardening but has
+  a recorded `CS7036` build failure in `AcceptanceOutcomeTests` after the
+  `JobsEndpoint` constructor changed. That composite is **not green** and is
+  not the canonical `main` snapshot above. It needs a fresh Claude fix,
+  independent Codex review and combined gates before any promotion.
+- F27 has a [console design](ui/operator-console-plan.md),
+  [static mockup](ui/operator-console-mockup.html) and
+  [approved design corrections](ui/operator-console-plan-rereview.md).
+  Those are contracts, not a runtime web console. New implementation slices
+  and their security review remain separate gates.
+- [Codex queue research](research/codex-queue-admission.md) and
+  [native downstream delivery research](research/native-downstream-delivery.md)
+  identify useful mechanisms and unresolved admission/recovery boundaries.
+  They do not establish safe native adapters or strict human-turn priority.
+
+## Next gates and boundaries
+
+1. Diagnose the intermittent published-scenario failure
+   (`Dispatcher_fault_stops_admission_instead_of_leaving_a_ready_daemon`).
+2. Port independently reviewed follow-on slices through dedicated integration
+   branches. Codex integration does not self-approve semantic fixes.
+3. Deliver real owned-agent launch, same-session follow-up, results and stop
+   with the chosen visible interactive mode or explicitly chosen headless mode.
+   Keep fake-only previews labelled and unsupported actions unavailable.
+4. Qualify native wake and managed Claude, Codex and Pi separately on promised
+   platforms. Linux tests and cross-builds cannot establish native Windows or
+   macOS support; upstream PR #70 evidence is not local qualification.
+
+The operator console must remain inside Host, reuse daemon authority and avoid
+its own database access or scheduler. Schema changes belong to their assigned
+owners, not incidental UI work.
+
+The pinned isolated SDK is `11.0.100-rc.1.26425.128`; root scripts discover it
+without changing global SDK/PATH. Legacy .NET 10 evidence remains version-bound.
+Retire superseded spikes only after reviewed behavior and regression tests move
+into the canonical solution; preserve live sessions and unique recovery evidence.
+
+GitHub organization/account, license and release decisions remain owner-dependent.
+Keep worktrees, SDKs, build outputs, raw state and credentials ignored. No release
+date or complete platform support follows from a planned wave diagram.

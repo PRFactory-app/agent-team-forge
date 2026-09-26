@@ -19,9 +19,11 @@
 #        DOTNET=/path/to/dotnet selects the SDK (default: <repo>/.tools/dotnet11/dotnet)
 # Exit: 0 pass, 1 scenario failed/timed out, 2 blocked (SDK/binary missing).
 set -euo pipefail
-# Resolve caller-relative overrides before changing to the repository root.
-if [[ "${DOTNET:-}" == */* ]]; then DOTNET="$(realpath "$DOTNET" 2>/dev/null || echo "$DOTNET")"; fi
-if [[ -n "${ATF_DEMO_BIN:-}" ]]; then ATF_DEMO_BIN="$(realpath "$ATF_DEMO_BIN" 2>/dev/null || echo "$ATF_DEMO_BIN")"; fi
+# Anchor caller-relative overrides to the caller's cwd (lexically, so a missing
+# target stays missing) before changing to the repository root.
+abs() { if [[ "$1" == /* ]]; then printf '%s\n' "$1"; else printf '%s\n' "$PWD/$1"; fi; }
+if [[ "${DOTNET:-}" == */* ]]; then DOTNET="$(abs "$DOTNET")"; fi
+if [[ -n "${ATF_DEMO_BIN:-}" ]]; then ATF_DEMO_BIN="$(abs "$ATF_DEMO_BIN")"; fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
@@ -33,7 +35,7 @@ if [[ -z "${DOTNET:-}" ]]; then
   common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
   DOTNET="${common:+$common/../.tools/dotnet11/dotnet}"
 fi
-[[ -n "${DOTNET:-}" && -x "$DOTNET" ]] || { echo "BLOCKED: pinned SDK not found (set DOTNET=)" >&2; exit 2; }
+[[ -n "${DOTNET:-}" && -x "$DOTNET" ]] || { echo "BLOCKED: SDK not found or not executable: ${DOTNET:-unset} (set DOTNET=)" >&2; exit 2; }
 DOTNET="$(realpath "$DOTNET")"
 export DOTNET_ROOT="$(dirname "$DOTNET")" DOTNET_NOLOGO=1 DOTNET_CLI_TELEMETRY_OPTOUT=1
 PIN="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' global.json)"

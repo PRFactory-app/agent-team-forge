@@ -181,8 +181,9 @@ file and does not stage, commit, move source, switch main, or push.
 Use fresh bounded sessions and dedicated feature worktrees. Claude implements;
 separate Codex sessions review code. Codex GPT-6 Sol, high, integrates approved
 snapshots and runs combined gates; integration is not review approval. Semantic
-conflicts return to a Claude writer and independent re-review. Claude workers
-use win-agent-teams; new Codex/Pi workers use native subagents. Retire completed
+conflicts return to a Claude writer and independent re-review. Staffing and spawn
+routes follow the current `AGENTS.md` rules (all orchestrator workers via
+win-agent-teams). Retire completed
 workers after handoff. This plan assigns work; it launches no agents.
 
 | Wave / lane | Exclusive ownership and useful parallel work | Dependency / exit |
@@ -193,7 +194,7 @@ workers after handoff. This plan assigns work; it launches no agents.
 | 1A: canonical source lift | One Claude writer owns root solution/config and `src/` plus `tests/` relocation as one coherent unit. No behavior changes. | Approved plan and frozen input; path map handed to other lanes. |
 | 1B: tooling relocation | Another Claude owns only root `scripts/` and necessary ignore deltas, against 1A's fixed path contract. | Independent worktree; no edits to projects, source, tests or shared build props. |
 | 1C: current documentation | Claude owns current README/status/handoff and active-path updates, excluding historical evidence owned by inventory lane. | Uses fixed path map; verifies final commands after integration. |
-| 1D: review/verification | Separate Codex reviewers inspect frozen 1A/1B inputs and run bounded checks; inventory/docs review can overlap. | Findings return to owning writer. Aim for five to six useful active lanes, not idle quotas. |
+| 1D: review/verification | Separate Codex reviewers inspect frozen 1A/1B inputs and run bounded checks; inventory/docs review can overlap. | Findings return to owning writer. Use useful active lanes within the `AGENTS.md` cap, not idle quotas. |
 | 2: canonical integration | Independent Codex integrator owns integration branch, tree/history inspection and combined gates. | Serialize accepted inputs; no competing writes to destination index or manifest. |
 | 3: legacy migration/retirement | Separate Claude protocol/terminal slices with disjoint files and regression ownership, each with Codex review. | Requires accepted backend contracts and explicit per-file retirement evidence; not a prerequisite for waves 0–2. |
 
