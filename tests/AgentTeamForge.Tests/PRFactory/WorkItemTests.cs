@@ -203,6 +203,58 @@ public sealed class WorkItemTests
         Assert.Equal("failed", teams.Get("https://example.test", server.Item.Id)!.State);
     }
 
+    [Theory]
+    [InlineData("artefacts", 404)]
+    [InlineData("artefacts", 409)]
+    [InlineData("complete", 404)]
+    [InlineData("complete", 409)]
+    [InlineData("fail", 404)]
+    [InlineData("fail", 409)]
+    public async Task Lost_lease_during_managed_finalization_closes_item_once_and_keeps_local_result(string endpoint, int status)
+    {
+        using var dir = new TempStateDir();
+        var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var item = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            RepositoryId = Guid.NewGuid(),
+            AgentType = PRFactoryAgentType.Codex,
+            Prompt = "Do work"
+        };
+        var server = new FakeServer(item) { RejectEndpoint = endpoint, RejectStatus = (HttpStatusCode)status };
+        var teams = new PRFactoryTeamStore(db);
+        var jobs = new JobStore(db, DurabilityCheckpoints.None);
+        var accept = new AcceptJob(jobs, new BoundPrincipal("prfactory", "connector", "connector-lead"),
+            new SpikeLimits(), false, new AdmissionGate(), ["codex"]);
+        var logs = new List<string>();
+        var adapter = new PRFactoryWorkItems("https://example.test", [new RepositoryMapping(item.RepositoryId, dir.Path)],
+            teams, new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
+            accept.Execute, jobs.GetJob, () => { }, log: logs.Add);
+
+        await adapter.TickAsync(null, CancellationToken.None);
+        var jobId = teams.MemberJob("https://example.test", item.Id, "lead", 0)!;
+        var claim = jobs.BeginNextAttempt()!;
+        var run = new RunRef(jobId, claim.RunId, claim.Generation, claim.Correlation);
+        if (endpoint == "fail")
+        {
+            Assert.True(jobs.EndUnsuccessfully(run, JobStatus.Failed, "local_failure"));
+        }
+        else
+        {
+            Assert.True(jobs.Complete(run, "local result"));
+        }
+        await adapter.TickAsync(null, CancellationToken.None);
+        Assert.Equal("failed", teams.Get("https://example.test", item.Id)!.State);
+        Assert.Empty(teams.Pending("https://example.test"));
+        Assert.Equal(endpoint == "fail" ? "local_failure" : "local result",
+            endpoint == "fail" ? jobs.GetJob(jobId)!.ReasonCode : jobs.GetJob(jobId)!.ResultText);
+        Assert.Single(logs, line => line.Contains("lease_lost", StringComparison.Ordinal));
+        var calls = server.Calls.Count(call => call == endpoint);
+        await adapter.TickAsync(null, CancellationToken.None);
+        Assert.Equal(calls, server.Calls.Count(call => call == endpoint));
+        Assert.Single(logs);
+    }
+
     static JobRecord NewJob(string id, string backend) =>
         new(id, "prfactory", "connector", "connector-lead", id, "prompt", "", JobStatus.Queued,
             null, null, 0, backend, null, null, null);
@@ -214,6 +266,8 @@ public sealed class WorkItemTests
         public int Uploads { get; private set; }
         public int Completions { get; private set; }
         public string? UploadContent { get; private set; }
+        public string? RejectEndpoint { get; set; }
+        public HttpStatusCode RejectStatus { get; set; }
         public List<string> Calls { get; } = [];
 
         public HttpResponseMessage Reply(HttpRequestMessage request)
@@ -234,6 +288,10 @@ public sealed class WorkItemTests
             {
                 Uploads++;
                 Calls.Add("artefacts");
+                if (RejectEndpoint == "artefacts")
+                {
+                    return new HttpResponseMessage(RejectStatus);
+                }
                 var body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
                 using var json = JsonDocument.Parse(body);
                 var artefacts = json.RootElement.GetProperty("artefacts");
@@ -244,11 +302,19 @@ public sealed class WorkItemTests
             {
                 Completions++;
                 Calls.Add("complete");
+                if (RejectEndpoint == "complete")
+                {
+                    return new HttpResponseMessage(RejectStatus);
+                }
                 return Json("{\"accepted\":true}");
             }
             if (path.Contains("/fail/", StringComparison.Ordinal))
             {
                 Calls.Add("fail");
+                if (RejectEndpoint == "fail")
+                {
+                    return new HttpResponseMessage(RejectStatus);
+                }
                 return Json("{\"acknowledged\":true}");
             }
             throw new InvalidOperationException(path);

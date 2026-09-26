@@ -1,3 +1,4 @@
+using AgentTeamForge.DAL.Files;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -12,21 +13,11 @@ namespace AgentTeamForge.Host.Hosting;
 /// </summary>
 public sealed class StateDirectory
 {
-    public const UnixFileMode PrivateDir = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
-    public const UnixFileMode PrivateFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+    public const UnixFileMode PrivateDir = PrivateFiles.Directory;
+    public const UnixFileMode PrivateFile = PrivateFiles.File;
 
     /// <summary>0700 on Linux; on Windows the state tree's inherited current-user ACL applies.</summary>
-    public static void CreatePrivateDirectory(string path)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            Directory.CreateDirectory(path);
-        }
-        else
-        {
-            Directory.CreateDirectory(path, PrivateDir);
-        }
-    }
+    public static void CreatePrivateDirectory(string path) => PrivateFiles.CreateDirectory(path);
 
     /// <summary>
     /// Upper bound for operator.key (44 bytes as written by init) and profile.json
@@ -108,7 +99,8 @@ public sealed class StateDirectory
                 throw new StateDirectoryException("private_file_unsafe");
             }
 
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            // daemon.lock stays open read/write by the live daemon; writers otherwise replace atomically.
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             WindowsPrivatePaths.Validate(stream.SafeFileHandle);
             if (stream.Length > MaxPrivateFileBytes)
             {

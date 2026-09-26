@@ -204,7 +204,9 @@ public static class DaemonCommand
             {
                 await new PRFactoryWorkItems(settings.Url, settings.Repositories, connectorTeams, client,
                     connectorAccept.Execute, store.GetJob, dispatcher.Signal,
-                    cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId, Log, externalTeam).TickAsync(machineId, ct);
+                    cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId, Log, externalTeam,
+                    new StopJob(store, new BoundPrincipal("prfactory", "connector", "connector-lead"),
+                        dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp).Execute).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
             });
         await Task.WhenAny(serving, dispatching);

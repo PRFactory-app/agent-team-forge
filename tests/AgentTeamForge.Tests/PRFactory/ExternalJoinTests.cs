@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.External;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.External;
@@ -179,13 +180,14 @@ public sealed class ExternalJoinTests
         server.Item.TeamPlan!.Members.Add(new PRFactoryTeamMember { Name = "second", Role = "Reviewer", Order = 2 });
         var actor = new ExternalTeam(new ExternalMemberStore(database), new WakeStore(database));
         var store = new PRFactoryTeamStore(database);
-        var lead = new JobRecord("lead-job", "prfactory", "connector", "connector-lead", "lead-job", "prompt", "",
-            JobStatus.Running, null, null, 0, "codex", null, null, null);
+        var jobs = new JobStore(database, DurabilityCheckpoints.None);
+        var principal = new BoundPrincipal("prfactory", "connector", "connector-lead");
+        var accept = new AcceptJob(jobs, principal, new SpikeLimits(), false, new AdmissionGate(), ["codex"]);
+        var stop = new StopJob(jobs, principal, _ => throw new InvalidOperationException("queued lead must not have a running backend"));
         var adapter = new PRFactoryWorkItems("https://example.test",
             [new RepositoryMapping(server.Item.RepositoryId, dir.Path, ["visitor", "second"])], store,
             new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
-            _ => JobResult.Ok(new JobView("lead-job", JobStatus.Running, null, null, 0), "accepted"), _ => lead, () => { },
-            externalTeam: actor);
+            accept.Execute, jobs.GetJob, () => { }, externalTeam: actor, stopJob: stop.Execute);
 
         await adapter.TickAsync(null, CancellationToken.None);
         var first = store.External("https://example.test", server.Item.Id, "visitor")!;
@@ -201,6 +203,9 @@ public sealed class ExternalJoinTests
 
         await adapter.TickAsync(null, CancellationToken.None);
         Assert.Equal("completed", store.Get("https://example.test", server.Item.Id)!.State);
+        var leadId = store.MemberJob("https://example.test", server.Item.Id, "lead", 0)!;
+        Assert.Equal(JobStatus.Cancelled, jobs.GetJob(leadId)!.Status);
+        Assert.Contains("External members completed", server.CompletionMarkdown);
         Assert.Equal(2, server.Lines.Count(l => l.RecordKind == "external-reply"));
         Assert.Equal("membership_revoked", actor.Read(secondToken, null, null).Error);
         Assert.All(store.ExternalMembers("https://example.test", server.Item.Id), row => Assert.True(row.Closed));
@@ -250,11 +255,12 @@ public sealed class ExternalJoinTests
         var store = new PRFactoryTeamStore(database);
         var lead = new JobRecord("lead-job", "prfactory", "connector", "connector-lead", "lead-job", "prompt", "",
             JobStatus.Running, null, null, 0, "codex", null, null, null);
+        var stops = new List<string>();
         var adapter = new PRFactoryWorkItems("https://example.test",
             [new RepositoryMapping(server.Item.RepositoryId, dir.Path, ["visitor"])], store,
             new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             _ => JobResult.Ok(new JobView("lead-job", JobStatus.Running, null, null, 0), "accepted"), _ => lead, () => { },
-            externalTeam: actor);
+            externalTeam: actor, stopJob: id => { stops.Add(id); lead = lead with { Status = JobStatus.Cancelled }; return JobResult.Ok(new JobView(id, JobStatus.Cancelled, null, null, 0), "stopped"); });
 
         await adapter.TickAsync(null, CancellationToken.None);
         var external = store.External("https://example.test", server.Item.Id, "visitor")!;
@@ -265,6 +271,7 @@ public sealed class ExternalJoinTests
         Assert.Empty(store.Pending("https://example.test"));
         Assert.Null(actor.Join(external.TeamId, external.TicketToken).Member);
         Assert.True(store.External("https://example.test", server.Item.Id, "visitor")!.Closed);
+        Assert.Equal(["lead-job"], stops);
     }
 
     [Fact]
@@ -309,6 +316,7 @@ public sealed class ExternalJoinTests
         public HashSet<Guid> Acknowledged { get; } = [];
         public List<PRFactoryStreamLine> Lines { get; } = [];
         public int StreamPosts { get; private set; }
+        public string? CompletionMarkdown { get; private set; }
         public List<string> Calls { get; } = [];
 
         public HttpResponseMessage Reply(HttpRequestMessage request)
@@ -371,6 +379,8 @@ public sealed class ExternalJoinTests
             if (path.Contains("/complete/", StringComparison.Ordinal))
             {
                 Calls.Add("complete");
+                using var body = JsonDocument.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+                CompletionMarkdown = body.RootElement.GetProperty("resultMarkdown").GetString();
                 return Json("{\"accepted\":true}");
             }
             if (path.Contains("/fail/", StringComparison.Ordinal))

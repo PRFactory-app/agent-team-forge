@@ -1,3 +1,4 @@
+using AgentTeamForge.DAL.Files;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -207,12 +208,7 @@ public static class PRFactoryConnection
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            using (var stream = new FileStream(temporary, new FileStreamOptions
-            {
-                Mode = FileMode.CreateNew,
-                Access = FileAccess.Write,
-                UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
-            }))
+            using (var stream = new FileStream(temporary, PrivateFiles.Options(FileMode.CreateNew, FileAccess.Write)))
             {
                 stream.Write(content);
                 stream.Flush(flushToDisk: true);

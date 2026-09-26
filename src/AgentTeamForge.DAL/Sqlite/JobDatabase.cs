@@ -1,3 +1,4 @@
+using AgentTeamForge.DAL.Files;
 using AgentTeamForge.DAL.Migrations;
 using Microsoft.Data.Sqlite;
 
@@ -61,6 +62,9 @@ public sealed class JobDatabase
     /// <summary>Copies an existing database through SQLite, including committed WAL pages.</summary>
     public static void Backup(string sourcePath, string destinationPath, TimeSpan busyTimeout)
     {
+        // SQLite opens an existing destination. Create it privately before
+        // SQLite writes any backup pages.
+        using (new FileStream(destinationPath, PrivateFiles.Options(FileMode.CreateNew, FileAccess.Write))) { }
         using var sourceConnection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = sourcePath,

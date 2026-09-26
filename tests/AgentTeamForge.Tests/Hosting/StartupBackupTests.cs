@@ -25,6 +25,12 @@ public sealed class StartupBackupTests
         StartupBackup.Run(state, BusyTimeout, _ => { }, () => "boot-one");
 
         var backup = Assert.Single(Backups(state));
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Equal(StateDirectory.PrivateDir, File.GetUnixFileMode(Path.Combine(state.Path, "backups")));
+            Assert.Equal(StateDirectory.PrivateFile, File.GetUnixFileMode(backup));
+            Assert.Equal(StateDirectory.PrivateFile, File.GetUnixFileMode(Path.Combine(state.Path, "backups", "boot-id")));
+        }
         using var copy = new SqliteConnection($"Data Source={backup};Mode=ReadOnly");
         copy.Open();
         using var query = copy.CreateCommand();
