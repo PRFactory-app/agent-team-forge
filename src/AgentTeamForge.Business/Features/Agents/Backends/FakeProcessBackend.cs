@@ -55,14 +55,15 @@ public sealed class FakeProcessBackend(string executable, IReadOnlyList<string> 
         }
 
         var line = JsonSerializer.Serialize(new FakeRequestLine(request.JobId, request.Correlation, request.Instruction, behavior, hold, request.ResumeSessionId), FakeWireJson.Default.FakeRequestLine);
-        return new FakeRun(process, Encoding.UTF8.GetBytes(line + "\n"), limits);
+        return new FakeRun(process, Encoding.UTF8.GetBytes(line + "\n"), limits, request.Output);
     }
 
-    sealed class FakeRun(Process process, byte[] requestLine, SpikeLimits limits) : IBackendRun
+    sealed class FakeRun(Process process, byte[] requestLine, SpikeLimits limits, Action<string, ReadOnlyMemory<byte>>? output) : IBackendRun
     {
         readonly Process _process = process;
         readonly SpikeLimits _limits = limits;
-        readonly Task _stderrDrain = DrainAsync(process.StandardError.BaseStream);
+        readonly Stream _stdout = new CapturingReadStream(process.StandardOutput.BaseStream, "stdout", output);
+        readonly Task _stderrDrain = DrainAsync(new CapturingReadStream(process.StandardError.BaseStream, "stderr", output));
         bool _deliveryFailed;
 
         public int? ProcessId => _process.Id;
@@ -91,7 +92,7 @@ public sealed class FakeProcessBackend(string executable, IReadOnlyList<string> 
                 yield break;
             }
 
-            var stdout = _process.StandardOutput.BaseStream;
+            var stdout = _stdout;
             var buffer = new MemoryStream();
             var chunk = new byte[4096];
             while (true)
@@ -173,6 +174,7 @@ public sealed class FakeProcessBackend(string executable, IReadOnlyList<string> 
 
         public async ValueTask DisposeAsync()
         {
+            var stdoutDrain = DrainAsync(_stdout);
             try
             {
                 await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
@@ -185,6 +187,14 @@ public sealed class FakeProcessBackend(string executable, IReadOnlyList<string> 
             try
             {
                 await _stderrDrain.WaitAsync(TimeSpan.FromSeconds(1));
+            }
+            catch (TimeoutException)
+            {
+            }
+
+            try
+            {
+                await stdoutDrain.WaitAsync(TimeSpan.FromSeconds(1));
             }
             catch (TimeoutException)
             {
