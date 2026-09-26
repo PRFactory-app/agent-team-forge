@@ -363,7 +363,7 @@ public static class SetupCommand
     {
         try
         {
-            return File.Exists(Path.Combine(state.Path, "daemon.log")) && File.ReadLines(Path.Combine(state.Path, "daemon.log"))
+            return File.Exists(Path.Combine(state.Path, "daemon.log")) && LiveFiles.ReadLines(Path.Combine(state.Path, "daemon.log"))
                 .Any(line => line == $"[atf-daemon] ready pid={pid}");
         }
         catch (IOException) { return false; }

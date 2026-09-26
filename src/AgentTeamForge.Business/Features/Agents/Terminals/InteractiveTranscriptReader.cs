@@ -1,5 +1,6 @@
-using System.Text;
+using System.Collections.Concurrent;
 using System.Text.Json;
+using AgentTeamForge.DAL.Files;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
@@ -88,7 +89,7 @@ internal sealed class InteractiveTranscriptReader : IInteractiveTranscriptReader
     {
         try
         {
-            foreach (var line in File.ReadLines(path).Take(10))
+            foreach (var line in LiveFiles.ReadLines(path).Take(10))
             {
                 using var json = JsonDocument.Parse(line);
                 var root = json.RootElement;
@@ -106,8 +107,23 @@ internal sealed class InteractiveTranscriptReader : IInteractiveTranscriptReader
                 }
             }
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { WarnUnreadable(path, e); }
+        catch (JsonException) { }
         return null;
+    }
+
+    static readonly ConcurrentDictionary<string, DateTime> Warned = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>An unreadable transcript silently stalls a job, so say so in the daemon log (once per file per 5 min).</summary>
+    static void WarnUnreadable(string path, Exception e)
+    {
+        var now = DateTime.UtcNow;
+        if (Warned.TryGetValue(path, out var last) && now - last < TimeSpan.FromMinutes(5))
+        {
+            return;
+        }
+        Warned[path] = now;
+        Console.Error.WriteLine($"[atf-daemon] transcript unreadable: {path}: {e.GetType().Name}: {e.Message}");
     }
 
     static InteractiveTranscript? Parse(string path, InteractiveAgentKind kind, string marker)
@@ -127,7 +143,7 @@ internal sealed class InteractiveTranscriptReader : IInteractiveTranscriptReader
             var completed = false;
             string? last = null;
             var progress = new List<string>();
-            foreach (var line in File.ReadLines(path, Encoding.UTF8))
+            foreach (var line in LiveFiles.ReadLines(path))
             {
                 if (!markerSeen && line.Contains(marker, StringComparison.Ordinal))
                 {
@@ -138,7 +154,10 @@ internal sealed class InteractiveTranscriptReader : IInteractiveTranscriptReader
                 {
                     continue;
                 }
-                using var json = JsonDocument.Parse(line);
+                JsonDocument json;
+                try { json = JsonDocument.Parse(line); }
+                catch (JsonException) { continue; } // The agent may be mid-write on the last line.
+                using var _ = json;
                 completed |= CompletedTurn(json.RootElement, kind);
                 if (AssistantText(json.RootElement, kind) is { } text)
                 {
@@ -148,7 +167,11 @@ internal sealed class InteractiveTranscriptReader : IInteractiveTranscriptReader
             }
             return markerSeen ? new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress, completed) : null;
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { return null; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            WarnUnreadable(path, e);
+            return null;
+        }
     }
 
     static string? AssistantText(JsonElement root, InteractiveAgentKind kind)
