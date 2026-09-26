@@ -30,13 +30,14 @@ public static class ClientCommand
                 Instruction = options.GetValueOrDefault("instruction"),
             },
             "get" => new IpcRequest { Op = IpcProtocol.JobGet, JobId = options.GetValueOrDefault("job") },
+            "stop" => new IpcRequest { Op = IpcProtocol.JobStop, JobId = options.GetValueOrDefault("job") },
             "list" => new IpcRequest { Op = IpcProtocol.JobList },
             _ => null,
         };
         if (request is null)
         {
-            Console.Error.WriteLine("usage: atf client <submit|follow-up|get|list> --state-dir DIR "
-                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT]]");
+            Console.Error.WriteLine("usage: atf client <submit|follow-up|get|stop|list> --state-dir DIR "
+                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT] | stop ID]");
             return 64;
         }
 

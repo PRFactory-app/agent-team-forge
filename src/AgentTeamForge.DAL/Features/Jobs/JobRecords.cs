@@ -6,6 +6,7 @@ public static class JobStatus
     public const string Running = "running";
     public const string Completed = "completed";
     public const string Failed = "failed";
+    public const string Cancelled = "cancelled";
     public const string NeedsReconciliation = "needs_reconciliation";
 }
 
@@ -57,6 +58,8 @@ public sealed record AcceptOutcome(AcceptKind Kind, JobRecord? Job);
 public sealed record AttemptClaim(JobRecord Job, string RunId, long Generation, string Correlation);
 
 public sealed record RunRef(string JobId, string RunId, long Generation, string Correlation);
+
+public sealed record CancelOutcome(JobRecord? Job, bool WasRunning, bool Changed);
 
 public sealed record EventRecord(long Seq, string JobId, string? RunId, string Kind);
 

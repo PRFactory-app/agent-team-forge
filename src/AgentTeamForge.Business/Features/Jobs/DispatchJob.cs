@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.DAL.Features.Jobs;
@@ -20,6 +21,7 @@ public sealed class DispatchJob : IDisposable
 
     readonly SemaphoreSlim _signal = new(0);
     readonly CancellationTokenSource _halted = new();
+    readonly ConcurrentDictionary<string, ActiveRun> _running = new();
     readonly JobStore store;
     readonly BackendCatalog backends;
     readonly SpikeLimits limits;
@@ -64,6 +66,17 @@ public sealed class DispatchJob : IDisposable
     public bool Halted => HaltReason is not null;
 
     public void Signal() => _signal.Release();
+
+    /// <summary>Interrupts an active attempt after its cancelled state has committed.</summary>
+    public void CancelRunning(string jobId)
+    {
+        if (_running.TryGetValue(jobId, out var active))
+        {
+            try { active.Stop.Cancel(); }
+            catch (ObjectDisposedException) { } // The attempt just finished.
+            active.TerminateOnce(TryTerminate);
+        }
+    }
 
     public void Dispose()
     {
@@ -111,6 +124,12 @@ public sealed class DispatchJob : IDisposable
             }
             catch (OperationCanceledException)
             {
+                return;
+            }
+
+            if (stopping.IsCancellationRequested || Halted)
+            {
+                slots.Release();
                 return;
             }
 
@@ -172,13 +191,24 @@ public sealed class DispatchJob : IDisposable
     internal async Task RunAttemptAsync(AttemptClaim claim, CancellationToken daemonLifetime)
     {
         var run = new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        using var stopRequested = new CancellationTokenSource();
+        var active = new ActiveRun(stopRequested);
+        _running[run.JobId] = active;
         IBackendRun? backendRun = null;
         try
         {
             // The deadline starts before any backend effect, so start and delivery are bounded too.
-            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, stopRequested.Token);
             deadline.CancelAfter(limits.MaxFakeRuntime);
             checkpoints.Hit(DurabilityCheckpoints.AttemptAfterCommit);
+
+            // A stop may have committed after claim but before this task was scheduled.
+            if (store.GetJob(run.JobId)?.Status == JobStatus.Cancelled)
+            {
+                return;
+            }
+
+            deadline.Token.ThrowIfCancellationRequested();
 
             if (!TryPrepare(claim.Job, out var backend, out var resumeSessionId, out var notStarted))
             {
@@ -208,7 +238,7 @@ public sealed class DispatchJob : IDisposable
                 // Process start cannot be cancelled. A late start may exist: it is
                 // terminated when it returns, never delivered to, never replaced.
                 TerminateLateStart(starting, run);
-                if (!daemonLifetime.IsCancellationRequested)
+                if (!daemonLifetime.IsCancellationRequested && !stopRequested.IsCancellationRequested)
                 {
                     End(run, JobStatus.NeedsReconciliation, "backend_start_timeout");
                 }
@@ -216,6 +246,8 @@ public sealed class DispatchJob : IDisposable
                 return;
             }
 
+            Volatile.Write(ref active.BackendRun, backendRun);
+            deadline.Token.ThrowIfCancellationRequested();
             TryRecord(run, backendRun.ProcessId, acked: false);
             await backendRun.DeliverAsync(deadline.Token).WaitAsync(deadline.Token);
             await foreach (var evidence in backendRun.ReadEvidenceAsync(deadline.Token))
@@ -245,6 +277,10 @@ public sealed class DispatchJob : IDisposable
 
             End(run, JobStatus.NeedsReconciliation, "backend_eof");
         }
+        catch (OperationCanceledException) when (stopRequested.IsCancellationRequested)
+        {
+            active.TerminateOnce(TryTerminate);
+        }
         catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested)
         {
             // Daemon shutdown: leave the attempt started; restart recovery quarantines it.
@@ -255,6 +291,11 @@ public sealed class DispatchJob : IDisposable
             // A possible surviving child or failed kill stays uncertain, never retried.
             TryTerminate(backendRun);
             End(run, JobStatus.NeedsReconciliation, "backend_timeout");
+        }
+        catch (Exception) when (stopRequested.IsCancellationRequested)
+        {
+            // Killing the owned child can surface as a stream or process error.
+            active.TerminateOnce(TryTerminate);
         }
         catch (Exception ex)
         {
@@ -267,6 +308,7 @@ public sealed class DispatchJob : IDisposable
         }
         finally
         {
+            _running.TryRemove(run.JobId, out _);
             await DisposeQuietly(backendRun);
         }
     }
@@ -316,6 +358,24 @@ public sealed class DispatchJob : IDisposable
         catch (Exception ex)
         {
             log($"owned child termination failed: {ex.GetType().Name}");
+        }
+    }
+
+    sealed class ActiveRun(CancellationTokenSource stop)
+    {
+        int _terminated;
+
+        public CancellationTokenSource Stop { get; } = stop;
+
+        public IBackendRun? BackendRun;
+
+        public void TerminateOnce(Action<IBackendRun?> terminate)
+        {
+            var backendRun = Volatile.Read(ref BackendRun);
+            if (backendRun is not null && Interlocked.Exchange(ref _terminated, 1) == 0)
+            {
+                terminate(backendRun);
+            }
         }
     }
 

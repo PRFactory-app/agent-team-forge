@@ -28,6 +28,7 @@ public static class IpcProtocol
     public const string JobSubmit = "job_submit";
     public const string JobGet = "job_get";
     public const string JobFollowUp = "job_follow_up";
+    public const string JobStop = "job_stop";
     public const string JobList = "job_list";
 
     public const string UnsupportedVersion = "unsupported_version";

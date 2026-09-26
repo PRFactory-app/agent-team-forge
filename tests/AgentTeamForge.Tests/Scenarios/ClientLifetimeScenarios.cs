@@ -84,6 +84,34 @@ public sealed class ClientLifetimeScenarios
     }
 
     [Fact]
+    public async Task Mcp_stop_cancels_a_running_child_and_its_session_can_be_resumed()
+    {
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        await rig.StartDaemonAsync();
+        var (_, client) = await rig.StartBridgeAsync();
+        Assert.Contains(await client.ListToolsAsync(cancellationToken: TestContext.Current.CancellationToken), t => t.Name == "stop_job");
+
+        var submitted = await SpikeRig.CallAsync(client, "submit_job",
+            new() { ["backend"] = "fake", ["idempotency_key"] = "stop-parent", ["instruction"] = "hold", ["hold"] = true });
+        var jobId = submitted.Job!.JobId;
+        var running = await Bounded.Until(async () =>
+        {
+            var result = await rig.GetAsync(jobId);
+            return result.Job?.SessionId is not null ? result : null;
+        }, "running session");
+
+        var stopped = await SpikeRig.CallAsync(client, "stop_job", new() { ["job_id"] = jobId });
+        Assert.Equal(JobStatus.Cancelled, stopped.Job!.Status);
+        Assert.Equal(JobStatus.Cancelled, (await rig.GetAsync(jobId)).Job!.Status);
+
+        var followUp = await SpikeRig.CallAsync(client, "follow_up",
+            new() { ["job_id"] = jobId, ["idempotency_key"] = "stop-child", ["instruction"] = "continue" });
+        var child = await rig.WaitForStatusAsync(followUp.Job!.JobId, JobStatus.Completed);
+        Assert.Equal(running.Job!.SessionId, child.Job!.SessionId);
+    }
+
+    [Fact]
     public async Task Queued_work_runs_with_no_connected_client()
     {
         using var rig = new SpikeRig();

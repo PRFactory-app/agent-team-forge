@@ -53,6 +53,7 @@ public static class JobsMcpBridge
         {
             new() { Name = "submit_job", Description = "Durably submit a task to an agent (claude, codex or pi) run by the AgentTeamForge daemon. Returns the job; poll get_job for the result.", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "get_job", Description = "Read a job's status, result output and native session_id.", InputSchema = Parse(GetSchema) },
+            new() { Name = "stop_job", Description = "Cancel a queued or running job. A finished job is returned unchanged.", InputSchema = Parse(GetSchema) },
             new() { Name = "follow_up", Description = "Send a follow-up instruction into a finished job's native agent session (same backend and cwd). Returns the new job.", InputSchema = Parse(FollowUpSchema) },
             new() { Name = "list_jobs", Description = "List recent jobs (without result text).", InputSchema = Parse(ListSchema) },
         };
@@ -81,6 +82,7 @@ public static class JobsMcpBridge
                             Hold = testProfile && args.TryGetValue("hold", out var hold) && hold.ValueKind == JsonValueKind.True,
                         },
                         "get_job" => new IpcRequest { Op = IpcProtocol.JobGet, JobId = String(args, "job_id") },
+                        "stop_job" => new IpcRequest { Op = IpcProtocol.JobStop, JobId = String(args, "job_id") },
                         "follow_up" => new IpcRequest
                         {
                             Op = IpcProtocol.JobFollowUp,

@@ -43,6 +43,10 @@ public sealed class SchemaTests
                                  instruction, options, status, result_text, accepted_at, updated_at)
                 VALUES ('job_old', 'local-operator', 'spike-team', 'fake-agent', 'job_submit', 'k', 'fp',
                         'hi', 'behavior=complete;hold=0', 'completed', 'kept', 'a', 'a');
+                INSERT INTO runs(run_id, job_id, generation, correlation, state, started_at, finished_at)
+                VALUES ('run_old', 'job_old', 1, 'corr_old', 'completed', 'a', 'a');
+                INSERT INTO events(job_id, run_id, kind, created_at)
+                VALUES ('job_old', 'run_old', 'completed', 'a');
                 """;
             command.ExecuteNonQuery();
         }
@@ -51,11 +55,15 @@ public sealed class SchemaTests
 
         var job = store.GetJob("job_old")!;
         Assert.Equal(("kept", "fake", null, null), (job.ResultText, job.Backend, job.SessionId, job.ParentJobId));
+        Assert.Equal("completed", Assert.Single(store.GetRuns("job_old")).State);
         using var check = new SqliteConnection($"Data Source={path};Pooling=False");
         check.Open();
         using var version = check.CreateCommand();
         version.CommandText = "SELECT max(version) FROM schema_migrations";
-        Assert.Equal(2L, (long)version.ExecuteScalar()!);
+        Assert.Equal(3L, (long)version.ExecuteScalar()!);
+        version.CommandText = "PRAGMA foreign_key_check";
+        using var violations = version.ExecuteReader();
+        Assert.False(violations.Read());
     }
 
     [Fact]
