@@ -1,6 +1,7 @@
 using AgentTeamForge.Host.Features.FakeBackend;
 using AgentTeamForge.Host.Features.Jobs;
 using AgentTeamForge.Host.Features.Setup;
+using AgentTeamForge.Host.Features.WebConsole;
 using AgentTeamForge.Host.Hosting;
 
 // Spike-only command surface; not an approved production CLI.
@@ -26,6 +27,8 @@ try
         case "mcp" when options.TryGetValue("state-dir", out var mcpDir):
             var mcpState = StateDirectory.Open(mcpDir);
             return await JobsMcpBridge.RunAsync(mcpState, SpikeProfileFile.Load(mcpState).TestProfile);
+        case "web" when options.TryGetValue("state-dir", out var webDir):
+            return await WebConsoleCommand.RunAsync(StateDirectory.Open(webDir), options);
         case "client" when args.Length > 1 && options.TryGetValue("state-dir", out var clientDir):
             return await ClientCommand.RunAsync(StateDirectory.Open(clientDir), args[1], options);
         default:
@@ -40,7 +43,7 @@ catch (StateDirectoryException ex)
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: atf <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
+    Console.Error.WriteLine("usage: atf <init|daemon|mcp|client|web|fake-backend> --state-dir DIR [options]");
     return 64;
 }
 
