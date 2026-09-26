@@ -49,7 +49,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             var (model, effort) = InteractiveLaunch.Selection(request.Options);
             if (live.Model == model && live.Effort == effort)
             {
-                return new Run(_control, _transcripts, request, live with { StartupProgress = request.StartupProgress }, started, _settleTimeout, _startupTimeout, RememberSession);
+                return new Run(_control, _transcripts, request, live with { StartupProgress = request.StartupProgress, LiveReuse = true }, started, _settleTimeout, _startupTimeout, RememberSession);
             }
             _control.StopOwned(live);
         }
@@ -311,6 +311,8 @@ internal sealed record InteractiveLaunch(InteractiveAgentKind Kind, string Agent
     // Kept with the owned pane by RetainedSessions, including fresh-launch follow-ups.
     public NativeTranscriptBinding? NativeTranscript { get; set; }
     public Action<string>? StartupProgress { get; init; }
+    /// <summary>A retained pane that already passed startup; its screen is never a setup screen.</summary>
+    public bool LiveReuse { get; init; }
     public string? JobId { get; init; }
     public string? Model { get; init; }
     public string? Effort { get; init; }

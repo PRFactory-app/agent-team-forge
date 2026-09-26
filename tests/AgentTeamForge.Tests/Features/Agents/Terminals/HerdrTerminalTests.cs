@@ -438,6 +438,28 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task Setup_text_in_history_never_blocks_a_ready_resumed_or_retained_pane()
+    {
+        const string editor = "\n────\n❯ \n────\n⏵⏵ bypass permissions on";
+        // Transcript/echoed prompt text quoting setup screens above a ready editor.
+        Assert.Null(HerdrAgentControl.StartupBlocker(InteractiveAgentKind.Claude, "Not logged in · Please run /login\nChoose the theme\nDark mode" + editor));
+        Assert.Equal("agent_login_required", HerdrAgentControl.StartupBlocker(InteractiveAgentKind.Claude, editor + "  Not logged in · Please run /login")?.Reason);
+        // A resumed transcript can render before the editor.
+        Assert.Null(HerdrAgentControl.StartupBlocker(InteractiveAgentKind.Claude, "Yes, I trust this folder\nSelect login method", resumed: true));
+        Assert.Null(HerdrAgentControl.StartupBlocker(InteractiveAgentKind.Codex, "Sign in with ChatGPT\nAPI key", resumed: true));
+
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { BootstrapFromTab = true, Screen = "Choose the theme\nDark mode" };
+        var control = new HerdrAgentControl(Terminal(fake), TimeSpan.FromMilliseconds(300));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", state.Path, null, null, Path.Combine(state.Path, "bootstrap"))
+        { LiveReuse = true };
+        await control.StartAsync(launch, TestContext.Current.CancellationToken);
+        var e = await Assert.ThrowsAsync<HerdrLaunchException>(() => control.PromptAsync(launch, "never sent", TestContext.Current.CancellationToken));
+        Assert.Contains("not ready", e.Message);
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["session", "stop", ..]);
+    }
+
+    [Fact]
     public async Task Blocked_startup_sends_no_prompt()
     {
         using var state = new AgentTeamForge.Tests.Support.TempStateDir();

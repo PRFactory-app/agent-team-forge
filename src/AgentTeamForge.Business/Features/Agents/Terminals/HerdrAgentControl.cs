@@ -78,7 +78,8 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         {
             var status = await StatusAsync(launch, cancellationToken);
             var screen = await terminal.ReadAgentAsync(session, binding.PaneId, cancellationToken);
-            if (StartupBlocker(launch.Kind, screen) is { } blocker) { throw blocker; }
+            // A retained live pane already passed startup; its scrollback is agent output.
+            if (!launch.LiveReuse && StartupBlocker(launch.Kind, screen, launch.ResumeSessionId is not null) is { } blocker) { throw blocker; }
             if (status is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done
                 && HasInputEditor(launch.Kind, screen))
             {
@@ -167,14 +168,17 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         e.Message.Contains("timeout", StringComparison.Ordinal) || e.Message.Contains("timed out", StringComparison.Ordinal)
         || e.Message.Contains("agent_prompt_stalled", StringComparison.Ordinal);
 
-    internal static AgentStartupBlockedException? StartupBlocker(InteractiveAgentKind kind, string screen)
+    internal static AgentStartupBlockedException? StartupBlocker(InteractiveAgentKind kind, string screen, bool resumed = false)
     {
         bool Has(string text) => screen.Contains(text, StringComparison.OrdinalIgnoreCase);
-        // A ready editor can contain historical output quoting setup screens. Only
-        // the explicit logged-out status is a blocker even with a rendered editor.
-        if (HasInputEditor(kind, screen) && !(kind == InteractiveAgentKind.Claude && Has("Not logged in") && Has("Please run /login")))
+        // A ready editor (or a resumed transcript) can contain historical output quoting
+        // setup screens. Only Claude's logged-out status in the footer below the editor
+        // is a blocker then.
+        if (HasInputEditor(kind, screen) || resumed)
         {
-            return null;
+            return kind == InteractiveAgentKind.Claude && ClaudeFooterLoggedOut(screen)
+                ? new("agent_login_required", "Claude may require login; run `claude` once in a terminal to log in.")
+                : null;
         }
         var command = kind == InteractiveAgentKind.Claude ? "claude" : "codex";
         if (kind == InteractiveAgentKind.Claude)
@@ -205,6 +209,16 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         return null;
     }
 
+    static bool ClaudeFooterLoggedOut(string screen)
+    {
+        var lines = screen.Split('\n').Select(line => line.Trim()).ToArray();
+        var editor = Array.FindLastIndex(lines, IsClaudeEditorLine);
+        return editor >= 0 && lines.Skip(editor + 1).Any(line =>
+            line.Contains("Not logged in", StringComparison.OrdinalIgnoreCase) && line.Contains("Please run /login", StringComparison.OrdinalIgnoreCase));
+    }
+
+    static bool IsClaudeEditorLine(string line) => line == "❯" || line.Length > 2 && line[0] == '❯' && char.IsWhiteSpace(line[1]) && !char.IsDigit(line[2]);
+
     internal static bool HasInputEditor(InteractiveAgentKind kind, string screen)
     {
         // Herdr's known-agent idle fallback also matches startup/login screens.
@@ -215,8 +229,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
             InteractiveAgentKind.Codex => lines.Any(line => line.StartsWith('›'))
                 && (screen.Contains("? for shortcuts", StringComparison.Ordinal) || screen.Contains("context left", StringComparison.Ordinal))
                 && !lines.Any(line => line.StartsWith("│ model:", StringComparison.Ordinal) && line.Contains("loading", StringComparison.OrdinalIgnoreCase)),
-            InteractiveAgentKind.Claude => lines.Any(line => line == "❯" || line.Length > 2 && line[0] == '❯'
-                    && char.IsWhiteSpace(line[1]) && !char.IsDigit(line[2]))
+            InteractiveAgentKind.Claude => lines.Any(IsClaudeEditorLine)
                 && screen.Contains("bypass permissions", StringComparison.OrdinalIgnoreCase),
             InteractiveAgentKind.Pi => lines.Count(line => line.Length > 5 && line.All(c => c == '─')) >= 2
                 && screen.Contains('/'),
