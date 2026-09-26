@@ -8,6 +8,7 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 /// <summary>Runs an interactive agent in an owned Windows Terminal tab.</summary>
 public sealed class WtInteractiveBackend : IJobBackend
 {
+    public static int RecoverOwned(string stateRoot) => WtTabControl.RecoverOwned(stateRoot);
     readonly IWtTabControl _tabs;
     readonly IInteractiveTranscriptReader _transcripts;
     readonly InteractiveAgentKind _kind;
@@ -42,6 +43,11 @@ public sealed class WtInteractiveBackend : IJobBackend
         var piDirectory = _kind == InteractiveAgentKind.Pi ? PiDirectory(request) : null;
         var launch = new InteractiveLaunch(_kind, agentName, cwd, request.ResumeSessionId, piDirectory,
             Path.Combine(_stateRoot, _tabDirectory, agentName + (_tabDirectory == "wt" ? ".launch.ps1" : ".launch.sh")));
+        if (OperatingSystem.IsWindows())
+        {
+            // Reject unsafe .cmd shim arguments or hook paths here, where not-started is provable.
+            _ = WtTabControl.AgentArguments(launch, "");
+        }
         return new Run(_tabs, _transcripts, request, launch, DateTimeOffset.UtcNow);
     }
 

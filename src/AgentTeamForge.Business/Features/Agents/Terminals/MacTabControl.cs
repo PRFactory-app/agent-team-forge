@@ -160,10 +160,6 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
         ? throw new ArgumentException("shell arguments cannot contain NUL", nameof(value))
         : "'" + value.Replace("'", "'\"'\"'", StringComparison.Ordinal) + "'";
 
-    internal static string AppleScriptQuote(string value) => "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal)
-        .Replace("\"", "\\\"", StringComparison.Ordinal).Replace("\r", "\\r", StringComparison.Ordinal)
-        .Replace("\n", "\\n", StringComparison.Ordinal) + "\"";
-
     internal static ProcessStartInfo LaunchInfo(string provider, string? address, string? kitty, string wrapper, string title)
     {
         if (provider == "kitty")
@@ -184,9 +180,19 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
         {
             throw new InvalidOperationException("unknown macOS terminal provider");
         }
+        // Terminal runs the text in the user's login shell (zsh, bash or fish). Plain single quotes
+        // mean the same in all of them only without backslashes or control characters.
+        if (wrapper.Any(c => c == '\\' || char.IsControl(c)))
+        {
+            throw new BackendNotStartedException("Terminal.app wrapper path contains a backslash or control character");
+        }
+        // The command reaches AppleScript as argv, never as script text.
         var terminal = new ProcessStartInfo("/usr/bin/osascript") { UseShellExecute = false, RedirectStandardError = true };
-        terminal.ArgumentList.Add("-e");
-        terminal.ArgumentList.Add("tell application \"Terminal\" to do script " + AppleScriptQuote("exec /bin/sh " + ShellQuote(wrapper)));
+        foreach (var arg in new[] { "-e", "on run argv", "-e", "tell application \"Terminal\" to do script (item 1 of argv)", "-e", "end run",
+            "exec /bin/sh " + ShellQuote(wrapper) })
+        {
+            terminal.ArgumentList.Add(arg);
+        }
         return terminal;
     }
 

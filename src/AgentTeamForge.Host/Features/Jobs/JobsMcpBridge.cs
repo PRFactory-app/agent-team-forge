@@ -3,6 +3,7 @@ using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Hosting;
+using AgentTeamForge.Host.Features.Setup;
 using AgentTeamForge.Host.Features.Wake;
 using AgentTeamForge.Host.Transport;
 using ModelContextProtocol.Protocol;
@@ -84,6 +85,11 @@ public static class JobsMcpBridge
 
     public static async Task<int> RunAsync(StateDirectory state, bool testProfile)
     {
+        _ = StateDirectory.ReadPrivateFile(state.CredentialFile);
+        if (await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = state.Path }, quiet: true) != 0)
+        {
+            return 1;
+        }
         var client = new IpcClient(state, new SpikeLimits());
         var workspace = Path.GetFullPath(Environment.CurrentDirectory);
         var parentId = Environment.GetEnvironmentVariable("WIN_AGENT_TEAMS_PARENT_ID") ?? ParentPid().ToString(System.Globalization.CultureInfo.InvariantCulture);

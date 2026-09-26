@@ -38,8 +38,10 @@ export DOTNET_ROOT="$(dirname "$DOTNET")"
 "$DOTNET" build src/AgentTeamForge.Host/AgentTeamForge.Host.csproj -c Release
 ATF="$(pwd)/src/AgentTeamForge.Host/bin/Release/net11.0/atf"
 "$ATF" setup --mode headless --apply
-"$ATF" start
 ```
+
+Install once; the daemon starts on first agent use or CLI client call. Add
+`--autostart` to setup to start it at login; this is off by default.
 
 Use `--mode herdr` for interactive Linux launch after installing Herdr. Omit
 `--apply` to print the Claude Code and Codex MCP registration commands for
@@ -49,7 +51,7 @@ review. A fresh setup creates a real-agent profile and private state under
 log in to each backend CLI you plan to run. `--apply` registers both MCP
 servers and sets `crossSessionInbound` to `accept` in `~/.claude/settings.json`
 for native wake, preserving existing settings. `start` prints the daemon PID
-and is safe to repeat; the daemon dispatches up to eight jobs concurrently.
+and is safe to repeat when started explicitly; the daemon dispatches up to eight jobs concurrently.
 `atf stop` sends SIGTERM to this state's daemon. See the
 [Linux quickstart](docs/quickstart.md) for job commands and wake setup.
 

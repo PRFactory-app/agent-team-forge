@@ -73,7 +73,8 @@ static partial class Native
     public static bool DarwinPrivateFile(SafeFileHandle handle, int maxBytes)
     {
         var buffer = new byte[256];
-        if (Fstat(handle.DangerousGetHandle(), buffer) != 0)
+        // x64 fstat is the legacy 32-bit-inode layout; only arm64 is laid out below.
+        if (RuntimeInformation.ProcessArchitecture != Architecture.Arm64 || Fstat(handle.DangerousGetHandle(), buffer) != 0)
         {
             return false;
         }

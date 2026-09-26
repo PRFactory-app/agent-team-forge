@@ -11,7 +11,7 @@ public static class OrphanedBackendProcess
 
     public static void Mark(ProcessStartInfo info, string correlation) => info.Environment[Marker] = correlation;
 
-    /// <summary>Read-only Linux check used before reviving an uncertain native session.</summary>
+    /// <summary>Read-only Unix check used before reviving an uncertain native session.</summary>
     public static bool HasMarkedProcess(IReadOnlyCollection<string> correlations)
     {
         if (OperatingSystem.IsMacOS())
@@ -22,15 +22,14 @@ public static class OrphanedBackendProcess
             }
 
             var darwinMarkers = correlations.Select(c => $"{Marker}={c}").ToHashSet(StringComparer.Ordinal);
-            foreach (var pid in DarwinProcess.Pids())
+            var pids = DarwinProcess.Pids();
+            if (pids.Count == 0)
             {
-                if (DarwinProcess.Arguments(pid)?.Environment.Any(darwinMarkers.Contains) == true)
-                {
-                    return true;
-                }
+                return true; // ps failed: no proof.
             }
-            // Darwin cannot read every process's environment. Treat absence as uncertain.
-            return true;
+
+            // kern.procargs2 fails only for other users' processes, which cannot carry our marker.
+            return pids.Any(pid => DarwinProcess.Arguments(pid)?.Environment.Any(darwinMarkers.Contains) == true);
         }
         if (!OperatingSystem.IsLinux() || correlations.Count == 0)
         {

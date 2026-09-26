@@ -7,7 +7,8 @@ need a .NET runtime.
 
 `scripts/release-build.sh VERSION [OUTPUT_DIR]` uses the pinned .NET 11 SDK to
 publish `linux-x64` or `osx-arm64` Native AOT on the matching host, creates
-`atf-VERSION-<rid>.tar.gz` and `SHA256SUMS`, and runs the extracted binary
+`atf-VERSION-<rid>.tar.gz` and `SHA256SUMS` (`SHA256SUMS-osx-arm64` on macOS, so
+the files of both jobs can share one release), and runs the extracted binary
 through `--version`. Linux also runs the published scenario smoke. The tag
 workflow uploads these files plus `install.sh` as CI artifacts. A separate `win-x64`
 job on `windows-latest` publishes Native AOT on Windows and uploads
@@ -27,7 +28,7 @@ not establish Windows product support. Native AOT needs a Windows build host
 for `win-x64` and cannot cross-compile from Linux.
 
 Install from downloaded files with `sh install.sh --archive
-atf-VERSION-<rid>.tar.gz --checksum SHA256SUMS`, or from a release with
+atf-VERSION-<rid>.tar.gz --checksum SHA256SUMS` (`SHA256SUMS-osx-arm64` on macOS), or from a release with
 `sh install.sh --version VERSION`. Without `--version`, the installer resolves
 the latest GitHub release tag. It verifies the archive checksum before
 extracting. The stable executable is `$HOME/.local/bin/atf`; payloads live in

@@ -6,8 +6,8 @@ cd "$ROOT"
 VERSION="${1:?usage: release-build.sh VERSION [OUTPUT_DIR]}"
 [[ "$VERSION" =~ ^[0-9][0-9A-Za-z.+-]*$ ]] || { echo "invalid version: $VERSION" >&2; exit 2; }
 case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64) RID=linux-x64; LIB_EXT=so; HASH=(sha256sum);;
-  Darwin-arm64) RID=osx-arm64; LIB_EXT=dylib; HASH=(shasum -a 256);;
+  Linux-x86_64) RID=linux-x64; LIB_EXT=so; HASH=(sha256sum); SUMS=SHA256SUMS;;
+  Darwin-arm64) RID=osx-arm64; LIB_EXT=dylib; HASH=(shasum -a 256); SUMS=SHA256SUMS-osx-arm64;;
   *) echo 'linux-x64 or osx-arm64 required' >&2; exit 2;;
 esac
 if [[ -z "${DOTNET:-}" ]]; then
@@ -52,9 +52,9 @@ if [[ -f "$work/publish/atf.dbg" ]]; then cp "$work/publish/atf.dbg" "$OUTPUT/at
 cp install.sh "$OUTPUT/install.sh"
 (
   cd "$OUTPUT"
-  "${HASH[@]}" "$archive" install.sh > SHA256SUMS
+  "${HASH[@]}" "$archive" install.sh > "$SUMS"
   for symbol in atf-*.dbg; do
-    if [[ -f "$symbol" ]]; then "${HASH[@]}" "$symbol" >> SHA256SUMS; fi
+    if [[ -f "$symbol" ]]; then "${HASH[@]}" "$symbol" >> "$SUMS"; fi
   done
 )
 echo "release bundle: $OUTPUT/$archive"

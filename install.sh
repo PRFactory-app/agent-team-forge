@@ -19,8 +19,8 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64) rid=linux-x64; hash_tool=sha256sum;;
-  Darwin-arm64) rid=osx-arm64; hash_tool=shasum;;
+  Linux-x86_64) rid=linux-x64; hash_tool=sha256sum; sums=SHA256SUMS;;
+  Darwin-arm64) rid=osx-arm64; hash_tool=shasum; sums=SHA256SUMS-osx-arm64;;
   *) fail 'only linux-x64 and osx-arm64 bundles are prepared';;
 esac
 for tool in tar "$hash_tool" mktemp readlink; do command -v "$tool" >/dev/null 2>&1 || fail "missing $tool"; done
@@ -97,7 +97,7 @@ if [ -n "$archive" ]; then
     name=${archive##*/}
     case "$name" in atf-*-$rid.tar.gz) version=${name#atf-}; version=${version%-$rid.tar.gz};; *) fail 'use --version with this archive name';; esac
   fi
-  checksum=${checksum:-$(dirname "$archive")/SHA256SUMS}
+  checksum=${checksum:-$(dirname "$archive")/$sums}
   [ -f "$checksum" ] || fail "checksum not found: $checksum"
 else
   command -v curl >/dev/null 2>&1 || fail 'curl is required for downloads'
@@ -120,7 +120,7 @@ if [ -z "$archive" ]; then
   archive=$scratch/$name
   checksum=$scratch/SHA256SUMS
   curl -fsSL "$release_url/$name" -o "$archive" || fail 'archive download failed'
-  curl -fsSL "$release_url/SHA256SUMS" -o "$checksum" || fail 'checksum download failed'
+  curl -fsSL "$release_url/$sums" -o "$checksum" || fail 'checksum download failed'
 fi
 expected=$(awk -v name="$name" '$2 == name && $1 ~ /^[0-9a-fA-F]+$/ {print $1}' "$checksum")
 [ "${#expected}" -eq 64 ] || fail "checksum entry missing for $name"
@@ -158,4 +158,4 @@ if [ ! -L "$bin" ]; then
   mv -f "$HOME/.local/bin/.atf.$$" "$bin"
 fi
 echo "installed atf $version: $bin"
-echo 'previous versions kept; rerun atf setup --mode headless|herdr|terminal --apply, then atf start and restart clients'
+echo 'previous versions kept; run atf setup --mode headless|herdr|terminal --apply and restart clients; daemon starts on first agent use (or at login with setup --autostart --apply)'

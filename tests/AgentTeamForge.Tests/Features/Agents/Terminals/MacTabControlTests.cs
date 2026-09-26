@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Host.Features.Setup;
 
@@ -25,10 +26,9 @@ public sealed class MacTabControlTests
     }
 
     [Fact]
-    public void AppleScriptAndWrapperKeepSpecialCharactersAsData()
+    public void WrapperKeepsSpecialCharactersAsData()
     {
         const string value = "a\\b\"c ‘quote’ \u201Dquote\u201D";
-        Assert.Equal("\"a\\\\b\\\"c ‘quote’ \u201Dquote\u201D\"", MacTabControl.AppleScriptQuote(value));
         var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", "/tmp/a'b\\c", null, null, "/tmp/atf.launch.sh");
         var wrapper = MacTabControl.WrapperText(launch, value + "'; echo unsafe", "/tmp/atf.pid", "/tmp/atf'binary");
         Assert.Contains("cd '/tmp/a'\"'\"'b\\c'", wrapper);
@@ -38,13 +38,28 @@ public sealed class MacTabControlTests
     }
 
     [Fact]
+    public void UnixCodexLaunchKeepsUserHooks()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", "/tmp/repo", null, null, "/tmp/atf.launch.sh");
+        var args = WtTabControl.AgentArguments(launch, "task");
+        Assert.DoesNotContain("--dangerously-bypass-hook-trust", args);
+        Assert.DoesNotContain(args, arg => arg.StartsWith("hooks.", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void LaunchersUseArgumentListsAndDoNotEmbedPromptInAppleScript()
     {
-        var terminal = MacTabControl.LaunchInfo("terminal", null, null, "/tmp/a'\\‘.sh", "atftest");
+        const string wrapper = "/tmp/a'\"‘\u201D $(x).sh";
+        var terminal = MacTabControl.LaunchInfo("terminal", null, null, wrapper, "atftest");
         Assert.Equal("/usr/bin/osascript", terminal.FileName);
-        Assert.Equal("-e", terminal.ArgumentList[0]);
-        Assert.Equal("tell application \"Terminal\" to do script " +
-            MacTabControl.AppleScriptQuote("exec /bin/sh " + MacTabControl.ShellQuote("/tmp/a'\\‘.sh")), terminal.ArgumentList[1]);
+        Assert.Equal(["-e", "on run argv", "-e", "tell application \"Terminal\" to do script (item 1 of argv)", "-e", "end run",
+            "exec /bin/sh " + MacTabControl.ShellQuote(wrapper)], terminal.ArgumentList);
+        Assert.Throws<BackendNotStartedException>(() => MacTabControl.LaunchInfo("terminal", null, null, "/tmp/a\\b.sh", "atftest"));
+        Assert.Throws<BackendNotStartedException>(() => MacTabControl.LaunchInfo("terminal", null, null, "/tmp/a\nb.sh", "atftest"));
 
         var kitty = MacTabControl.LaunchInfo("kitty", "unix:/tmp/kitty.sock", "/usr/bin/kitty", "/tmp/run.sh", "atftest");
         Assert.Equal("/usr/bin/kitty", kitty.FileName);
