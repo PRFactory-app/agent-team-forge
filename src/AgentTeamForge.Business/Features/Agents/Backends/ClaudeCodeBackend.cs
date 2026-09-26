@@ -49,7 +49,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             throw new BackendNotStartedException("claude could not be started", ex);
         }
 
-        return new ClaudeRun(process, request.Correlation, sessionId, Encoding.UTF8.GetBytes(request.Instruction));
+        return new ClaudeRun(process, request.Correlation, sessionId, Encoding.UTF8.GetBytes(request.Instruction), request.Output);
     }
 
     internal static List<string> Arguments(BackendRequest request, string sessionId)
@@ -59,10 +59,11 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
         return arguments;
     }
 
-    sealed class ClaudeRun(Process process, string correlation, string sessionId, byte[] instruction) : IBackendRun
+    sealed class ClaudeRun(Process process, string correlation, string sessionId, byte[] instruction, Action<string, ReadOnlyMemory<byte>>? output) : IBackendRun
     {
         readonly Process _process = process;
-        readonly Task _stderrDrain = DrainAsync(process.StandardError.BaseStream);
+        readonly Stream _stdout = new CapturingReadStream(process.StandardOutput.BaseStream, "stdout", output);
+        readonly Task _stderrDrain = DrainAsync(new CapturingReadStream(process.StandardError.BaseStream, "stderr", output));
         bool _deliveryFailed;
 
         public int? ProcessId => _process.Id;
@@ -94,7 +95,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
 
             // Known before the turn ends: a stopped turn stays resumable.
             yield return new BackendEvidence.Session(correlation, sessionId);
-            var (output, overflow) = await ReadBoundedAsync(_process.StandardOutput.BaseStream, cancellationToken);
+            var (output, overflow) = await ReadBoundedAsync(_stdout, cancellationToken);
             if (overflow)
             {
                 TerminateOwnedChild();
@@ -130,6 +131,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
 
         public async ValueTask DisposeAsync()
         {
+            var stdoutDrain = DrainAsync(_stdout);
             try
             {
                 try
@@ -152,6 +154,14 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
                 try
                 {
                     await _stderrDrain.WaitAsync(TimeSpan.FromSeconds(1));
+                }
+                catch (TimeoutException)
+                {
+                }
+
+                try
+                {
+                    await stdoutDrain.WaitAsync(TimeSpan.FromSeconds(1));
                 }
                 catch (TimeoutException)
                 {

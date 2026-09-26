@@ -75,6 +75,7 @@ public static class DaemonCommand
         }
 
         var store = new JobStore(database, checkpoints);
+        var jobLogs = new JobLogs(state.Path, Log);
         var prune = new PruneJob(new PruneJobs(database), state.Path);
         var wakeStore = new WakeStore(database);
         var quarantined = new RecoverOnStartup(store).Execute();
@@ -100,11 +101,11 @@ public static class DaemonCommand
         }
         Log($"backends: {string.Join(',', backends.Names)}");
         var admission = new AdmissionGate();
-        using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log);
+        using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs);
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept),
             new ListJobs(store, profile.Bound),
-            new StopJob(store, profile.Bound, dispatcher.CancelRunning), checkpoints, dispatcher.Signal, wakeStore, prune);
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,

@@ -33,8 +33,9 @@ public sealed class PruneJobTests
         Set(f, uncertain.JobId, "needs_reconciliation", 40);
         var state = Path.GetDirectoryName(f.DatabasePath)!;
         var logs = Path.Combine(state, "logs");
+        new JobLogs(state).BeginRun(oldCompleted.JobId, "run", "fake")("stdout", "old"u8.ToArray());
+        Assert.Contains("old", new JobLogs(state).Read(oldCompleted.JobId).Text);
         Directory.CreateDirectory(logs);
-        File.WriteAllText(Path.Combine(logs, oldCompleted.JobId + ".log"), "old");
         File.WriteAllText(Path.Combine(logs, oldRunning.JobId + ".log"), "active");
 
         var count = new PruneJob(new PruneJobs(f.Database), state).Execute(30, false);

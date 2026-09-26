@@ -39,7 +39,8 @@ try
             var mcpState = StateDirectory.Open(mcpDir);
             return await JobsMcpBridge.RunAsync(mcpState, SpikeProfileFile.Load(mcpState).TestProfile);
         case "client" when args.Length > 1 && options.TryGetValue("state-dir", out var clientDir):
-            return await ClientCommand.RunAsync(StateDirectory.Open(clientDir), args[1], options);
+            return await ClientCommand.RunAsync(StateDirectory.Open(clientDir), args[1], options,
+                args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordinal) ? args[2] : null);
         default:
             return Usage();
     }
