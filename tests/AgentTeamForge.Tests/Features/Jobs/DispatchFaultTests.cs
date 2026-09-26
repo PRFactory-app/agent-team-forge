@@ -20,7 +20,8 @@ public sealed class DispatchFaultTests
     [Fact]
     public async Task Unexpected_backend_failure_quarantines_the_attempt_and_halts_claims()
     {
-        using var f = new JobFixture();
+        // One slot, so the second job is provably not claimed after the halt.
+        using var f = new JobFixture(new SpikeLimits { MaxConcurrentJobs = 1 });
         var backend = new StallingBackend { StartThrows = new InvalidOperationException("pipe exploded") };
         using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
         var first = f.Submit("k1");

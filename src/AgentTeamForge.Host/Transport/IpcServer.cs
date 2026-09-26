@@ -12,7 +12,8 @@ namespace AgentTeamForge.Host.Transport;
 /// Handlers run against the daemon lifetime, not the client's connection.
 /// </summary>
 public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincipal principal, SpikeLimits limits,
-    Func<IpcRequest, IpcResponse> handle, Action<string> log) : IDisposable
+    Func<IpcRequest, IpcResponse> handle, Action<string> log, Action<IpcResponse>? afterReply = null,
+    Func<IpcRequest, IDisposable?>? beforeRequest = null) : IDisposable
 {
     const int MaxConcurrentConnections = 16;
     readonly SemaphoreSlim _slots = new(MaxConcurrentConnections);
@@ -98,12 +99,21 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
                 return;
             }
 
+            using var claimPause = beforeRequest?.Invoke(request);
+
             // Business work is synchronous and not tied to this connection;
             // a vanished client cannot cancel a committed job.
             var response = request.ProtocolVersion != IpcProtocol.Version
                 ? new IpcResponse(false, IpcProtocol.UnsupportedVersion)
                 : handle(request);
-            await Frames.WriteAsync(stream, response, IpcJson.Default.IpcResponse, daemonLifetime);
+            try
+            {
+                await Frames.WriteAsync(stream, response, IpcJson.Default.IpcResponse, daemonLifetime);
+            }
+            finally
+            {
+                afterReply?.Invoke(response);
+            }
         }
         catch (FrameException ex)
         {

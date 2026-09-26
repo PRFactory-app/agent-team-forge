@@ -13,8 +13,11 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     const string JobColumns = """
         j.job_id, j.principal, j.team, j.target_agent, j.idempotency_key, j.instruction, j.options,
         j.status, j.reason_code, j.result_text,
-        (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id)
+        (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id),
+        j.backend, j.cwd, j.parent_job_id, j.session_id, j.worktree_path, j.worktree_branch, j.worktree_base
         """;
+
+    public string WorktreeRoot => Path.Combine(Path.GetDirectoryName(database.Path)!, "worktrees");
 
     /// <summary>
     /// Stores job + scoped key/fingerprint + unattempted intent + acceptance event
@@ -41,35 +44,63 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         }
 
         var jobId = "job_" + Guid.CreateVersion7().ToString("N");
+        var worktreePath = job.CreateWorktree ? Path.Combine(WorktreeRoot, jobId) : job.WorktreePath;
+        var worktreeBranch = job.CreateWorktree ? $"atf/job-{jobId}" : job.WorktreeBranch;
         var now = Now();
         Execute(connection, tx, """
             INSERT INTO jobs(job_id, principal, team, target_agent, operation, idempotency_key, fingerprint,
-                             instruction, options, status, accepted_at, updated_at)
-            VALUES ($id, $p, $t, $a, $o, $k, $f, $i, $opt, 'queued', $now, $now);
+                             instruction, options, backend, cwd, parent_job_id, worktree_path, worktree_branch, worktree_base, status, accepted_at, updated_at)
+            VALUES ($id, $p, $t, $a, $o, $k, $f, $i, $opt, $b, $cwd, $parent, $wtpath, $wtbranch, $wtbase, 'queued', $now, $now);
             INSERT INTO dispatch_intents(job_id, state, created_at) VALUES ($id, 'unattempted', $now);
             INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'accepted', $now);
             """,
             ("$id", jobId), ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent),
             ("$o", job.Operation), ("$k", job.IdempotencyKey), ("$f", job.Fingerprint),
-            ("$i", job.Instruction), ("$opt", job.Options), ("$now", now));
+            ("$i", job.Instruction), ("$opt", job.Options), ("$b", job.Backend), ("$cwd", job.Cwd),
+            ("$parent", job.ParentJobId), ("$wtpath", worktreePath), ("$wtbranch", worktreeBranch),
+            ("$wtbase", job.WorktreeBase), ("$now", now));
+        if (job.WakeTargetKey is not null && job.WakeGeneration is not null)
+        {
+            Execute(connection, tx, """
+                INSERT INTO wake_jobs(job_id, target_key)
+                SELECT $id, target_key FROM wake_targets
+                WHERE target_key=$key AND generation=$generation
+                """, ("$id", jobId), ("$key", job.WakeTargetKey), ("$generation", job.WakeGeneration.Value));
+        }
         checkpoints.Hit(DurabilityCheckpoints.AcceptBeforeCommit);
         tx.Commit();
 
         // The committed row as written, without a post-commit read: a read failure
         // here would otherwise be reported as a storage error for an accepted job.
         return new AcceptOutcome(AcceptKind.Accepted, new JobRecord(jobId, job.Principal, job.Team, job.TargetAgent,
-            job.IdempotencyKey, job.Instruction, job.Options, JobStatus.Queued, null, null, 0));
+            job.IdempotencyKey, job.Instruction, job.Options, JobStatus.Queued, null, null, 0,
+            job.Backend, job.Cwd, job.ParentJobId, null)
+        {
+            WorktreePath = worktreePath,
+            WorktreeBranch = worktreeBranch,
+            WorktreeBase = job.WorktreeBase,
+        });
     });
 
     /// <summary>
     /// Claims the oldest unattempted intent and commits the attempt-start
     /// (generation + correlation) before the caller may cause any effect.
+    /// A follow-up is skipped while any job on its parent's native session is
+    /// running (the parent itself, a job holding that session, or another
+    /// follow-up of a job holding it), so turns on one session never overlap.
     /// </summary>
     public AttemptClaim? BeginNextAttempt() => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
-        var jobId = QueryString(connection, tx,
-            "SELECT job_id FROM dispatch_intents WHERE state='unattempted' ORDER BY created_at, rowid LIMIT 1");
+        var jobId = QueryString(connection, tx, """
+            SELECT i.job_id FROM dispatch_intents i JOIN jobs j ON j.job_id = i.job_id
+            WHERE i.state='unattempted' AND NOT EXISTS (
+                SELECT 1 FROM jobs p JOIN jobs k ON k.status='running'
+                WHERE p.job_id = j.parent_job_id
+                  AND (k.job_id = p.job_id OR k.session_id = p.session_id OR EXISTS (
+                      SELECT 1 FROM jobs q WHERE q.job_id = k.parent_job_id AND q.session_id = p.session_id)))
+            ORDER BY i.created_at, i.rowid LIMIT 1
+            """);
         if (jobId is null)
         {
             return null;
@@ -114,6 +145,21 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             ("$gen", run.Generation), ("$corr", run.Correlation));
         tx.Commit();
         return 0;
+    });
+
+    /// <summary>Records the backend's native session on the job, fenced to the current started run.</summary>
+    public bool RecordSession(RunRef run, string sessionId) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        var updated = Execute(connection, tx, """
+            UPDATE jobs SET session_id=$sid, updated_at=$now
+            WHERE job_id=$id AND status='running' AND EXISTS (
+                SELECT 1 FROM runs WHERE run_id=$run AND job_id=$id AND generation=$gen AND correlation=$corr AND state='started')
+            """,
+            ("$sid", sessionId), ("$now", Now()), ("$id", run.JobId), ("$run", run.RunId),
+            ("$gen", run.Generation), ("$corr", run.Correlation));
+        tx.Commit();
+        return updated == 1;
     });
 
     /// <summary>
@@ -209,7 +255,43 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return (IReadOnlyList<string>)jobs;
     });
 
+    /// <summary>
+    /// Run markers whose backend processes may have outlived daemon death,
+    /// including runs that died before their PID was recorded.
+    /// </summary>
+    public IReadOnlyList<string> GetInterruptedRunCorrelations() => Read(connection =>
+    {
+        using var command = Command(connection, null, """
+            SELECT correlation FROM runs
+            WHERE state='started' OR (state='needs_reconciliation' AND reason_code='daemon_restart_uncertain')
+            """);
+        using var reader = command.ExecuteReader();
+        var correlations = new List<string>();
+        while (reader.Read())
+        {
+            correlations.Add(reader.GetString(0));
+        }
+
+        return (IReadOnlyList<string>)correlations;
+    });
+
     public JobRecord? GetJob(string jobId) => Read(connection => GetJob(connection, null, jobId));
+
+    /// <summary>Newest first, scoped to one principal/team.</summary>
+    public IReadOnlyList<JobRecord> ListJobs(string principal, string team, int limit) => Read(connection =>
+    {
+        using var command = Command(connection, null,
+            $"SELECT {JobColumns} FROM jobs j WHERE j.principal=$p AND j.team=$t ORDER BY j.accepted_at DESC, j.rowid DESC LIMIT $n",
+            ("$p", principal), ("$t", team), ("$n", limit));
+        using var reader = command.ExecuteReader();
+        var jobs = new List<JobRecord>();
+        while (reader.Read())
+        {
+            jobs.Add(ReadJob(reader));
+        }
+
+        return (IReadOnlyList<JobRecord>)jobs;
+    });
 
     public IReadOnlyList<EventRecord> GetEvents(string jobId) => Read(connection =>
     {
@@ -249,7 +331,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     public IReadOnlyList<JobSummaryRecord> ListJobs(string principal, string team, string? status, string? beforeJobId, int take) => Read(connection =>
     {
         using var command = Command(connection, null, """
-            SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at
+            SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at, j.worktree_path, j.worktree_branch
             FROM jobs j
             WHERE j.principal=$p AND j.team=$t
               AND ($status IS NULL OR j.status=$status)
@@ -263,7 +345,11 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         while (reader.Read())
         {
             jobs.Add(new JobSummaryRecord(reader.GetString(0), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetString(2),
-                reader.GetInt32(3), reader.GetString(4), reader.GetString(5)));
+                reader.GetInt32(3), reader.GetString(4), reader.GetString(5))
+            {
+                WorktreePath = NullableString(reader, 6),
+                WorktreeBranch = NullableString(reader, 7),
+            });
         }
 
         return (IReadOnlyList<JobSummaryRecord>)jobs;
@@ -283,14 +369,21 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             return null;
         }
 
-        var job = new JobRecord(
-            reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
-            reader.GetString(5), reader.GetString(6), reader.GetString(7),
-            reader.IsDBNull(8) ? null : reader.GetString(8),
-            reader.IsDBNull(9) ? null : reader.GetString(9),
-            reader.GetInt32(10));
-        return (job, reader.GetString(11));
+        return (ReadJob(reader), reader.GetString(18));
     }
+
+    static JobRecord ReadJob(SqliteDataReader reader) => new(
+        reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
+        reader.GetString(5), reader.GetString(6), reader.GetString(7),
+        NullableString(reader, 8), NullableString(reader, 9), reader.GetInt32(10),
+        reader.GetString(11), NullableString(reader, 12), NullableString(reader, 13), NullableString(reader, 14))
+    {
+        WorktreePath = NullableString(reader, 15),
+        WorktreeBranch = NullableString(reader, 16),
+        WorktreeBase = NullableString(reader, 17),
+    };
+
+    static string? NullableString(SqliteDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
 
     static string? QueryString(SqliteConnection connection, SqliteTransaction? tx, string sql, params (string, object?)[] parameters)
     {

@@ -2,6 +2,7 @@ using System.Text.Json;
 using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Hosting;
+using AgentTeamForge.Host.Features.Wake;
 using AgentTeamForge.Host.Transport;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -15,25 +16,35 @@ namespace AgentTeamForge.Host.Features.Jobs;
 /// </summary>
 public static class JobsMcpBridge
 {
-    const string SubmitSchema = """
-        {"type":"object","properties":{
-          "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."},
-          "instruction":{"type":"string"}},
-         "required":["idempotency_key","instruction"]}
+    const string SubmitProperties = """
+          "backend":{"type":"string","enum":["claude","codex","pi","fake"],"description":"Agent CLI the daemon runs for this job."},
+          "instruction":{"type":"string","description":"Task for the agent."},
+          "cwd":{"type":"string","description":"Absolute working directory for the agent (optional)."},
+          "worktree":{"type":"boolean","description":"Create a private git worktree for this job from cwd's HEAD."},
+          "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."}
+        """;
+
+    const string SubmitSchema = """{"type":"object","properties":{""" + SubmitProperties + """
+        },"required":["backend","instruction","idempotency_key"]}
         """;
 
     // Test-profile only: fake barrier/behaviour controls. The daemon enforces this independently.
-    const string TestSubmitSchema = """
-        {"type":"object","properties":{
-          "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."},
-          "instruction":{"type":"string"},
-          "behavior":{"type":"string","enum":["complete","eof_after_ack","exit_after_receipt","mismatched_correlation","hang"]},
+    const string TestSubmitSchema = """{"type":"object","properties":{""" + SubmitProperties + """
+          ,"behavior":{"type":"string","enum":["complete","eof_after_ack","exit_after_receipt","mismatched_correlation","hang"]},
           "hold":{"type":"boolean"}},
-         "required":["idempotency_key","instruction"]}
+         "required":["backend","instruction","idempotency_key"]}
         """;
 
     const string GetSchema = """
         {"type":"object","properties":{"job_id":{"type":"string"}},"required":["job_id"]}
+        """;
+
+    const string FollowUpSchema = """
+        {"type":"object","properties":{
+          "job_id":{"type":"string","description":"Finished job whose native agent session is resumed."},
+          "instruction":{"type":"string"},
+          "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."}},
+         "required":["job_id","instruction","idempotency_key"]}
         """;
 
     const string ListSchema = """
@@ -46,8 +57,33 @@ public static class JobsMcpBridge
     public static async Task<int> RunAsync(StateDirectory state, bool testProfile)
     {
         var client = new IpcClient(state, new SpikeLimits());
+        var wakeTarget = HostSessionWake.Resolve(state);
+        long? wakeGeneration = null;
+        async Task RegisterWakeAsync(CancellationToken cancellationToken)
+        {
+            if (wakeTarget is null || wakeGeneration is not null)
+            {
+                return;
+            }
+
+            // Wake is best effort: a missing daemon or credential must not stop the bridge or fail job calls.
+            try
+            {
+                var registration = await client.SendAsync(wakeTarget, cancellationToken);
+                if (registration.Ok)
+                {
+                    wakeGeneration = registration.WakeGeneration;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException) { }
+        }
+        await RegisterWakeAsync(CancellationToken.None);
         var tools = new List<Tool>
         {
+            new() { Name = "submit_job", Description = "Durably submit a task to an agent (claude, codex or pi) run by the AgentTeamForge daemon. Returns the job; poll get_job for the result.", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
+            new() { Name = "get_job", Description = "Read a job's status, result output and native session_id.", InputSchema = Parse(GetSchema) },
+            new() { Name = "follow_up", Description = "Send a follow-up instruction into a finished job's native agent session (same backend and cwd). Returns the new job.", InputSchema = Parse(FollowUpSchema) },
+            new() { Name = "list_jobs", Description = "List jobs, newest first, one bounded page at a time.", InputSchema = Parse(ListSchema) },
             new() { Name = "job_submit", Description = "Durably submit a job to the AgentTeamForge daemon (spike).", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "job_get", Description = "Read a job's committed state and result (spike).", InputSchema = Parse(GetSchema) },
             new() { Name = "job_list", Description = "List your jobs' committed state, newest first, one bounded page at a time (read-only, spike).", InputSchema = Parse(ListSchema) },
@@ -55,7 +91,7 @@ public static class JobsMcpBridge
 
         var options = new McpServerOptions
         {
-            ServerInfo = new Implementation { Name = "agentteamforge-spike", Version = "0.0.1-spike" },
+            ServerInfo = new Implementation { Name = "agentteamforge", Version = "0.1.0-mvp" },
             Capabilities = new ServerCapabilities { Tools = new ToolsCapability() },
             Handlers = new McpServerHandlers
             {
@@ -64,7 +100,13 @@ public static class JobsMcpBridge
                 {
                     var call = request.Params ?? throw new InvalidOperationException("missing params");
                     var args = call.Arguments ?? new Dictionary<string, JsonElement>();
+                    await RegisterWakeAsync(cancellationToken);
                     var (ipc, rejection) = Map(call.Name, args, testProfile);
+                    if (ipc is not null && wakeTarget is not null && wakeGeneration is not null
+                        && ipc.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp or IpcProtocol.JobGet)
+                    {
+                        ipc = ipc with { WakeKey = wakeTarget.WakeKey, WakeGeneration = wakeGeneration };
+                    }
                     var response = ipc is null
                         ? new IpcResponse(false, rejection)
                         : await client.SendAsync(ipc, cancellationToken);
@@ -77,7 +119,7 @@ public static class JobsMcpBridge
             },
         };
 
-        await using var server = McpServer.Create(new StdioServerTransport("agentteamforge-spike"), options);
+        await using var server = McpServer.Create(new StdioServerTransport("agentteamforge"), options);
         await server.RunAsync();
         return 0;
     }
@@ -86,16 +128,26 @@ public static class JobsMcpBridge
     static (IpcRequest? Request, string? Rejection) Map(string name, IDictionary<string, JsonElement> args, bool testProfile) =>
         name switch
         {
-            "job_submit" => (new IpcRequest
+            "job_submit" or "submit_job" => (new IpcRequest
             {
                 Op = IpcProtocol.JobSubmit,
                 IdempotencyKey = String(args, "idempotency_key"),
                 Instruction = String(args, "instruction"),
+                Backend = String(args, "backend"),
+                Cwd = String(args, "cwd"),
+                Worktree = args.TryGetValue("worktree", out var worktree) && worktree.ValueKind == JsonValueKind.True,
                 Behavior = testProfile ? String(args, "behavior") : null,
                 Hold = testProfile && args.TryGetValue("hold", out var hold) && hold.ValueKind == JsonValueKind.True,
             }, null),
-            "job_get" => (new IpcRequest { Op = IpcProtocol.JobGet, JobId = String(args, "job_id") }, null),
-            "job_list" => ListRequest(args),
+            "job_get" or "get_job" => (new IpcRequest { Op = IpcProtocol.JobGet, JobId = String(args, "job_id") }, null),
+            "follow_up" => (new IpcRequest
+            {
+                Op = IpcProtocol.JobFollowUp,
+                JobId = String(args, "job_id"),
+                Instruction = String(args, "instruction"),
+                IdempotencyKey = String(args, "idempotency_key"),
+            }, null),
+            "job_list" or "list_jobs" => ListRequest(args),
             _ => (null, IpcProtocol.UnknownOp),
         };
 

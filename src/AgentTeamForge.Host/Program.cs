@@ -19,7 +19,16 @@ try
         case "init" when options.TryGetValue("state-dir", out var initDir):
             return InitCommand.Run(initDir, options.ContainsKey("test-profile"),
                 options.TryGetValue("queue-limit", out var q) ? int.Parse(q, System.Globalization.CultureInfo.InvariantCulture) : null,
-                options.TryGetValue("max-runtime-seconds", out var m) ? int.Parse(m, System.Globalization.CultureInfo.InvariantCulture) : null);
+                options.TryGetValue("max-runtime-seconds", out var m) ? int.Parse(m, System.Globalization.CultureInfo.InvariantCulture) : null,
+                options.GetValueOrDefault("backends"));
+        case "setup":
+            return SetupCommand.Run(options);
+        case "start":
+            return await SetupCommand.StartAsync(options);
+        case "stop":
+            return SetupCommand.Stop(options);
+        case "prune":
+            return await PruneCommand.RunAsync(StateDirectory.Open(SetupCommand.ResolveStateDir(options)), options);
         case "daemon" when options.TryGetValue("state-dir", out var daemonDir):
             return await DaemonCommand.RunAsync(StateDirectory.Open(daemonDir), options.GetValueOrDefault("test-crash-at"), options.GetValueOrDefault("test-fail-at"));
         case "mcp" when options.TryGetValue("state-dir", out var mcpDir):
@@ -39,7 +48,7 @@ catch (StateDirectoryException ex)
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: atf <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
+    Console.Error.WriteLine("usage: atf setup --mode headless|herdr [--state-dir DIR] [--apply] | start|stop [--state-dir DIR] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
     return 64;
 }
 

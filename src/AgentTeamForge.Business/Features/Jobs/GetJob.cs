@@ -20,7 +20,7 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal)
         }
         catch (StorageException ex)
         {
-            return JobResult.Fail(ex.Failure == StorageFailure.Busy ? JobErrors.StorageBusy : JobErrors.StorageUnavailable);
+            return JobResult.Fail(JobErrors.FromStorage(ex));
         }
 
         // Another principal's job is indistinguishable from an unknown ID.
@@ -29,5 +29,27 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal)
             : JobResult.Ok(ToView(job), "found");
     }
 
-    internal static JobView ToView(JobRecord job) => new(job.JobId, job.Status, job.ResultText, job.ReasonCode, job.Attempts);
+    /// <summary>Most recent jobs of the bound principal, without result text (keeps frames small).</summary>
+    public JobResult List(int limit = 50)
+    {
+        try
+        {
+            var jobs = store.ListJobs(principal.Principal, principal.Team, Math.Clamp(limit, 1, 200));
+            return new JobResult(null, "listed", null) { Jobs = [.. jobs.Select(j => ToView(j) with { Result = null })] };
+        }
+        catch (StorageException ex)
+        {
+            return JobResult.Fail(JobErrors.FromStorage(ex));
+        }
+    }
+
+    internal static JobView ToView(JobRecord job) => new(job.JobId, job.Status, job.ResultText, job.ReasonCode, job.Attempts)
+    {
+        Backend = job.Backend,
+        SessionId = job.SessionId,
+        ParentJobId = job.ParentJobId,
+        Cwd = job.WorktreePath ?? job.Cwd,
+        WorktreePath = job.WorktreePath,
+        WorktreeBranch = job.WorktreeBranch,
+    };
 }
