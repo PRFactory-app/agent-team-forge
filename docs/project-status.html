@@ -4,150 +4,62 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<meta name="description" content="AgentTeamForge Linux status: what runs on main and what is in progress.">
-<title>AgentTeamForge Project Status</title>
+<meta name="description" content="AgentTeamForge: Linux capability evidence, platform readiness and remaining v0.0.1 work.">
+<title>AgentTeamForge · Project status</title>
 <style>
-:root{--bg:#f4f6f9;--paper:#fff;--ink:#17263a;--muted:#55657a;--line:#d3dce7;--link:#1a4f86;
---act:#2f6fd0;--act-ink:#fff;--part:#d9e6fa;--part-ink:#163f7a;--expl:#fff1d6;--expl-ink:#6b4700;--ok:#1f7a3f;--ok-ink:#fff;
---plan-a:#e7ebf0;--plan-b:#cfd6df;--plan-ink:#3d4b5c;--blk:#a3302b;--now:#fff8dc;--nowline:#c98a00}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#10161e;--paper:#18212c;--ink:#e3eaf2;--muted:#9fb0c3;--line:#2d3a49;--link:#8cbcf5;
---act:#4d8ce6;--act-ink:#08121f;--part:#1f3553;--part-ink:#cfe0fa;--expl:#3a2d10;--expl-ink:#f6d99c;--ok:#3fae66;--ok-ink:#06140b;
---plan-a:#222c38;--plan-b:#2e3a48;--plan-ink:#b8c5d4;--blk:#ff8d86;--now:#2b2610;--nowline:#e0a826}}
-:root[data-theme="dark"]{--bg:#10161e;--paper:#18212c;--ink:#e3eaf2;--muted:#9fb0c3;--line:#2d3a49;--link:#8cbcf5;--act:#4d8ce6;--act-ink:#08121f;--part:#1f3553;--part-ink:#cfe0fa;--expl:#3a2d10;--expl-ink:#f6d99c;--ok:#3fae66;--ok-ink:#06140b;--plan-a:#222c38;--plan-b:#2e3a48;--plan-ink:#b8c5d4;--blk:#ff8d86;--now:#2b2610;--nowline:#e0a826}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
-a{color:var(--link);text-underline-offset:2px}
-a:focus-visible,summary:focus-visible{outline:3px solid var(--nowline);outline-offset:3px}
-.skip{position:absolute;left:-999px}.skip:focus{left:16px;top:8px;background:var(--paper);padding:.3rem .6rem}
-header,main,footer{max-width:1240px;margin:0 auto;padding:0 16px}
-header{padding-top:1.1rem}
-h1{font-size:1.45rem;margin:.1rem 0 .2rem;letter-spacing:-.01em}
-h2{font-size:1.2rem;margin:0 0 .6rem}
-h3{font-size:1rem;margin:0 0 .4rem}
-.meta{color:var(--muted);font-size:.85rem;margin:0}
-.headline{margin:.6rem 0 .8rem;padding:.6rem .9rem;border-left:5px solid var(--blk);background:var(--paper);border-radius:6px;font-weight:600}
-nav{display:flex;flex-wrap:wrap;gap:.3rem 1rem;font-size:.88rem;margin:.4rem 0 .9rem}
-section{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:1rem;margin:0 0 1rem}
-.split{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
-.split>div{border:1px solid var(--line);border-radius:8px;padding:.7rem .9rem}
-.split h3{display:flex;gap:.4rem;align-items:center}
-ul{margin:.3rem 0;padding-left:1.2rem}li{margin:.15rem 0}
-.legend{display:flex;flex-wrap:wrap;gap:.4rem 1.1rem;font-size:.83rem;margin:.2rem 0 .7rem;padding:0;list-style:none}
-.legend li{display:flex;align-items:center;gap:.35rem}
-.sw{display:inline-block;width:1.6rem;height:.9rem;border-radius:3px;border:1px solid var(--line)}
-.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px}
-.hint{font-size:.8rem;color:var(--muted);margin:.3rem 0 0}
-table.g{table-layout:fixed;border-collapse:separate;border-spacing:0;width:100%;min-width:980px;font-size:.82rem}
-.g caption{text-align:left;padding:.5rem .6rem;font-size:.82rem;color:var(--muted)}
-.g th,.g td{border-bottom:1px solid var(--line);padding:.35rem .25rem;vertical-align:middle}
-.g thead th{font-weight:650;text-align:left;font-size:.76rem;color:var(--muted);background:var(--paper)}
-.g thead th b{display:block;color:var(--ink);font-size:.8rem}
-.g th[scope=row]{position:sticky;left:0;z-index:1;background:var(--paper);text-align:left;width:15.5rem;min-width:13rem;border-right:1px solid var(--line);font-weight:400;padding:.45rem .6rem}
-.g th[scope=row] strong{font-size:.86rem}
-.g th[scope=row] .st{display:block;font-size:.76rem;color:var(--muted);line-height:1.3}
-.g th[scope=row] .pl{display:block;font-size:.72rem;color:var(--muted)}
-.g col.c0{width:15.5rem}.g .now{background:var(--now)}
-.g thead th.now{box-shadow:inset 0 3px 0 var(--nowline)}
-.g tbody tr.track th[scope=row]{background:var(--paper)}
-.g tr.sub th{background:var(--bg);font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);position:sticky;left:0}
-.bar{display:block;border-radius:5px;padding:.3rem .45rem;font-weight:600;font-size:.76rem;line-height:1.25;min-height:1.9rem}
-.act{background:var(--act);color:var(--act-ink)}
-.part{background:var(--part);color:var(--part-ink);border:2px solid var(--act)}
-.expl{background:var(--expl);color:var(--expl-ink);border:2px dashed var(--expl-ink)}
-.ok{background:var(--ok);color:var(--ok-ink)}
-.plan{color:var(--plan-ink);background:repeating-linear-gradient(135deg,var(--plan-a) 0 6px,var(--plan-b) 6px 12px);border:1px dashed var(--plan-ink);font-weight:500}
-.blk{display:inline-block;margin-left:.3rem;color:var(--blk);background:var(--paper);border:1px solid var(--blk);border-radius:4px;padding:0 .25rem;font-size:.7rem;font-weight:700}
-.bar .blk{margin:.2rem 0 0 0}
-.neutral{border:1px solid var(--muted);color:var(--ink)}
-.tag{display:inline-block;border-radius:4px;padding:.05rem .4rem;font-size:.74rem;font-weight:700;white-space:nowrap}
-.gates{font-size:.85rem}
-.gates li{margin:.25rem 0}
-details{border:1px solid var(--line);border-radius:8px;margin:.5rem 0;background:var(--paper)}
-summary{cursor:pointer;padding:.55rem .8rem;font-weight:600}
-summary .st{font-weight:400;color:var(--muted);font-size:.85rem}
-details>div{padding:0 .8rem .7rem}
-.wp{list-style:none;padding:0;margin:.3rem 0;font-size:.85rem}
-.wp li{display:grid;grid-template-columns:5.2rem 1fr auto;gap:.5rem;border-top:1px solid var(--line);padding:.3rem 0}
-.wp code{font-weight:700}
-.wp .s{font-size:.75rem;color:var(--muted);text-align:right}
-.ftbl{width:100%;border-collapse:collapse;font-size:.84rem}
-.ftbl th,.ftbl td{border-top:1px solid var(--line);padding:.35rem .4rem;text-align:left;vertical-align:top}
-.small{font-size:.83rem;color:var(--muted)}
-footer{font-size:.8rem;color:var(--muted);padding-bottom:2rem}
-@media (max-width:760px){.split{grid-template-columns:1fr}.wp li{grid-template-columns:4.6rem 1fr}.wp .s{grid-column:2;text-align:left}
- /* Narrow screens: stacked rows instead of a sticky, horizontally scrolled grid. Each bar shows its wave. */
- .scroll{overflow:visible;border:0}table.g,.g caption,.g tbody,.g tr,.g th,.g td{display:block;width:auto;min-width:0}
- .g thead,.g colgroup,.g td.gap{display:none}.g caption{padding:0 0 .5rem}
- .g tr{border:1px solid var(--line);border-radius:8px;margin:0 0 .5rem;padding:0 0 .4rem;background:var(--paper)}
- .g tr.sub{border:0;background:none;padding:0;margin:.8rem 0 .3rem}.g tr.sub th{position:static;background:none;padding:0;border:0}
- .g th[scope=row]{position:static;width:auto;min-width:0;border:0;padding:.45rem .6rem .3rem}
- .g td{border:0;padding:.15rem .6rem;background:none!important}
- .g td[data-w]::before{content:attr(data-w);display:block;font-size:.72rem;font-weight:650;color:var(--muted)}
- .g td.now[data-w]::before,.g td[data-w^="W0"]::before{color:var(--ink);text-decoration:underline 3px var(--nowline)}
- .ftbl thead{display:none}.ftbl tr{display:block;border-top:1px solid var(--line);padding:.3rem 0}.ftbl td{display:block;border:0;padding:.1rem .2rem}}
-@media print{.scroll{overflow:visible}details{break-inside:avoid}}
-/* The ordered lane board keeps the existing colours and stacked mobile table pattern. */
-table.g{min-width:760px}
-.g col.c1{width:10rem}.g col.c2{width:25rem}
-.g td{overflow-wrap:anywhere}
-code{overflow-wrap:anywhere}
-.headline{border-left-color:var(--ok)}
-@media (max-width:760px){table.g{min-width:0}.g td[data-w]::before{content:attr(data-w)}}
+:root{color-scheme:light dark;--bg:#f3f5f8;--paper:#fff;--ink:#19283b;--muted:#536176;--line:#cfd8e3;--link:#2157a1;--good:#176b43;--good-bg:#e7f5ed;--test:#28579b;--test-bg:#eaf1fc;--wait:#815400;--wait-bg:#fff2d6}
+@media(prefers-color-scheme:dark){:root{--bg:#101820;--paper:#192530;--ink:#e7eef7;--muted:#b0bfd0;--line:#384a5d;--link:#9cc6ff;--good:#91e2b5;--good-bg:#183b2c;--test:#b0cfff;--test-bg:#213a59;--wait:#f4d18e;--wait-bg:#44351b}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.48 system-ui,sans-serif}header,main,footer{max-width:1160px;margin:auto;padding:0 24px}header{padding-top:28px}h1{font-size:clamp(1.7rem,4vw,2.4rem);line-height:1.15;margin:8px 0 14px;letter-spacing:-.035em}h2{font-size:1.2rem;margin:0 0 12px}h3{font-size:1rem;margin:0 0 5px}p{margin:6px 0 12px}a{color:var(--link);text-underline-offset:3px}a:focus-visible{outline:3px solid var(--link);outline-offset:4px}code{font-size:.88em;overflow-wrap:anywhere}.meta,.note{color:var(--muted);font-size:.83rem}.eyebrow{text-transform:uppercase;letter-spacing:.12em;font-weight:700;font-size:.76rem;color:var(--muted)}nav{display:flex;flex-wrap:wrap;gap:8px 22px;margin:18px 0;font-size:.9rem}section{margin:0 0 20px}.banner{border-left:4px solid var(--wait);padding:12px 16px;background:var(--wait-bg);border-radius:0 8px 8px 0}.platforms{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.platforms article,.panel{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:16px}.platforms p{font-size:.9rem;margin-bottom:0}.badge{display:inline-block;font-size:.72rem;font-weight:750;border-radius:4px;padding:2px 7px;white-space:nowrap}.live{color:var(--good);background:var(--good-bg)}.tests{color:var(--test);background:var(--test-bg)}.pending{color:var(--wait);background:var(--wait-bg)}.legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:8px 0 14px;font-size:.8rem;color:var(--muted)}.matrix{display:grid;grid-template-columns:1fr 1fr;gap:0 24px}.feature{padding:12px 0;border-top:1px solid var(--line)}.feature h3{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}.feature p{font-size:.89rem;margin:5px 0 0}.steps{margin:0;padding-left:22px}.steps li{padding:0 0 9px 5px;font-size:.9rem}.steps li:last-child{padding-bottom:0}.roadmap{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.roadmap p{font-size:.88rem;margin:0}.roadmap strong{display:block;margin-bottom:4px}.sources{font-size:.8rem;color:var(--muted);border-top:1px solid var(--line);padding-top:14px}footer{padding-bottom:24px}.skip{position:absolute;left:-9999px}.skip:focus{left:12px;top:8px;background:var(--paper);padding:8px}@media(max-width:680px){header,main,footer{padding-left:16px;padding-right:16px}.platforms,.matrix,.roadmap{grid-template-columns:1fr}.platforms{gap:8px}.panel{padding:14px}.feature h3{align-items:flex-start}.roadmap{gap:12px}h1{margin-top:10px}}@media print{body{background:white}.panel,.platforms article{break-inside:avoid}nav,.skip{display:none}}
 </style>
 </head>
 <body>
-<a class="skip" href="#today">Skip to what runs today</a>
+<a class="skip" href="#linux">Skip to Linux capabilities</a>
 <header>
-<p class="meta">AgentTeamForge · Linux status · 26 September 2026</p>
-<h1>Linux jobs and interactive agents run on main</h1>
-<p class="meta">Snapshot: <code>main</code> at <code>cdfb2c5</code>, checked against source and branch tips. This page is a recorded status, not live telemetry.</p>
-<p class="headline">Today you can set up the .NET 11 daemon, run Claude Code, Codex or Pi jobs headlessly or in Herdr, follow up in their native sessions, inspect output and stop jobs or the daemon. Native wake has been verified live for all three. A dogfood rehearsal passed without a watcher.</p>
-<nav aria-label="Report sections"><a href="#today">Run today</a><a href="#next">In progress</a><a href="#decisions">Scope decisions</a><a href="#limits">Current limits</a></nav>
+<p class="eyebrow">AgentTeamForge / owner overview / 26 September 2026</p>
+<h1>Linux works. Release verification remains.</h1>
+<p class="meta">Source snapshot: <code>main 5294bc6</code> · Changes since <code>e6bf685</code> · Recorded evidence, not live telemetry.</p>
+<p class="banner"><strong>v0.0.1 target: verified on Linux and ready for the Windows smoke test.</strong> Core features and installer bootstrap are merged; setup polish and the latest live Linux end-to-end rerun remain open. No release/tag is claimed.</p>
+<nav aria-label="Sections"><a href="#linux">What works</a><a href="#release">Before v0.0.1</a><a href="#later">After v0.0.1</a><a href="quickstart.md">Quickstart</a></nav>
 </header>
 <main>
-<section id="today" aria-labelledby="today-h">
-<h2 id="today-h">Run today on Linux</h2>
-<p>Build or publish the host using the pinned .NET 11 SDK, then choose a launch mode explicitly:</p>
-<ul>
-<li><code>atf setup --mode headless --apply</code> or <code>atf setup --mode herdr --apply</code>, then <code>atf start</code>. Herdr mode opens real interactive agent TUIs for Claude Code, Codex and Pi.</li>
-<li>Submit, inspect, follow up, list and cancel jobs through MCP (<code>submit_job</code>, <code>get_job</code>, <code>follow_up</code>, <code>list_jobs</code>, <code>stop_job</code>) or <code>atf client</code>. The fake backend is available for local checks. Dispatch is bounded to eight concurrent jobs by default and preserves order per native session.</li>
-<li>Read live output with <code>get_job_output</code> or <code>atf client logs JOB_ID --follow</code>, including Herdr transcripts. Use <code>--worktree</code> on submit for an isolated per-job Git checkout; follow-ups reuse it. Jobs support run timeouts, queue TTL and interrupting follow-ups. An idle failed or reconciled session can also be resumed when ownership checks pass.</li>
-<li><code>atf client stop JOB_ID</code> cancels one job; <code>atf stop</code> stops the owned daemon. Startup recovery uses pidfd-pinned cleanup for orphaned backend children. <code>atf prune</code> removes eligible jobs after 30 days by default; the daemon also sweeps daily. First start each boot attempts a SQLite backup and keeps the newest two backups.</li>
-</ul>
-<p>Native wake commits the result before sending a notice to a detected Claude Code, Codex or Pi lead; the lead reads the job through MCP. Setup enables Claude <code>crossSessionInbound</code>. Codex may need <code>register_codex_wake</code>; Pi uses the bundled extension. See the <a href="quickstart.md">Linux quickstart</a> for exact build, setup and CLI commands, and the <a href="migrating-from-win-agent-teams.md">migration guide</a> for tool mapping and the dogfood run.</p>
+<section class="platforms" aria-label="Platform status">
+<article><h2>Linux <span class="badge live">Primary</span></h2><p>Real-agent runs recorded earlier; recent fixes need the combined rerun. Linux x64 is the initial release target.</p></article>
+<article><h2>Windows <span class="badge pending">Smoke pending</span></h2><p><code>wt</code> mode, named pipes, hooks and cleanup ported. Owner smoke-testing in a VM; results unverified.</p></article>
+<article><h2>macOS <span class="badge pending">Untested</span></h2><p>arm64, Terminal.app and kitty prepared. Volunteer tester needed; no native acceptance claim.</p></article>
 </section>
-
-<section id="next" aria-labelledby="next-h">
-<h2 id="next-h">In progress</h2>
-<p class="small">These branches and worktrees are outside main. A branch with only a baseline or plan does not mean its runtime feature is ready.</p>
-<ul class="legend" aria-label="Status legend">
-<li><span class="sw part"></span> Code in review</li><li><span class="sw act"></span> Implementation in progress</li><li><span class="sw plan"></span> Plan or validation pending</li>
-</ul>
-<div class="scroll" tabindex="0" role="region" aria-label="In-progress work, scrolls horizontally on wide layouts">
-<table class="g">
-<caption>Next Linux work and later platform qualification.</caption>
-<colgroup><col class="c0"><col class="c1"><col class="c2"><col></colgroup>
-<thead><tr><th scope="col">Lane</th><th scope="col">Status</th><th scope="col">Next step</th><th scope="col">Evidence</th></tr></thead>
-<tbody>
-<tr><th scope="row"><strong>Web console</strong><span class="st">Small authenticated loopback console</span></th><td data-w="Status"><span class="bar act">Code on branch</span></td><td data-w="Next step">Review and integrate status, output, follow-up and stop UI.</td><td data-w="Evidence"><code>feature/web-console</code></td></tr>
-<tr><th scope="row"><strong>Multi-lead and resume</strong></th><td data-w="Status"><span class="bar act">Worktree changes</span></td><td data-w="Next step">Complete multi-lead routing and <code>resume_session</code>; review before merge.</td><td data-w="Evidence"><code>feature/multi-lead</code></td></tr>
-<tr><th scope="row"><strong>Herdr interrupt gaps</strong></th><td data-w="Status"><span class="bar act">Fix lane open</span></td><td data-w="Next step">Close remaining interactive interrupt behavior.</td><td data-w="Evidence"><code>fix/herdr-interrupt-gaps</code></td></tr>
-<tr><th scope="row"><strong>Spike retirement and install</strong></th><td data-w="Status"><span class="bar act">Work in progress</span></td><td data-w="Next step">Retire superseded spike code; finish Linux install and release packaging.</td><td data-w="Evidence"><code>chore/retire-spike</code>; <code>feature/install-release</code>; <code>feature/install-setup</code></td></tr>
-<tr><th scope="row"><strong>PRFactory connector</strong></th><td data-w="Status"><span class="bar plan">Plan; slice 1 underway</span></td><td data-w="Next step">Review the opt-in outbound connector implementation.</td><td data-w="Evidence"><code>docs/plan-prfactory</code>; <code>feature/prfactory-connector</code></td></tr>
-<tr><th scope="row"><strong>Windows terminal tabs</strong></th><td data-w="Status"><span class="bar plan">Port in progress</span></td><td data-w="Next step">Validate <code>wt</code> on the owner's Windows VM after Linux work.</td><td data-w="Evidence"><code>feature/windows-wt</code></td></tr>
-</tbody></table></div>
+<section id="linux" class="panel">
+<h2>What works today on Linux</h2>
+<div class="legend"><span><span class="badge live">Live baseline</span> Earlier recorded runs</span><span><span class="badge tests">Automated</span> Unit/scenario coverage, not real-client proof</span><span><span class="badge pending">Unverified</span> No completed live evidence found</span></div>
+<div class="matrix">
+<article class="feature"><h3>Headless Claude / Codex / Pi <span class="badge live">Live baseline</span></h3><p>Submit, results, native-session resume, logs, worktrees and bounded parallel jobs. Earlier dogfood run reported success; current three-backend rerun pending.</p></article>
+<article class="feature"><h3>Herdr interactive mode <span class="badge tests">Latest fixes automated</span></h3><p>Real TUIs ran earlier. Turn-bound completion, no uncertain prompt replay and custom Claude profile lookup now merged. Trust/cancel fixes still in flight.</p></article>
+<article class="feature"><h3>Daemon &amp; bridge <span class="badge tests">Automated + bounded smoke</span></h3><p>Lazy start, optional login autostart, durable jobs and lead recovery. Surviving MCP bridges reconnect; uncertain requests are not replayed. Real Herdr + fake-agent restart/stop passed; full live recovery rerun pending.</p></article>
+<article class="feature"><h3>Wake &amp; job controls <span class="badge live">Live baseline</span></h3><p>Notice-only wake recorded for all three Linux hosts. Follow-up, interrupt and targeted stop exist; busy follow-up requires interrupt. Uncertain sessions stay fenced; explicit cleanup is retryable.</p></article>
+<article class="feature"><h3>Codex Desktop → Claude lead <span class="badge tests">Scenario-tested</span></h3><p>Lead issues ticket; Desktop joins through external MCP, exchanges messages and leaves. Queue-wake scenario uses fake Codex; actual Desktop flow remains unverified.</p></article>
+<article class="feature"><h3>Claude Desktop → PRFactory ticket <span class="badge pending">Live flow unverified</span></h3><p>Actor-owned external teams and recipe-member binding merged, unit-tested. Owner gets private join prompt via <code>atf prfactory status</code>; member pastes it into <code>join_team</code>. Desktop wake unverified.</p></article>
+<article class="feature"><h3>PRFactory connector <span class="badge tests">Unit-tested</span></h3><p><strong>1:</strong> opt-in pairing, mappings, heartbeat. <strong>2:</strong> ATF durable-acceptance client merged; server change on a local PRFactory branch awaits owner deploy (branch/deployment unverified here). <strong>3:</strong> durable work items, team jobs and artefacts merged. Command/log plumbing also exists; hosted disconnect/reconnect acceptance remains unverified.</p></article>
+<article class="feature"><h3>Web console <span class="badge tests">Automated; live UX unverified</span></h3><p>Authenticated loopback console: cards/lights, live activity, inline composer, interrupt/stop, New agent form, join tickets and persistent light/dark themes. New form and stale-response fixes are merged.</p></article>
+<article class="feature"><h3>Tiers &amp; discovery <span class="badge tests">Automated</span></h3><p>Codex/Pi: cheapest/low/medium → Luna high/xhigh/max; high → Sol high; xhigh/max → Astra low/medium. Pi medium-fast → Sol medium. Claude defaults to Opus. Bounded, expiring discovery rejects known-missing tier models; no silent tier downgrade.</p></article>
+<article class="feature"><h3>Install &amp; setup <span class="badge pending">Release path unverified</span></h3><p>Native AOT bundle, checksum installer, repeatable upgrade and owned uninstall cleanup are merged; Claude/Codex/Pi registration exists. Current main: explicit <code>setup --mode … --apply</code>; first use starts daemon. Fake-bundle tests passed; real fresh-install/upgrade/uninstall still needs proof.</p></article>
+</div>
+<p class="note">Latest linked verification: <a href="session-life-verification.md">session lifetime slice</a> — 440 tests passed, 5 live tests skipped; 33/33 published scenarios. This is a slice result, not the pending full real-agent matrix.</p>
 </section>
-
-<section id="decisions" aria-labelledby="decisions-h">
-<h2 id="decisions-h">Scope decisions</h2>
-<p>Agents run unattended with bypass permissions. Human approval relay, W7 multi-team scopes and the earlier contract ceremony were dropped by owner decision. Linux comes first; Windows and macOS need validation on their own machines. The PRFactory connector is optional, and local jobs need no external orchestrator.</p>
+<section id="release" class="panel">
+<h2>Before v0.0.1 — concrete remaining work</h2>
+<ol class="steps">
+<li><strong>Finish and integrate active branches.</strong> <code>feature/install-bootstrap</code> merged during this audit (<code>5294bc6</code>); real release install remains unverified. <code>feature/setup-ux</code>: unmerged apply-by-default/client-summary work plus local edits. <code>fix/herdr-trust-cancel</code>: local edits only at audit; no unique commit. Review/test completion unverified.</li>
+<li><strong>Rerun published Linux end to end.</strong> Claude/Codex/Pi × headless/Herdr: result, follow-up, interrupt/stop, daemon/bridge recovery, wake/read, external join and prune. Also check console flows and clean-profile install/setup/upgrade/uninstall. Current combined result unverified.</li>
+<li><strong>Close external dependencies.</strong> Owner deploys PRFactory slice 2 server branch; exercise both Desktop ticket flows and connector disconnect/restart/reconnect. Local ATF use remains independent of PRFactory.</li>
+<li><strong>Release and Windows handoff.</strong> First GitHub tag/release requires owner decision. Supply binary, versions and smoke commands; record VM results. Windows success is a qualification follow-up, not a prerequisite for Linux-first publication.</li>
+<li><strong>Track minors explicitly.</strong> <code>WindowsTabJob.Assign</code> sidecar race; macOS daemon launch without <code>setsid</code>; <code>ReadTeam</code> sender-cursor advancement. Resolution unverified; assess against native smoke results. No seamless adoption of uncertain Herdr sessions.</li>
+</ol>
+<p class="note">Branch/worktree audit excludes old retained experiment/review branches from release blockers. Already merged: Herdr turn/session-life, bridge reconnect, tier discovery and New agent form fixes. Older plans and HANDOFF describe earlier checkpoints.</p>
 </section>
-
-<section id="limits" aria-labelledby="limits-h">
-<h2 id="limits-h">Current limits</h2>
-<p>Herdr's server and pane binding is still held in memory, so the headless pidfd recovery claim does not imply full interactive tab recovery. Worktrees remain for manual cleanup when jobs are pruned. The web console, installer and Windows terminal port are not available from main yet.</p>
+<section id="later" class="panel">
+<h2>After v0.0.1</h2>
+<div class="roadmap"><p><strong>1 · Qualify platforms</strong>Finish Windows native smoke and installer; recruit macOS tester and validate launch, wake limits and lifecycle.</p><p><strong>2 · Finish connector acceptance</strong>Close remaining slice 4–5 command/upload/reconnect gaps using hosted evidence and the existing PRFactory UI.</p><p><strong>3 · Polish daily use</strong>Resolve tracked minors, simplify recovery and installation from real usage; keep local operation independent.</p></div>
 </section>
 </main>
-<footer>Recorded from <code>git log d67726b..main</code>, current source and named branch tips on 26 September 2026.</footer>
+<footer><p class="sources">Evidence: <a href="plans/core-stability.md">core stability</a> · <a href="plans/easy-install.md">easy install</a> · <a href="plans/prfactory-connector.md">connector plan</a> · <a href="install.md">install</a> · <a href="../HANDOFF.md">handoff</a> · <a href="../tests/AgentTeamForge.Tests/Scenarios/ExternalJoinScenarios.cs">external-join scenario</a> · <a href="../tests/AgentTeamForge.Tests/Scenarios/BridgeReconnectScenarios.cs">bridge scenarios</a>. Source and local branch inventory checked 26 September; no real-agent tests run for this documentation change.</p></footer>
 </body>
 </html>
