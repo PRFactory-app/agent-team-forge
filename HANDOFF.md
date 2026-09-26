@@ -98,6 +98,10 @@ and record the decision. Do not claim either is already implemented or verified.
 
 ## 3. Read in this order
 
+For current branch/agent status, first read [the implementation checkpoint](docs/implementation-status.md).
+It records immutable handoffs, active repairs and review boundaries; phase plans
+alone are not progress evidence.
+
 1. [Handoff](HANDOFF.md) — this status, constraints, and validation boundary.
 2. [Contributor instructions](AGENTS.md), then [README](README.md) — policy and
    orientation.
