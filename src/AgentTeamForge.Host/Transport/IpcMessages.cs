@@ -23,6 +23,8 @@ public sealed record IpcRequest
     public int? QueueTtlSeconds { get; init; }
     public string? Status { get; init; }
     public int? Limit { get; init; }
+    public long? Offset { get; init; }
+    public int? MaxBytes { get; init; }
     public string? Cursor { get; init; }
     public int? OlderThanDays { get; init; }
     public bool DryRun { get; init; }
@@ -34,7 +36,7 @@ public sealed record IpcRequest
     public string? WakeHome { get; init; }
 }
 
-public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null);
+public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null);
 
 public static class IpcProtocol
 {
@@ -42,6 +44,7 @@ public static class IpcProtocol
     public const string Hello = "hello";
     public const string JobSubmit = "job_submit";
     public const string JobGet = "job_get";
+    public const string JobOutput = "job_output";
     public const string JobFollowUp = "job_follow_up";
     public const string JobStop = "job_stop";
     public const string JobList = "job_list";
@@ -64,4 +67,5 @@ public static class IpcProtocol
 [JsonSerializable(typeof(IpcResponse))]
 [JsonSerializable(typeof(JobView))]
 [JsonSerializable(typeof(JobListPage))]
+[JsonSerializable(typeof(JobOutput))]
 public sealed partial class IpcJson : JsonSerializerContext;

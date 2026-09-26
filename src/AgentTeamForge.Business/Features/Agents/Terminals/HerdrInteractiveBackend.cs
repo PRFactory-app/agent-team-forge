@@ -1,6 +1,7 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
-using System.Collections.Concurrent;
+using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
@@ -82,6 +83,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend
         string? _prompt;
         DateTimeOffset _lastPromptAt;
         int _promptAttempts;
+        int _loggedMessages;
         public int? ProcessId => null; // The Herdr server owns the TUI process, not this daemon.
 
         public async Task DeliverAsync(CancellationToken cancellationToken)
@@ -128,6 +130,14 @@ public sealed class HerdrInteractiveBackend : IJobBackend
                     yield break;
                 }
                 var output = transcripts.Read(launch, "atf-corr:" + request.Correlation, started);
+                if (output is not null && request.Output is { } log)
+                {
+                    for (var i = _loggedMessages; i < output.Progress.Count; i++)
+                    {
+                        log("transcript", Encoding.UTF8.GetBytes(output.Progress[i] + "\n"));
+                    }
+                    _loggedMessages = output.Progress.Count;
+                }
                 if (output?.SessionId is { } nativeId && nativeId != session)
                 {
                     session = nativeId;
@@ -243,4 +253,7 @@ internal interface IInteractiveTranscriptReader
     string? FindPiSessionDirectory(string root, string sessionId);
 }
 
-internal sealed record InteractiveTranscript(string SessionId, string? Message);
+internal sealed record InteractiveTranscript(string SessionId, string? Message, IReadOnlyList<string>? Messages = null)
+{
+    public IReadOnlyList<string> Progress => Messages ?? [];
+}

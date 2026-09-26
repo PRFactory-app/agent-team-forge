@@ -125,12 +125,12 @@ internal sealed class InteractiveTranscriptReader : IInteractiveTranscriptReader
             }
             var markerSeen = false;
             string? last = null;
+            var progress = new List<string>();
             foreach (var line in File.ReadLines(path, Encoding.UTF8))
             {
-                if (line.Contains(marker, StringComparison.Ordinal))
+                if (!markerSeen && line.Contains(marker, StringComparison.Ordinal))
                 {
                     markerSeen = true;
-                    last = null;
                     continue;
                 }
                 if (!markerSeen)
@@ -141,9 +141,10 @@ internal sealed class InteractiveTranscriptReader : IInteractiveTranscriptReader
                 if (AssistantText(json.RootElement, kind) is { } text)
                 {
                     last = text;
+                    progress.Add(text);
                 }
             }
-            return markerSeen ? new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last) : null;
+            return markerSeen ? new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress) : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { return null; }
     }

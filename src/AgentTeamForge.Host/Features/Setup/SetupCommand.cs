@@ -13,7 +13,7 @@ public static class SetupCommand
     const string SettingsFile = "launch-mode.json";
 
     public static int Run(IReadOnlyDictionary<string, string> options, Func<string, IReadOnlyList<string>, int>? commandRunner = null,
-        string? executablePath = null)
+        string? executablePath = null, string? claudeSettingsPath = null)
     {
         if (!options.TryGetValue("mode", out var mode) || mode is not ("headless" or "herdr"))
         {
@@ -63,6 +63,22 @@ public static class SetupCommand
             else
             {
                 Console.Out.WriteLine(FormatCommand(tool, args));
+            }
+        }
+
+        if (options.ContainsKey("apply"))
+        {
+            var settingsPath = claudeSettingsPath ?? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "settings.json");
+            try
+            {
+                EnableClaudeInbound(settingsPath);
+                Console.Out.WriteLine($"claude: native wake inbound enabled in {settingsPath}");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+            {
+                Console.Error.WriteLine($"error: Claude settings update failed ({ex.GetType().Name})");
+                return 1;
             }
         }
 
@@ -291,6 +307,62 @@ public static class SetupCommand
                 file.Flush(flushToDisk: true);
             }
 
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporary))
+            {
+                File.Delete(temporary);
+            }
+        }
+    }
+
+    static void EnableClaudeInbound(string path)
+    {
+        var parent = Path.GetDirectoryName(path)!;
+        Directory.CreateDirectory(parent, StateDirectory.PrivateDir);
+        using var existing = File.Exists(path)
+            ? JsonDocument.Parse(File.ReadAllBytes(path), new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip })
+            : null;
+        if (existing is not null && existing.RootElement.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException("Claude settings must be an object");
+        }
+        if (existing?.RootElement.TryGetProperty("crossSessionInbound", out var inbound) == true
+            && inbound.ValueKind == JsonValueKind.String && inbound.GetString() == "accept")
+        {
+            return;
+        }
+
+        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            using (var file = new FileStream(temporary, new FileStreamOptions
+            {
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.Write,
+                UnixCreateMode = StateDirectory.PrivateFile,
+            }))
+            {
+                using var writer = new Utf8JsonWriter(file, new JsonWriterOptions { Indented = true });
+                writer.WriteStartObject();
+                if (existing is not null)
+                {
+                    foreach (var property in existing.RootElement.EnumerateObject())
+                    {
+                        if (property.Name == "crossSessionInbound")
+                        {
+                            continue;
+                        }
+                        property.WriteTo(writer);
+                    }
+                }
+                writer.WriteString("crossSessionInbound", "accept");
+                writer.WriteEndObject();
+                writer.Flush();
+                file.Flush(flushToDisk: true);
+            }
             File.Move(temporary, path, overwrite: true);
         }
         finally

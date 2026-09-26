@@ -35,8 +35,8 @@ public sealed record NewJob(
     /// <summary>Running time allowed once an attempt starts; null means no job timeout.</summary>
     public int? TimeoutSeconds { get; init; }
 
-    /// <summary>A job still queued at this instant is cancelled instead of started.</summary>
-    public DateTimeOffset? QueueDeadline { get; init; }
+    /// <summary>Queued time allowed from the acceptance commit; null means no queue TTL.</summary>
+    public int? QueueTtlSeconds { get; init; }
 
     public string? WakeTargetKey { get; init; }
 

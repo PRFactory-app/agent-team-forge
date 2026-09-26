@@ -7,6 +7,9 @@ public sealed record BackendRequest(string JobId, string Correlation, string Ins
 
     /// <summary>Working directory for the agent; null uses the daemon default.</summary>
     public string? WorkingDirectory { get; init; }
+
+    /// <summary>Receives each raw stdout/stderr read as soon as it arrives.</summary>
+    public Action<string, ReadOnlyMemory<byte>>? Output { get; init; }
 }
 
 /// <summary>Evidence observed from a backend; Business alone decides what it means.</summary>

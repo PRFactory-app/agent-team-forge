@@ -49,7 +49,7 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
             throw new BackendNotStartedException("pi could not be started", ex);
         }
 
-        return new PiRun(process, request.Correlation, Encoding.UTF8.GetBytes(request.Instruction));
+        return new PiRun(process, request.Correlation, Encoding.UTF8.GetBytes(request.Instruction), request.Output);
     }
 
     internal static List<string> BuildArguments(BackendRequest request)
@@ -80,10 +80,11 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
         return args;
     }
 
-    sealed class PiRun(Process process, string correlation, byte[] instruction) : IBackendRun
+    sealed class PiRun(Process process, string correlation, byte[] instruction, Action<string, ReadOnlyMemory<byte>>? output) : IBackendRun
     {
         readonly Process _process = process;
-        readonly Task _stderrDrain = DrainAsync(process.StandardError.BaseStream);
+        readonly Stream _stdout = new CapturingReadStream(process.StandardOutput.BaseStream, "stdout", output);
+        readonly Task _stderrDrain = DrainAsync(new CapturingReadStream(process.StandardError.BaseStream, "stderr", output));
         bool _deliveryFailed;
 
         public int? ProcessId => _process.Id;
@@ -112,7 +113,7 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
             }
 
             var turn = new TurnState();
-            await foreach (var line in ReadLinesAsync(_process.StandardOutput.BaseStream, cancellationToken))
+            await foreach (var line in ReadLinesAsync(_stdout, cancellationToken))
             {
                 foreach (var evidence in turn.Observe(line, correlation))
                 {
@@ -144,6 +145,7 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
 
         public async ValueTask DisposeAsync()
         {
+            var stdoutDrain = DrainAsync(_stdout);
             try
             {
                 await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
@@ -156,6 +158,14 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
             try
             {
                 await _stderrDrain.WaitAsync(TimeSpan.FromSeconds(1));
+            }
+            catch (TimeoutException)
+            {
+            }
+
+            try
+            {
+                await stdoutDrain.WaitAsync(TimeSpan.FromSeconds(1));
             }
             catch (TimeoutException)
             {

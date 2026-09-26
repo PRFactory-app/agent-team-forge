@@ -30,15 +30,16 @@ public sealed class DispatchJob : IDisposable
     readonly DurabilityCheckpoints checkpoints;
     readonly AdmissionGate admission;
     readonly Action<string> log;
+    readonly JobLogs? jobLogs;
     string? _haltReason;
 
     /// <summary>Single-backend convenience: serves jobs whose backend is "fake".</summary>
-    public DispatchJob(JobStore store, IJobBackend backend, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log)
-        : this(store, new BackendCatalog().Register(BackendCatalog.Fake, () => backend), limits, checkpoints, admission, log)
+    public DispatchJob(JobStore store, IJobBackend backend, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log, JobLogs? jobLogs = null)
+        : this(store, new BackendCatalog().Register(BackendCatalog.Fake, () => backend), limits, checkpoints, admission, log, jobLogs)
     {
     }
 
-    public DispatchJob(JobStore store, BackendCatalog backends, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log)
+    public DispatchJob(JobStore store, BackendCatalog backends, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log, JobLogs? jobLogs = null)
     {
         // Validated before the daemon reports readiness; CancelAfter would otherwise fault the loop.
         if (limits.MaxFakeRuntime <= TimeSpan.Zero || limits.MaxFakeRuntime > MaxAllowedRuntime)
@@ -54,6 +55,7 @@ public sealed class DispatchJob : IDisposable
         this.checkpoints = checkpoints;
         this.admission = admission;
         this.log = log;
+        this.jobLogs = jobLogs;
     }
 
     /// <summary>
@@ -326,6 +328,7 @@ public sealed class DispatchJob : IDisposable
             {
                 ResumeSessionId = resumeSessionId,
                 WorkingDirectory = JobWorktree.WorkingDirectory(claim.Job),
+                Output = jobLogs?.BeginRun(claim.Job.JobId, claim.RunId, claim.Job.Backend),
             };
             var starting = Task.Run(() => backend.Start(request), CancellationToken.None);
             try
@@ -388,7 +391,8 @@ public sealed class DispatchJob : IDisposable
         }
         catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested)
         {
-            // Daemon shutdown: leave the attempt started; restart recovery quarantines it.
+            // Leave the attempt started for restart recovery, but stop its owned process/session.
+            active.TerminateOnce(TryTerminate);
         }
         catch (OperationCanceledException)
         {
