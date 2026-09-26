@@ -55,7 +55,7 @@ public class HerdrTerminalTests
         var server = Assert.Single(fake.Detached);
         Assert.Equal(["-f", "sh", "-c", HerdrCommands.ServerScript, session.SessionName], server.ArgumentList);
         var tab = fake.Calls.Single(c => c.Args is ["tab", "create", ..]);
-        Assert.Equal(["tab", "create", "--workspace", "w1", "--cwd", "/work", "--label", "agent-a", "--env", "ATF_BOOTSTRAP_FILE=" + Bootstrap, "--no-focus"], tab.Args);
+        Assert.Equal(["tab", "create", "--workspace", "w1", "--cwd", "/work", "--label", "agent-a", "--env", "ATF_BOOTSTRAP_FILE=" + Bootstrap, "--no-focus", "--env", "CODEX_HOME=/home/u/.codex"], tab.Args);
         foreach (var env in fake.Calls.Select(c => c.Env).Append(server.Environment))
         {
             Assert.DoesNotContain(env.Values, v => v?.Contains(Sentinel, StringComparison.Ordinal) == true);
@@ -108,6 +108,24 @@ public class HerdrTerminalTests
         fake.TabReplaced = true;
         await Assert.ThrowsAsync<HerdrLaunchException>(() => terminal.StopOwnedSessionAsync(session, CancellationToken.None));
         Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
+    }
+
+    [Fact]
+    public async Task SharedTabPinsRelativeCodexHomeEvenWhenServerHasAnotherEnvironment()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true };
+        var configured = new Dictionary<string, string?>(Desktop)
+        {
+            ["CODEX_HOME"] = Path.GetRelativePath(Environment.CurrentDirectory, state.File("codex"))
+        };
+        var terminal = Terminal(fake, configured);
+        var session = await terminal.ExistingSessionAsync("default", CancellationToken.None);
+        await terminal.OpenAgentTabAsync(session, "agent-a", "/work", Bootstrap, CancellationToken.None);
+
+        Assert.Equal(state.File("codex"), terminal.Env("CODEX_HOME"));
+        var tab = fake.Calls.Single(c => c.Args is ["tab", "create", ..]);
+        Assert.Contains("CODEX_HOME=" + state.File("codex"), tab.Args);
     }
 
     [Fact]

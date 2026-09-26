@@ -15,6 +15,8 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
 {
     public InteractiveTranscriptReader() : this(Environment.GetEnvironmentVariable) { }
 
+    readonly string _codexHome = CodexPaths.Home(environment, Environment.CurrentDirectory);
+
     const int MaxTranscriptBytes = 32 * 1024 * 1024;
     const int MaxResultChars = 32 * 1024;
 
@@ -132,10 +134,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             var dir = Path.Combine(ClaudeConfigRoot.Resolve(environment, cwd), "projects", encoded);
             return Directory.Exists(dir) ? Directory.EnumerateFiles(dir, "*.jsonl") : [];
         }
-        var home = environment("HOME") is { Length: > 0 } h && Path.IsPathFullyQualified(h)
-            ? h : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var codexHome = environment("CODEX_HOME") is { Length: > 0 } configured ? configured : Path.Combine(home, ".codex");
-        var sessions = Path.Combine(codexHome, "sessions");
+        var sessions = Path.Combine(_codexHome, "sessions");
         return Directory.Exists(sessions) ? Directory.EnumerateFiles(sessions, "rollout-*.jsonl", SearchOption.AllDirectories) : [];
     }
 

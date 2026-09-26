@@ -116,15 +116,19 @@ public sealed class WtInteractiveBackendTests
     [Fact]
     public void WrapperKeepsPromptAndUsesResumeWithoutExposingItToWt()
     {
-        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", "C:\\work's repo", "native-1", null, "C:\\state\\tab.ps1");
+        using var state = new TempStateDir();
+        var cwd = Path.Combine(state.Path, "work's repo");
+        Directory.CreateDirectory(cwd);
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", cwd, "native-1", null, "C:\\state\\tab.ps1");
         var prompt = "first line; it's fine\nsecond — line";
-        var wrapper = Encoding.UTF8.GetString(WtTabControl.WrapperBytes(launch, prompt, "C:\\state\\tab.pid"));
+        var wrapper = Encoding.UTF8.GetString(WtTabControl.WrapperBytes(launch, prompt, "C:\\state\\tab.pid", @"C:\daemon\codex"));
         Assert.StartsWith("\uFEFF", wrapper);
         Assert.Contains("$start.FileName = 'codex'", wrapper);
         Assert.Contains("$start.Arguments = '--dangerously-bypass-approvals-and-sandbox -C", wrapper);
         Assert.Contains("resume native-1", wrapper);
         Assert.Contains("first line; it''s fine\nsecond — line", wrapper);
-        Assert.Contains("$start.WorkingDirectory = 'C:\\work''s repo'", wrapper);
+        Assert.Contains("$start.WorkingDirectory = '" + cwd.Replace("'", "''") + "'", wrapper);
+        Assert.Contains("$env:CODEX_HOME = 'C:\\daemon\\codex'", wrapper);
         Assert.Contains("$PID.ToString() + '|'", wrapper);
         Assert.EndsWith("exit 0\r\n", wrapper);
     }
@@ -132,11 +136,14 @@ public sealed class WtInteractiveBackendTests
     [Fact]
     public void FreshWindowsCodexDirectoryIsTrustedOnlyInTheLaunchArguments()
     {
-        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", "C:\\code\\new dir", null, null, "C:\\state\\tab.ps1");
+        using var state = new TempStateDir();
+        var cwd = Path.Combine(state.Path, "New Dir");
+        Directory.CreateDirectory(cwd);
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", cwd, null, null, "C:\\state\\tab.ps1");
         var args = WtTabControl.AgentArguments(launch, "task");
 
-        Assert.Equal(["-C", "C:\\code\\new dir"], args.SkipWhile(arg => arg != "-C").Take(2));
-        Assert.Equal(["-c", "projects={'C:\\code\\new dir'={trust_level='trusted'}}"],
+        Assert.Equal(["-C", cwd], args.SkipWhile(arg => arg != "-C").Take(2));
+        Assert.Equal(["-c", "projects={'" + CodexPaths.TrustKey(cwd) + "'={trust_level='trusted'}}"],
             args.SkipWhile(arg => arg != "-c").Take(2));
         var wrapper = Encoding.UTF8.GetString(WtTabControl.WrapperBytes(launch, "task", "C:\\state\\tab.pid"));
         Assert.Contains("projects={", wrapper);

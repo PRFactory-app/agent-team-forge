@@ -362,12 +362,14 @@ public sealed class HerdrInteractiveBackendTests
     [Fact]
     public void CodexTrustsOnlyTheLaunchDirectoryViaConfigOverride()
     {
-        var cwd = "/tmp/atf-new-'\"project.v1";
+        using var state = new TempStateDir();
+        var cwd = Path.Combine(state.Path, "atf-new-'\"project.v1");
+        Directory.CreateDirectory(cwd);
         var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", cwd, null, null, "/tmp/bootstrap");
 
         var args = HerdrAgentControl.AgentArguments(launch);
 
-        Assert.Equal(["-c", "projects={\"/tmp/atf-new-'\\\"project.v1\"={trust_level='trusted'}}"],
+        Assert.Equal(["-c", "projects={\"" + cwd.Replace("\"", "\\\"") + "\"={trust_level='trusted'}}"],
             args.SkipWhile(arg => arg != "-c").Take(2));
     }
 
