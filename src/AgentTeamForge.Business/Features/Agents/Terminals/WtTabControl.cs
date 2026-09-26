@@ -63,20 +63,31 @@ internal sealed class WtTabControl : IWtTabControl
         {
             start.ArgumentList.Add(arg);
         }
+        Process? launcher = null;
         try
         {
-            using var launcher = Process.Start(start) ?? throw new IOException("wt.exe did not start");
-            await AwaitTabAsync(launch, wrapper, sidecar, launcher, cancellationToken);
+            try { launcher = Process.Start(start); }
+            catch (System.ComponentModel.Win32Exception) { }
+            if (launcher is not null)
+            {
+                await AwaitTabAsync(launch, wrapper, sidecar, launcher, cancellationToken);
+                return;
+            }
         }
-        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && ShouldRetryInConsole(ex))
+        catch (TabExitedException) when (!cancellationToken.IsCancellationRequested)
         {
             // A tab can attach to a degraded WT window with no usable TTY.
-            // A fresh console remains interactive; never switch to a pipe/headless run.
-            await StartConsoleAsync(launch, wrapper, sidecar, cancellationToken);
         }
+        finally { launcher?.Dispose(); }
+        // Retry only when the wrapper provably never ran (wt.exe did not start) or its tab
+        // exited during startup. A timeout or wt.exe error is ambiguous: the tab may still
+        // run the wrapper, so a retry could run the agent twice (as in the reference).
+        // A fresh console remains interactive; never switch to a pipe/headless run.
+        await StartConsoleAsync(launch, wrapper, sidecar, cancellationToken);
     }
 
-    internal static bool ShouldRetryInConsole(Exception ex) => ex is IOException or OperationCanceledException or System.ComponentModel.Win32Exception;
+    /// <summary>The wrapper started and exited within the settle window, so a retry cannot double-run it.</summary>
+    internal sealed class TabExitedException() : IOException("Windows Terminal tab exited during startup");
 
     async Task StartConsoleAsync(InteractiveLaunch launch, string wrapper, string sidecar, CancellationToken token)
     {
@@ -104,7 +115,7 @@ internal sealed class WtTabControl : IWtTabControl
                 if (!IsAlive(launch))
                 {
                     _tabs.TryRemove(launch.AgentName, out _);
-                    throw new IOException("Windows Terminal tab exited during startup");
+                    throw new TabExitedException();
                 }
                 return;
             }
@@ -270,6 +281,7 @@ internal sealed class WtTabControl : IWtTabControl
         if (command.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
         {
             args.Add(ShimPrompt(launch.Kind, Path.ChangeExtension(launch.BootstrapPath, ".prompt.txt")));
+            WindowsCliLaunch.EnsureCmdSafe(args);
             return args;
         }
         args.Add(launch.Kind == InteractiveAgentKind.Pi && prompt.Length > 0 && prompt[0] is '@' or '/' or '-'

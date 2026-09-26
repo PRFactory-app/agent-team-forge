@@ -14,5 +14,8 @@ public sealed class WindowsPrivatePathsTests
         Assert.False(WindowsPrivatePaths.IsPrivateAcl(user, user, [(0, user), (0, other)]));
         Assert.False(WindowsPrivatePaths.IsPrivateAcl(user, user, [(1, user)]));
         Assert.False(WindowsPrivatePaths.IsPrivateAcl(user, user, []));
+        // An elevated admin's files are owned by BUILTIN\Administrators; the DACL must still be user-only.
+        Assert.True(WindowsPrivatePaths.IsPrivateAcl(user, WindowsPrivatePaths.Administrators, [(0, user)]));
+        Assert.False(WindowsPrivatePaths.IsPrivateAcl(user, WindowsPrivatePaths.Administrators, [(0, WindowsPrivatePaths.Administrators)]));
     }
 }

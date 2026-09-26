@@ -21,6 +21,7 @@ internal static class WindowsCliLaunch
         }
         else if (launch[0].EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
         {
+            EnsureCmdSafe(info.ArgumentList);
             var command = PowerShellCommand(launch[0], info.ArgumentList);
             info.FileName = "powershell.exe";
             info.ArgumentList.Clear();
@@ -31,6 +32,19 @@ internal static class WindowsCliLaunch
         else
         {
             info.FileName = launch[0];
+        }
+    }
+
+    /// <summary>
+    /// cmd.exe re-parses a .cmd shim's arguments (PowerShell 5.1 leaves unspaced ones
+    /// unquoted and expands %VAR% even inside quotes), so a caller-supplied model name
+    /// or path with a cmd metacharacter could run commands. Prompts never go here.
+    /// </summary>
+    internal static void EnsureCmdSafe(IEnumerable<string> args)
+    {
+        if (args.Any(arg => arg.Any(c => char.IsControl(c) || c is '&' or '|' or '<' or '>' or '^' or '%' or '!')))
+        {
+            throw new BackendNotStartedException("argument is unsafe for a Windows .cmd shim");
         }
     }
 

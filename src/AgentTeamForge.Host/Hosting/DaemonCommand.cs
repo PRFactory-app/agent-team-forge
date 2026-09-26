@@ -99,8 +99,9 @@ public static class DaemonCommand
         }
         var quarantined = new RecoverOnStartup(store, RecoverHerdr).Execute();
         Log($"recovery: quarantined {quarantined.Count} uncertain attempt(s)");
-        if (launchMode == "wt")
+        if (OperatingSystem.IsWindows())
         {
+            // Not gated on the current mode: tabs from an earlier wt setup are still ours.
             Log($"recovery: settled {WtInteractiveBackend.RecoverOwned(state.Path)} owned Windows tab(s)");
         }
 

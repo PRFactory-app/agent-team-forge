@@ -38,6 +38,11 @@ public sealed class WtInteractiveBackend : IJobBackend
         var piDirectory = _kind == InteractiveAgentKind.Pi ? PiDirectory(request) : null;
         var launch = new InteractiveLaunch(_kind, agentName, cwd, request.ResumeSessionId, piDirectory,
             Path.Combine(_stateRoot, "wt", agentName + ".launch.ps1"));
+        if (OperatingSystem.IsWindows())
+        {
+            // Reject unsafe .cmd shim arguments or hook paths here, where not-started is provable.
+            _ = WtTabControl.AgentArguments(launch, "");
+        }
         return new Run(_tabs, _transcripts, request, launch, DateTimeOffset.UtcNow);
     }
 

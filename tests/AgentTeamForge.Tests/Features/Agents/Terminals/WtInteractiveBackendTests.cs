@@ -98,6 +98,19 @@ public sealed class WtInteractiveBackendTests
         Assert.DoesNotContain("task instruction", command);
     }
 
+    [Theory]
+    [InlineData("gpt&calc")]
+    [InlineData("C:\\repo|x")]
+    [InlineData("%USERPROFILE%")]
+    [InlineData("a^b")]
+    [InlineData("line\nbreak")]
+    public void CmdShimArgumentsWithCmdMetacharactersAreRejected(string value) =>
+        Assert.Throws<BackendNotStartedException>(() => WindowsCliLaunch.EnsureCmdSafe(["--model", value]));
+
+    [Fact]
+    public void CmdShimAcceptsOrdinaryArguments() =>
+        WindowsCliLaunch.EnsureCmdSafe(["-c", "model_reasoning_effort=\"high\"", "C:\\Users\\A B\\repo", "hooks.Stop=[{hooks=[{type='command'}]}]"]);
+
     [Fact]
     public void RecoveryRequiresCreationTimeAlongsidePid()
     {

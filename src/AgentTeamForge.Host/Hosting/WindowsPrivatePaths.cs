@@ -56,8 +56,11 @@ internal static partial class WindowsPrivatePaths
         finally { LocalFree(descriptor); }
     }
 
+    /// <summary>BUILTIN\Administrators (S-1-5-32-544): the default owner of anything an elevated admin creates.</summary>
+    internal static readonly byte[] Administrators = [1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 32, 2, 0, 0];
+
     internal static bool IsPrivateAcl(byte[] expected, byte[] owner, IReadOnlyList<(byte Type, byte[] Sid)> aces) =>
-        owner.AsSpan().SequenceEqual(expected) && aces.Count > 0
+        (owner.AsSpan().SequenceEqual(expected) || owner.AsSpan().SequenceEqual(Administrators)) && aces.Count > 0
         && aces.All(ace => ace.Type == 0 && ace.Sid.AsSpan().SequenceEqual(expected));
 
     static byte[]? ReadSid(nint actual)
