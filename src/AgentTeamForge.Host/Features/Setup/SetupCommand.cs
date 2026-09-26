@@ -12,16 +12,36 @@ public static class SetupCommand
 {
     const string SettingsFile = "launch-mode.json";
 
-    public static int Run(IReadOnlyDictionary<string, string> options, Func<string, IReadOnlyList<string>, int>? commandRunner = null,
-        string? executablePath = null, string? claudeSettingsPath = null)
+    public static int Run(IReadOnlyDictionary<string, string> options, Func<string, IReadOnlyList<string>, (int ExitCode, string Output)>? commandRunner = null,
+        string? executablePath = null, string? claudeSettingsPath = null, string? homePath = null, string? extensionPath = null)
     {
+        var check = options.ContainsKey("check");
+        var apply = options.ContainsKey("apply");
+        if (check && apply)
+        {
+            Console.Error.WriteLine("error: --check and --apply are mutually exclusive");
+            return 64;
+        }
         if (!options.TryGetValue("mode", out var mode) || mode is not ("headless" or "herdr"))
         {
-            Console.Error.WriteLine("usage: atf setup --mode headless|herdr [--state-dir DIR] [--apply]");
-            return 64;
+            if (!check)
+            {
+                Console.Error.WriteLine("usage: atf setup --mode headless|herdr [--state-dir DIR] [--apply|--check]");
+                return 64;
+            }
         }
 
         var dir = ResolveStateDir(options);
+        var home = homePath ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var binary = ClientSetup.StableBinary(executablePath ?? Environment.ProcessPath
+            ?? throw new InvalidOperationException("Executable path unavailable"), home);
+        commandRunner ??= RunCommand;
+        var settingsPath = claudeSettingsPath ?? Path.Combine(home, ".claude", "settings.json");
+        if (check)
+        {
+            return ClientSetup.Reconcile(binary, dir, home, settingsPath, extensionPath, commandRunner, apply: false) ? 0 : 1;
+        }
+
         if (!File.Exists(Path.Combine(dir, "profile.json")))
         {
             var result = InitCommand.Run(dir, testProfile: false, queueLimit: null, maxRuntimeSeconds: null);
@@ -37,47 +57,20 @@ public static class SetupCommand
             Console.Error.WriteLine("error: setup requires an agents profile");
             return 78;
         }
-        WriteMode(state, mode);
+        WriteMode(state, mode!);
 
-        var binary = RegistrationExecutable(executablePath);
-        commandRunner ??= RunCommand;
-        foreach (var (tool, args) in Registrations(binary, state.Path))
+        if (apply)
         {
-            if (options.ContainsKey("apply"))
+            if (!ClientSetup.Reconcile(binary, state.Path, home, settingsPath, extensionPath, commandRunner, apply: true))
             {
-                if (commandRunner(tool, ["mcp", "get", "agentteamforge"]) == 0)
-                {
-                    Console.Out.WriteLine($"{tool}: already registered");
-                    continue;
-                }
-
-                if (commandRunner(tool, args) != 0)
-                {
-                    Console.Error.WriteLine($"error: {tool} MCP registration failed");
-                    return 1;
-                }
-
-                Console.Out.WriteLine($"{tool}: registered");
-            }
-            else
-            {
-                Console.Out.WriteLine(FormatCommand(tool, args));
+                return 1;
             }
         }
-
-        if (options.ContainsKey("apply"))
+        else
         {
-            var settingsPath = claudeSettingsPath ?? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "settings.json");
-            try
+            foreach (var (tool, args) in Registrations(binary, state.Path))
             {
-                EnableClaudeInbound(settingsPath);
-                Console.Out.WriteLine($"claude: native wake inbound enabled in {settingsPath}");
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-            {
-                Console.Error.WriteLine($"error: Claude settings update failed ({ex.GetType().Name})");
-                return 1;
+                Console.Out.WriteLine(FormatCommand(tool, args));
             }
         }
 
@@ -271,25 +264,6 @@ public static class SetupCommand
         ("codex", ["mcp", "add", "agentteamforge", "--", binary, "mcp", "--state-dir", stateDir]),
     ];
 
-    static string RegistrationExecutable(string? supplied)
-    {
-        var binary = Path.GetFullPath(supplied ?? Environment.ProcessPath
-            ?? throw new InvalidOperationException("Executable path unavailable"));
-        if (supplied is not null)
-        {
-            return binary;
-        }
-
-        var home = Environment.GetEnvironmentVariable("HOME") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var stable = Path.Combine(home, ".local", "bin", "atf");
-        var root = Path.Combine(home, ".local", "share", "agentteamforge");
-        var current = Path.Combine(root, "current");
-        var link = new FileInfo(stable).LinkTarget;
-        var release = new DirectoryInfo(current).LinkTarget;
-        return link == Path.Combine(current, "atf") && release is not null
-            && Path.GetFullPath(Path.Combine(root, release, "atf")) == binary ? stable : binary;
-    }
-
     internal static string ResolveStateDir(IReadOnlyDictionary<string, string> options) => Path.GetFullPath(
         options.TryGetValue("state-dir", out var specified) ? specified :
         Path.Combine(Environment.GetEnvironmentVariable("XDG_STATE_HOME") is { Length: > 0 } xdg ? xdg :
@@ -336,7 +310,7 @@ public static class SetupCommand
         }
     }
 
-    static void EnableClaudeInbound(string path)
+    internal static void EnableClaudeInbound(string path)
     {
         var parent = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(parent, StateDirectory.PrivateDir);
@@ -407,7 +381,7 @@ public static class SetupCommand
     internal static string? ConfiguredMode(StateDirectory state) =>
         File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadMode(state) : null;
 
-    static int RunCommand(string tool, IReadOnlyList<string> args)
+    internal static (int ExitCode, string Output) RunCommand(string tool, IReadOnlyList<string> args)
     {
         var info = new ProcessStartInfo(tool) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
         foreach (var arg in args)
@@ -421,13 +395,13 @@ public static class SetupCommand
             var stdout = process.StandardOutput.ReadToEndAsync();
             var stderr = process.StandardError.ReadToEndAsync();
             process.WaitForExit();
-            _ = stdout.GetAwaiter().GetResult();
+            var output = stdout.GetAwaiter().GetResult();
             _ = stderr.GetAwaiter().GetResult();
-            return process.ExitCode;
+            return (process.ExitCode, output);
         }
         catch (System.ComponentModel.Win32Exception)
         {
-            return 127;
+            return (127, "");
         }
     }
 

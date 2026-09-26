@@ -11,6 +11,11 @@
     <!-- DAL reference is composition-only (daemon role); endpoints go through Business. -->
     <ProjectReference Include="../AgentTeamForge.DAL/AgentTeamForge.DAL.csproj" />
     <PackageReference Include="ModelContextProtocol.Core" />
+    <!-- Web console role only (Kestrel, empty builder; AOT-compatible). -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Features/WebConsole/wwwroot/*" LogicalName="WebConsole.%(Filename)%(Extension)" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="AgentTeamForge.Tests" />

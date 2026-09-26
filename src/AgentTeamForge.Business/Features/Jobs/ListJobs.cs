@@ -1,5 +1,6 @@
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
+using System.Globalization;
 
 namespace AgentTeamForge.Business.Features.Jobs;
 
@@ -20,6 +21,8 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal)
         var limit = request.Limit ?? DefaultPageSize;
         if (limit is < 1 or > MaxPageSize
             || request.Status is not (null or JobStatus.Queued or JobStatus.Running or JobStatus.Completed or JobStatus.Failed or JobStatus.NeedsReconciliation or JobStatus.Cancelled)
+            || request.Backend is not (null or "fake" or "claude" or "codex" or "pi")
+            || (request.Since is not null && !DateTimeOffset.TryParse(request.Since, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out _))
             || (request.Cursor is not null && (request.Cursor.Length > 64 || !request.Cursor.StartsWith("job_", StringComparison.Ordinal))))
         {
             return new JobListResult(null, JobErrors.InvalidRequest);
@@ -29,7 +32,9 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal)
         try
         {
             // One extra row decides truncation without a separate count query.
-            rows = store.ListJobs(principal.Principal, principal.Team, request.Status, request.Cursor, limit + 1);
+            var since = request.Since is null ? null : DateTimeOffset.Parse(request.Since, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind).ToUniversalTime().ToString("O");
+            rows = store.ListJobs(principal.Principal, principal.Team, request.Status, request.Backend, since, request.Cursor, limit + 1,
+                request.LeadSessionId, request.AllWorkspace ? request.Workspace : null);
         }
         catch (StorageException ex)
         {
@@ -41,17 +46,28 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal)
         {
             WorktreePath = r.WorktreePath,
             WorktreeBranch = r.WorktreeBranch,
+            Backend = r.Backend,
+            SessionId = r.SessionId,
+            ParentJobId = r.ParentJobId,
         }).ToList();
         return new JobListResult(new JobListPage(jobs, limit, hasMore, hasMore ? jobs[^1].JobId : null), null);
     }
 }
 
 /// <summary>Optional exact status filter, page size and opaque continuation cursor; no other query surface.</summary>
-public sealed record ListJobsRequest(string? Status = null, int? Limit = null, string? Cursor = null);
+public sealed record ListJobsRequest(string? Status = null, int? Limit = null, string? Cursor = null, string? Backend = null, string? Since = null)
+{
+    public string? LeadSessionId { get; init; }
+    public bool AllWorkspace { get; init; }
+    public string? Workspace { get; init; }
+}
 
 /// <summary>Inspection view of a job; use job_get for its result.</summary>
 public sealed record JobSummary(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)
 {
+    public string? Backend { get; init; }
+    public string? SessionId { get; init; }
+    public string? ParentJobId { get; init; }
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }
 }

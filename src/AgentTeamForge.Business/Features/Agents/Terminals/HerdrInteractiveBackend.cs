@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -14,6 +15,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend
     readonly IInteractiveTranscriptReader _transcripts;
     readonly InteractiveAgentKind _kind;
     readonly string _stateRoot;
+    readonly ConcurrentDictionary<string, InteractiveLaunch> _liveSessions = new(StringComparer.Ordinal);
 
     public HerdrInteractiveBackend(HerdrTerminal terminal, InteractiveAgentKind kind, string stateRoot)
         : this(new HerdrAgentControl(terminal), new InteractiveTranscriptReader(), kind, stateRoot) { }
@@ -34,8 +36,13 @@ public sealed class HerdrInteractiveBackend : IJobBackend
             throw new BackendNotStartedException("interactive working directory does not exist");
         }
 
-        var agentName = "atf" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(10));
         var started = DateTimeOffset.UtcNow;
+        if (request.ResumeSessionId is { } resumeId && _liveSessions.TryRemove(resumeId, out var live))
+        {
+            return new Run(_control, _transcripts, request, live, started, RememberSession);
+        }
+
+        var agentName = "atf" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(10));
         var piDirectory = _kind == InteractiveAgentKind.Pi ? PiDirectory(request) : null;
         var launch = new InteractiveLaunch(_kind, agentName, cwd, request.ResumeSessionId, piDirectory,
             Path.Combine(_stateRoot, "herdr", agentName + ".bootstrap"));
@@ -49,7 +56,18 @@ public sealed class HerdrInteractiveBackend : IJobBackend
         {
             throw new InvalidOperationException("interactive agent launch is uncertain: " + e.Message, e);
         }
-        return new Run(_control, _transcripts, request, launch, started);
+        return new Run(_control, _transcripts, request, launch, started, RememberSession);
+    }
+
+    void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions[sessionId] = launch;
+
+    /// <summary>Closes an interrupted tab when its queued follow-up ends before claim.</summary>
+    public void CloseUnclaimedSession(string sessionId)
+    {
+        if (_liveSessions.TryRemove(sessionId, out var launch))
+        {
+            _control.StopOwned(launch);
+        }
     }
 
     string PiDirectory(BackendRequest request)
@@ -65,10 +83,14 @@ public sealed class HerdrInteractiveBackend : IJobBackend
     }
 
     sealed class Run(IHerdrAgentControl control, IInteractiveTranscriptReader transcripts, BackendRequest request,
-        InteractiveLaunch launch, DateTimeOffset started) : IBackendRun
+        InteractiveLaunch launch, DateTimeOffset started, Action<string, InteractiveLaunch> rememberSession) : IBackendRun
     {
         bool _delivered;
         bool _completed;
+        readonly Lock _lifetime = new();
+        bool _interrupted;
+        bool _stopped;
+        string? _sessionId = request.ResumeSessionId;
         string? _prompt;
         DateTimeOffset _lastPromptAt;
         int _promptAttempts;
@@ -130,6 +152,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend
                 if (output?.SessionId is { } nativeId && nativeId != session)
                 {
                     session = nativeId;
+                    _sessionId = nativeId;
                     yield return new BackendEvidence.Session(request.Correlation, nativeId);
                 }
                 if (status == InteractiveAgentStatus.Working)
@@ -196,13 +219,38 @@ public sealed class HerdrInteractiveBackend : IJobBackend
 
         public void TerminateOwnedChild() => control.StopOwned(launch);
 
+        public void InterruptTurn()
+        {
+            // Preserve the same verified pane for the follow-up. Escape interrupts
+            // the TUI turn without terminating its agent process.
+            // Serialized with dispose: a tab closed by a settled turn is never
+            // handed to the follow-up, which then resumes in a fresh tab.
+            lock (_lifetime)
+            {
+                if (_stopped)
+                {
+                    return;
+                }
+                _interrupted = true;
+                control.InterruptAsync(launch, CancellationToken.None).GetAwaiter().GetResult();
+                if (_sessionId is { } sessionId)
+                {
+                    rememberSession(sessionId, launch);
+                }
+            }
+        }
+
         public ValueTask DisposeAsync()
         {
             // A settled turn is finished; close only our proven session before a
             // follow-up resumes its native session in a fresh owned tab.
-            if (_completed)
+            lock (_lifetime)
             {
-                control.StopOwned(launch);
+                if (_completed && !_interrupted)
+                {
+                    _stopped = true;
+                    control.StopOwned(launch);
+                }
             }
             return ValueTask.CompletedTask;
         }
@@ -218,6 +266,7 @@ internal interface IHerdrAgentControl
 {
     Task StartAsync(InteractiveLaunch launch, CancellationToken cancellationToken);
     Task PromptAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken);
+    Task InterruptAsync(InteractiveLaunch launch, CancellationToken cancellationToken);
     Task<InteractiveAgentStatus> StatusAsync(InteractiveLaunch launch, CancellationToken cancellationToken);
     void StopOwned(InteractiveLaunch launch);
 }

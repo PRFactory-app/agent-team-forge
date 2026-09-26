@@ -1,7 +1,9 @@
 using System.Reflection;
 using AgentTeamForge.Host.Features.FakeBackend;
 using AgentTeamForge.Host.Features.Jobs;
+using AgentTeamForge.Host.Features.PRFactory;
 using AgentTeamForge.Host.Features.Setup;
+using AgentTeamForge.Host.Features.WebConsole;
 using AgentTeamForge.Host.Hosting;
 
 // Spike-only command surface; not an approved production CLI.
@@ -35,6 +37,9 @@ try
                 options.GetValueOrDefault("backends"));
         case "setup":
             return SetupCommand.Run(options);
+        case "doctor":
+            options["check"] = "true";
+            return SetupCommand.Run(options);
         case "start":
             return await SetupCommand.StartAsync(options);
         case "stop":
@@ -43,11 +48,15 @@ try
             return InstallCommand.Uninstall(options);
         case "prune":
             return await PruneCommand.RunAsync(StateDirectory.Open(SetupCommand.ResolveStateDir(options)), options);
+        case "prfactory" when args.Length > 1:
+            return PRFactoryConnection.Run(StateDirectory.Open(SetupCommand.ResolveStateDir(options)), args[1], options, args, Console.In);
         case "daemon" when options.TryGetValue("state-dir", out var daemonDir):
             return await DaemonCommand.RunAsync(StateDirectory.Open(daemonDir), options.GetValueOrDefault("test-crash-at"), options.GetValueOrDefault("test-fail-at"));
         case "mcp" when options.TryGetValue("state-dir", out var mcpDir):
             var mcpState = StateDirectory.Open(mcpDir);
             return await JobsMcpBridge.RunAsync(mcpState, SpikeProfileFile.Load(mcpState).TestProfile);
+        case "web" when options.TryGetValue("state-dir", out var webDir):
+            return await WebConsoleCommand.RunAsync(StateDirectory.Open(webDir), options);
         case "client" when args.Length > 1 && options.TryGetValue("state-dir", out var clientDir):
             return await ClientCommand.RunAsync(StateDirectory.Open(clientDir), args[1], options,
                 args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordinal) ? args[2] : null);
@@ -63,7 +72,7 @@ catch (StateDirectoryException ex)
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: atf --version | setup --mode headless|herdr [--state-dir DIR] [--apply] | start|stop [--state-dir DIR] | uninstall [--purge] [--state-dir DIR] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
+    Console.Error.WriteLine("usage: atf --version | setup --mode headless|herdr [--state-dir DIR] [--apply|--check] | doctor [--state-dir DIR] | start|stop [--state-dir DIR] | uninstall [--purge] [--state-dir DIR] | prfactory connect|disconnect|status [--state-dir DIR] [--url HTTPS_URL --repo ID=DIR, token on stdin] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|web|fake-backend> --state-dir DIR [options]");
     return 64;
 }
 

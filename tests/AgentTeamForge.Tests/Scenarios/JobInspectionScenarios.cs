@@ -42,7 +42,7 @@ public sealed class JobInspectionScenarios
         var tools = await bridge.ListToolsAsync(cancellationToken: TestContext.Current.CancellationToken);
         Assert.Contains(tools, t => t.Name == "job_list");
         var viaMcp = await SpikeRig.CallAsync(bridge, "job_list", new() { ["status"] = JobStatus.Running, ["limit"] = 5 });
-        Assert.Equal([held.Job.JobId], viaMcp.Page!.Jobs.Select(j => j.JobId));
+        Assert.Empty(viaMcp.Page!.Jobs); // CLI jobs have no lead session; this new bridge sees only its own jobs.
 
         // Present but wrongly typed (or null) string fields must be rejected, not treated as absent.
         foreach (var malformed in new Dictionary<string, object?>[]

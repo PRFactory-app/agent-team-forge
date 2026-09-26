@@ -1,0 +1,22 @@
+body { font: 14px/1.4 ui-monospace, monospace; margin: 0 16px 32px; color: #111; background: #fff; }
+header { display: flex; gap: 16px; align-items: baseline; }
+h1 { font-size: 18px; }
+h2 { font-size: 16px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 2px 8px; border-bottom: 1px solid #ccc; overflow-wrap: anywhere; }
+tr.selected { background: #eef; }
+td button { font: inherit; border: 0; background: none; color: #03c; text-decoration: underline; cursor: pointer; padding: 0; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; }
+dd { margin: 0; overflow-wrap: anywhere; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid #ccc; padding: 8px; max-height: 50vh; overflow: auto; }
+textarea { width: 100%; box-sizing: border-box; font: inherit; }
+.note { color: #666; }
+.error { color: #b00; }
+.warn { color: #a60; }
+@media (prefers-color-scheme: dark) {
+  body { color: #ddd; background: #111; }
+  th, td, pre { border-color: #444; }
+  tr.selected { background: #223; }
+  td button { color: #8af; }
+  .note { color: #999; }
+}

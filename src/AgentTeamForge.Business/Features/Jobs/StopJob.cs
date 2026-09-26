@@ -4,7 +4,7 @@ using AgentTeamForge.DAL.Sqlite;
 namespace AgentTeamForge.Business.Features.Jobs;
 
 /// <summary>Commits cancellation before asking the dispatcher to stop its owned backend run.</summary>
-public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<string> cancelRunning)
+public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<string> cancelRunning, Action<string>? closeUnclaimedFollowUp = null)
 {
     public JobResult Execute(string jobId)
     {
@@ -24,6 +24,10 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
             if (outcome.WasRunning)
             {
                 cancelRunning(jobId);
+            }
+            else if (outcome.Changed)
+            {
+                closeUnclaimedFollowUp?.Invoke(jobId);
             }
 
             return JobResult.Ok(GetJob.ToView(outcome.Job), outcome.Changed ? "stopped" : "unchanged");

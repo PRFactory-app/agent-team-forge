@@ -203,6 +203,17 @@ public sealed class HerdrTerminal
         }
     }
 
+    /// <summary>On restart, a session already absent or stopped needs no teardown.</summary>
+    public async Task RecoverOwnedSessionAsync(OwnedHerdrSession session, CancellationToken cancellationToken)
+    {
+        var listed = HerdrOwnership.Find(await GlobalAsync(cancellationToken, "session", "list", "--json"), session.SessionName);
+        if (listed?["running"] is not JsonValue running || !running.TryGetValue<bool>(out var isRunning) || !isRunning)
+        {
+            return;
+        }
+        await StopOwnedSessionAsync(session, cancellationToken);
+    }
+
     /// <summary>A raw command against the owned server, after re-proving its identity.</summary>
     internal async Task<JsonNode> RunOwnedAsync(OwnedHerdrSession session, CancellationToken cancellationToken, params string[] args) =>
         ServerProblem(session) is { } problem

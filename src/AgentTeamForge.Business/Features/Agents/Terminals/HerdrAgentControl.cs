@@ -21,6 +21,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         // Record immediately: a later tab/start failure is still an owned session.
         try
         {
+            HerdrOwnedSessions.Save(launch, session);
             var binding = await terminal.OpenAgentTabAsync(session, launch.AgentName, launch.WorkingDirectory, launch.BootstrapPath, cancellationToken);
             _runs[launch.AgentName] = (session, binding);
             var args = new List<string> { "agent", "start", launch.AgentName, "--kind", Kind(launch.Kind), "--pane", binding.PaneId, "--timeout", "15000", "--" };
@@ -29,7 +30,11 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         }
         catch
         {
-            try { await terminal.StopOwnedSessionAsync(session, CancellationToken.None); }
+            try
+            {
+                await terminal.StopOwnedSessionAsync(session, CancellationToken.None);
+                HerdrOwnedSessions.Delete(launch);
+            }
             catch (HerdrLaunchException) { /* The original fault remains uncertain; never touch another session. */ }
             _runs.TryRemove(launch.AgentName, out _);
             throw;
@@ -62,6 +67,18 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         }
     }
 
+    public async Task InterruptAsync(InteractiveLaunch launch, CancellationToken cancellationToken)
+    {
+        var (session, binding) = Binding(launch);
+        if (await terminal.VerifyBindingAsync(binding, cancellationToken) is { } problem)
+        {
+            throw new HerdrLaunchException("refusing interrupt: " + problem);
+        }
+        await terminal.RunOwnedAsync(session, cancellationToken, "agent", "send-keys", binding.PaneId, "esc");
+        await terminal.RunOwnedAsync(session, cancellationToken, "agent", "wait", binding.PaneId,
+            "--until", "idle", "--until", "done", "--timeout", "15000");
+    }
+
     public async Task<InteractiveAgentStatus> StatusAsync(InteractiveLaunch launch, CancellationToken cancellationToken)
     {
         var (session, binding) = Binding(launch);
@@ -92,6 +109,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         {
             terminal.StopOwnedSessionAsync(run.Session, CancellationToken.None).GetAwaiter().GetResult();
             _runs.TryRemove(launch.AgentName, out _);
+            HerdrOwnedSessions.Delete(launch);
         }
     }
 
