@@ -115,19 +115,27 @@ public sealed class BridgeReconnectScenarios
         using var rig = new SpikeRig();
         await rig.InitAsync();
         await rig.StartDaemonAsync("--test-fail-at", DurabilityCheckpoints.AcceptAfterCommit);
-        var (_, bridge) = await rig.StartBridgeAsync("unknown-lead");
-        var args = new Dictionary<string, object?>
+        try
         {
-            ["backend"] = "fake",
-            ["instruction"] = "once",
-            ["idempotency_key"] = "unknown"
-        };
-        var lost = await SpikeRig.CallAsync(bridge, "submit_job", args);
-        Assert.Equal(IpcProtocol.OutcomeUnknown, lost.Error);
+            var (_, bridge) = await rig.StartBridgeAsync("unknown-lead");
+            var args = new Dictionary<string, object?>
+            {
+                ["backend"] = "fake",
+                ["instruction"] = "once",
+                ["idempotency_key"] = "unknown"
+            };
+            var lost = await SpikeRig.CallAsync(bridge, "submit_job", args);
+            Assert.Equal(IpcProtocol.OutcomeUnknown, lost.Error);
 
-        var recovered = await SpikeRig.CallAsync(bridge, "submit_job", args);
-        Assert.Equal("existing", recovered.Outcome);
-        await rig.WaitForStatusAsync(recovered.Job!.JobId, "completed");
-        Assert.Equal(1, rig.Invocations(recovered.Job!.JobId));
+            var recovered = await SpikeRig.CallAsync(bridge, "submit_job", args);
+            Assert.Equal("existing", recovered.Outcome);
+            await rig.WaitForStatusAsync(recovered.Job!.JobId, "completed");
+            Assert.Equal(1, rig.Invocations(recovered.Job!.JobId));
+        }
+        finally
+        {
+            // The bridge restarts the daemon outside the rig's owned processes.
+            await rig.RunToExitAsync(["stop", "--state-dir", rig.StateDir]);
+        }
     }
 }
