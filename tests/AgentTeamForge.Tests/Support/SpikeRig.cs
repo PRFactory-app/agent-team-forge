@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using AgentTeamForge.Host.Hosting;
 using AgentTeamForge.Host.Transport;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -201,6 +202,50 @@ public sealed class SpikeRig : IDisposable
         }
 
         Thread.Sleep(100);
-        _dir.Dispose();
+        var stopError = StopDaemon();
+        if (stopError is null)
+        {
+            _dir.Dispose();
+        }
+        Assert.Null(stopError);
+    }
+
+    string? StopDaemon()
+    {
+        var lockFile = Path.Combine(StateDir, "daemon.lock");
+        try
+        {
+            if (!File.Exists(lockFile))
+            {
+                return null;
+            }
+            using (var free = DaemonLock.TryAcquire(lockFile))
+            {
+                if (free is not null)
+                {
+                    return null;
+                }
+            }
+
+            // A bridge can start a detached daemon that is not in _processes.
+            // Stop only the daemon holding this rig's private state lock.
+            using var stopper = Process.Start(Info(["stop", "--state-dir", StateDir], redirectInput: false));
+            if (stopper is null)
+            {
+                return "could not start daemon stopper";
+            }
+            if (!stopper.WaitForExit(10_000))
+            {
+                OwnedProcesses.KillAbruptly(stopper);
+                return "daemon stopper timed out";
+            }
+            using var remaining = DaemonLock.TryAcquire(lockFile);
+            return stopper.ExitCode == 0 && remaining is not null ? null
+                : $"daemon stop exited {stopper.ExitCode}; state: {StateDir}; error: {stopper.StandardError.ReadToEnd()}";
+        }
+        catch (Exception ex)
+        {
+            return $"daemon cleanup failed for {StateDir}: {ex}";
+        }
     }
 }
