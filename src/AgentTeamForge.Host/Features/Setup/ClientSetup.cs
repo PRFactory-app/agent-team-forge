@@ -35,13 +35,17 @@ internal static class ClientSetup
         string? extensionOverride, Func<string, IReadOnlyList<string>, (int ExitCode, string Output)> run, bool apply)
     {
         var healthy = true;
+        var installed = 0;
+        Console.Out.WriteLine($"MCP binary: {binary}");
+        Console.Out.WriteLine($"State directory: {stateDir}");
         foreach (var client in new[] { "claude", "codex" })
         {
             if (run(client, ["--version"]).ExitCode == 127)
             {
-                Console.Out.WriteLine($"{client}: not installed (optional)");
+                Console.Out.WriteLine($"{client}: skipped (not installed)");
                 continue;
             }
+            installed++;
 
             var (exitCode, output) = run(client, ["mcp", "get", Name]);
             var desiredArgs = $"mcp --state-dir {stateDir}";
@@ -52,33 +56,39 @@ internal static class ClientSetup
                 && (client != "codex" || HasLine(output, "enabled:", "true"));
             if (matches)
             {
-                Console.Out.WriteLine($"{client}: MCP registration current");
+                Console.Out.WriteLine($"{client}: installed (MCP registration current)");
                 continue;
             }
 
             if (!apply)
             {
-                Console.Out.WriteLine($"{client}: MCP registration missing or stale");
+                Console.Out.WriteLine($"{client}: failed (MCP registration missing or stale)");
                 healthy = false;
                 continue;
             }
 
             // Claude refuses to overwrite a named entry. Remove only its user-scoped entry.
-            if (client == "claude" && found && output.Contains("Scope: User config", StringComparison.Ordinal)
-                && run(client, ["mcp", "remove", Name, "--scope", "user"]).ExitCode != 0)
+            if (client == "claude" && found && output.Contains("Scope: User config", StringComparison.Ordinal))
             {
-                Console.Error.WriteLine("error: claude MCP removal failed");
-                return false;
+                var (removalExit, removalOutput) = run(client, ["mcp", "remove", Name, "--scope", "user"]);
+                if (removalExit != 0)
+                {
+                    Console.Error.WriteLine($"claude: failed (MCP removal: {BoundedError(removalOutput)})");
+                    healthy = false;
+                    continue;
+                }
             }
             var args = client == "claude"
                 ? (IReadOnlyList<string>)["mcp", "add", "--scope", "user", Name, "--", binary, "mcp", "--state-dir", stateDir]
                 : ["mcp", "add", Name, "--", binary, "mcp", "--state-dir", stateDir];
-            if (run(client, args).ExitCode != 0)
+            var (registrationExit, registrationOutput) = run(client, args);
+            if (registrationExit != 0)
             {
-                Console.Error.WriteLine($"error: {client} MCP registration failed");
-                return false;
+                Console.Error.WriteLine($"{client}: failed (MCP registration: {BoundedError(registrationOutput)})");
+                healthy = false;
+                continue;
             }
-            Console.Out.WriteLine($"{client}: MCP registration updated");
+            Console.Out.WriteLine($"{client}: installed (MCP registration updated)");
         }
 
         if (!OperatingSystem.IsWindows() && run("claude", ["--version"]).ExitCode != 127)
@@ -101,28 +111,48 @@ internal static class ClientSetup
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
             {
-                Console.Error.WriteLine($"error: Claude settings invalid ({ex.GetType().Name})");
-                return false;
+                Console.Error.WriteLine($"claude: failed (settings: {BoundedError(ex.Message)})");
+                healthy = false;
             }
         }
 
         if (run("pi", ["--version"]).ExitCode != 127)
         {
+            installed++;
             try
             {
                 healthy &= ReconcilePi(binary, stateDir, home, extensionOverride, run, apply);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
             {
-                Console.Error.WriteLine($"error: Pi setup failed ({ex.GetType().Name})");
-                return false;
+                Console.Error.WriteLine($"pi: failed (setup: {BoundedError(ex.Message)})");
+                healthy = false;
             }
         }
         else
         {
-            Console.Out.WriteLine("pi: not installed (optional)");
+            Console.Out.WriteLine("pi: skipped (not installed)");
+        }
+        if (installed == 0)
+        {
+            Console.Out.WriteLine($"{(apply ? "Setup succeeded, but no" : "No")} agent clients were found. Install and log in to Claude, Codex, or Pi, then rerun atf setup.");
+        }
+        if (!healthy)
+        {
+            Console.Error.WriteLine("Rerun atf setup after fixing the failed client; successful registrations are kept.");
+            Console.Out.WriteLine("Reload clients whose MCP registration succeeded.");
+        }
+        else if (installed > 0)
+        {
+            Console.Out.WriteLine("Reload installed clients to use AgentTeamForge.");
         }
         return healthy;
+    }
+
+    internal static string BoundedError(string output)
+    {
+        var useful = string.Join(' ', output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        return useful.Length == 0 ? "command exited without details" : useful.Length <= 400 ? useful : useful[..400] + "…";
     }
 
     static bool ReconcilePi(string binary, string stateDir, string home, string? extensionOverride,
@@ -159,7 +189,7 @@ internal static class ClientSetup
         var present = adapterCurrent && extensionCurrent && mcpCurrent && stateCurrent;
         if (present)
         {
-            Console.Out.WriteLine("pi: adapter, MCP and wake extension current");
+            Console.Out.WriteLine("pi: installed (adapter, MCP and wake extension current)");
             return true;
         }
         if (!apply)
@@ -181,22 +211,22 @@ internal static class ClientSetup
             {
                 missing.Add("state directory setting");
             }
-            Console.Out.WriteLine($"pi: {string.Join(", ", missing)} missing or stale");
+            Console.Out.WriteLine($"pi: failed ({string.Join(", ", missing)} missing or stale)");
             return false;
         }
         if (!File.Exists(Path.Combine(extension, "package.json")))
         {
-            Console.Error.WriteLine($"error: bundled Pi wake extension missing at {extension}");
+            Console.Error.WriteLine($"pi: failed (bundled wake extension missing at {extension})");
             return false;
         }
-        if (!adapterCurrent && run("pi", ["install", Adapter]).ExitCode != 0)
+        if (!adapterCurrent && run("pi", ["install", Adapter]) is var adapterInstall && adapterInstall.ExitCode != 0)
         {
-            Console.Error.WriteLine("error: Pi MCP adapter install failed");
+            Console.Error.WriteLine($"pi: failed (MCP adapter installation requires network: {BoundedError(adapterInstall.Output)})");
             return false;
         }
-        if (!extensionCurrent && run("pi", ["install", extension]).ExitCode != 0)
+        if (!extensionCurrent && run("pi", ["install", extension]) is var extensionInstall && extensionInstall.ExitCode != 0)
         {
-            Console.Error.WriteLine("error: Pi wake extension install failed");
+            Console.Error.WriteLine($"pi: failed (wake extension installation: {BoundedError(extensionInstall.Output)})");
             return false;
         }
         var servers = mcp["mcpServers"] as JsonObject ?? [];
@@ -211,7 +241,7 @@ internal static class ClientSetup
             state["stateDir"] = stateDir;
             WriteObject(statePath, state);
         }
-        Console.Out.WriteLine("pi: adapter, MCP and wake extension updated");
+        Console.Out.WriteLine("pi: installed (adapter, MCP and wake extension updated)");
         return true;
     }
 

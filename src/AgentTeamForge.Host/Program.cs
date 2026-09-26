@@ -74,7 +74,7 @@ catch (StateDirectoryException ex)
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: atf --version | setup --mode headless|herdr|terminal|wt [--web-port PORT] [--autostart[=off]] [--state-dir DIR] [--apply|--check] | doctor [--state-dir DIR] | start|stop [--state-dir DIR] | web [--open] [--rotate-token] [--state-dir DIR] | uninstall [--purge] [--state-dir DIR] | prfactory connect|disconnect|status [--state-dir DIR] [--url HTTPS_URL --repo ID=DIR --external ID:MEMBER, token on stdin] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
+    Console.Error.WriteLine("usage: atf --version | setup [--mode headless|herdr|terminal|wt] [--web-port PORT] [--autostart[=off]] [--state-dir DIR] [--check|--apply] [--force] | doctor [--state-dir DIR] | start|stop [--state-dir DIR] | web [--open] [--rotate-token] [--state-dir DIR] | uninstall [--purge] [--state-dir DIR] | prfactory connect|disconnect|status [--state-dir DIR] [--url HTTPS_URL --repo ID=DIR --external ID:MEMBER, token on stdin] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
     return 64;
 }
 

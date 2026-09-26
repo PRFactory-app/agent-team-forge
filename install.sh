@@ -158,4 +158,10 @@ if [ ! -L "$bin" ]; then
   mv -f "$HOME/.local/bin/.atf.$$" "$bin"
 fi
 echo "installed atf $version: $bin"
-echo 'previous versions kept; run atf setup --mode headless|herdr|terminal --apply and restart clients; daemon starts on first agent use (or at login with setup --autostart --apply)'
+quoted_bin=$(printf '%s' "$bin" | sed "s/'/'\\\\''/g")
+printf "Run: '%s' setup\n" "$quoted_bin"
+echo 'Reload installed clients after setup; the daemon starts on first use.'
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) echo 'Optional: add "$HOME/.local/bin" to PATH for the shorter atf command.' ;;
+esac

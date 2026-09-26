@@ -19,7 +19,8 @@ public static class SetupCommand
     public const int DefaultWebPort = 8765;
 
     public static int Run(IReadOnlyDictionary<string, string> options, Func<string, IReadOnlyList<string>, (int ExitCode, string Output)>? commandRunner = null,
-        string? executablePath = null, string? claudeSettingsPath = null, string? homePath = null, string? extensionPath = null)
+        string? executablePath = null, string? claudeSettingsPath = null, string? homePath = null, string? extensionPath = null,
+        TextReader? input = null, bool? interactive = null)
     {
         var check = options.ContainsKey("check");
         var apply = options.ContainsKey("apply");
@@ -46,28 +47,43 @@ public static class SetupCommand
         }
         var dir = ResolveStateDir(options);
         var mode = options.GetValueOrDefault("mode");
-        if (mode is null && Directory.Exists(dir))
+        var configuredMode = Directory.Exists(dir) ? ConfiguredMode(StateDirectory.Open(dir)) : null;
+        mode ??= configuredMode;
+        commandRunner ??= RunCommand;
+        if (mode is null && !check && autostart is null)
         {
-            mode = ConfiguredMode(StateDirectory.Open(dir));
-        }
-        if (mode is not ("headless" or "herdr" or "terminal" or "wt") || (!check && !options.ContainsKey("mode") && !(autostart is not null && apply)))
-        {
-            if (!check && !(autostart == "off" && apply && !options.ContainsKey("mode") && mode is null))
+            if (!(interactive ?? !Console.IsInputRedirected))
             {
-                Console.Error.WriteLine("usage: atf setup --mode headless|herdr|terminal|wt [--web-port PORT] [--autostart[=off]] [--state-dir DIR] [--apply|--check]");
+                Console.Error.WriteLine("error: fresh non-interactive setup needs --mode headless or --mode herdr (or run in a terminal to choose)");
+                return 64;
+            }
+            mode = ChooseMode(input ?? Console.In, commandRunner);
+            if (mode is null)
+            {
                 return 64;
             }
         }
-        else if (!ModeAvailable(mode))
+        if (mode is not ("headless" or "herdr" or "terminal" or "wt")
+            && !(check && mode is null) && !(autostart == "off" && !check && configuredMode is null))
+        {
+            Console.Error.WriteLine("usage: atf setup [--mode headless|herdr|terminal|wt] [--web-port PORT] [--autostart[=off]] [--state-dir DIR] [--check|--apply] [--force]");
+            return 64;
+        }
+        if (mode is not null && !ModeAvailable(mode))
         {
             Console.Error.WriteLine($"error: launch mode {mode} is unavailable on this platform");
             return 64;
         }
+        if (mode == "herdr" && !check && HerdrProblem(commandRunner) is { } herdrProblem)
+        {
+            Console.Error.WriteLine($"error: herdr is unavailable: {herdrProblem}; choose --mode headless explicitly if desired");
+            return 64;
+        }
 
         var home = homePath ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var binary = ClientSetup.StableBinary(executablePath ?? Environment.ProcessPath
-            ?? throw new InvalidOperationException("Executable path unavailable"), home);
-        commandRunner ??= RunCommand;
+        var executable = executablePath ?? Environment.ProcessPath
+            ?? throw new InvalidOperationException("Executable path unavailable");
+        var binary = ClientSetup.StableBinary(executable, home);
         var settingsPath = claudeSettingsPath ?? Path.Combine(home, ".claude", "settings.json");
         if (check)
         {
@@ -75,9 +91,18 @@ public static class SetupCommand
             return ClientSetup.Reconcile(binary, dir, home, settingsPath, extensionPath, commandRunner, apply: false) ? 0 : 1;
         }
 
-        if (autostart is not null && apply && !options.ContainsKey("mode"))
+        if (autostart is not null && !options.ContainsKey("mode"))
         {
             return LoginAutostart.Apply(home, binary, dir, enable: autostart == "true", commandRunner);
+        }
+
+        var unsafeBinary = UnsafeRegistrationPath(executable);
+        var unsafeState = UnsafeRegistrationPath(dir);
+        if (!options.ContainsKey("force") && (unsafeBinary is not null || unsafeState is not null))
+        {
+            Console.Error.WriteLine($"error: setup would write global client registrations using an unsafe {(unsafeBinary is not null ? "binary" : "state directory")} path: {unsafeBinary ?? unsafeState}");
+            Console.Error.WriteLine("Use --force only if this is intentional. For testing, use atf start --state-dir DIR or atf mcp --state-dir DIR.");
+            return 64;
         }
 
         if (!File.Exists(Path.Combine(dir, "profile.json")))
@@ -101,35 +126,79 @@ public static class SetupCommand
             ? int.Parse(webPortText, CultureInfo.InvariantCulture) : ConfiguredWebPort(state);
         WriteMode(state, settings with { WebPort = webPort });
 
-        if (apply)
+        if (!ClientSetup.Reconcile(binary, state.Path, home, settingsPath, extensionPath, commandRunner, apply: true))
         {
-            if (!ClientSetup.Reconcile(binary, state.Path, home, settingsPath, extensionPath, commandRunner, apply: true))
-            {
-                return 1;
-            }
-            if (autostart is not null && LoginAutostart.Apply(home, binary, state.Path, autostart == "true", commandRunner) != 0)
-            {
-                return 1;
-            }
+            return 1;
         }
-        else
+        if (autostart is not null && LoginAutostart.Apply(home, binary, state.Path, autostart == "true", commandRunner) != 0)
         {
-            foreach (var (tool, args) in Registrations(binary, state.Path))
-            {
-                Console.Out.WriteLine(FormatCommand(tool, args));
-            }
+            return 1;
         }
 
-        if (mode == "headless")
-        {
-            Console.Out.WriteLine($"Launch mode: headless. Run: {FormatCommand(binary, ["start", "--state-dir", state.Path])}");
-        }
-        else
-        {
-            Console.Out.WriteLine($"Launch mode: {mode}{(mode == "terminal" ? " (" + settings.TerminalProvider + ")" : "")}. Run: {FormatCommand(binary, ["start", "--state-dir", state.Path])}");
-        }
+        Console.Out.WriteLine($"Launch mode: {mode}{(mode == "terminal" ? " (" + settings.TerminalProvider + ")" : "")}");
+        Console.Out.WriteLine($"Binary: {binary}");
+        Console.Out.WriteLine($"State: {state.Path}");
+        Console.Out.WriteLine("The daemon starts on first use.");
         return 0;
     }
+
+    static string? ChooseMode(TextReader input, Func<string, IReadOnlyList<string>, (int ExitCode, string Output)> run)
+    {
+        var problem = HerdrProblem(run);
+        Console.Out.WriteLine(problem is null
+            ? "Recommended launch mode: herdr (interactive agent windows are available)."
+            : $"Recommended launch mode: headless (Herdr unavailable: {problem}).");
+        Console.Out.Write("Choose launch mode by typing herdr or headless: ");
+        var choice = input.ReadLine()?.Trim().ToLowerInvariant();
+        if (choice is "headless" or "herdr")
+        {
+            return choice;
+        }
+        Console.Error.WriteLine("error: type herdr or headless to confirm a launch mode");
+        return null;
+    }
+
+    static string? HerdrProblem(Func<string, IReadOnlyList<string>, (int ExitCode, string Output)> run)
+    {
+        if (!ModeAvailable("herdr"))
+        {
+            return "unsupported platform";
+        }
+        if (OperatingSystem.IsLinux() && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY"))
+            && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DISPLAY")))
+        {
+            return "no graphical desktop session (WAYLAND_DISPLAY or DISPLAY)";
+        }
+        var (exitCode, output) = run("herdr", ["--version"]);
+        return exitCode == 0 ? null : exitCode == 127 ? "herdr executable not found" :
+            $"herdr --version failed: {ClientSetup.BoundedError(output)}";
+    }
+
+    static string? UnsafeRegistrationPath(string path)
+    {
+        var full = Path.GetFullPath(path);
+        var temp = Path.GetFullPath(Path.GetTempPath());
+        if (Within(full, "/tmp") || Within(full, temp))
+        {
+            return $"{full} is under a temporary directory";
+        }
+        if (full.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .Any(part => part is ".worktrees" or "artifacts"))
+        {
+            return $"{full} is inside .worktrees or artifacts";
+        }
+        for (var parent = Path.GetDirectoryName(full); parent is not null; parent = Path.GetDirectoryName(parent))
+        {
+            if (File.Exists(Path.Combine(parent, ".git")) || Directory.Exists(Path.Combine(parent, ".git")))
+            {
+                return $"{full} is inside a git worktree";
+            }
+        }
+        return null;
+    }
+
+    static bool Within(string path, string root) => path.Equals(Path.TrimEndingDirectorySeparator(root), StringComparison.Ordinal)
+        || path.StartsWith(Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar, StringComparison.Ordinal);
 
     public static async Task<int> StartAsync(IReadOnlyDictionary<string, string> options, string? executablePath = null, bool quiet = false)
     {
@@ -523,12 +592,6 @@ public static class SetupCommand
         }
     }
 
-    internal static IReadOnlyList<(string Tool, IReadOnlyList<string> Args)> Registrations(string binary, string stateDir) =>
-    [
-        ("claude", ["mcp", "add", "--scope", "user", "agentteamforge", "--", binary, "mcp", "--state-dir", stateDir]),
-        ("codex", ["mcp", "add", "agentteamforge", "--", binary, "mcp", "--state-dir", stateDir]),
-    ];
-
     internal static string ResolveStateDir(IReadOnlyDictionary<string, string> options) => Path.GetFullPath(
         options.TryGetValue("state-dir", out var specified) ? specified :
         OperatingSystem.IsWindows()
@@ -721,8 +784,8 @@ public static class SetupCommand
             var stderr = process.StandardError.ReadToEndAsync();
             process.WaitForExit();
             var output = stdout.GetAwaiter().GetResult();
-            _ = stderr.GetAwaiter().GetResult();
-            return (process.ExitCode, output);
+            var error = stderr.GetAwaiter().GetResult();
+            return (process.ExitCode, process.ExitCode == 0 ? output : error.Length > 0 ? error : output);
         }
         catch (System.ComponentModel.Win32Exception)
         {
@@ -730,14 +793,7 @@ public static class SetupCommand
         }
     }
 
-    static string FormatCommand(string tool, IReadOnlyList<string> args) => OperatingSystem.IsWindows()
-        ? "powershell -NoProfile -Command \"& " + string.Join(' ', new[] { tool }.Concat(args).Select(QuotePowerShell)) + "\""
-        : string.Join(' ', new[] { tool }.Concat(args).Select(Quote));
-
     static string QuotePowerShell(string value) => PowerShellText.Quote(value);
-
-    static string Quote(string value) => value.All(c => char.IsAsciiLetterOrDigit(c) || c is '/' or '-' or '_' or '.')
-        ? value : "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
 }
 
 public sealed record LaunchModeSettings(string Mode, string? TerminalProvider = null, string? KittyAddress = null, string? KittyBinary = null)

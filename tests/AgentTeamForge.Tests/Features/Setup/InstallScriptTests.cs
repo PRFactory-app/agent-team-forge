@@ -51,6 +51,16 @@ public sealed class InstallScriptTests
         Assert.False(Directory.Exists(Path.Combine(home, ".local", "bin")));
     }
 
+    [Fact]
+    public void CompletionPrintsQuotedAbsoluteSetupCommand()
+    {
+        using var temp = new TempStateDir();
+        var home = temp.File("my ' home");
+        var (exit, output) = RunWithOutput(home, "--archive", Bundle(temp, "0.0.1"));
+        Assert.Equal(0, exit);
+        Assert.Contains($"Run: '{home.Replace("'", "'\\''", StringComparison.Ordinal)}/.local/bin/atf' setup", output);
+    }
+
     static string Bundle(TempStateDir temp, string version)
     {
         var dir = temp.File($"rel {version}");
@@ -71,7 +81,9 @@ public sealed class InstallScriptTests
         return archive;
     }
 
-    static int Run(string home, params string[] args)
+    static int Run(string home, params string[] args) => RunWithOutput(home, args).ExitCode;
+
+    static (int ExitCode, string Output) RunWithOutput(string home, params string[] args)
     {
         var start = new ProcessStartInfo("sh") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
         start.ArgumentList.Add(Script);
@@ -86,7 +98,7 @@ public sealed class InstallScriptTests
         _ = process.StandardError.ReadToEnd();
         Assert.True(process.WaitForExit(60_000), "install.sh timed out");
         output.Wait();
-        return process.ExitCode;
+        return (process.ExitCode, output.Result);
     }
 
     static string FindInstallScript()
