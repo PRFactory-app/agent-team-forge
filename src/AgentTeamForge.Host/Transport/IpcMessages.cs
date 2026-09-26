@@ -15,9 +15,12 @@ public sealed record IpcRequest
     public string? Behavior { get; init; }
     public bool Hold { get; init; }
     public string? JobId { get; init; }
+    public string? Status { get; init; }
+    public int? Limit { get; init; }
+    public string? Cursor { get; init; }
 }
 
-public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null);
+public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null);
 
 public static class IpcProtocol
 {
@@ -25,6 +28,7 @@ public static class IpcProtocol
     public const string Hello = "hello";
     public const string JobSubmit = "job_submit";
     public const string JobGet = "job_get";
+    public const string JobList = "job_list";
 
     public const string UnsupportedVersion = "unsupported_version";
     public const string Unauthenticated = "unauthenticated";
@@ -41,4 +45,5 @@ public static class IpcProtocol
 [JsonSerializable(typeof(IpcRequest))]
 [JsonSerializable(typeof(IpcResponse))]
 [JsonSerializable(typeof(JobView))]
+[JsonSerializable(typeof(JobListPage))]
 public sealed partial class IpcJson : JsonSerializerContext;

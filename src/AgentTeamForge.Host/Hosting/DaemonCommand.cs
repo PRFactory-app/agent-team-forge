@@ -79,6 +79,7 @@ public static class DaemonCommand
         var endpoint = new JobsEndpoint(
             new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, dispatcher.Signal),
             new GetJob(store, profile.Bound),
+            new ListJobs(store, profile.Bound),
             checkpoints);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
