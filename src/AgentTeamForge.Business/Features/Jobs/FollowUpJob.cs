@@ -46,9 +46,13 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             var runs = store.GetRuns(parent.JobId);
             // A needs_reconciliation row can be committed before its child exits. Only
             // a terminal run with no live marked process proves this session is idle.
+            // A run without a daemon-owned pid (a Herdr TUI, or a start that never
+            // reported) carries no marker we can scan, so it proves nothing.
             if (runs.Any(r => r.State == "started")
                 || (parent.Status is JobStatus.Failed or JobStatus.NeedsReconciliation
-                    && (runs.Count == 0 || OrphanedBackendProcess.HasMarkedProcess([.. runs.Select(r => r.Correlation)]))))
+                    && (runs.Count == 0
+                        || (parent.Status == JobStatus.NeedsReconciliation && runs[^1].BackendPid is null)
+                        || OrphanedBackendProcess.HasMarkedProcess([.. runs.Select(r => r.Correlation)]))))
             {
                 return JobResult.Fail(JobErrors.ParentNotReady);
             }

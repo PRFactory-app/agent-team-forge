@@ -104,15 +104,19 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
                 yield break;
             }
 
-            if (resuming && (BackendSessionErrors.IsExpired(Encoding.UTF8.GetString(output))
-                || await BackendSessionErrors.HasExpiredDiagnosticAsync(_stderrDrain, cancellationToken)))
+            // A successful turn may itself mention these phrases; only a turn without a
+            // result is checked for a missing native session.
+            var interpreted = Interpret(correlation, output).ToList();
+            if (resuming && !interpreted.Any(e => e is BackendEvidence.Result)
+                && (BackendSessionErrors.IsExpired(Encoding.UTF8.GetString(output))
+                    || await BackendSessionErrors.HasExpiredDiagnosticAsync(_stderrDrain, cancellationToken)))
             {
                 yield return new BackendEvidence.ProtocolError("session_expired");
                 yield break;
             }
 
             yield return new BackendEvidence.Ack(correlation);
-            foreach (var evidence in Interpret(correlation, output))
+            foreach (var evidence in interpreted)
             {
                 if (evidence is not BackendEvidence.Session { SessionId: var reported } || reported != sessionId)
                 {

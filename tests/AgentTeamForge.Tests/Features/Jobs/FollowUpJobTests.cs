@@ -100,6 +100,7 @@ public sealed class FollowUpJobTests
         using var process = Process.Start(info)!;
         try
         {
+            f.Store.RecordBackendEvidence(run, process.Id, acked: false);
             Assert.True(f.Store.EndUnsuccessfully(run, JobStatus.NeedsReconciliation, "daemon_restart_uncertain"));
             var followUp = new FollowUpJob(f.Store, JobFixture.Operator, accept);
             Assert.Equal(JobErrors.ParentNotReady, followUp.Execute(new FollowUpRequest(parent.JobId, "next", "c")).Error);
@@ -115,6 +116,24 @@ public sealed class FollowUpJobTests
                 process.Kill();
             }
         }
+    }
+
+    [Fact]
+    public void Reconciliation_without_an_owned_pid_is_never_revived()
+    {
+        // A Herdr TUI is owned by the Herdr server: no pid and no scannable marker,
+        // so a quiet /proc scan does not prove the agent is idle.
+        using var f = new JobFixture();
+        var accept = f.Accept();
+        var parent = f.Submit("p");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(f.Store.RecordSession(run, "sess-herdr"));
+        Assert.True(f.Store.EndUnsuccessfully(run, JobStatus.NeedsReconciliation, "interactive_agent_blocked"));
+
+        Assert.Equal(JobErrors.ParentNotReady,
+            new FollowUpJob(f.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "next", "c")).Error);
+        Assert.Equal(0, f.Store.CountUnattemptedIntents());
     }
 
     [Fact]

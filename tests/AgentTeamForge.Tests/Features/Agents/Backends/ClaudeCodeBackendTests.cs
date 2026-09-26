@@ -71,6 +71,17 @@ public sealed class ClaudeCodeBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task Resumed_result_mentioning_a_missing_session_is_not_session_expired()
+    {
+        var backend = new ClaudeCodeBackend(FakeClaude("""{"type":"result","subtype":"success","is_error":false,"result":"fixed the session not found bug","session_id":"s-1"}"""));
+
+        var evidence = await RunAsync(backend, new BackendRequest("j3", "c3", "more", "") { ResumeSessionId = "s-1" });
+
+        Assert.Contains(new BackendEvidence.Result("c3", "fixed the session not found bug"), evidence);
+        Assert.DoesNotContain(evidence, e => e is BackendEvidence.ProtocolError);
+    }
+
+    [Fact]
     public async Task Status_line_from_command_shim_does_not_hide_claude_result()
     {
         var backend = new ClaudeCodeBackend(FakeClaude("""
