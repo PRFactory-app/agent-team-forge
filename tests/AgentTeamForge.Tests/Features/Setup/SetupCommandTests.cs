@@ -157,16 +157,11 @@ public sealed class SetupCommandTests
     [Fact]
     public async Task StartDetectsOwnedRunningDaemon()
     {
-        using var temp = new TempStateDir();
-        var dir = temp.File("state");
-        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = dir },
-            (_, _) => throw new InvalidOperationException(), "/tmp/atf"));
-        var state = StateDirectory.Open(dir);
-        using var daemonLock = DaemonLock.TryAcquire(state.LockFile);
-        Assert.NotNull(daemonLock);
-        daemonLock.WriteOwnerPid();
-
-        Assert.Equal(0, await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = dir }, "/missing/atf"));
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        var daemon = await rig.StartDaemonAsync();
+        Assert.Equal(0, await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = rig.StateDir }, "/missing/atf", quiet: true));
+        Assert.False(daemon.HasExited);
     }
 
     [Fact]
@@ -179,10 +174,6 @@ public sealed class SetupCommandTests
 
         var state = StateDirectory.Open(dir);
         Assert.Equal("herdr", SetupCommand.ConfiguredMode(state));
-        using var daemonLock = DaemonLock.TryAcquire(state.LockFile);
-        Assert.NotNull(daemonLock);
-        daemonLock.WriteOwnerPid();
-        Assert.Equal(0, await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = dir }, "/missing/atf"));
         Assert.False(File.Exists(state.Socket));
     }
 
@@ -215,5 +206,87 @@ public sealed class SetupCommandTests
         Assert.Equal(0, secondExit);
         Assert.Empty(secondError);
         Assert.Contains("Daemon is not running.", secondOutput);
+    }
+
+    [Fact]
+    public async Task ConcurrentBridgesStartOneDaemonThatSurvivesBridgeExit()
+    {
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        try
+        {
+            var bridges = await Task.WhenAll(rig.StartBridgeAsync("lead-one"), rig.StartBridgeAsync("lead-two"));
+            var state = StateDirectory.Open(rig.StateDir);
+            var pid = DaemonLock.ReadOwnerPid(state.LockFile);
+            Assert.True(pid > 0);
+            Assert.Single(File.ReadLines(Path.Combine(rig.StateDir, "daemon.log")),
+                line => line.StartsWith("[atf-daemon] ready pid=", StringComparison.Ordinal));
+            Assert.All(bridges, bridge => Assert.False(bridge.Process.HasExited));
+
+            foreach (var (process, client) in bridges)
+            {
+                await client.DisposeAsync();
+                process.Kill();
+                await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+            }
+
+            Assert.Equal(pid, DaemonLock.ReadOwnerPid(state.LockFile));
+            Assert.True((await rig.ClientAsync("list")).Ok);
+            Assert.Equal(pid, DaemonLock.ReadOwnerPid(state.LockFile));
+        }
+        finally
+        {
+            await rig.RunToExitAsync(["stop", "--state-dir", rig.StateDir]);
+        }
+    }
+
+    [Fact]
+    public void LoginAutostartWritesAndRemovesLinuxUnitAndMacPlistInTempHome()
+    {
+        using var temp = new TempStateDir();
+        var home = temp.File("home");
+        var calls = new List<string>();
+        (int, string) Runner(string tool, IReadOnlyList<string> args)
+        {
+            calls.Add(tool + " " + string.Join(' ', args));
+            return (0, "");
+        }
+
+        var binary = "/tmp/atf binary";
+        var state = "/tmp/atf state";
+        Assert.Equal(0, LoginAutostart.Apply(home, binary, state, true, Runner, "linux"));
+        var unit = File.ReadAllText(LoginAutostart.FilePath(home, "linux"));
+        Assert.Contains("ExecStart=\"/tmp/atf binary\" daemon --state-dir \"/tmp/atf state\"", unit);
+        Assert.Contains("WantedBy=default.target", unit);
+        Assert.Contains("Environment=\"PATH=" + Environment.GetEnvironmentVariable("PATH"), unit);
+        Assert.Contains("systemctl --user enable agentteamforge.service", calls);
+        Assert.Equal(0, LoginAutostart.Apply(home, binary, state, false, Runner, "linux"));
+        Assert.False(LoginAutostart.IsInstalled(home, "linux"));
+
+        Assert.Equal(0, LoginAutostart.Apply(home, binary, state, true, Runner, "macos"));
+        var plist = File.ReadAllText(LoginAutostart.FilePath(home, "macos"));
+        Assert.Contains("<string>/tmp/atf binary</string>", plist);
+        Assert.Contains("<key>RunAtLoad</key><true/>", plist);
+        Assert.Contains("<key>PATH</key>", plist);
+        Assert.Equal(0, LoginAutostart.Apply(home, binary, state, false, Runner, "macos"));
+        Assert.False(LoginAutostart.IsInstalled(home, "macos"));
+    }
+
+    [Fact]
+    public void AutostartOnSpellingEnablesForConfiguredStateInTempHome()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        using var temp = new TempStateDir();
+        var dir = temp.File("state");
+        var home = temp.File("home");
+        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = dir },
+            (_, _) => throw new InvalidOperationException(), "/tmp/atf", homePath: home));
+
+        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["autostart"] = "on", ["apply"] = "true", ["state-dir"] = dir },
+            (_, _) => (0, ""), "/tmp/atf", homePath: home));
+        Assert.True(LoginAutostart.IsInstalled(home, "linux"));
     }
 }

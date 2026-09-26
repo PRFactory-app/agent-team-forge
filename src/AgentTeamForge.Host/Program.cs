@@ -72,7 +72,7 @@ catch (StateDirectoryException ex)
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: atf --version | setup --mode headless|herdr|wt [--state-dir DIR] [--apply|--check] | doctor [--state-dir DIR] | start|stop [--state-dir DIR] | uninstall [--purge] [--state-dir DIR] | prfactory connect|disconnect|status [--state-dir DIR] [--url HTTPS_URL --repo ID=DIR, token on stdin] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|web|fake-backend> --state-dir DIR [options]");
+    Console.Error.WriteLine("usage: atf --version | setup --mode headless|herdr|wt [--autostart[=off]] [--state-dir DIR] [--apply|--check] | doctor [--state-dir DIR] | start|stop [--state-dir DIR] | uninstall [--purge] [--state-dir DIR] | prfactory connect|disconnect|status [--state-dir DIR] [--url HTTPS_URL --repo ID=DIR, token on stdin] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|web|fake-backend> --state-dir DIR [options]");
     return 64;
 }
 
@@ -87,6 +87,12 @@ static Dictionary<string, string> ParseOptions(string[] rest)
         }
 
         var name = rest[i][2..];
+        var equals = name.IndexOf('=');
+        if (equals >= 0)
+        {
+            options[name[..equals]] = name[(equals + 1)..];
+            continue;
+        }
         var hasValue = i + 1 < rest.Length && !rest[i + 1].StartsWith("--", StringComparison.Ordinal);
         options[name] = hasValue ? rest[++i] : "true";
     }
