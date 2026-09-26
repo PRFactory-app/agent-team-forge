@@ -112,13 +112,12 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             // Known before the turn ends: a stopped turn stays resumable.
             yield return new BackendEvidence.Session(correlation, sessionId);
             var final = Array.Empty<byte>();
-            var oversized = false;
             await foreach (var line in ReadLinesAsync(_stdout, cancellationToken))
             {
                 if (line is null)
                 {
-                    oversized = true;
-                    break;
+                    output?.Invoke("status", "[stdout line omitted: too large]\n"u8.ToArray());
+                    continue;
                 }
                 try
                 {
@@ -131,13 +130,6 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
                 }
                 catch (JsonException) { }
             }
-            if (oversized)
-            {
-                TerminateOwnedChild();
-                yield return new BackendEvidence.ProtocolError("backend_output_too_large");
-                yield break;
-            }
-
             // A successful turn may itself mention these phrases; only a turn without a
             // result is checked for a missing native session.
             var interpreted = Interpret(correlation, final).ToList();
@@ -252,6 +244,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
         {
             var buffer = new MemoryStream();
             var chunk = new byte[16 * 1024];
+            var skipping = false;
             int read;
             while ((read = await stream.ReadAsync(chunk, cancellationToken)) > 0)
             {
@@ -259,21 +252,26 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
                 {
                     if (chunk[i] == (byte)'\n')
                     {
-                        yield return buffer.ToArray();
+                        yield return skipping ? null : buffer.ToArray();
                         buffer.SetLength(0);
+                        skipping = false;
                     }
-                    else
+                    else if (!skipping)
                     {
                         buffer.WriteByte(chunk[i]);
                         if (buffer.Length > MaxOutputBytes)
                         {
-                            yield return null;
-                            yield break;
+                            buffer.SetLength(0);
+                            skipping = true;
                         }
                     }
                 }
             }
-            if (buffer.Length > 0)
+            if (skipping)
+            {
+                yield return null;
+            }
+            else if (buffer.Length > 0)
             {
                 yield return buffer.ToArray();
             }

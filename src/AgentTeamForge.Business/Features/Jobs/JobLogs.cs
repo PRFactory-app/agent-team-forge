@@ -56,6 +56,7 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
         using var line = new MemoryStream();
         var cursor = afterCursor;
         var position = afterCursor;
+        var stream = "stdout";
         while (entries.Count < limit)
         {
             var page = Read(jobId, position);
@@ -83,7 +84,13 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
                 }
                 var text = line.Length <= 4 * 1024 * 1024 ? Encoding.UTF8.GetString(line.ToArray()).TrimEnd('\r') : "";
                 line.SetLength(0);
-                foreach (var entry in JobActivity.Normalize(plainOutput ? "plain" : backend, text))
+                if (text is "[stdout]" or "[stderr]")
+                {
+                    stream = text[1..^1];
+                    cursor = position + i + 1;
+                    continue;
+                }
+                foreach (var entry in JobActivity.Normalize(plainOutput ? "plain" : backend, text, stream))
                 {
                     entries.Add(entry);
                 }
@@ -127,24 +134,55 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
     /// <summary>Returns a synchronous sink used by the backend's stdout and stderr readers.</summary>
     public Action<string, ReadOnlyMemory<byte>> BeginRun(string jobId, string runId, string backend)
     {
-        string? lastStream = null;
+        var pending = new Dictionary<string, MemoryStream>();
+        var skipping = new HashSet<string>();
         TryAppend(jobId, Encoding.UTF8.GetBytes($"\n=== run {runId} job {jobId} backend {backend} {DateTimeOffset.UtcNow:O} ===\n"));
         return (stream, bytes) =>
         {
-            if (bytes.IsEmpty)
-            {
-                return;
-            }
-
             lock (gate)
             {
-                if (lastStream != stream)
+                if (!pending.TryGetValue(stream, out var line))
                 {
-                    TryAppendLocked(jobId, Encoding.UTF8.GetBytes($"\n[{stream}]\n"));
-                    lastStream = stream;
+                    line = new MemoryStream();
+                    pending.Add(stream, line);
                 }
-
-                TryAppendLocked(jobId, bytes.Span);
+                void Flush()
+                {
+                    TryAppendLocked(jobId, Encoding.UTF8.GetBytes($"[{stream}]\n"));
+                    if (skipping.Remove(stream))
+                    {
+                        TryAppendLocked(jobId, "[line omitted: too large]\n"u8);
+                    }
+                    else
+                    {
+                        TryAppendLocked(jobId, line.GetBuffer().AsSpan(0, (int)line.Length));
+                        TryAppendLocked(jobId, "\n"u8);
+                    }
+                    line.SetLength(0);
+                }
+                foreach (var value in bytes.Span)
+                {
+                    if (value == (byte)'\n')
+                    {
+                        Flush();
+                    }
+                    else if (!skipping.Contains(stream))
+                    {
+                        if (line.Length < MaxLogBytes)
+                        {
+                            line.WriteByte(value);
+                        }
+                        else
+                        {
+                            line.SetLength(0);
+                            skipping.Add(stream);
+                        }
+                    }
+                }
+                if (bytes.IsEmpty && (line.Length > 0 || skipping.Contains(stream)))
+                {
+                    Flush();
+                }
             }
         };
     }

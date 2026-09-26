@@ -119,7 +119,8 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
             }
 
             var turn = new TurnState();
-            await foreach (var line in ReadLinesAsync(_stdout, cancellationToken))
+            await foreach (var line in ReadLinesAsync(_stdout, cancellationToken,
+                () => output?.Invoke("status", "[stdout line omitted: too large]\n"u8.ToArray())))
             {
                 foreach (var evidence in turn.Observe(line, correlation))
                 {
@@ -292,7 +293,7 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
     }
 
     /// <summary>Splits stdout into lines; a line over <see cref="MaxLineBytes"/> is discarded, never buffered.</summary>
-    internal static async IAsyncEnumerable<ReadOnlyMemory<byte>> ReadLinesAsync(Stream stream, [EnumeratorCancellation] CancellationToken cancellationToken)
+    internal static async IAsyncEnumerable<ReadOnlyMemory<byte>> ReadLinesAsync(Stream stream, [EnumeratorCancellation] CancellationToken cancellationToken, Action? onOversized = null)
     {
         var buffer = new MemoryStream();
         var chunk = new byte[64 * 1024];
@@ -302,7 +303,11 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
             var read = await stream.ReadAsync(chunk, cancellationToken);
             if (read == 0)
             {
-                if (!skipping && buffer.Length > 0)
+                if (skipping)
+                {
+                    onOversized?.Invoke();
+                }
+                else if (buffer.Length > 0)
                 {
                     yield return buffer.ToArray();
                 }
@@ -320,8 +325,19 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
 
                 if (!skipping)
                 {
-                    buffer.Write(chunk, start, i - start);
-                    yield return buffer.ToArray();
+                    if (buffer.Length + i - start <= MaxLineBytes)
+                    {
+                        buffer.Write(chunk, start, i - start);
+                        yield return buffer.ToArray();
+                    }
+                    else
+                    {
+                        onOversized?.Invoke();
+                    }
+                }
+                else
+                {
+                    onOversized?.Invoke();
                 }
 
                 buffer.SetLength(0);
