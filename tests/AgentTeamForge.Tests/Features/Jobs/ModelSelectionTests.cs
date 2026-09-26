@@ -122,6 +122,12 @@ public sealed class ModelSelectionTests
         Assert.True(start.Elapsed < TimeSpan.FromSeconds(2));
         Assert.Empty(hung.GetModels("codex"));
         Assert.Equal("xxx", File.ReadAllText(calls));
+
+        // An unknown catalog is not cached for the daemon lifetime.
+        var retried = new BackendModelDiscovery(TimeSpan.FromMilliseconds(100), _ => script, unknownTtl: TimeSpan.Zero);
+        Assert.Empty(retried.GetModels("codex"));
+        Assert.Empty(retried.GetModels("codex"));
+        Assert.Equal("xxxxx", File.ReadAllText(calls));
     }
 
     [Theory]
