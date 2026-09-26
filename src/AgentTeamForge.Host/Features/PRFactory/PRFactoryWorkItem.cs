@@ -55,6 +55,16 @@ public sealed record PRFactoryCompletionRequest(bool Success, string? ResultMark
 public sealed record PRFactoryFailureRequest(string ErrorMessage, string ErrorDetails, bool ShouldRetry, string PartialResult, Guid? LeaseToken);
 public sealed record PRFactoryCompletionResponse(bool Accepted);
 public sealed record PRFactoryFailureResponse(bool Acknowledged);
+public sealed record PRFactoryCommand(Guid CommandId, string Kind, string TargetAgentName, string? Text);
+public sealed record PRFactoryCommandDrainResponse(List<PRFactoryCommand> Commands);
+public sealed record PRFactoryCommandAck(Guid CommandId, bool Accepted, string? Reason);
+public sealed record PRFactoryCommandAckRequest(Guid LeaseToken, List<PRFactoryCommandAck> Acks);
+public sealed record PRFactoryCommandAckResponse(int Applied);
+public sealed record PRFactoryStreamLine(string AgentName, long Seq, DateTimeOffset At, string Stream, string Text, string? RecordKind);
+public sealed record PRFactoryStreamEvent(string Kind, string? TeamId, string AgentName, string Backend, string? State,
+    Guid RepositoryId, string? SpawnedBy);
+public sealed record PRFactoryStreamBatch(Guid? LeaseToken, string BatchId, List<PRFactoryStreamEvent> Events, List<PRFactoryStreamLine> Lines);
+public sealed record PRFactoryStreamResponse(bool Accepted, Dictionary<string, long> AcceptedThroughSeq, int CreditLines, int CreditBytes);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true)]
 [JsonSerializable(typeof(PRFactoryPollResponse))]
@@ -66,4 +76,9 @@ public sealed record PRFactoryFailureResponse(bool Acknowledged);
 [JsonSerializable(typeof(PRFactoryCompletionResponse))]
 [JsonSerializable(typeof(PRFactoryFailureResponse))]
 [JsonSerializable(typeof(PRFactoryWorkItem))]
+[JsonSerializable(typeof(PRFactoryCommandDrainResponse))]
+[JsonSerializable(typeof(PRFactoryCommandAckRequest))]
+[JsonSerializable(typeof(PRFactoryCommandAckResponse))]
+[JsonSerializable(typeof(PRFactoryStreamBatch))]
+[JsonSerializable(typeof(PRFactoryStreamResponse))]
 internal sealed partial class PRFactoryWorkItemJson : JsonSerializerContext;

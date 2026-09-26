@@ -116,16 +116,46 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return new JoinTicket(teamId, reserved, ticket, expires);
     }
 
-    public JoinedMember? Join(string teamId, string ticket, DateTimeOffset now)
+    /// <summary>Replace an expired, never-used ticket for the same reserved member name.</summary>
+    public JoinTicket? RenewExpiredTicket(string teamId, string name, DateTimeOffset now, TimeSpan ttl)
+    {
+        using var db = database.OpenConnection();
+        using var command = db.CreateCommand();
+        var ticket = Secret();
+        var expires = now + ttl;
+        command.CommandText = """
+            UPDATE external_members SET ticket_hash=$hash,ticket_expires=$expires
+            WHERE team_id=$team AND name=$name AND ticket_used_at IS NULL AND left_at IS NULL AND ticket_expires<=$now
+            AND EXISTS (SELECT 1 FROM external_teams t WHERE t.team_id=$team AND t.closed_at IS NULL)
+            """;
+        command.Parameters.AddWithValue("$team", teamId);
+        command.Parameters.AddWithValue("$name", name);
+        command.Parameters.AddWithValue("$hash", Hash(ticket));
+        command.Parameters.AddWithValue("$expires", expires.ToString("O"));
+        command.Parameters.AddWithValue("$now", now.ToString("O"));
+        return command.ExecuteNonQuery() == 1 ? new JoinTicket(teamId, name, ticket, expires) : null;
+    }
+
+    public bool HasLeft(string teamId, string name)
+    {
+        using var db = database.OpenConnection();
+        using var command = db.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM external_members WHERE team_id=$team AND name=$name AND left_at IS NOT NULL";
+        command.Parameters.AddWithValue("$team", teamId);
+        command.Parameters.AddWithValue("$name", name);
+        return (long)command.ExecuteScalar()! > 0;
+    }
+
+    public (JoinedMember? Member, bool Left) Join(string teamId, string ticket, DateTimeOffset now)
     {
         using var db = database.OpenConnection();
         using var tx = db.BeginTransaction(deferred: false);
         using var select = db.CreateCommand();
         select.Transaction = tx;
         select.CommandText = """
-            SELECT m.name,m.ticket_used_at,m.token_hash,m.member_id FROM external_members m JOIN external_teams t ON t.team_id=m.team_id
+            SELECT m.name,m.ticket_used_at,m.token_hash,m.member_id,m.left_at,m.ticket_expires FROM external_members m JOIN external_teams t ON t.team_id=m.team_id
             WHERE m.team_id=$team AND m.ticket_hash=$hash
-            AND m.ticket_expires>$now AND m.left_at IS NULL AND t.closed_at IS NULL
+            AND t.closed_at IS NULL
             """;
         select.Parameters.AddWithValue("$team", teamId);
         select.Parameters.AddWithValue("$hash", Hash(ticket));
@@ -138,13 +168,21 @@ public sealed class ExternalMemberStore(JobDatabase database)
         {
             if (!reader.Read())
             {
-                return null;
+                return (null, false);
             }
 
             name = reader.GetString(0);
             used = !reader.IsDBNull(1);
             storedHash = reader.IsDBNull(2) ? null : reader.GetString(2);
             memberId = reader.GetString(3);
+            if (!reader.IsDBNull(4))
+            {
+                return (null, true);
+            }
+            if (string.CompareOrdinal(reader.GetString(5), now.ToString("O")) <= 0)
+            {
+                return (null, false);
+            }
         }
 
         // The ticket remains the recovery credential until expiry. Derivation makes a lost
@@ -153,7 +191,7 @@ public sealed class ExternalMemberStore(JobDatabase database)
         var token = Hash("atf-member:" + memberId + ":" + ticket);
         if (used)
         {
-            return storedHash == Hash(token) ? new JoinedMember(teamId, name, token) : null;
+            return (storedHash == Hash(token) ? new JoinedMember(teamId, name, token) : null, false);
         }
         using var update = db.CreateCommand();
         update.Transaction = tx;
@@ -167,15 +205,15 @@ public sealed class ExternalMemberStore(JobDatabase database)
         update.Parameters.AddWithValue("$token", Hash(token));
         if (update.ExecuteNonQuery() != 1)
         {
-            return null;
+            return (null, false);
         }
 
         tx.Commit();
-        return new JoinedMember(teamId, name, token);
+        return (new JoinedMember(teamId, name, token), false);
     }
 
     // 0 = unknown/revoked, 1 = left now, 2 = already left.
-    public int Leave(string token, DateTimeOffset now)
+    public (int State, string? Name) Leave(string token, DateTimeOffset now)
     {
         using var db = database.OpenConnection();
         using var tx = db.BeginTransaction(deferred: false);
@@ -183,7 +221,7 @@ public sealed class ExternalMemberStore(JobDatabase database)
         command.Transaction = tx;
         // Revoked members get no more doorbells for mail they never read.
         command.CommandText = """
-            UPDATE external_messages SET wake_key=NULL WHERE read_at IS NULL
+            UPDATE external_messages SET wake_key=NULL,read_at=$now WHERE read_at IS NULL
             AND recipient=(SELECT member_id FROM external_members WHERE token_hash=$hash AND active=1);
             UPDATE external_members SET active=0,left_at=$now,wake_key=NULL
             WHERE token_hash=$hash AND active=1;
@@ -193,12 +231,15 @@ public sealed class ExternalMemberStore(JobDatabase database)
         command.Parameters.AddWithValue("$hash", Hash(token));
         if ((long)command.ExecuteScalar()! != 1)
         {
-            command.CommandText = "SELECT count(*) FROM external_members WHERE token_hash=$hash AND active=0 AND left_at IS NOT NULL";
-            return (long)command.ExecuteScalar()! == 1 ? 2 : 0;
+            command.CommandText = "SELECT name FROM external_members WHERE token_hash=$hash AND active=0 AND left_at IS NOT NULL";
+            var previousName = command.ExecuteScalar() as string;
+            return (previousName is null ? 0 : 2, previousName);
         }
 
+        command.CommandText = "SELECT name FROM external_members WHERE token_hash=$hash";
+        var name = command.ExecuteScalar() as string;
         tx.Commit();
-        return 1;
+        return (1, name);
     }
 
     public bool CloseTeam(string teamId, DateTimeOffset now)
@@ -215,13 +256,34 @@ public sealed class ExternalMemberStore(JobDatabase database)
             return false;
         }
         command.CommandText = """
-            UPDATE external_members SET active=0,left_at=$now,token_hash=NULL,wake_key=NULL
+            UPDATE external_members SET active=0,left_at=$now,wake_key=NULL
             WHERE team_id=$team AND left_at IS NULL;
-            UPDATE external_messages SET wake_key=NULL WHERE team_id=$team;
+            UPDATE external_messages SET wake_key=NULL,read_at=COALESCE(read_at,$now) WHERE team_id=$team;
             """;
         command.ExecuteNonQuery();
         tx.Commit();
         return true;
+    }
+
+    public bool RevokeMember(string teamId, string name, DateTimeOffset now)
+    {
+        using var db = database.OpenConnection();
+        using var tx = db.BeginTransaction(deferred: false);
+        using var command = db.CreateCommand();
+        command.Transaction = tx;
+        command.CommandText = """
+            UPDATE external_members SET active=0,left_at=$now,wake_key=NULL
+            WHERE team_id=$team AND name=$name AND left_at IS NULL;
+            UPDATE external_messages SET wake_key=NULL,read_at=$now WHERE read_at IS NULL
+            AND recipient=(SELECT member_id FROM external_members WHERE team_id=$team AND name=$name);
+            SELECT count(*) FROM external_members WHERE team_id=$team AND name=$name AND left_at IS NOT NULL;
+            """;
+        command.Parameters.AddWithValue("$team", teamId);
+        command.Parameters.AddWithValue("$name", name);
+        command.Parameters.AddWithValue("$now", now.ToString("O"));
+        var revoked = (long)command.ExecuteScalar()! == 1;
+        tx.Commit();
+        return revoked;
     }
 
     public bool SendFromMember(string token, string text, DateTimeOffset now)
@@ -237,11 +299,12 @@ public sealed class ExternalMemberStore(JobDatabase database)
         using var command = db.CreateCommand();
         command.Transaction = tx;
         command.CommandText = """
-            INSERT INTO external_messages(team_id,sender,recipient,text,created_at,wake_key)
-            SELECT $team,$sender,'lead',$text,$now,wake_key FROM external_teams WHERE team_id=$team AND closed_at IS NULL
+            INSERT INTO external_messages(team_id,sender,recipient,sender_seq,text,created_at,wake_key)
+            SELECT $team,$sender,'lead',$position,$text,$now,wake_key FROM external_teams WHERE team_id=$team AND closed_at IS NULL
             """;
         command.Parameters.AddWithValue("$team", member.Value.Team);
         command.Parameters.AddWithValue("$sender", member.Value.Name);
+        command.Parameters.AddWithValue("$position", NextSenderSeq(db, tx, member.Value.Team, "lead", member.Value.Name));
         command.Parameters.AddWithValue("$text", text);
         command.Parameters.AddWithValue("$now", now.ToString("O"));
         if (command.ExecuteNonQuery() != 1)
@@ -253,21 +316,44 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return true;
     }
 
-    public bool SendToMember(string teamId, string name, string text, string sender, DateTimeOffset now)
+    public bool SendToMember(string teamId, string name, string text, string sender, DateTimeOffset now, string? commandId = null)
     {
         using var db = database.OpenConnection();
         using var tx = db.BeginTransaction(deferred: false);
         using var command = db.CreateCommand();
         command.Transaction = tx;
+        command.Parameters.AddWithValue("$team", teamId);
+        if (commandId is not null)
+        {
+            command.CommandText = "INSERT OR IGNORE INTO external_delivery_keys(team_id,command_id) VALUES ($team,$command)";
+            command.Parameters.AddWithValue("$command", commandId);
+            if (command.ExecuteNonQuery() == 0)
+            {
+                tx.Commit();
+                return true;
+            }
+        }
         command.CommandText = """
-            INSERT INTO external_messages(team_id,sender,recipient,text,created_at,wake_key)
-            SELECT m.team_id,$sender,m.member_id,$text,$now,m.wake_key
+            INSERT INTO external_messages(team_id,sender,recipient,sender_seq,text,created_at,wake_key)
+            SELECT m.team_id,$sender,m.member_id,$position,$text,$now,m.wake_key
             FROM external_members m JOIN external_teams t ON t.team_id=m.team_id
             WHERE m.team_id=$team AND t.closed_at IS NULL AND m.name=$name AND m.active=1
             """;
-        command.Parameters.AddWithValue("$team", teamId);
         command.Parameters.AddWithValue("$sender", sender);
         command.Parameters.AddWithValue("$name", name);
+        // A failed send rolls back this allocation with the transaction.
+        using (var recipient = db.CreateCommand())
+        {
+            recipient.Transaction = tx;
+            recipient.CommandText = "SELECT member_id FROM external_members WHERE team_id=$team AND name=$name AND active=1";
+            recipient.Parameters.AddWithValue("$team", teamId);
+            recipient.Parameters.AddWithValue("$name", name);
+            if (recipient.ExecuteScalar() is not string recipientId)
+            {
+                return false;
+            }
+            command.Parameters.AddWithValue("$position", NextSenderSeq(db, tx, teamId, recipientId, sender));
+        }
         command.Parameters.AddWithValue("$text", text);
         command.Parameters.AddWithValue("$now", now.ToString("O"));
         if (command.ExecuteNonQuery() != 1)
@@ -277,6 +363,23 @@ public sealed class ExternalMemberStore(JobDatabase database)
 
         tx.Commit();
         return true;
+    }
+
+    static long NextSenderSeq(SqliteConnection db, SqliteTransaction tx, string teamId, string recipient, string sender)
+    {
+        using var command = db.CreateCommand();
+        command.Transaction = tx;
+        command.CommandText = """
+            INSERT OR IGNORE INTO external_sender_cursors(team_id,recipient,sender) VALUES ($team,$recipient,$sender);
+            UPDATE external_sender_cursors SET high_water=high_water+1
+            WHERE team_id=$team AND recipient=$recipient AND sender=$sender;
+            SELECT high_water FROM external_sender_cursors
+            WHERE team_id=$team AND recipient=$recipient AND sender=$sender;
+            """;
+        command.Parameters.AddWithValue("$team", teamId);
+        command.Parameters.AddWithValue("$recipient", recipient);
+        command.Parameters.AddWithValue("$sender", sender);
+        return (long)command.ExecuteScalar()!;
     }
 
     public ExternalInbox? ReadMemberCompat(string token, long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent)
@@ -317,29 +420,30 @@ public sealed class ExternalMemberStore(JobDatabase database)
     {
         using var select = db.CreateCommand();
         select.Transaction = tx;
-        select.CommandText = "SELECT seq,sender,text,created_at,read_at FROM external_messages WHERE team_id=$team AND recipient=$recipient ORDER BY seq";
+        select.CommandText = "SELECT sender_seq,sender,text,created_at FROM external_messages WHERE team_id=$team AND recipient=$recipient ORDER BY seq";
         select.Parameters.AddWithValue("$team", teamId);
         select.Parameters.AddWithValue("$recipient", recipient);
         var positions = new Dictionary<string, long>(StringComparer.Ordinal);
         var cursors = new Dictionary<string, long>(StringComparer.Ordinal);
         var available = new List<ExternalMessage>();
+        using (var watermarks = db.CreateCommand())
+        {
+            watermarks.Transaction = tx;
+            watermarks.CommandText = "SELECT sender,high_water,cursor FROM external_sender_cursors WHERE team_id=$team AND recipient=$recipient";
+            watermarks.Parameters.AddWithValue("$team", teamId);
+            watermarks.Parameters.AddWithValue("$recipient", recipient);
+            using var reader = watermarks.ExecuteReader();
+            while (reader.Read())
+            {
+                positions[reader.GetString(0)] = reader.GetInt64(1);
+                cursors[reader.GetString(0)] = reader.GetInt64(2);
+            }
+        }
         using (var reader = select.ExecuteReader())
         {
             while (reader.Read())
             {
-                var sender = reader.GetString(1);
-                var position = positions.GetValueOrDefault(sender) + 1;
-                positions[sender] = position;
-                if (!reader.IsDBNull(4))
-                {
-                    cursors[sender] = position;
-                }
-                else
-                {
-                    cursors.TryAdd(sender, 0);
-                }
-
-                available.Add(new ExternalMessage(position, sender, reader.GetString(2), reader.GetString(3)));
+                available.Add(new ExternalMessage(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
             }
         }
         var floor = fromAgent is null ? 0 : Math.Max(cursors.GetValueOrDefault(fromAgent), sinceSeq ?? 0);
@@ -363,12 +467,9 @@ public sealed class ExternalMemberStore(JobDatabase database)
             using var update = db.CreateCommand();
             update.Transaction = tx;
             update.CommandText = """
-                WITH numbered AS (
-                    SELECT seq,sender,ROW_NUMBER() OVER (PARTITION BY sender ORDER BY seq) AS sender_seq
-                    FROM external_messages WHERE team_id=$team AND recipient=$recipient)
-                UPDATE external_messages SET read_at=$now WHERE seq IN
-                    (SELECT seq FROM numbered WHERE sender=$sender AND sender_seq<=$cursor)
-                AND read_at IS NULL
+                UPDATE external_messages SET read_at=$now
+                WHERE team_id=$team AND recipient=$recipient AND sender=$sender
+                AND sender_seq<=$cursor AND read_at IS NULL
                 """;
             update.Parameters.AddWithValue("$team", teamId);
             update.Parameters.AddWithValue("$recipient", recipient);
@@ -385,6 +486,17 @@ public sealed class ExternalMemberStore(JobDatabase database)
                 update.Parameters["$sender"].Value = sender;
                 update.Parameters["$cursor"].Value = cursor;
                 update.ExecuteNonQuery();
+                using var advance = db.CreateCommand();
+                advance.Transaction = tx;
+                advance.CommandText = """
+                    UPDATE external_sender_cursors SET cursor=$cursor
+                    WHERE team_id=$team AND recipient=$recipient AND sender=$sender AND cursor<$cursor
+                    """;
+                advance.Parameters.AddWithValue("$team", teamId);
+                advance.Parameters.AddWithValue("$recipient", recipient);
+                advance.Parameters.AddWithValue("$sender", sender);
+                advance.Parameters.AddWithValue("$cursor", cursor);
+                advance.ExecuteNonQuery();
             }
             cursors = updated;
         }
@@ -541,12 +653,6 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return new ExternalInbox(rows, next, more);
     }
 
-    // Keep open-team history so per-sender sequence numbers never reset after prune.
-    const string Settled = """
-        (team_id IN (SELECT team_id FROM external_teams WHERE closed_at IS NOT NULL)
-        OR recipient IN (SELECT member_id FROM external_members WHERE left_at IS NOT NULL))
-        """;
-
     public int Prune(DateTimeOffset cutoff, bool dryRun)
     {
         using var db = database.OpenConnection();
@@ -554,8 +660,8 @@ public sealed class ExternalMemberStore(JobDatabase database)
         using var command = db.CreateCommand();
         command.Transaction = tx;
         command.CommandText = dryRun
-            ? "SELECT count(*) FROM external_messages WHERE created_at<$cutoff AND " + Settled
-            : "DELETE FROM external_messages WHERE created_at<$cutoff AND " + Settled;
+            ? "SELECT count(*) FROM external_messages WHERE created_at<$cutoff AND read_at IS NOT NULL"
+            : "DELETE FROM external_messages WHERE created_at<$cutoff AND read_at IS NOT NULL";
         command.Parameters.AddWithValue("$cutoff", cutoff.ToString("O"));
         var count = dryRun ? Convert.ToInt32(command.ExecuteScalar()) : command.ExecuteNonQuery();
         if (!dryRun)
