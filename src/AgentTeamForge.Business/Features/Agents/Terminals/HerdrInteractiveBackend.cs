@@ -77,7 +77,16 @@ public sealed class HerdrInteractiveBackend : IJobBackend
         {
             var marker = "atf-corr:" + request.Correlation;
             var prompt = request.Instruction + "\n\n[AgentTeamForge correlation id: " + marker + " — internal marker, ignore this line]";
-            await control.PromptAsync(launch, prompt, cancellationToken);
+            try
+            {
+                await control.PromptAsync(launch, prompt, cancellationToken);
+            }
+            catch (HerdrLaunchException)
+            {
+                // Delivery is uncertain: report it as evidence (needs reconciliation) instead of
+                // letting a Herdr control fault halt the whole dispatcher.
+                return;
+            }
             _prompt = prompt;
             _lastPromptAt = DateTimeOffset.UtcNow;
             _promptAttempts = 1;
@@ -101,7 +110,12 @@ public sealed class HerdrInteractiveBackend : IJobBackend
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var status = await control.StatusAsync(launch, cancellationToken);
+                var status = await StatusAsync(cancellationToken);
+                if (status is null)
+                {
+                    yield return new BackendEvidence.ProtocolError("interactive_control_failed");
+                    yield break;
+                }
                 var output = transcripts.Read(launch, "atf-corr:" + request.Correlation, started);
                 if (output?.SessionId is { } nativeId && nativeId != session)
                 {
@@ -130,6 +144,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend
                 }
                 if (status == InteractiveAgentStatus.Gone)
                 {
+                    _completed = true; // Nothing left to observe; close our owned session on dispose.
                     yield return new BackendEvidence.ProtocolError("interactive_agent_exited");
                     yield break;
                 }
@@ -141,12 +156,32 @@ public sealed class HerdrInteractiveBackend : IJobBackend
                         yield return new BackendEvidence.ProtocolError("interactive_prompt_unobserved");
                         yield break;
                     }
-                    await control.PromptAsync(launch, _prompt!, cancellationToken);
+                    if (!await RetryPromptAsync(cancellationToken))
+                    {
+                        yield return new BackendEvidence.ProtocolError("interactive_control_failed");
+                        yield break;
+                    }
                     _lastPromptAt = DateTimeOffset.UtcNow;
                     _promptAttempts++;
                 }
                 await Task.Delay(250, cancellationToken);
             }
+        }
+
+        async Task<InteractiveAgentStatus?> StatusAsync(CancellationToken cancellationToken)
+        {
+            try { return await control.StatusAsync(launch, cancellationToken); }
+            catch (HerdrLaunchException) { return null; }
+        }
+
+        async Task<bool> RetryPromptAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                await control.PromptAsync(launch, _prompt!, cancellationToken);
+                return true;
+            }
+            catch (HerdrLaunchException) { return false; }
         }
 
         public void TerminateOwnedChild() => control.StopOwned(launch);

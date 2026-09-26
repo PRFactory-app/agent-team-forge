@@ -89,6 +89,43 @@ public sealed class HerdrInteractiveBackendTests
         finally { Directory.Delete(root, recursive: true); }
     }
 
+    [Fact]
+    public async Task HerdrControlFaultsBecomeEvidenceNotDispatcherFaults()
+    {
+        var failedPrompt = new HerdrInteractiveBackend(new FakeControl { FailPrompt = true }, new FakeReader(null), InteractiveAgentKind.Codex, Path.GetTempPath());
+        await using (var run = failedPrompt.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() }))
+        {
+            await run.DeliverAsync(CancellationToken.None);
+            Assert.Equal([new BackendEvidence.ProtocolError("interactive_delivery_not_confirmed")], await Collect(run));
+        }
+
+        var failedStatus = new HerdrInteractiveBackend(new FakeControl { FailStatus = true }, new FakeReader(null), InteractiveAgentKind.Codex, Path.GetTempPath());
+        await using (var run = failedStatus.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() }))
+        {
+            await run.DeliverAsync(CancellationToken.None);
+            Assert.Contains(new BackendEvidence.ProtocolError("interactive_control_failed"), await Collect(run));
+        }
+    }
+
+    [Fact]
+    public async Task ExitedAgentClosesItsOwnedSession()
+    {
+        var control = new FakeControl { Status = InteractiveAgentStatus.Gone };
+        var backend = new HerdrInteractiveBackend(control, new FakeReader(null), InteractiveAgentKind.Claude, Path.GetTempPath());
+        var run = backend.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() });
+        await run.DeliverAsync(CancellationToken.None);
+        Assert.Contains(new BackendEvidence.ProtocolError("interactive_agent_exited"), await Collect(run));
+        await run.DisposeAsync();
+        Assert.True(control.Stopped);
+    }
+
+    [Theory]
+    [InlineData("herdr --session atf-x exited 1: timeout", true)]
+    [InlineData("herdr --session atf-x exited 1: agent_prompt_stalled", true)]
+    [InlineData("herdr --session atf-x exited 1: agent_blocked", false)]
+    public void StalledOrTimedOutPromptIsObservedNotFatal(string message, bool unsettled) =>
+        Assert.Equal(unsettled, HerdrAgentControl.IsUnsettledPrompt(new HerdrLaunchException(message)));
+
     /// <summary>Opt-in live agent run; HerdrTerminal creates only an atf-test-* session.</summary>
     [Fact]
     public async Task RealHerdr_InteractiveCodexInOwnedTestSession()
@@ -161,16 +198,25 @@ public sealed class HerdrInteractiveBackendTests
             return Task.CompletedTask;
         }
 
+        public bool FailPrompt { get; init; }
+        public bool FailStatus { get; init; }
+        public InteractiveAgentStatus Status { get; init; } = InteractiveAgentStatus.Done;
+        public bool Stopped { get; private set; }
+
         public Task PromptAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken)
         {
+            if (FailPrompt)
+            {
+                throw new HerdrLaunchException("herdr agent prompt exited 1: agent_blocked");
+            }
             Prompt = prompt;
             return Task.CompletedTask;
         }
 
         public Task<InteractiveAgentStatus> StatusAsync(InteractiveLaunch launch, CancellationToken cancellationToken) =>
-            Task.FromResult(InteractiveAgentStatus.Done);
+            FailStatus ? throw new HerdrLaunchException("herdr agent get exited 1: io") : Task.FromResult(Status);
 
-        public void StopOwned(InteractiveLaunch launch) { }
+        public void StopOwned(InteractiveLaunch launch) => Stopped = true;
     }
 
     sealed class FakeReader(InteractiveTranscript? output) : IInteractiveTranscriptReader

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
@@ -5,7 +6,8 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 /// <summary>Herdr's native agent commands keep input and lifecycle tied to the owned pane.</summary>
 internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentControl
 {
-    readonly Dictionary<string, (OwnedHerdrSession Session, HerdrTabBinding Binding)> _runs = [];
+    // stop_job terminates from another thread while the dispatcher is still polling.
+    readonly ConcurrentDictionary<string, (OwnedHerdrSession Session, HerdrTabBinding Binding)> _runs = [];
 
     public async Task StartAsync(InteractiveLaunch launch, CancellationToken cancellationToken)
     {
@@ -20,7 +22,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         try
         {
             var binding = await terminal.OpenAgentTabAsync(session, launch.AgentName, launch.WorkingDirectory, launch.BootstrapPath, cancellationToken);
-            _runs.Add(launch.AgentName, (session, binding));
+            _runs[launch.AgentName] = (session, binding);
             var args = new List<string> { "agent", "start", launch.AgentName, "--kind", Kind(launch.Kind), "--pane", binding.PaneId, "--timeout", "15000", "--" };
             args.AddRange(AgentArguments(launch));
             await terminal.RunOwnedAsync(session, cancellationToken, [.. args]);
@@ -29,7 +31,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         {
             try { await terminal.StopOwnedSessionAsync(session, CancellationToken.None); }
             catch (HerdrLaunchException) { /* The original fault remains uncertain; never touch another session. */ }
-            _runs.Remove(launch.AgentName);
+            _runs.TryRemove(launch.AgentName, out _);
             throw;
         }
     }
@@ -52,10 +54,11 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
                 throw new HerdrLaunchException("Herdr did not confirm agent prompt submission");
             }
         }
-        catch (HerdrLaunchException e) when (e.Message.Contains("timeout", StringComparison.Ordinal))
+        catch (HerdrLaunchException e) when (IsUnsettledPrompt(e))
         {
-            // A long turn can outlive the wait. The prompt may already be executing;
-            // ReadEvidenceAsync continues observing this exact bound pane/transcript.
+            // A long turn can outlive the wait, and a fresh TUI can accept input without an
+            // observed state change (agent_prompt_stalled). The prompt may already be executing;
+            // ReadEvidenceAsync keeps observing this exact bound pane/transcript and retries once.
         }
     }
 
@@ -88,9 +91,12 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         if (_runs.TryGetValue(launch.AgentName, out var run))
         {
             terminal.StopOwnedSessionAsync(run.Session, CancellationToken.None).GetAwaiter().GetResult();
-            _runs.Remove(launch.AgentName);
+            _runs.TryRemove(launch.AgentName, out _);
         }
     }
+
+    internal static bool IsUnsettledPrompt(HerdrLaunchException e) =>
+        e.Message.Contains("timeout", StringComparison.Ordinal) || e.Message.Contains("agent_prompt_stalled", StringComparison.Ordinal);
 
     (OwnedHerdrSession Session, HerdrTabBinding Binding) Binding(InteractiveLaunch launch) =>
         _runs.TryGetValue(launch.AgentName, out var binding) ? binding : throw new HerdrLaunchException("interactive run is not bound to an owned tab");
