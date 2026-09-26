@@ -56,6 +56,13 @@ There must be no silent fallback to headless, tmux, or a terminal other than the
 one selected. Noninteractive installation requires an equivalent explicit
 parameter or configuration value.
 
+For Herdr and Windows Terminal, `ATF_INTERACTIVE_STARTUP_TIMEOUT_SECONDS`
+sets the readiness and native delivery confirmation window. It defaults to 180
+seconds and accepts 30–900 seconds. A timed-out or ambiguous prompt is never
+resent; the job stays under observation for a correlated native user record
+before it becomes `needs_reconciliation`. The daemon's default interactive
+attempt deadline also leaves room for both startup and confirmation windows.
+
 Changing the default mode affects new agents. Existing agents' actual mode and
 terminal binding must not be rewritten as though they had moved. A per-job
 override is not needed in the PoC; separate test profiles can exercise both

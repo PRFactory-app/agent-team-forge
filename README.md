@@ -112,6 +112,8 @@ under the daemon state directory. The job view and list show its path and branch
 follow-ups reuse it. Worktrees remain for manual inspection and cleanup.
 `stop_job(job_id)` (`atf client stop ID`) cancels a queued or running job and kills
 its process tree; the job ends `cancelled` and its session can still be followed up.
+For `needs_reconciliation`, it stops only a verified owned agent; otherwise it
+returns `owned_agent_not_verified` and leaves the fence in place.
 `timeout_s` on `submit_job`/`follow_up` (`--timeout S`) cancels a running job with
 reason `timeout`; `queue_ttl_s` (`--queue-ttl S`) cancels one that has not started
 in time (reason `queue_ttl`). Both are off by default.

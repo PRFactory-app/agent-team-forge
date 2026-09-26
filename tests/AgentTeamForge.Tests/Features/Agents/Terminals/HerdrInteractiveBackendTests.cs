@@ -416,7 +416,7 @@ public sealed class HerdrInteractiveBackendTests
     [Fact]
     public async Task HerdrControlFaultsBecomeEvidenceNotDispatcherFaults()
     {
-        var failedPrompt = new HerdrInteractiveBackend(new FakeControl { FailPrompt = true }, new FakeReader(null), InteractiveAgentKind.Codex, Path.GetTempPath());
+        var failedPrompt = new HerdrInteractiveBackend(new FakeControl { FailPrompt = true }, new FakeReader(null), InteractiveAgentKind.Codex, Path.GetTempPath(), startupTimeout: TimeSpan.FromMilliseconds(20));
         await using (var run = failedPrompt.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() }))
         {
             await run.DeliverAsync(CancellationToken.None);
@@ -429,6 +429,21 @@ public sealed class HerdrInteractiveBackendTests
             await run.DeliverAsync(CancellationToken.None);
             Assert.Contains(new BackendEvidence.ProtocolError("interactive_control_failed"), await Collect(run));
         }
+    }
+
+    [Fact]
+    public async Task UncertainPromptCompletesWhenNativeRecordAppearsLater()
+    {
+        var control = new FakeControl { FailPrompt = true };
+        var reader = new DelayedReader(2, new InteractiveTranscript("native", "finished", Completed: true));
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Codex,
+            Path.GetTempPath(), startupTimeout: TimeSpan.FromSeconds(2));
+        await using var run = backend.Start(new BackendRequest("job", "corr", "work", "") { WorkingDirectory = Path.GetTempPath() });
+        await run.DeliverAsync(CancellationToken.None);
+        var evidence = await Collect(run);
+        Assert.Contains(new BackendEvidence.Ack("corr"), evidence);
+        Assert.Contains(new BackendEvidence.Result("corr", "finished"), evidence);
+        Assert.DoesNotContain(evidence, item => item is BackendEvidence.ProtocolError);
     }
 
     [Fact]
@@ -471,7 +486,7 @@ public sealed class HerdrInteractiveBackendTests
     {
         var control = new FakeControl { Status = InteractiveAgentStatus.Idle };
         var reader = new FakeReader(interim ? new InteractiveTranscript("native-1", "let me check", ["let me check"]) : null);
-        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Codex, Path.GetTempPath(), TimeSpan.FromMilliseconds(600));
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Codex, Path.GetTempPath(), TimeSpan.FromMilliseconds(600), TimeSpan.FromMilliseconds(600));
         var run = backend.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() });
         await run.DeliverAsync(CancellationToken.None);
 
@@ -481,7 +496,7 @@ public sealed class HerdrInteractiveBackendTests
         Assert.Equal(1, control.Prompts);
         Assert.DoesNotContain(evidence, e => e is BackendEvidence.Result);
         Assert.Equal(interim, evidence.Any(e => e is BackendEvidence.Ack));
-        Assert.Equal(new BackendEvidence.ProtocolError("interactive_completion_unobserved"), evidence[^1]);
+        Assert.Equal(new BackendEvidence.ProtocolError(interim ? "interactive_completion_unobserved" : "interactive_delivery_not_confirmed"), evidence[^1]);
         Assert.False(control.Stopped); // Uncertain tabs are kept, with or without a native session ID.
     }
 
@@ -649,6 +664,14 @@ public sealed class HerdrInteractiveBackendTests
             Interrupts++;
             return Task.CompletedTask;
         }
+    }
+
+    sealed class DelayedReader(int emptyReads, InteractiveTranscript result) : IInteractiveTranscriptReader
+    {
+        int _reads;
+        public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started) =>
+            Interlocked.Increment(ref _reads) <= emptyReads ? null : result;
+        public string? FindPiSessionDirectory(string root, string sessionId) => null;
     }
 
     sealed class FakeReader(InteractiveTranscript? output) : IInteractiveTranscriptReader

@@ -44,6 +44,10 @@ internal sealed class WtTabControl : IWtTabControl
             File.Delete(sidecar);
         }
 
+        if (launch.JobId is { } jobId)
+        {
+            await File.WriteAllTextAsync(Path.ChangeExtension(wrapper, ".job"), jobId, Encoding.ASCII, cancellationToken);
+        }
         await File.WriteAllTextAsync(promptFile, prompt, Encoding.UTF8, cancellationToken);
         if (launch.Kind == InteractiveAgentKind.Codex)
         {
@@ -104,14 +108,16 @@ internal sealed class WtTabControl : IWtTabControl
     async Task AwaitTabAsync(InteractiveLaunch launch, string wrapper, string sidecar, Func<(bool Exited, int Code)> status, CancellationToken cancellationToken)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(12));
+        deadline.CancelAfter(InteractiveStartup.Timeout);
         while (true)
         {
             if (TryReadOwned(sidecar, wrapper) is { } tab && TryIdentity(tab.Pid) == tab.Created)
             {
                 _tabs[launch.AgentName] = tab;
                 WindowsTabJob.Assign(tab.Pid);
-                await Task.Delay(TimeSpan.FromSeconds(2), deadline.Token);
+                try { await Task.Delay(TimeSpan.FromSeconds(2), deadline.Token); }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                { throw new IOException("interactive tab readiness timed out"); }
                 if (!IsAlive(launch))
                 {
                     _tabs.TryRemove(launch.AgentName, out _);
@@ -124,19 +130,33 @@ internal sealed class WtTabControl : IWtTabControl
             {
                 throw new IOException($"interactive launcher exited {code}");
             }
-            await Task.Delay(100, deadline.Token);
+            try { await Task.Delay(100, deadline.Token); }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            { throw new IOException("interactive tab readiness timed out"); }
         }
     }
 
-    public int? ProcessId(InteractiveLaunch launch) =>
-        _tabs.TryGetValue(launch.AgentName, out var tab) ? tab.Pid : null;
+    OwnedTab? Owned(InteractiveLaunch launch)
+    {
+        if (_tabs.TryGetValue(launch.AgentName, out var existing) && TryIdentity(existing.Pid) == existing.Created)
+        {
+            return existing;
+        }
+        // The wrapper may write its sidecar after the launch wait expired.
+        var sidecar = Path.ChangeExtension(launch.BootstrapPath, ".pid");
+        var found = TryReadOwned(sidecar, launch.BootstrapPath);
+        if (found is null || TryIdentity(found.Pid) != found.Created) { return null; }
+        _tabs[launch.AgentName] = found;
+        return found;
+    }
 
-    public bool IsAlive(InteractiveLaunch launch) =>
-        _tabs.TryGetValue(launch.AgentName, out var tab) && TryIdentity(tab.Pid) == tab.Created;
+    public int? ProcessId(InteractiveLaunch launch) => Owned(launch)?.Pid;
+
+    public bool IsAlive(InteractiveLaunch launch) => Owned(launch) is not null;
 
     public void StopOwned(InteractiveLaunch launch)
     {
-        if (!_tabs.TryGetValue(launch.AgentName, out var tab))
+        if (Owned(launch) is not { } tab)
         {
             return;
         }
@@ -177,6 +197,7 @@ internal sealed class WtTabControl : IWtTabControl
         try { File.Delete(tab.Sidecar); } catch (IOException) { }
         try { File.Delete(tab.Wrapper); } catch (IOException) { }
         try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".prompt.txt")); } catch (IOException) { }
+        try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".job")); } catch (IOException) { }
         try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".hook.ps1")); } catch (IOException) { }
         try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".hook.cmd")); } catch (IOException) { }
         return true;

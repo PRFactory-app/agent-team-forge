@@ -230,7 +230,10 @@ With the daemon running, `atf prune --dry-run` previews; `atf prune` removes
 eligible completed, failed, or cancelled jobs older than 30 days. Automatic pruning runs at startup and daily, deleting matching logs but leaving worktrees.
 
 `stop_job` / `atf client stop JOB_ID` cancels an individual queued or running
-job. `atf stop` stops the whole daemon.
+job. For `needs_reconciliation`, it stops a live agent only when ATF can verify
+ownership, then records `cancelled` with reason `stopped` and releases the session
+fence. Otherwise it returns `owned_agent_not_verified` without signaling a PID.
+`atf stop` stops the whole daemon.
 
 ## Developer build or publish
 

@@ -67,6 +67,7 @@ public static class JobErrors
     public const string NotFound = "not_found";
     public const string DaemonUnhealthy = "daemon_unhealthy";
     public const string BackendUnavailable = "backend_unavailable";
+    public const string OwnershipNotProven = "owned_agent_not_verified";
     public const string ParentNotReady = "parent_not_ready";
     public const string SessionExpired = "session_expired";
     public const string CwdNotGitRepo = "cwd_not_git_repo";

@@ -93,6 +93,7 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
         bool _deliveryFailed;
 
         public int? ProcessId => _process.Id;
+        public bool OwnedChildAlive => !_process.HasExited;
 
         public async Task DeliverAsync(CancellationToken cancellationToken)
         {

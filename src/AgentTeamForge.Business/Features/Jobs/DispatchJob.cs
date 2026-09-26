@@ -23,6 +23,7 @@ public sealed class DispatchJob : IDisposable
     readonly SemaphoreSlim _signal = new(0);
     readonly CancellationTokenSource _halted = new();
     readonly ConcurrentDictionary<string, ActiveRun> _running = new();
+    readonly ConcurrentDictionary<string, IBackendRun> _reconciledWindows = new();
     readonly SemaphoreSlim _claimGate = new(1, 1);
     readonly Lock _haltClaimGate = new();
     readonly JobStore store;
@@ -80,6 +81,54 @@ public sealed class DispatchJob : IDisposable
             active.TerminateOnce(backend => TryTerminate(backend, jobId));
             try { active.Stop.Cancel(); }
             catch (ObjectDisposedException) { } // The attempt just finished.
+        }
+    }
+
+    /// <summary>Stops a quarantined agent only through verified backend ownership.</summary>
+    public bool StopReconciled(JobRecord job)
+    {
+        if (job.Status != JobStatus.NeedsReconciliation) { return false; }
+        var backend = backends.Resolve(job.Backend);
+        if (backend is HerdrInteractiveBackend herdr)
+        {
+            lock (herdr.SessionStopGate)
+            {
+                var peers = store.GetSessionJobs(job.JobId);
+                if (!herdr.HasOwnedJobs(peers) || !herdr.StopOwnedJobs(peers)) { return false; }
+                return true;
+            }
+        }
+        if (backend is WtInteractiveBackend wt) { return wt.StopOwnedJob(job.JobId); }
+        // While the attempt is still unwinding, its held Process is the only
+        // trustworthy Windows ownership proof. Never reconstruct a handle from a PID.
+        if (_running.TryGetValue(job.JobId, out var active) && active.BackendRun is { OwnedChildAlive: true }
+            && active.TerminateOnce(run => run!.TerminateOwnedChild()))
+        {
+            try { active.Stop.Cancel(); } catch (ObjectDisposedException) { }
+            return true;
+        }
+        if (_reconciledWindows.TryGetValue(job.JobId, out var retained) && retained.OwnedChildAlive)
+        {
+            retained.TerminateOwnedChild();
+            return true;
+        }
+        var runs = store.GetRuns(job.JobId);
+        if (runs.Count == 0 || !OrphanedBackendProcess.HasMarkedProcess([runs[^1].Correlation],
+            runs[^1].BackendPid is int pid ? [pid] : [])) { return false; }
+        OrphanedBackendProcess.TerminateMarked([runs[^1].Correlation]);
+        return !OrphanedBackendProcess.HasMarkedProcess([runs[^1].Correlation],
+            runs[^1].BackendPid is int knownPid ? [knownPid] : []);
+    }
+
+    public void ForgetReconciledOwnership(JobRecord job)
+    {
+        if (backends.Resolve(job.Backend) is HerdrInteractiveBackend herdr)
+        {
+            herdr.ForgetStoppedJobs(store.GetSessionJobs(job.JobId));
+        }
+        if (_reconciledWindows.TryRemove(job.JobId, out var retained))
+        {
+            _ = DisposeQuietly(retained);
         }
     }
 
@@ -341,7 +390,13 @@ public sealed class DispatchJob : IDisposable
         {
             // The deadline starts before any backend effect, so start and delivery are bounded too.
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, stopRequested.Token);
-            deadline.CancelAfter(limits.MaxFakeRuntime);
+            // Interactive launch and native transcript confirmation can exceed the fake
+            // backend's short default runtime on a loaded desktop.
+            var runtime = backends.Resolve(claim.Job.Backend) is HerdrInteractiveBackend or WtInteractiveBackend
+                ? TimeSpan.FromTicks(Math.Max(limits.MaxFakeRuntime.Ticks,
+                    (InteractiveStartup.Timeout * 2 + TimeSpan.FromSeconds(90)).Ticks))
+                : limits.MaxFakeRuntime;
+            deadline.CancelAfter(runtime);
             checkpoints.Hit(DurabilityCheckpoints.AttemptAfterCommit);
 
             // A job timeout ends the attempt through the same cancel path as a stop.
@@ -468,7 +523,6 @@ public sealed class DispatchJob : IDisposable
         }
         finally
         {
-            _running.TryRemove(run.JobId, out _);
             // An interrupt kills before it cancels, so the turn can end first.
             if (stopRequested.IsCancellationRequested || active.Terminated)
             {
@@ -477,7 +531,15 @@ public sealed class DispatchJob : IDisposable
                 OrphanedBackendProcess.TerminateMarked([run.Correlation]);
             }
 
-            await DisposeQuietly(backendRun);
+            if (OperatingSystem.IsWindows() && backendRun is { OwnedChildAlive: true }
+                && store.GetJob(run.JobId)?.Status == JobStatus.NeedsReconciliation)
+            {
+                // Windows cannot re-prove a terminal job's PID after its Process
+                // handle is disposed. Retain that handle for an explicit stop.
+                _reconciledWindows[run.JobId] = backendRun;
+            }
+            else { await DisposeQuietly(backendRun); }
+            _running.TryRemove(run.JobId, out _);
             if (backendRun?.OwnedSessionStopped == true)
             {
                 try { store.ReconcileStoppedJob(run.JobId); }
@@ -569,13 +631,12 @@ public sealed class DispatchJob : IDisposable
 
         public bool Terminated => Volatile.Read(ref _terminated) != 0;
 
-        public void TerminateOnce(Action<IBackendRun?> terminate)
+        public bool TerminateOnce(Action<IBackendRun?> terminate)
         {
             var backendRun = Volatile.Read(ref BackendRun);
-            if (backendRun is not null && Interlocked.Exchange(ref _terminated, 1) == 0)
-            {
-                terminate(backendRun);
-            }
+            if (backendRun is null || Interlocked.Exchange(ref _terminated, 1) != 0) { return false; }
+            terminate(backendRun);
+            return true;
         }
     }
 

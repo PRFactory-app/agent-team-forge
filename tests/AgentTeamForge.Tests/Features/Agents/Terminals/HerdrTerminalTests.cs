@@ -236,7 +236,7 @@ public class HerdrTerminalTests
             var fake = new FakeHerdr { BootstrapFromTab = true };
             // No transcript ever appears, so no native session ID is learned.
             var backend = new HerdrInteractiveBackend(new HerdrAgentControl(Terminal(fake)), new InteractiveTranscriptReader(name => name == "CODEX_HOME" ? state : null),
-                InteractiveAgentKind.Codex, state, TimeSpan.FromMilliseconds(300));
+                InteractiveAgentKind.Codex, state, TimeSpan.FromMilliseconds(300), TimeSpan.FromMilliseconds(600));
             var job = f.Submit("no native id");
             var claim = f.Store.BeginNextAttempt()!;
             using (var dispatcher = new AgentTeamForge.Business.Features.Jobs.DispatchJob(f.Store, backend, f.Limits,
@@ -328,7 +328,7 @@ public class HerdrTerminalTests
                     : new CapturedProcess(false, 1, $$$"""{"error":{"code":"{{{code}}}"}}""", false, "", false),
             };
             var backend = new HerdrInteractiveBackend(new HerdrAgentControl(Terminal(fake)), new InteractiveTranscriptReader(name => name == "CODEX_HOME" ? state : null),
-                InteractiveAgentKind.Codex, state, TimeSpan.FromMilliseconds(500));
+                InteractiveAgentKind.Codex, state, TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(600));
             await using var run = backend.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = state });
             await run.DeliverAsync(CancellationToken.None);
 
@@ -344,7 +344,7 @@ public class HerdrTerminalTests
             // Herdr's own wait timeout/stall may hide a delivered prompt: keep observing, then uncertain.
             // A CLI deadline is not proof either way: delivery is unconfirmed, never resent.
             Assert.DoesNotContain(evidence, e => e is BackendEvidence.Ack);
-            Assert.Equal(new BackendEvidence.ProtocolError("interactive_completion_unobserved"), evidence[^1]);
+            Assert.Equal(new BackendEvidence.ProtocolError("interactive_delivery_not_confirmed"), evidence[^1]);
         }
         finally { Directory.Delete(state, recursive: true); }
     }

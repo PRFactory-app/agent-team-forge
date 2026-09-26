@@ -1,6 +1,10 @@
 using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
+using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Sqlite;
+using AgentTeamForge.Tests.Support;
 
 namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 
@@ -35,7 +39,7 @@ public sealed class WtInteractiveBackendTests
     public async Task FailedTabLaunchNeverReportsDelivery()
     {
         var tabs = new FakeTabs { FailLaunch = true };
-        var backend = new WtInteractiveBackend(tabs, new FakeReader(null), InteractiveAgentKind.Claude, Path.GetTempPath());
+        var backend = new WtInteractiveBackend(tabs, new FakeReader(null), InteractiveAgentKind.Claude, Path.GetTempPath(), "wt", TimeSpan.FromMilliseconds(20));
         await using var run = backend.Start(new BackendRequest("job", "corr", "work", "") { WorkingDirectory = Path.GetTempPath() });
         await run.DeliverAsync(CancellationToken.None);
         var evidence = new List<BackendEvidence>();
@@ -45,6 +49,49 @@ public sealed class WtInteractiveBackendTests
         }
 
         Assert.Equal([new BackendEvidence.ProtocolError("interactive_delivery_not_confirmed")], evidence);
+    }
+
+    [Fact]
+    public async Task LateTabLaunchCompletesAfterCorrelatedNativeRecord()
+    {
+        var tabs = new LateSidecarTabs();
+        var reader = new SidecarReader(tabs);
+        var backend = new WtInteractiveBackend(tabs, reader, InteractiveAgentKind.Codex,
+            Path.GetTempPath(), "wt", TimeSpan.FromSeconds(2));
+        await using var run = backend.Start(new BackendRequest("job", "corr", "work", "") { WorkingDirectory = Path.GetTempPath() });
+        await run.DeliverAsync(CancellationToken.None);
+        Assert.Null(run.ProcessId); // The launch wait expired before its sidecar appeared.
+        var evidence = new List<BackendEvidence>();
+        await foreach (var item in run.ReadEvidenceAsync(CancellationToken.None)) { evidence.Add(item); }
+        Assert.Equal(4242, run.ProcessId);
+        Assert.Equal(1, tabs.Starts);
+        Assert.Contains(new BackendEvidence.Ack("corr"), evidence);
+        Assert.Contains(new BackendEvidence.Result("corr", "finished"), evidence);
+        Assert.DoesNotContain(evidence, item => item is BackendEvidence.ProtocolError);
+    }
+
+    [Fact]
+    public async Task FencedWtJobStopsOnlyItsOwnedTab()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("wt-fenced");
+        var claim = f.Store.BeginNextAttempt()!;
+        var tabs = new FakeTabs();
+        var backend = new WtInteractiveBackend(tabs, new FakeReader(null), InteractiveAgentKind.Codex,
+            Path.GetTempPath(), "wt", TimeSpan.FromMilliseconds(20));
+        var run = backend.Start(new BackendRequest(job.JobId, claim.Correlation, "work", "") { WorkingDirectory = Path.GetTempPath() });
+        await run.DeliverAsync(CancellationToken.None);
+        await run.DisposeAsync();
+        Assert.True(f.Store.EndUnsuccessfully(new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation),
+            JobStatus.NeedsReconciliation, "interactive_delivery_not_confirmed"));
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None,
+            f.Admission, _ => { });
+        var stopped = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
+            stopReconciled: dispatcher.StopReconciled).Execute(job.JobId);
+        Assert.Equal("stopped", stopped.Outcome);
+        Assert.True(tabs.Stopped);
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
     }
 
     [Fact]
@@ -257,6 +304,28 @@ public sealed class WtInteractiveBackendTests
         public bool IsAlive(InteractiveLaunch launch) => !Stopped;
         public int? ProcessId(InteractiveLaunch launch) => Prompt.Length > 0 ? 4242 : null;
         public void StopOwned(InteractiveLaunch launch) => Stopped = true;
+    }
+
+    sealed class LateSidecarTabs : IWtTabControl
+    {
+        int _probes;
+        public int Starts { get; private set; }
+        public void Preflight(InteractiveAgentKind kind) { }
+        public Task StartAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken)
+        {
+            Starts++;
+            throw new IOException("tab readiness timed out after handing off the wrapper");
+        }
+        public bool IsAlive(InteractiveLaunch launch) => Interlocked.Increment(ref _probes) > 2;
+        public int? ProcessId(InteractiveLaunch launch) => Volatile.Read(ref _probes) > 2 ? 4242 : null;
+        public void StopOwned(InteractiveLaunch launch) { }
+    }
+
+    sealed class SidecarReader(LateSidecarTabs tabs) : IInteractiveTranscriptReader
+    {
+        public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started) =>
+            tabs.IsAlive(launch) ? new InteractiveTranscript("native", "finished", Completed: true) : null;
+        public string? FindPiSessionDirectory(string root, string sessionId) => null;
     }
 
     sealed class FakeReader(InteractiveTranscript? transcript) : IInteractiveTranscriptReader

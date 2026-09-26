@@ -53,7 +53,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         }
         // Agent detection can precede the first rendered input editor. Require a
         // settled ready state before sending any bytes, including on resumed panes.
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        var deadline = DateTimeOffset.UtcNow.Add(InteractiveStartup.Timeout);
         DateTimeOffset? readySince = null;
         while (true)
         {

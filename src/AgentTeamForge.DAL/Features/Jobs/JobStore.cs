@@ -297,6 +297,30 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return new CancelOutcome(job, running, changed);
     });
 
+    /// <summary>Records a verified stop of an uncertain run and releases its session fence.</summary>
+    public CancelOutcome CancelReconciled(string jobId, string principal, string team) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        var job = GetJob(connection, tx, jobId);
+        if (job is null || job.Principal != principal || job.Team != team)
+        {
+            return new CancelOutcome(null, false, false);
+        }
+        if (job.Status != JobStatus.NeedsReconciliation)
+        {
+            return new CancelOutcome(job, false, false);
+        }
+        var now = Now();
+        Execute(connection, tx, "UPDATE runs SET state='cancelled', reason_code='stopped', finished_at=$now WHERE job_id=$id AND generation=(SELECT max(generation) FROM runs WHERE job_id=$id)",
+            ("$id", jobId), ("$now", now));
+        Execute(connection, tx, """
+            UPDATE jobs SET status='cancelled', session_fenced=0, reason_code='stopped', updated_at=$now WHERE job_id=$id;
+            INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'cancelled', $now);
+            """, ("$id", jobId), ("$now", now));
+        tx.Commit();
+        return new CancelOutcome(GetJob(connection, null, jobId), false, true);
+    });
+
     static bool CancelInTransaction(SqliteConnection connection, SqliteTransaction tx, JobRecord job, string reason)
     {
         if (job.Status is not (JobStatus.Queued or JobStatus.Running))

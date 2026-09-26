@@ -86,6 +86,7 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
         bool _deliveryFailed;
 
         public int? ProcessId => _process.Id;
+        public bool OwnedChildAlive => !_process.HasExited;
 
         public async Task DeliverAsync(CancellationToken cancellationToken)
         {

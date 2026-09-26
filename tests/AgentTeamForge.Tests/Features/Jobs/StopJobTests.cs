@@ -1,4 +1,5 @@
 using AgentTeamForge.Business.Features.Agents.Backends;
+using System.Diagnostics;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
@@ -55,6 +56,76 @@ public sealed class StopJobTests
         await nextDispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
         Assert.Equal("session-1", resumed.Started.Single().ResumeSessionId);
         Assert.Equal(JobStatus.Completed, f.Store.GetJob(next.Job!.JobId)!.Status);
+    }
+
+    [Fact]
+    public void Fenced_job_stops_only_marked_live_process_and_releases_fence()
+    {
+        if (!OperatingSystem.IsLinux()) { return; }
+        using var f = new JobFixture();
+        var job = f.Submit("fenced");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(f.Store.EndUnsuccessfully(run, JobStatus.NeedsReconciliation, "interactive_delivery_not_confirmed"));
+        var info = new ProcessStartInfo("sleep", ["300"]) { UseShellExecute = false };
+        OrphanedBackendProcess.Mark(info, claim.Correlation);
+        using var process = Process.Start(info)!;
+        try
+        {
+            using var dispatcher = new DispatchJob(f.Store, new ScriptedBackend(_ => []), f.Limits,
+                DurabilityCheckpoints.None, f.Admission, _ => { });
+            var stop = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
+                stopReconciled: dispatcher.StopReconciled);
+            var result = stop.Execute(job.JobId);
+            Assert.Equal("stopped", result.Outcome);
+            Assert.Equal(JobStatus.Cancelled, f.Store.GetJob(job.JobId)!.Status);
+            Assert.Equal("stopped", f.Store.GetJob(job.JobId)!.ReasonCode);
+            Assert.False(f.Store.IsSessionFenced(job.JobId));
+            Assert.Equal(JobStatus.Cancelled, f.Store.GetRuns(job.JobId).Single().State);
+            Assert.True(process.WaitForExit(5000));
+        }
+        finally { if (!process.HasExited) { process.Kill(); } }
+    }
+
+    [Fact]
+    public void Fenced_job_without_owned_agent_returns_clear_error()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("unverified");
+        var claim = f.Store.BeginNextAttempt()!;
+        Assert.True(f.Store.EndUnsuccessfully(new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation),
+            JobStatus.NeedsReconciliation, "interactive_delivery_not_confirmed"));
+        using var dispatcher = new DispatchJob(f.Store, new ScriptedBackend(_ => []), f.Limits,
+            DurabilityCheckpoints.None, f.Admission, _ => { });
+        var result = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
+            stopReconciled: dispatcher.StopReconciled).Execute(job.JobId);
+        Assert.Equal(JobErrors.OwnershipNotProven, result.Error);
+        Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(job.JobId)!.Status);
+        Assert.True(f.Store.IsSessionFenced(job.JobId));
+    }
+
+    [Fact]
+    public void Fenced_job_never_signals_unmarked_pid()
+    {
+        if (!OperatingSystem.IsLinux()) { return; }
+        using var f = new JobFixture();
+        using var foreign = Process.Start(new ProcessStartInfo("sleep", ["30"]) { UseShellExecute = false })!;
+        try
+        {
+            var job = f.Submit("foreign-pid");
+            var claim = f.Store.BeginNextAttempt()!;
+            var run = new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+            f.Store.RecordBackendEvidence(run, foreign.Id, false);
+            Assert.True(f.Store.EndUnsuccessfully(run, JobStatus.NeedsReconciliation, "interactive_delivery_not_confirmed"));
+            using var dispatcher = new DispatchJob(f.Store, new ScriptedBackend(_ => []), f.Limits,
+                DurabilityCheckpoints.None, f.Admission, _ => { });
+            var stopped = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
+                stopReconciled: dispatcher.StopReconciled).Execute(job.JobId);
+            Assert.Equal(JobErrors.OwnershipNotProven, stopped.Error);
+            Assert.False(foreign.HasExited);
+            Assert.True(f.Store.IsSessionFenced(job.JobId));
+        }
+        finally { if (!foreign.HasExited) { foreign.Kill(); } }
     }
 
     [Fact]

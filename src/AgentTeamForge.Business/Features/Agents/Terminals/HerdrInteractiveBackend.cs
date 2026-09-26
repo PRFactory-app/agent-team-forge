@@ -17,13 +17,14 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     readonly RetainedSessions _liveSessions;
     internal Lock SessionStopGate { get; } = new();
     readonly TimeSpan _settleTimeout;
+    readonly TimeSpan _startupTimeout;
 
     public HerdrInteractiveBackend(HerdrTerminal terminal, InteractiveAgentKind kind, string stateRoot)
         : this(new HerdrAgentControl(terminal), new InteractiveTranscriptReader(terminal.Env), kind, stateRoot) { }
 
     // settleTimeout: how long an idle agent may go without native completion before the turn is uncertain.
     internal HerdrInteractiveBackend(IHerdrAgentControl control, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot,
-        TimeSpan? settleTimeout = null)
+        TimeSpan? settleTimeout = null, TimeSpan? startupTimeout = null)
     {
         _control = control;
         _transcripts = transcripts;
@@ -31,6 +32,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         _stateRoot = stateRoot;
         _liveSessions = new RetainedSessions(control.StopOwned);
         _settleTimeout = settleTimeout ?? TimeSpan.FromSeconds(60);
+        _startupTimeout = startupTimeout ?? InteractiveStartup.Timeout;
     }
 
     public IBackendRun Start(BackendRequest request)
@@ -47,7 +49,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             var (model, effort) = InteractiveLaunch.Selection(request.Options);
             if (live.Model == model && live.Effort == effort)
             {
-                return new Run(_control, _transcripts, request, live, started, _settleTimeout, RememberSession);
+                return new Run(_control, _transcripts, request, live, started, _settleTimeout, _startupTimeout, RememberSession);
             }
             _control.StopOwned(live);
         }
@@ -67,7 +69,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         {
             throw new InvalidOperationException("interactive agent launch is uncertain: " + e.Message, e);
         }
-        return new Run(_control, _transcripts, request, launch, started, _settleTimeout, RememberSession);
+        return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout, RememberSession);
     }
 
     void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
@@ -105,10 +107,10 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     }
 
     sealed class Run(IHerdrAgentControl control, IInteractiveTranscriptReader transcripts, BackendRequest request,
-        InteractiveLaunch launch, DateTimeOffset started, TimeSpan settleTimeout, Action<string, InteractiveLaunch> rememberSession) : IBackendRun
+        InteractiveLaunch launch, DateTimeOffset started, TimeSpan settleTimeout, TimeSpan startupTimeout, Action<string, InteractiveLaunch> rememberSession) : IBackendRun
     {
-        bool _delivered;
         bool _agentExited;
+        bool _promptReturned;
         readonly Lock _lifetime = new();
         bool _interrupted;
         bool _stopped;
@@ -124,6 +126,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             try
             {
                 await control.PromptAsync(launch, prompt, cancellationToken);
+                _promptReturned = true;
             }
             catch (HerdrLaunchException)
             {
@@ -133,16 +136,10 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             }
             // Submitted exactly once. A missing transcript never proves non-delivery, so the
             // prompt is never resent; an unproven turn ends as needs_reconciliation instead.
-            _delivered = true;
         }
 
         public async IAsyncEnumerable<BackendEvidence> ReadEvidenceAsync([EnumeratorCancellation] CancellationToken cancellationToken)
         {
-            if (!_delivered)
-            {
-                yield return new BackendEvidence.ProtocolError("interactive_delivery_not_confirmed");
-                yield break;
-            }
             var acknowledged = false;
             var session = request.ResumeSessionId;
             if (session is not null)
@@ -152,12 +149,13 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             // Only the native completion record of this correlated turn completes the job;
             // Herdr's idle/done classification alone can follow interim commentary.
             var quietSince = DateTimeOffset.UtcNow;
+            var confirmationDeadline = DateTimeOffset.UtcNow.Add(startupTimeout);
             var seenMessages = 0;
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var status = await StatusAsync(cancellationToken);
-                if (status is null)
+                if (status is null && (acknowledged || _promptReturned))
                 {
                     yield return new BackendEvidence.ProtocolError("interactive_control_failed");
                     yield break;
@@ -188,6 +186,22 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                     yield return new BackendEvidence.Result(request.Correlation, message);
                     yield return new BackendEvidence.EndOfOutput();
                     yield break;
+                }
+                if (!acknowledged && _promptReturned && status == InteractiveAgentStatus.Gone)
+                {
+                    _agentExited = true;
+                    yield return new BackendEvidence.ProtocolError("interactive_agent_exited");
+                    yield break;
+                }
+                if (!acknowledged)
+                {
+                    if (DateTimeOffset.UtcNow >= confirmationDeadline)
+                    {
+                        yield return new BackendEvidence.ProtocolError("interactive_delivery_not_confirmed");
+                        yield break;
+                    }
+                    await Task.Delay(250, cancellationToken);
+                    continue;
                 }
                 if (status == InteractiveAgentStatus.Blocked)
                 {

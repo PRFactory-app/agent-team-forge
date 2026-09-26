@@ -44,6 +44,9 @@ public interface IBackendRun : IAsyncDisposable
 {
     int? ProcessId { get; }
 
+    /// <summary>Whether this run's held process handle still identifies a live child.</summary>
+    bool OwnedChildAlive => false;
+
     /// <summary>Positive proof that this run's owned interactive session was stopped.</summary>
     bool OwnedSessionStopped => false;
 
