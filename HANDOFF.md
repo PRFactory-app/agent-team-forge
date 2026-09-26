@@ -18,12 +18,13 @@ implementation attempt was stopped and redirected to C#/.NET. Earlier non-.NET
 snippets do not qualify as M0 implementation. The concurrent spike's runtime
 results are not validated by this architecture/documentation update.
 
-The **complete waterfall product plan** has one GPT-6 Astra/medium-authored
-plan per phase. Current priority is continuous bounded implementation toward a
-runnable E2E checkpoint: roughly six parallel lanes, Claude writing code and
-Codex GPT-6 Sol high verifying/reviewing/integrating separate worktrees. See
+The **complete waterfall product plan** has one GPT-6 Astra-authored plan per
+phase (historically written at medium effort). Current priority is continuous bounded implementation toward a
+runnable E2E checkpoint under the staffing rules in `AGENTS.md` (Claude Code
+orchestrator, up to 14 agents; Pi tier max plans, Claude writes code, Codex
+GPT-6 Sol high reviews/integrates separate worktrees). See
 [the execution allocation](docs/spikes/m0-integration-plan.md). A later user
-addition requests a small text-only operator web console; Pi Astra/medium owns
+addition requests a small text-only operator web console; Pi Astra (now tier max) owns
 its plan and static HTML mockup first, not production UI implementation. The near-term real Linux demo remains a
 checkpoint, not the full scope. Interactive-spike safety repairs are separately
 in progress after independent GPT review; no adapter safety approval is implied.

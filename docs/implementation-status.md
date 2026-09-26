@@ -49,7 +49,7 @@ The legacy `AtfSpike` is an isolated experimental baseline. Consolidate reviewed
 reusable behavior/tests into the real solution and retire superseded runtime
 projects; do not delete live sessions or unique recovery evidence as file cleanup.
 
-## Previous dispatch wave (superseded above)
+## Previous dispatch wave (superseded above; historical routes)
 
 This table records assignments, **not a live activity indicator**. Finished
 workers must be retired after their handoff; waiting does not count as active.
@@ -68,9 +68,10 @@ The admission, inspection and probe writers have committed their handoffs and
 were stopped with `kill_agent`.
 
 The four previously waiting MCP workers were stopped using `kill_agent`,
-including the two legacy Codex workers. New Codex/Pi workers use native
-subagents; only Claude uses win-agent-teams. Target five to six useful lanes
-when independent work exists; do not create busywork or extend huge contexts.
+including the two legacy Codex workers. *Historical:* at that time new Codex/Pi
+workers used native subagents with a five-to-six-lane target. Current staffing
+follows `AGENTS.md`: all orchestrator workers via win-agent-teams, up to 14
+agents; do not create busywork or extend huge contexts.
 Semantic runtime fixes remain Claude work followed by independent Codex review.
 
 ## Next testable checkpoint

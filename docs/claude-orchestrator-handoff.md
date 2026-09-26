@@ -8,13 +8,14 @@ useful wave. No replacement orchestrator has been spawned by this handoff.
 ## 1. Immediate objective and operating rules
 
 Deliver a testable tool quickly, not more planning for its own sake. Maintain a
-ready queue of small, bounded implementation/review/integration tasks. Target six to eight useful parallel workers. Eight phase plans are not eight independent
+ready queue of small, bounded implementation/review/integration tasks. Use up to 14 useful parallel agents (owner authorized). Eight phase plans are not eight independent
 implementations: distinguish real contract dependencies from unnecessarily serial
 whole-phase ordering. Do not count waiting workers as active or invent busywork.
 
-- The Claude Code orchestrator (Opus) does no hands-on implementation or
-  review; it keeps ~6–8 useful workers busy. All workers spawn through
-  **win-agent-teams** `spawn_agent`: Pi tier max (GPT-6 Astra) plans/researches;
+- The Claude Code orchestrator (Opus) does no hands-on work at all; it
+  keeps up to 14 useful agents busy. All orchestrator-spawned workers use
+  **win-agent-teams** `spawn_agent`: Pi tier max (GPT-6 Astra) plans/researches and may use its own subagents or lead a
+  sub-team for its area, reporting results back;
   Claude Code Opus, effort medium (low if trivial), implements; Codex tier high
   (GPT-6 Sol) reviews, integrates and runs combined gates. Semantic merge fixes
   go to a fresh Claude writer, then Codex re-review. Astra may remain a
