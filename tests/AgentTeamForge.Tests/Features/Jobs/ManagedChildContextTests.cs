@@ -77,6 +77,11 @@ public sealed class ManagedChildContextTests
         info.Environment["CLAUDE_CODE_SSE_PORT"] = "1234";
         info.Environment["CLAUDE_CODE_SESSION_ID"] = "parent-session";
         info.Environment["CLAUDE_CODE_PARENT_SESSION_ID"] = "parent-session";
+        info.Environment["CLAUDE_CODE_SESSION_ATTENDED"] = "0";
+        info.Environment["CLAUDE_CODE_REMOTE_SESSION_ID"] = "parent-remote";
+        info.Environment["CLAUDE_CODE_BRIDGE_SESSION_ID"] = "parent-bridge";
+        info.Environment["CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR"] = "3";
+        info.Environment["AI_AGENT"] = "claude-code_agent";
         info.Environment["CODEX_THREAD_ID"] = "parent-thread";
         info.Environment["HERDR_PANE_ID"] = "parent-pane";
         info.Environment["ATF_EXTERNAL_ONLY"] = "1";
