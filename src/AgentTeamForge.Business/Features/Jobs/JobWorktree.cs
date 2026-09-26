@@ -14,6 +14,9 @@ public static class JobWorktree
     static readonly TimeSpan AddTimeout = TimeSpan.FromMinutes(10);
     const int MaxGitOutputBytes = 1024 * 1024;
 
+    // Git's own output is already in the pipe when it exits; a hook descendant may keep it open.
+    static readonly TimeSpan DrainGrace = TimeSpan.FromSeconds(1);
+
     public static string? Head(string cwd)
     {
         var root = Git(cwd, QueryTimeout, "rev-parse", "--show-toplevel");
@@ -95,12 +98,14 @@ public static class JobWorktree
                 return null;
             }
 
-            // A hook descendant may retain stdout after git exits. Exit and drain share
-            // one deadline; output beyond the cap is discarded while draining continues.
-            var output = DrainAsync(process.StandardOutput.BaseStream, deadline.Token);
+            // A hook descendant may retain stdout after git exits. Exit shares the whole
+            // deadline; after exit the drain gets a short grace and keeps what it read.
+            // Output beyond the cap is discarded while draining continues.
+            using var drain = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+            var output = DrainAsync(process.StandardOutput.BaseStream, drain.Token);
             try
             {
-                await Task.WhenAll(process.WaitForExitAsync(deadline.Token), output);
+                await process.WaitForExitAsync(deadline.Token);
             }
             catch (OperationCanceledException) when (deadline.IsCancellationRequested)
             {
@@ -110,14 +115,19 @@ public static class JobWorktree
                 }
                 catch (InvalidOperationException)
                 {
-                    // Git has exited; the drain's cancellation still bounds the call.
+                    // Git exited meanwhile.
                 }
 
+                drain.Cancel();
+                await output;
                 cancellationToken.ThrowIfCancellationRequested();
                 return null;
             }
 
-            return process.ExitCode == 0 ? (await output).Trim() : null;
+            drain.CancelAfter(DrainGrace);
+            var text = await output;
+            cancellationToken.ThrowIfCancellationRequested();
+            return process.ExitCode == 0 ? text.Trim() : null;
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
         {
@@ -129,11 +139,18 @@ public static class JobWorktree
     {
         using var kept = new MemoryStream();
         var buffer = new byte[16 * 1024];
-        int n;
-        while ((n = await stream.ReadAsync(buffer, cancellationToken)) > 0)
+        try
         {
-            var room = (int)Math.Min(n, MaxGitOutputBytes - kept.Length);
-            kept.Write(buffer, 0, room);
+            int n;
+            while ((n = await stream.ReadAsync(buffer, cancellationToken)) > 0)
+            {
+                var room = (int)Math.Min(n, MaxGitOutputBytes - kept.Length);
+                kept.Write(buffer, 0, room);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Bounded: keep what was read before the deadline or post-exit grace.
         }
 
         return Encoding.UTF8.GetString(kept.GetBuffer(), 0, (int)kept.Length);

@@ -114,7 +114,7 @@ public sealed class JobWorktreeTests
     }
 
     [Fact]
-    public async Task Git_deadline_includes_a_descendant_that_holds_stdout_after_git_exits()
+    public async Task Git_success_is_not_held_by_a_descendant_that_keeps_stdout_after_git_exits()
     {
         using var source = new TempStateDir();
         Git(source.Path, "init");
@@ -124,13 +124,13 @@ public sealed class JobWorktreeTests
         var watch = Stopwatch.StartNew();
         try
         {
-            var result = await JobWorktree.GitAsync(source.Path, TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken,
+            var result = await JobWorktree.GitAsync(source.Path, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken,
                 "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "second");
-            Assert.Null(result);
+            Assert.NotNull(result);
+            Assert.Contains("ready", result);
             Assert.True(File.Exists(pidFile));
             Assert.Equal("second", Git(source.Path, "log", "-1", "--format=%s"));
-            Assert.True(watch.Elapsed >= TimeSpan.FromMilliseconds(150), $"git drain returned before its deadline: {watch.Elapsed}");
-            Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"git drain took {watch.Elapsed}");
+            Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5), $"git drain took {watch.Elapsed}");
         }
         finally
         {
