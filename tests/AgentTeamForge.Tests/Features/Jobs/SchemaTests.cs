@@ -55,7 +55,7 @@ public sealed class SchemaTests
         check.Open();
         using var version = check.CreateCommand();
         version.CommandText = "SELECT max(version) FROM schema_migrations";
-        Assert.Equal(2L, (long)version.ExecuteScalar()!);
+        Assert.Equal((long)AgentTeamForge.DAL.Migrations.Schema.CurrentVersion, (long)version.ExecuteScalar()!);
     }
 
     [Fact]

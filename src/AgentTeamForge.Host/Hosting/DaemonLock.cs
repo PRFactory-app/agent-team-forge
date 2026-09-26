@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Globalization;
+using System.Text;
 
 namespace AgentTeamForge.Host.Hosting;
 
@@ -42,6 +44,29 @@ public sealed class DaemonLock : IDisposable
         }
 
         return new DaemonLock(stream);
+    }
+
+    /// <summary>Record the lock owner's PID only after ownership is established.</summary>
+    public void WriteOwnerPid()
+    {
+        _stream.Position = 0;
+        _stream.SetLength(0);
+        var bytes = Encoding.ASCII.GetBytes(Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
+        _stream.Write(bytes);
+        _stream.Flush(flushToDisk: true);
+    }
+
+    public static int? ReadOwnerPid(string path)
+    {
+        try
+        {
+            var value = Encoding.ASCII.GetString(StateDirectory.ReadPrivateFile(path));
+            return int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var pid) && pid > 0 ? pid : null;
+        }
+        catch (StateDirectoryException)
+        {
+            return null;
+        }
     }
 
     public void Dispose() => _stream.Dispose();

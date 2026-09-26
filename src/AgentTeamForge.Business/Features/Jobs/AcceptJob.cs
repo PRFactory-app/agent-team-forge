@@ -11,7 +11,7 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// accepts it (or resolves the same key) before any acknowledgment. Nothing is
 /// read or written once the admission gate is closed.
 /// </summary>
-public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLimits limits, bool testProfile, AdmissionGate admission, Action onAccepted,
+public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLimits limits, bool testProfile, AdmissionGate admission,
     IReadOnlyCollection<string>? backends = null)
 {
     public const string Operation = "job_submit";
@@ -38,7 +38,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         }
 
         var options = $"behavior={behavior};hold={(request.Hold ? 1 : 0)}";
-        return Admit(Operation, request.IdempotencyKey, request.Instruction, options, backend, cwd, null);
+        return Admit(Operation, request.IdempotencyKey, request.Instruction, options, backend, cwd, null, request.WakeKey, request.WakeGeneration);
     }
 
     internal bool IsValid(string? key, string? instruction) =>
@@ -46,7 +46,8 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         && !string.IsNullOrEmpty(instruction) && instruction.Length <= limits.MaxInstructionChars;
 
     /// <summary>Durable acceptance shared by submit and follow-up; one admission-gated transaction.</summary>
-    internal JobResult Admit(string operation, string key, string instruction, string options, string backend, string? cwd, string? parentJobId)
+    internal JobResult Admit(string operation, string key, string instruction, string options, string backend, string? cwd, string? parentJobId,
+        string? wakeKey = null, long? wakeGeneration = null)
     {
         if (!admission.TryEnter())
         {
@@ -61,6 +62,8 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
                 Backend = backend,
                 Cwd = cwd,
                 ParentJobId = parentJobId,
+                WakeTargetKey = wakeKey,
+                WakeGeneration = wakeGeneration,
             };
 
             AcceptOutcome outcome;
@@ -76,7 +79,6 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
             switch (outcome.Kind)
             {
                 case AcceptKind.Accepted:
-                    onAccepted();
                     return JobResult.Ok(GetJob.ToView(outcome.Job!), "accepted");
                 case AcceptKind.Existing:
                     return JobResult.Ok(GetJob.ToView(outcome.Job!), "existing");
