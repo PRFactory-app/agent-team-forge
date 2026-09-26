@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>AgentTeamForge console</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header><h1>AgentTeamForge console</h1><span id="status"></span></header>
+
+<section id="login">
+  <form id="login-form" autocomplete="off">
+    <label for="token">Console token (printed by <code>atf web</code>)</label>
+    <input id="token" type="password" autocomplete="off" spellcheck="false" required>
+    <button type="submit">Connect</button>
+  </form>
+  <p class="note">The token is kept in page memory only. Reloading the page requires entering it again.</p>
+</section>
+
+<main id="console" hidden>
+  <section>
+    <h2>Jobs <button id="refresh" type="button">Refresh</button></h2>
+    <table>
+      <thead><tr><th>Job</th><th>Status</th><th>Backend</th><th>Session</th><th>Parent</th><th>Attempts</th></tr></thead>
+      <tbody id="jobs"></tbody>
+    </table>
+  </section>
+
+  <section id="detail" hidden>
+    <h2>Job <span id="d-id"></span></h2>
+    <dl>
+      <dt>Status</dt><dd id="d-status"></dd>
+      <dt>Reason</dt><dd id="d-reason"></dd>
+      <dt>Backend</dt><dd id="d-backend"></dd>
+      <dt>Session</dt><dd id="d-session"></dd>
+      <dt>Parent</dt><dd id="d-parent"></dd>
+      <dt>Cwd</dt><dd id="d-cwd"></dd>
+      <dt>Attempts</dt><dd id="d-attempts"></dd>
+    </dl>
+    <h3>Result</h3>
+    <pre id="d-result"></pre>
+
+    <h3>Follow-up</h3>
+    <form id="follow-form" autocomplete="off">
+      <textarea id="follow-text" rows="4" maxlength="8192" required></textarea>
+      <button id="follow-send" type="submit">Send follow-up</button>
+      <button id="follow-retry" type="button" hidden>Retry with same key</button>
+      <button id="follow-discard" type="button" hidden>Discard pending attempt</button>
+    </form>
+    <p id="follow-state"></p>
+
+    <h3>Logs</h3>
+    <!-- TODO(codex): incremental tail via next_offset, stdout/stderr split if the IPC grows one. -->
+    <button id="logs-refresh" type="button">Reload logs</button>
+    <pre id="d-logs"></pre>
+
+    <h3>Interrupt</h3>
+    <!-- TODO(codex): stub. Needs an interrupt IPC op (stop active attempt + follow-up); see feature/interrupt-followup. -->
+    <form id="interrupt-form" autocomplete="off">
+      <textarea id="interrupt-text" rows="2" maxlength="8192" disabled></textarea>
+      <button type="submit" disabled>Interrupt and redirect</button>
+      <span class="note">Not wired yet.</span>
+    </form>
+
+    <h3>Stop</h3>
+    <!-- TODO(codex): confirm dialog, show outcome/reason_code inline. -->
+    <button id="stop-job" type="button">Stop job</button>
+    <p id="stop-state"></p>
+  </section>
+</main>
+</body>
+</html>
