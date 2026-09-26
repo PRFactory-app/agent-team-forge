@@ -17,6 +17,7 @@ public sealed class StartupBackupScenarios
 
         Assert.Contains(rig.DaemonLog, line => line.Contains("backup failed:", StringComparison.Ordinal));
         var accepted = await rig.SubmitAsync("backup-failed", "still works");
+        Assert.True(accepted.Ok, accepted.Error);
         await rig.WaitForStatusAsync(accepted.Job!.JobId, JobStatus.Completed);
     }
 }
