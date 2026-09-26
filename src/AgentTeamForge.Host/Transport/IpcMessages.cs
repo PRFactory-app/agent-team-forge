@@ -10,6 +10,10 @@ public sealed record IpcRequest
     public required string Op { get; init; }
     public string? Credential { get; init; }
     public string? Principal { get; init; }
+    public string? LeadSessionId { get; init; }
+    public string? Workspace { get; init; }
+    public string? BindingKey { get; init; }
+    public bool AllWorkspace { get; init; }
     public string? IdempotencyKey { get; init; }
     public string? Instruction { get; init; }
     public string? Behavior { get; init; }
@@ -37,7 +41,7 @@ public sealed record IpcRequest
     public string? WakeHome { get; init; }
 }
 
-public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null);
+public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null);
 
 public static class IpcProtocol
 {
@@ -51,6 +55,10 @@ public static class IpcProtocol
     public const string JobList = "job_list";
     public const string JobPrune = "job_prune";
     public const string WakeRegister = "wake_register";
+    public const string SessionStart = "session_start";
+    public const string SessionInfo = "session_info";
+    public const string SessionResume = "session_resume";
+    public const string SessionBindWake = "session_bind_wake";
 
     public const string UnsupportedVersion = "unsupported_version";
     public const string Unauthenticated = "unauthenticated";
@@ -69,4 +77,5 @@ public static class IpcProtocol
 [JsonSerializable(typeof(JobView))]
 [JsonSerializable(typeof(JobListPage))]
 [JsonSerializable(typeof(JobOutput))]
+[JsonSerializable(typeof(AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo))]
 public sealed partial class IpcJson : JsonSerializerContext;
