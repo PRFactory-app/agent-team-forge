@@ -90,6 +90,18 @@ public sealed class PiBackendTests : IDisposable
     }
 
     [Fact]
+    public void Assistant_message_without_agent_settled_is_not_a_result()
+    {
+        var turn = new PiBackend.TurnState();
+        var message = System.Text.Encoding.UTF8.GetBytes("""
+            {"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"partial"}],"stopReason":"stop"}}
+            """);
+
+        Assert.Empty(turn.Observe(message, "c1"));
+        Assert.Equal(new BackendEvidence.ProtocolError("pi_not_settled"), turn.FinishAtEndOfOutput());
+    }
+
+    [Fact]
     public async Task Terminate_kills_the_owned_process_tree()
     {
         await using var run = _backend.Start(Request("x", "model=hang"));

@@ -119,7 +119,7 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
                 }
             }
 
-            if (turn.Finish(correlation) is { } final)
+            if (turn.FinishAtEndOfOutput() is { } final)
             {
                 yield return final;
             }
@@ -228,6 +228,19 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
                 ({ Length: > MaxResultChars }, _) => new BackendEvidence.ProtocolError("backend_result_too_long"),
                 var (text, _) => new BackendEvidence.Result(correlation, text),
             };
+        }
+
+        public BackendEvidence? FinishAtEndOfOutput()
+        {
+            if (_finished)
+            {
+                return null;
+            }
+
+            _finished = true;
+            // A message_end is only one low-level response. Pi may still retry
+            // or recover; only agent_settled confirms the session-level turn.
+            return new BackendEvidence.ProtocolError("pi_not_settled");
         }
 
         static bool IsAssistant(JsonElement message) =>
