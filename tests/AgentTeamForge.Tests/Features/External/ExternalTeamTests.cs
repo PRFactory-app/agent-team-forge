@@ -298,6 +298,23 @@ public sealed class ExternalTeamTests
         Assert.Empty(team.Read(token, 3, null, fromAgent: "team-lead").Inbox!.Messages);
     }
 
+    [Fact]
+    public void Prune_keeps_connector_team_cursor_and_unread_replies()
+    {
+        using var f = new JobFixture();
+        var time = DateTimeOffset.UtcNow.AddDays(-31);
+        var store = new ExternalMemberStore(f.Database);
+        var team = new ExternalTeam(store, new WakeStore(f.Database), () => time);
+        var teamId = team.CreateActorTeam("actor:prune-connector")!;
+        var token = team.Join(teamId, team.CreateTicketForTeam(teamId, "worker", null).Ticket!.Token).Member!.MemberToken;
+        Assert.True(team.Send(token, "first").Ok);
+        Assert.True(team.Send(token, "second").Ok);
+        var cursor = team.ReadTeam(teamId, 0, 1).Inbox!.NextSeq;
+
+        Assert.Equal(1, store.Prune(DateTimeOffset.UtcNow.AddDays(-30), dryRun: false));
+        Assert.Equal("second", Assert.Single(team.ReadTeam(teamId, cursor, 50).Inbox!.Messages).Text);
+    }
+
     static ExternalTeam Team(JobFixture f, Func<DateTimeOffset>? clock = null) =>
         new(new ExternalMemberStore(f.Database), new WakeStore(f.Database), clock);
 

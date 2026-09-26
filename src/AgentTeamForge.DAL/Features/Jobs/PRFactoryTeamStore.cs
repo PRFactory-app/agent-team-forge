@@ -3,6 +3,9 @@ using AgentTeamForge.DAL.Sqlite;
 namespace AgentTeamForge.DAL.Features.Jobs;
 
 public sealed record PRFactoryTeamRecord(string Server, Guid WorkItemId, string ClaimedJson, string State, bool Uploaded);
+public sealed record PRFactoryExternalRecord(string Member, string ActualName, string TeamId, string TicketToken,
+    DateTimeOffset TicketExpires, bool TicketUploaded, long ReplySeq, bool Closed);
+public sealed record PRFactoryCommandReceipt(bool Accepted, string? Reason);
 
 /// <summary>Local work ownership and job mappings; the server acceptance protocol is a later slice.</summary>
 public sealed class PRFactoryTeamStore(JobDatabase database)
@@ -75,6 +78,106 @@ public sealed class PRFactoryTeamStore(JobDatabase database)
         command.Parameters.AddWithValue("$member", member);
         command.Parameters.AddWithValue("$turn", turn);
         command.Parameters.AddWithValue("$job", jobId);
+        command.ExecuteNonQuery();
+    }
+
+    public PRFactoryExternalRecord? External(string server, Guid id, string member) =>
+        ExternalMembers(server, id).FirstOrDefault(row => row.Member == member);
+
+    public IReadOnlyList<PRFactoryExternalRecord> ExternalMembers(string server, Guid id)
+    {
+        var rows = new List<PRFactoryExternalRecord>();
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT member,actual_name,team_id,ticket_token,ticket_expires,ticket_uploaded,reply_seq,closed FROM prfactory_external WHERE server=$server AND work_item_id=$id ORDER BY member";
+        command.Parameters.AddWithValue("$server", server);
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3),
+                DateTimeOffset.Parse(reader.GetString(4)), reader.GetInt32(5) != 0, reader.GetInt64(6), reader.GetInt32(7) != 0));
+        }
+        return rows;
+    }
+
+    public void RecordExternal(string server, Guid id, string member, string actualName, string teamId, string token, DateTimeOffset expires)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT OR IGNORE INTO prfactory_external(server,work_item_id,member,actual_name,team_id,ticket_token,ticket_expires)
+            VALUES ($server,$id,$member,$actual,$team,$token,$expires)
+            """;
+        command.Parameters.AddWithValue("$server", server);
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        command.Parameters.AddWithValue("$member", member);
+        command.Parameters.AddWithValue("$actual", actualName);
+        command.Parameters.AddWithValue("$team", teamId);
+        command.Parameters.AddWithValue("$token", token);
+        command.Parameters.AddWithValue("$expires", expires.ToString("O"));
+        command.ExecuteNonQuery();
+    }
+
+    public void RenewExternal(string server, Guid id, string member, string token, DateTimeOffset expires)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE prfactory_external SET ticket_token=$token,ticket_expires=$expires WHERE server=$server AND work_item_id=$id AND member=$member";
+        command.Parameters.AddWithValue("$server", server);
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        command.Parameters.AddWithValue("$member", member);
+        command.Parameters.AddWithValue("$token", token);
+        command.Parameters.AddWithValue("$expires", expires.ToString("O"));
+        command.ExecuteNonQuery();
+    }
+
+    public void MarkTicketUploaded(string server, Guid id, string member) => UpdateExternal(server, id, member, "ticket_uploaded=1");
+    public void SetReplySeq(string server, Guid id, string member, long seq) => UpdateExternal(server, id, member, "reply_seq=$seq", seq);
+    public void MarkExternalClosed(string server, Guid id) => UpdateExternal(server, id, null, "closed=1");
+
+    void UpdateExternal(string server, Guid id, string? member, string set, long? seq = null)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = $"UPDATE prfactory_external SET {set} WHERE server=$server AND work_item_id=$id" + (member is null ? "" : " AND member=$member");
+        command.Parameters.AddWithValue("$server", server);
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        if (member is not null)
+        {
+            command.Parameters.AddWithValue("$member", member);
+        }
+
+        if (seq is not null)
+        {
+            command.Parameters.AddWithValue("$seq", seq.Value);
+        }
+
+        command.ExecuteNonQuery();
+    }
+
+    public PRFactoryCommandReceipt? CommandReceipt(string server, Guid id, Guid commandId)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT accepted,reason FROM prfactory_command_receipts WHERE server=$server AND work_item_id=$id AND command_id=$command";
+        command.Parameters.AddWithValue("$server", server);
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        command.Parameters.AddWithValue("$command", commandId.ToString("D"));
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? new(reader.GetInt32(0) != 0, reader.IsDBNull(1) ? null : reader.GetString(1)) : null;
+    }
+
+    public void RecordCommand(string server, Guid id, Guid commandId, bool accepted, string? reason)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT OR IGNORE INTO prfactory_command_receipts(server,work_item_id,command_id,accepted,reason) VALUES ($server,$id,$command,$accepted,$reason)";
+        command.Parameters.AddWithValue("$server", server);
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        command.Parameters.AddWithValue("$command", commandId.ToString("D"));
+        command.Parameters.AddWithValue("$accepted", accepted ? 1 : 0);
+        command.Parameters.AddWithValue("$reason", (object?)reason ?? DBNull.Value);
         command.ExecuteNonQuery();
     }
 

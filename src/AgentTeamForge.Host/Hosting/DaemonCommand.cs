@@ -200,10 +200,13 @@ public static class DaemonCommand
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path), Log).RunAsync(lifetime.Token);
         var pruning = profile.AutoPrune ? RunPruneAsync(prune, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
         var prfactory = PRFactoryHeartbeat.RunAsync(state, lifetime.Token, log: Log,
-            onConnected: (client, settings, machineId, ct) =>
-                new PRFactoryWorkItems(settings.Url, settings.Repositories, connectorTeams, client,
+            onConnected: async (client, settings, machineId, ct) =>
+            {
+                await new PRFactoryWorkItems(settings.Url, settings.Repositories, connectorTeams, client,
                     connectorAccept.Execute, store.GetJob, dispatcher.Signal,
-                    cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId, Log).TickAsync(machineId, ct));
+                    cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId, Log, externalTeam).TickAsync(machineId, ct);
+                PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
+            });
         await Task.WhenAny(serving, dispatching);
 
         // The dispatcher only returns on its own when halted or faulted; it closed

@@ -123,6 +123,11 @@ public sealed class SchemaTests
             command.CommandText = """
                 DROP TABLE external_sender_cursors;
                 DROP INDEX external_messages_sender_position;
+                ALTER TABLE external_messages DROP COLUMN sender_seq;
+                DELETE FROM schema_migrations WHERE version=11;
+                DROP TABLE prfactory_command_receipts;
+                DROP TABLE external_delivery_keys;
+                DROP TABLE prfactory_external;
                 DELETE FROM schema_migrations WHERE version=10;
                 DROP TABLE external_messages;
                 DROP TABLE external_members;
@@ -159,7 +164,7 @@ public sealed class SchemaTests
     }
 
     [Fact]
-    public void Version_9_external_messages_gain_stable_sender_positions_and_cursor()
+    public void Version_10_external_messages_gain_stable_sender_positions_and_cursor()
     {
         using var dir = new TempStateDir();
         var path = dir.File("jobs.db");
@@ -172,7 +177,7 @@ public sealed class SchemaTests
                 DROP TABLE external_sender_cursors;
                 DROP INDEX external_messages_sender_position;
                 ALTER TABLE external_messages DROP COLUMN sender_seq;
-                DELETE FROM schema_migrations WHERE version=10;
+                DELETE FROM schema_migrations WHERE version=11;
                 INSERT INTO external_teams(team_id,owner_key,created_at) VALUES ('team','owner','old');
                 INSERT INTO external_messages(team_id,sender,recipient,text,created_at,read_at)
                 VALUES ('team','agent','lead','one','old','old'),

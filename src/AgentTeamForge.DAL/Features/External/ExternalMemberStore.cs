@@ -116,6 +116,36 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return new JoinTicket(teamId, reserved, ticket, expires);
     }
 
+    /// <summary>Replace an expired, never-used ticket for the same reserved member name.</summary>
+    public JoinTicket? RenewExpiredTicket(string teamId, string name, DateTimeOffset now, TimeSpan ttl)
+    {
+        using var db = database.OpenConnection();
+        using var command = db.CreateCommand();
+        var ticket = Secret();
+        var expires = now + ttl;
+        command.CommandText = """
+            UPDATE external_members SET ticket_hash=$hash,ticket_expires=$expires
+            WHERE team_id=$team AND name=$name AND ticket_used_at IS NULL AND left_at IS NULL AND ticket_expires<=$now
+            AND EXISTS (SELECT 1 FROM external_teams t WHERE t.team_id=$team AND t.closed_at IS NULL)
+            """;
+        command.Parameters.AddWithValue("$team", teamId);
+        command.Parameters.AddWithValue("$name", name);
+        command.Parameters.AddWithValue("$hash", Hash(ticket));
+        command.Parameters.AddWithValue("$expires", expires.ToString("O"));
+        command.Parameters.AddWithValue("$now", now.ToString("O"));
+        return command.ExecuteNonQuery() == 1 ? new JoinTicket(teamId, name, ticket, expires) : null;
+    }
+
+    public bool HasLeft(string teamId, string name)
+    {
+        using var db = database.OpenConnection();
+        using var command = db.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM external_members WHERE team_id=$team AND name=$name AND left_at IS NOT NULL";
+        command.Parameters.AddWithValue("$team", teamId);
+        command.Parameters.AddWithValue("$name", name);
+        return (long)command.ExecuteScalar()! > 0;
+    }
+
     public (JoinedMember? Member, bool Left) Join(string teamId, string ticket, DateTimeOffset now)
     {
         using var db = database.OpenConnection();
@@ -265,19 +295,29 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return true;
     }
 
-    public bool SendToMember(string teamId, string name, string text, string sender, DateTimeOffset now)
+    public bool SendToMember(string teamId, string name, string text, string sender, DateTimeOffset now, string? commandId = null)
     {
         using var db = database.OpenConnection();
         using var tx = db.BeginTransaction(deferred: false);
         using var command = db.CreateCommand();
         command.Transaction = tx;
+        command.Parameters.AddWithValue("$team", teamId);
+        if (commandId is not null)
+        {
+            command.CommandText = "INSERT OR IGNORE INTO external_delivery_keys(team_id,command_id) VALUES ($team,$command)";
+            command.Parameters.AddWithValue("$command", commandId);
+            if (command.ExecuteNonQuery() == 0)
+            {
+                tx.Commit();
+                return true;
+            }
+        }
         command.CommandText = """
             INSERT INTO external_messages(team_id,sender,recipient,sender_seq,text,created_at,wake_key)
             SELECT m.team_id,$sender,m.member_id,$position,$text,$now,m.wake_key
             FROM external_members m JOIN external_teams t ON t.team_id=m.team_id
             WHERE m.team_id=$team AND t.closed_at IS NULL AND m.name=$name AND m.active=1
             """;
-        command.Parameters.AddWithValue("$team", teamId);
         command.Parameters.AddWithValue("$sender", sender);
         command.Parameters.AddWithValue("$name", name);
         // A failed send rolls back this allocation with the transaction.

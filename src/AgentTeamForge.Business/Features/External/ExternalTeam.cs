@@ -19,6 +19,7 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
     static readonly Regex SafeName = new("^[A-Za-z0-9_-]{1,64}$", RegexOptions.CultureInvariant);
     static readonly Regex Token = new("^[a-f0-9]{64}$", RegexOptions.CultureInvariant);
     const int MaxText = 65536;
+    static readonly TimeSpan TicketTtl = TimeSpan.FromMinutes(10);
     string? MemberSecret(string? token)
     {
         if (token is null)
@@ -49,9 +50,15 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
             return new("invalid_request");
         }
 
-        var ticket = members.CreateTicket(teamId, name, note ?? "", now(), TimeSpan.FromMinutes(10));
+        var ticket = members.CreateTicket(teamId, name, note ?? "", now(), TicketTtl);
         return ticket is null ? new("invalid_team_or_name") : new(Ticket: ticket);
     }
+
+    /// <summary>Re-issue a ticket nobody used before it expired; null while it is valid, used or revoked.</summary>
+    public JoinTicket? RenewExpiredTicket(string teamId, string name) =>
+        members.RenewExpiredTicket(teamId, name, now(), TicketTtl);
+
+    public bool HasLeft(string teamId, string name) => members.HasLeft(teamId, name);
 
     public ExternalResult CreateTicket(string? sessionId, string? workspace, string? name, string? note)
     {
@@ -107,6 +114,10 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
 
     /// <summary>Send from a trusted daemon actor to a joined member; the wake scan sees only committed rows.</summary>
     public ExternalResult SendToMember(string? teamId, string? name, string? text, string sender = "team-lead")
+        => SendToMemberOnce(teamId, name, text, sender, null);
+
+    /// <summary>Atomically deduplicate a server command with the inbox insertion.</summary>
+    public ExternalResult SendToMemberOnce(string? teamId, string? name, string? text, string sender, string? commandId)
     {
         if (teamId is null || name is null || !SafeName.IsMatch(name) || text is null || text.Length is < 1 or > MaxText
             || string.IsNullOrWhiteSpace(sender) || sender.Length > 64)
@@ -114,7 +125,7 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
             return new("invalid_request");
         }
 
-        return members.SendToMember(teamId, name, text, sender, now()) ? new() : new("member_not_found");
+        return members.SendToMember(teamId, name, text, sender, now(), commandId) ? new() : new("member_not_found");
     }
 
     public ExternalResult Read(string? token, long? sinceSeq, int? limit, string? fromAgent = null, bool full = false, int? maxChars = null)
