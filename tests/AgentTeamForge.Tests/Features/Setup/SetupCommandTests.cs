@@ -90,4 +90,23 @@ public sealed class SetupCommandTests
             (_, _) => throw new InvalidOperationException(), "/tmp/atf"));
         Assert.False(File.Exists(Path.Combine(dir, "launch-mode.json")));
     }
+
+    [Fact]
+    public async Task StopTerminatesTheOwnedDaemonAndIsIdempotent()
+    {
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        var daemon = await rig.StartDaemonAsync();
+
+        var (firstExit, firstOutput, firstError) = await rig.RunToExitAsync(["stop", "--state-dir", rig.StateDir + "/"]);
+        Assert.Equal(0, firstExit);
+        Assert.Empty(firstError);
+        Assert.Contains($"Stopped daemon {daemon.Id}.", firstOutput);
+        await Bounded.Until(() => daemon.HasExited, "stopped daemon exit");
+
+        var (secondExit, secondOutput, secondError) = await rig.RunToExitAsync(["stop", "--state-dir", rig.StateDir]);
+        Assert.Equal(0, secondExit);
+        Assert.Empty(secondError);
+        Assert.Contains("Daemon is not running.", secondOutput);
+    }
 }

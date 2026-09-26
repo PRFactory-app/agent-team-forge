@@ -8,6 +8,7 @@ static partial class Native
     public const int LockNonBlocking = 4;
 
     public const int ENOENT = 2;
+    public const int SigTerm = 15;
     public const int OpenReadOnly = 0;
     public const int OpenNoCtty = 0x100;
     public const int OpenNonBlocking = 0x800;

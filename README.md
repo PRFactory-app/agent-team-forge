@@ -50,6 +50,14 @@ concurrently by default. `--mode herdr` is saved but `start` refuses it until
 Herdr launch support lands; native wake behavior is covered in the
 [Linux quickstart](docs/quickstart.md).
 
+Run `atf prune --dry-run` to count expired jobs, then `atf prune` to remove them.
+`--older-than 30d` is the default; both commands accept `--state-dir DIR` and
+require the daemon to be running. The daemon also prunes once at startup and
+every 24 hours. Set `auto_prune` to `false` or `prune_older_than_days` to a
+positive number in the private `profile.json` to change that schedule. Pruning
+removes completed and failed jobs, their stored output/events/runs, and matching
+files in `logs/<job-id>.log`. Active jobs and parents of active follow-ups remain.
+
 ## Run the bounded checkpoint
 
 See the [Linux quickstart](docs/quickstart.md) for build and publish commands,
@@ -87,10 +95,13 @@ Register the MCP bridge with `claude mcp add atf -- /path/to/atf mcp --state-dir
 and use `submit_job(backend, instruction, cwd?, idempotency_key)`, `get_job`,
 `follow_up(job_id, instruction, idempotency_key)` (resumes the finished job's native
 session on the same backend/cwd) and `list_jobs`. CLI equivalents:
-`atf client submit|get|follow-up|list`. `scripts/demo-real.sh [claude|codex|pi]` is the
-opt-in end-to-end check (spends tokens); `fake` is a plumbing dry run. The daemon
-runs up to eight jobs concurrently by default; agents run headless with bypassed
-permissions.
+`atf client submit|get|follow-up|list`. Add `worktree: true` to `submit_job` or
+`--worktree` to `atf client submit` with a git `cwd` to create an isolated
+checkout under the daemon state directory; the job view and list show its path
+and branch, and follow-ups reuse it. Worktrees remain for manual inspection and
+cleanup. `scripts/demo-real.sh [claude|codex|pi]` is the opt-in end-to-end
+check (spends tokens); `fake` is a plumbing dry run. The daemon runs up to
+eight jobs concurrently by default; agents run headless with bypassed permissions.
 
 ## Reading order
 
