@@ -146,19 +146,10 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
         }
 
         var inbox = members.ReadMemberCompat(secret, sinceSeq, full ? int.MaxValue - 1 : limit ?? 50, now(),
-            string.IsNullOrEmpty(fromAgent) ? null : fromAgent);
+            string.IsNullOrEmpty(fromAgent) ? null : fromAgent, maxChars);
         if (inbox is null)
         {
             return new("membership_revoked");
-        }
-        if (maxChars is { } max)
-        {
-            inbox = inbox with
-            {
-                Messages = [.. inbox.Messages.Select(message => message with
-                { Text = message.Text[..Math.Min(message.Text.Length, max)], Truncated = message.Text.Length > max,
-                    FullLen = message.Text.Length })]
-            };
         }
         return new(Inbox: inbox);
     }
@@ -177,20 +168,10 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
         }
 
         var inbox = members.ReadLeadCompat(sessionId, sinceSeq, full ? int.MaxValue - 1 : limit ?? 50, now(),
-            string.IsNullOrEmpty(fromAgent) ? null : fromAgent);
+            string.IsNullOrEmpty(fromAgent) ? null : fromAgent, maxChars);
         if (inbox is null)
         {
             return new("invalid_team");
-        }
-
-        if (maxChars is { } max)
-        {
-            inbox = inbox with
-            {
-                Messages = [.. inbox.Messages.Select(message => message with
-                { Text = message.Text[..Math.Min(message.Text.Length, max)], Truncated = message.Text.Length > max,
-                    FullLen = message.Text.Length })]
-            };
         }
 
         return new(Inbox: inbox);

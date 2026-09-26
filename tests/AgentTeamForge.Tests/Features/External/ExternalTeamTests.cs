@@ -4,6 +4,8 @@ using AgentTeamForge.DAL.Features.External;
 using AgentTeamForge.DAL.Features.Sessions;
 using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.Tests.Support;
+using AgentTeamForge.Host.Transport;
+using System.Text.Json;
 
 namespace AgentTeamForge.Tests.Features.External;
 
@@ -29,6 +31,86 @@ public sealed class ExternalTeamTests
         Assert.True(team.SendFromLead(lead.SessionId, lead.Workspace, "reviewer", "work").Ok);
         Assert.Equal("work", Assert.Single(team.Read(token, null, null).Inbox!.Messages).Text);
         Assert.Equal("invalid_session", team.SendFromLead(null, null, "reviewer", "report").Error);
+    }
+
+    [Fact]
+    public void Large_external_pages_fit_ipc_and_only_delivered_rows_advance_the_cursor()
+    {
+        using var f = new JobFixture();
+        var team = Team(f);
+        var teamId = team.CreateActorTeam("actor:large-read")!;
+        var token = team.Join(teamId, team.CreateTicketForTeam(teamId, "reader", null).Ticket!.Token).Member!.MemberToken;
+        var escaped = new string('"', 65529) + "\"\\\n\té😀";
+        var unicode = string.Concat(Enumerable.Repeat("😀", 32768));
+        Assert.Equal(65536, escaped.Length);
+        Assert.Equal(65536, unicode.Length);
+        for (var i = 0; i < 50; i++)
+        {
+            Assert.True(team.SendToMember(teamId, "reader", i % 2 == 0 ? escaped : unicode).Ok);
+        }
+
+        var watermark = team.Read(token, null, 0).Inbox!;
+        Assert.Empty(watermark.Messages);
+        Assert.True(watermark.HasMore);
+        Assert.Equal(50, watermark.UnreadCount);
+        Assert.Equal(0, watermark.Cursors!["team-lead"]);
+        using (var db = f.Database.OpenConnection())
+        using (var command = db.CreateCommand())
+        {
+            command.CommandText = "SELECT count(*) FROM external_messages WHERE read_at IS NULL";
+            Assert.Equal(50L, command.ExecuteScalar());
+        }
+
+        var seen = new List<long>();
+        while (seen.Count < 50)
+        {
+            // Full overrides the count limit, but the transport budget still pages.
+            var inbox = team.Read(token, null, 0, full: true).Inbox!;
+            Assert.NotEmpty(inbox.Messages);
+            foreach (var message in inbox.Messages)
+            {
+                Assert.Equal(message.Seq % 2 == 1 ? escaped : unicode, message.Text);
+            }
+            Assert.True(JsonSerializer.SerializeToUtf8Bytes(new IpcResponse(true, Inbox: inbox), IpcJson.Default.IpcResponse).Length
+                <= 2 * 1024 * 1024);
+            seen.AddRange(inbox.Messages.Select(message => message.Seq));
+            Assert.Equal(50 - seen.Count, team.Read(token, null, 0).Inbox!.UnreadCount);
+            Assert.Equal(seen.Count < 50, inbox.HasMore);
+        }
+        Assert.Equal(Enumerable.Range(1, 50).Select(i => (long)i), seen);
+        Assert.Empty(team.Read(token, null, 50).Inbox!.Messages);
+    }
+
+    [Fact]
+    public void Lead_read_uses_truncated_text_for_the_page_budget()
+    {
+        using var f = new JobFixture();
+        var lead = new LeadSessionStore(f.Database).Start("/workspace/a", "lead-a");
+        var team = Team(f);
+        var token = team.Join(lead.SessionId,
+            team.CreateTicket(lead.SessionId, lead.Workspace, "writer", null).Ticket!.Token).Member!.MemberToken;
+        var text = new string('\\', 65536);
+        for (var i = 0; i < 50; i++)
+        {
+            Assert.True(team.Send(token, text).Ok);
+        }
+
+        var watermark = team.ReadLead(lead.SessionId, lead.Workspace, null, 0).Inbox!;
+        Assert.Empty(watermark.Messages);
+        Assert.Equal(50, watermark.UnreadCount);
+        var clipped = team.ReadLead(lead.SessionId, lead.Workspace, null, 50,
+            fromAgent: "writer", maxChars: 12).Inbox!;
+        Assert.Equal(50, clipped.Messages.Count);
+        Assert.False(clipped.HasMore);
+        Assert.All(clipped.Messages, message =>
+        {
+            Assert.Equal(new string('\\', 12), message.Text);
+            Assert.True(message.Truncated);
+            Assert.Equal(65536, message.FullLen);
+        });
+        Assert.True(JsonSerializer.SerializeToUtf8Bytes(new IpcResponse(true, Inbox: clipped), IpcJson.Default.IpcResponse).Length
+            <= 2 * 1024 * 1024);
+        Assert.Empty(team.ReadLead(lead.SessionId, lead.Workspace, null, 0).Inbox!.Messages);
     }
 
     [Fact]
