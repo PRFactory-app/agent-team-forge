@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
+using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
@@ -23,7 +24,8 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         try
         {
             HerdrOwnedSessions.Save(launch, session);
-            var binding = await terminal.OpenAgentTabAsync(session, launch.AgentName, launch.WorkingDirectory, launch.BootstrapPath, cancellationToken);
+            var binding = await terminal.OpenAgentTabAsync(session, launch.AgentName, launch.WorkingDirectory, launch.BootstrapPath, cancellationToken,
+                bypassClaudeWorkspaceTrust: launch.Kind == InteractiveAgentKind.Claude);
             _runs[launch.AgentName] = (session, binding);
             var args = new List<string> { "agent", "start", launch.AgentName, "--kind", Kind(launch.Kind), "--pane", binding.PaneId, "--timeout", "15000", "--" };
             args.AddRange(AgentArguments(launch));
@@ -48,6 +50,26 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         if (await terminal.VerifyBindingAsync(binding, cancellationToken) is { } problem)
         {
             throw new HerdrLaunchException("refusing prompt: " + problem);
+        }
+        // Agent detection can precede the first rendered input editor. Require a
+        // settled ready state before sending any bytes, including on resumed panes.
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        DateTimeOffset? readySince = null;
+        while (true)
+        {
+            var status = await StatusAsync(launch, cancellationToken);
+            if (status is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done
+                && HasInputEditor(launch.Kind, await terminal.ReadAgentAsync(session, binding.PaneId, cancellationToken)))
+            {
+                readySince ??= DateTimeOffset.UtcNow;
+                if (DateTimeOffset.UtcNow - readySince >= TimeSpan.FromSeconds(1)) { break; }
+            }
+            else { readySince = null; }
+            if (status is InteractiveAgentStatus.Blocked or InteractiveAgentStatus.Gone || DateTimeOffset.UtcNow >= deadline)
+            {
+                throw new HerdrLaunchException("interactive agent not ready before prompt delivery");
+            }
+            await Task.Delay(250, cancellationToken);
         }
         try
         {
@@ -119,7 +141,27 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
     }
 
     internal static bool IsUnsettledPrompt(HerdrLaunchException e) =>
-        e.Message.Contains("timeout", StringComparison.Ordinal) || e.Message.Contains("agent_prompt_stalled", StringComparison.Ordinal);
+        e.Message.Contains("timeout", StringComparison.Ordinal) || e.Message.Contains("timed out", StringComparison.Ordinal)
+        || e.Message.Contains("agent_prompt_stalled", StringComparison.Ordinal);
+
+    internal static bool HasInputEditor(InteractiveAgentKind kind, string screen)
+    {
+        // Herdr's known-agent idle fallback also matches startup/login screens.
+        // Require the rendered editor and its footer, not merely a detected process.
+        var lines = screen.Split('\n').Select(line => line.Trim()).ToArray();
+        return kind switch
+        {
+            InteractiveAgentKind.Codex => lines.Any(line => line.StartsWith('›'))
+                && (screen.Contains("? for shortcuts", StringComparison.Ordinal) || screen.Contains("context left", StringComparison.Ordinal))
+                && !lines.Any(line => line.StartsWith("│ model:", StringComparison.Ordinal) && line.Contains("loading", StringComparison.OrdinalIgnoreCase)),
+            InteractiveAgentKind.Claude => lines.Any(line => line == "❯" || line.Length > 2 && line[0] == '❯'
+                    && char.IsWhiteSpace(line[1]) && !char.IsDigit(line[2]))
+                && screen.Contains("bypass permissions", StringComparison.OrdinalIgnoreCase),
+            InteractiveAgentKind.Pi => lines.Count(line => line.Length > 5 && line.All(c => c == '─')) >= 2
+                && screen.Contains('/'),
+            _ => false,
+        };
+    }
 
     (OwnedHerdrSession Session, HerdrTabBinding Binding) Binding(InteractiveLaunch launch) =>
         _runs.TryGetValue(launch.AgentName, out var binding) ? binding : throw new HerdrLaunchException("interactive run is not bound to an owned tab");
@@ -138,13 +180,18 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         switch (launch.Kind)
         {
             case InteractiveAgentKind.Claude:
-                args.AddRange(["--permission-mode", "bypassPermissions"]);
+                args.AddRange(["--permission-mode", "bypassPermissions", "--settings", "{\"skipDangerousModePermissionPrompt\":true}"]);
                 break;
             case InteractiveAgentKind.Codex:
-                args.AddRange(["--dangerously-bypass-approvals-and-sandbox", "-C", launch.WorkingDirectory]);
+                // Trust only this invocation's cwd. Codex otherwise opens its workspace-trust
+                // screen before Herdr's first prompt and may persist trust in config.toml.
+                // CLI override paths split on every dot and do not parse quoted keys;
+                // put the cwd key inside a TOML inline table on the value side instead.
+                args.AddRange(["--dangerously-bypass-approvals-and-sandbox", "-C", launch.WorkingDirectory,
+                    "-c", "projects={" + TomlKey(launch.WorkingDirectory) + "={trust_level=\"trusted\"}}"]);
                 break;
             case InteractiveAgentKind.Pi:
-                args.AddRange(["--session-dir", launch.PiSessionDirectory!, "--exclude-tools", "ask_user,ask_question,ask_human,request_input"]);
+                args.AddRange(["--approve", "--session-dir", launch.PiSessionDirectory!, "--exclude-tools", "ask_user,ask_question,ask_human,request_input"]);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(launch));
@@ -183,6 +230,18 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
             }
         }
         return args;
+    }
+
+    static string TomlKey(string value)
+    {
+        var key = new StringBuilder("\"");
+        foreach (var c in value)
+        {
+            if (c is '\\' or '"') { key.Append('\\').Append(c); }
+            else if (c is < ' ' or '\u007f') { key.Append("\\u").Append(((int)c).ToString("X4")); }
+            else { key.Append(c); }
+        }
+        return key.Append('"').ToString();
     }
 
     static string? FindStatus(JsonNode? node)

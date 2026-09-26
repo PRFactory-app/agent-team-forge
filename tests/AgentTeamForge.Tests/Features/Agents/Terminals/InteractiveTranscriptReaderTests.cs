@@ -14,6 +14,8 @@ public sealed class InteractiveTranscriptReaderTests
         $$$"""{"type":"assistant","sessionId":"claude-native","message":{"role":"assistant","stop_reason":{{{(stop is null ? "null" : "\"" + stop + "\"")}}},"content":[{"type":"text","text":"{{{text}}}"}]}}""";
     const string ClaudeThinkingEnd = """{"type":"assistant","sessionId":"claude-native","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"x"}]}}""";
     const string ClaudeToolResult = """{"type":"user","sessionId":"claude-native","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}""";
+    const string ClaudeBackground = """{"type":"user","sessionId":"claude-native","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"Running in background"}]},"toolUseResult":{"backgroundTaskId":"task-1"}}""";
+    static string ClaudeNotification(string id = "task-1") => ClaudeUser($"<task-notification><task-id>{id}</task-id><status>completed</status></task-notification>");
 
     const string CodexMeta = """{"type":"session_meta","payload":{"id":"codex-native"}}""";
     const string CodexStarted = """{"type":"event_msg","payload":{"type":"task_started"}}""";
@@ -35,6 +37,20 @@ public sealed class InteractiveTranscriptReaderTests
 
     public static TheoryData<InteractiveAgentKind, string[], string?, bool> Turns => new()
     {
+        { InteractiveAgentKind.Claude, [ClaudeUser(Marker),
+            """{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"run_in_background":true}}]}}""",
+            ClaudeAssistant("waiting", "end_turn")], "waiting", false },
+        { InteractiveAgentKind.Claude, [ClaudeUser(Marker), ClaudeBackground,
+            """{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"finished"}]},"toolUseResult":{"retrieval_status":"success","task":{"task_id":"task-1","status":"completed"}}}""",
+            ClaudeAssistant("DONE", "end_turn")], "DONE", true },
+        { InteractiveAgentKind.Claude, [ClaudeUser(Marker), ClaudeBackground, ClaudeAssistant("waiting", "end_turn")], "waiting", false },
+        { InteractiveAgentKind.Claude, [ClaudeUser(Marker), ClaudeBackground, ClaudeAssistant("waiting", "end_turn"), ClaudeNotification()], "waiting", false },
+        { InteractiveAgentKind.Claude, [ClaudeUser(Marker), ClaudeBackground, ClaudeAssistant("waiting", "end_turn"), ClaudeNotification(),
+            ClaudeAssistant("DONE", "end_turn"), ClaudeUser("human asks more"), ClaudeAssistant("human reply", "end_turn")], "DONE", true },
+        { InteractiveAgentKind.Claude, [ClaudeUser(Marker), ClaudeBackground, ClaudeAssistant("waiting", "end_turn"), ClaudeUser("human takes over"),
+            ClaudeNotification(), ClaudeAssistant("human reply", "end_turn")], "waiting", false },
+        { InteractiveAgentKind.Claude, [ClaudeUser(Marker), ClaudeBackground, ClaudeAssistant("waiting", "end_turn"), ClaudeNotification("foreign-task"),
+            ClaudeAssistant("human reply", "end_turn")], "waiting", false },
         // Interim commentary alone never completes, even if the TUI goes idle.
         { InteractiveAgentKind.Claude, [ClaudeUser(Marker), ClaudeAssistant("interim", "tool_use"), ClaudeToolResult], "interim", false },
         // A thinking-only end_turn record precedes the final text; it is not completion yet.

@@ -538,7 +538,10 @@ public sealed class DispatchJob : IDisposable
         }
         catch (Exception ex)
         {
-            log($"owned child termination failed: {ex.GetType().Name}");
+            var details = ex is AggregateException aggregate
+                ? string.Join("; ", aggregate.Flatten().InnerExceptions.Select(inner => $"{inner.GetType().Name}: {inner.Message}"))
+                : $"{ex.GetType().Name}: {ex.Message}";
+            log($"owned child termination failed: {details}");
         }
     }
 

@@ -96,7 +96,8 @@ public sealed class HerdrInteractiveBackendTests
         var evidence = await Collect(run);
 
         Assert.Equal("native-1", control.Launch?.ResumeSessionId);
-        Assert.Equal(["--permission-mode", "bypassPermissions", "--resume", "native-1"], HerdrAgentControl.AgentArguments(control.Launch!));
+        Assert.Equal(["--permission-mode", "bypassPermissions", "--settings", "{\"skipDangerousModePermissionPrompt\":true}", "--resume", "native-1"],
+            HerdrAgentControl.AgentArguments(control.Launch!));
         Assert.Contains(evidence, e => e == new BackendEvidence.Session("corr-2", "native-1"));
         Assert.Contains(evidence, e => e == new BackendEvidence.Result("corr-2", "follow-up finished"));
     }
@@ -330,7 +331,33 @@ public sealed class HerdrInteractiveBackendTests
         Assert.Contains("--continue", args);
         Assert.DoesNotContain("--session-id", args);
         Assert.Contains("/tmp/pi-one", args);
+        Assert.Contains("--approve", args);
     }
+
+    [Fact]
+    public void CodexTrustsOnlyTheLaunchDirectoryViaConfigOverride()
+    {
+        var cwd = "/tmp/atf-new-\"project.v1";
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", cwd, null, null, "/tmp/bootstrap");
+
+        var args = HerdrAgentControl.AgentArguments(launch);
+
+        Assert.Equal(["-c", "projects={\"/tmp/atf-new-\\\"project.v1\"={trust_level=\"trusted\"}}"],
+            args.SkipWhile(arg => arg != "-c").Take(2));
+    }
+
+    [Theory]
+    [InlineData(InteractiveAgentKind.Codex, "│ model: loading\n› Ask Codex\n? for shortcuts", false)]
+    [InlineData(InteractiveAgentKind.Codex, "Do you trust this directory?", false)]
+    [InlineData(InteractiveAgentKind.Codex, "model: GPT-6-Luna\n› Ask Codex\n? for shortcuts", true)]
+    [InlineData(InteractiveAgentKind.Codex, "Finished loading files\n› Ask Codex\n? for shortcuts", true)]
+    [InlineData(InteractiveAgentKind.Claude, "Select login method:\n❯ 1. Claude account", false)]
+    [InlineData(InteractiveAgentKind.Claude, "❯ Try a task\nbypass permissions on", true)]
+    [InlineData(InteractiveAgentKind.Claude, "❯\u00a0Try a task\nbypass permissions on", true)]
+    [InlineData(InteractiveAgentKind.Pi, "pi v0.87.1\nLoading extensions", false)]
+    [InlineData(InteractiveAgentKind.Pi, "──────\n\n──────\n/tmp/work\ngpt-6-luna", true)]
+    public void Readiness_requires_the_rendered_input_editor(InteractiveAgentKind kind, string screen, bool ready) =>
+        Assert.Equal(ready, HerdrAgentControl.HasInputEditor(kind, screen));
 
     [Theory]
     [InlineData(InteractiveAgentKind.Claude, "model=opus;effort=high", "--model", "opus", "--effort", "high")]
@@ -343,7 +370,9 @@ public sealed class HerdrInteractiveBackendTests
             .WithSelection(options);
         var args = HerdrAgentControl.AgentArguments(launch);
         Assert.Equal([modelFlag, model], args.SkipWhile(arg => arg != modelFlag).Take(2));
-        Assert.Equal([effortFlag, effort], args.SkipWhile(arg => arg != effortFlag).Take(2));
+        var effortIndex = args.ToList().IndexOf(effort);
+        Assert.True(effortIndex > 0);
+        Assert.Equal(effortFlag, args[effortIndex - 1]);
         Assert.Contains(kind switch { InteractiveAgentKind.Claude => "--resume", InteractiveAgentKind.Codex => "resume", _ => "--continue" }, args);
     }
 
@@ -414,15 +443,18 @@ public sealed class HerdrInteractiveBackendTests
         Assert.True(control.Stopped);
     }
 
-    [Fact]
-    public async Task Idle_before_late_transcript_never_resends_and_late_completion_wins()
+    [Theory]
+    [InlineData(InteractiveAgentKind.Claude)]
+    [InlineData(InteractiveAgentKind.Codex)]
+    [InlineData(InteractiveAgentKind.Pi)]
+    public async Task Idle_before_late_transcript_never_resends_and_late_completion_wins(InteractiveAgentKind kind)
     {
         // Herdr reports idle long before the native transcript flushes (e.g. after a
         // timed-out/stalled prompt submission that was swallowed as uncertain).
         var control = new FakeControl { Status = InteractiveAgentStatus.Idle };
         var reader = new SequenceReader(null, null, null, null, null, null, null, null,
             new InteractiveTranscript("native-1", "finished", ["finished"], Completed: true));
-        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(), TimeSpan.FromSeconds(10));
+        var backend = new HerdrInteractiveBackend(control, reader, kind, Path.GetTempPath(), TimeSpan.FromSeconds(10));
         await using var run = backend.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() });
         await run.DeliverAsync(CancellationToken.None);
 
@@ -448,8 +480,24 @@ public sealed class HerdrInteractiveBackendTests
 
         Assert.Equal(1, control.Prompts);
         Assert.DoesNotContain(evidence, e => e is BackendEvidence.Result);
+        Assert.Equal(interim, evidence.Any(e => e is BackendEvidence.Ack));
         Assert.Equal(new BackendEvidence.ProtocolError("interactive_completion_unobserved"), evidence[^1]);
         Assert.False(control.Stopped); // Uncertain tabs are kept, with or without a native session ID.
+    }
+
+    [Fact]
+    public async Task Background_task_wait_does_not_expire_as_idle_or_complete_with_interim_text()
+    {
+        var waiting = new InteractiveTranscript("native-1", "waiting", ["waiting"], PendingBackgroundTasks: true);
+        var reader = new SequenceReader(waiting, waiting, waiting, waiting,
+            new InteractiveTranscript("native-1", "DONE", ["waiting", "DONE"], Completed: true));
+        var control = new FakeControl { Status = InteractiveAgentStatus.Idle };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(), TimeSpan.FromMilliseconds(100));
+        await using var run = backend.Start(new BackendRequest("job", "corr", "sleep", "") { WorkingDirectory = Path.GetTempPath() });
+        await run.DeliverAsync(CancellationToken.None);
+        var evidence = await Collect(run, TimeSpan.FromSeconds(5));
+        Assert.Contains(new BackendEvidence.Result("corr", "DONE"), evidence);
+        Assert.DoesNotContain(evidence, e => e is BackendEvidence.ProtocolError);
     }
 
     [Fact]

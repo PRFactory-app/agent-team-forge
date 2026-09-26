@@ -144,6 +144,18 @@ public sealed class CodexExecBackendTests : IDisposable
         await Bounded.Until(() => GrandchildExited(grandchild), "grandchild exit");
     }
 
+    [Fact]
+    public async Task Terminating_an_already_exited_child_succeeds()
+    {
+        var script = _dir.File("codex-exit");
+        File.WriteAllText(script, "#!/bin/sh\nexit 0\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        await using var run = new CodexExecBackend(script).Start(new BackendRequest("job-exit", "corr-exit", "x", ""));
+        await foreach (var _ in run.ReadEvidenceAsync(TestContext.Current.CancellationToken)) { }
+
+        run.TerminateOwnedChild();
+    }
+
     static bool GrandchildExited(int pid)
     {
         var stat = $"/proc/{pid}/stat";

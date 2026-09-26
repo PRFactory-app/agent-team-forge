@@ -131,8 +131,12 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             }
             var markerSeen = false;
             var completed = false;
+            var ended = false;
             string? last = null;
             var progress = new List<string>();
+            var backgroundTools = new HashSet<string>();
+            var backgroundTasks = new HashSet<string>();
+            var knownTasks = new HashSet<string>();
             foreach (var line in File.ReadLines(path, Encoding.UTF8))
             {
                 JsonDocument json;
@@ -157,6 +161,17 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                         markerSeen = userText?.Contains(marker, StringComparison.Ordinal) == true;
                         continue;
                     }
+                    if (kind == InteractiveAgentKind.Claude && Str(root, "type") == "user"
+                        && root.TryGetProperty("message", out var notificationMessage)
+                        && notificationMessage.TryGetProperty("content", out var notificationContent)
+                        && notificationContent.ValueKind == JsonValueKind.String
+                        && TaskNotification(notificationContent.GetString()!, backgroundTasks, knownTasks, out var wasPending))
+                    {
+                        // The notification starts a continuation, not a human turn. Its
+                        // own final assistant record must arrive before completion.
+                        if (wasPending) { completed = false; }
+                        continue;
+                    }
                     if (userText is not null)
                     {
                         // Codex records the same input as both response_item and event_msg.
@@ -164,13 +179,22 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                         {
                             continue;
                         }
+                        ended = true;
                         break; // Next native user input: a new turn.
                     }
                     if (kind == InteractiveAgentKind.Codex && EventType(root) == "task_started")
                     {
                         break;
                     }
-                    completed |= CompletedTurn(root, kind);
+                    if (kind == InteractiveAgentKind.Claude)
+                    {
+                        TrackBackgroundTasks(root, backgroundTools, backgroundTasks, knownTasks);
+                        if (Str(root, "type") == "assistant")
+                        {
+                            completed = CompletedTurn(root, kind) && backgroundTools.Count == 0 && backgroundTasks.Count == 0;
+                        }
+                    }
+                    else { completed |= CompletedTurn(root, kind); }
                     if (AssistantText(root, kind) is { } text)
                     {
                         last = text;
@@ -178,9 +202,60 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                     }
                 }
             }
-            return markerSeen ? new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress, completed) : null;
+            return markerSeen ? new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress, completed,
+                !ended && (backgroundTools.Count > 0 || backgroundTasks.Count > 0)) : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { return null; }
+    }
+
+    static void TrackBackgroundTasks(JsonElement root, HashSet<string> tools, HashSet<string> tasks, HashSet<string> knownTasks)
+    {
+        if (root.TryGetProperty("message", out var message) && message.TryGetProperty("content", out var content)
+            && content.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var block in content.EnumerateArray())
+            {
+                if (Str(block, "type") == "tool_use" && Str(block, "id") is { } toolId
+                    && block.TryGetProperty("input", out var input) && Flag(input, "run_in_background"))
+                {
+                    tools.Add(toolId);
+                }
+                if (Str(block, "type") == "tool_result" && Str(block, "tool_use_id") is { } resultId)
+                {
+                    tools.Remove(resultId);
+                }
+            }
+        }
+        // Also covers Bash commands automatically moved to the background by Claude.
+        if (root.TryGetProperty("toolUseResult", out var result) && Str(result, "backgroundTaskId") is { } taskId)
+        {
+            tasks.Add(taskId);
+            knownTasks.Add(taskId);
+        }
+        if (result.ValueKind == JsonValueKind.Object && result.TryGetProperty("task", out var task)
+            && Str(task, "task_id") is { } finishedId && Str(task, "status") is "completed" or "failed" or "killed")
+        {
+            tasks.Remove(finishedId); // TaskOutput can observe completion before a notification arrives.
+        }
+    }
+
+    static bool TaskNotification(string text, HashSet<string> tasks, HashSet<string> knownTasks, out bool wasPending)
+    {
+        wasPending = false;
+        if (!text.TrimStart().StartsWith("<task-notification>", StringComparison.Ordinal)) { return false; }
+        var start = text.IndexOf("<task-id>", StringComparison.Ordinal);
+        var end = text.IndexOf("</task-id>", StringComparison.Ordinal);
+        if (start < 0 || end < start + 9) { return false; }
+        var id = text[(start + 9)..end];
+        if (!knownTasks.Contains(id)) { return false; }
+        wasPending = tasks.Contains(id);
+        if (text.Contains("<status>completed</status>", StringComparison.Ordinal)
+            || text.Contains("<status>failed</status>", StringComparison.Ordinal)
+            || text.Contains("<status>killed</status>", StringComparison.Ordinal))
+        {
+            tasks.Remove(id);
+        }
+        return true;
     }
 
     static string? AssistantText(JsonElement root, InteractiveAgentKind kind)

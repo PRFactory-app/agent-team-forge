@@ -153,19 +153,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             yield return new BackendEvidence.EndOfOutput();
         }
 
-        public void TerminateOwnedChild()
-        {
-            try
-            {
-                if (!_process.HasExited)
-                {
-                    _process.Kill(entireProcessTree: true);
-                }
-            }
-            catch (InvalidOperationException)
-            {
-            }
-        }
+        public void TerminateOwnedChild() => OwnedProcessTermination.Kill(_process);
 
         public void InterruptTurn()
         {
