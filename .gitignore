@@ -1,0 +1,39 @@
+# Agent/harness state and local credentials
+.pi-glla/
+.pi/
+.claude/
+.codex/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Build and test output
+**/bin/
+**/obj/
+**/TestResults/
+**/artifacts/
+.vs/
+
+# Runtime records and raw experiments are not publication-cleared
+**/.run/
+**/evidence/
+**/transcripts/
+**/captures/
+**/worktrees/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.log
+*.sock
+*.pid
+
+# Editor/OS local files
+.DS_Store
+Thumbs.db
+*.user
+*.suo
