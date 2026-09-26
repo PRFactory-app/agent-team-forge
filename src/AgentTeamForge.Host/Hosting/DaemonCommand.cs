@@ -66,6 +66,7 @@ public static class DaemonCommand
         JobDatabase database;
         try
         {
+            StartupBackup.Run(state, limits.BusyTimeout, Log);
             database = JobDatabase.Open(state.Database, limits.BusyTimeout);
         }
         catch (StorageException ex)
