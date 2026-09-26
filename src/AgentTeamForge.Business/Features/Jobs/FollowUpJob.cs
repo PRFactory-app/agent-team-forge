@@ -116,6 +116,7 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             parent.Backend, parent.Cwd, parent.JobId, request.WakeKey, request.WakeGeneration, worktreeBase: parent.WorktreeBase,
             worktreePath: parent.WorktreePath, worktreeBranch: parent.WorktreeBranch,
             timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds,
-            interruptParent: interruptRunning, cancelRunning: cancelRunning, leadSessionId: request.LeadSessionId);
+            interruptParent: interruptRunning, cancelRunning: cancelRunning, leadSessionId: request.LeadSessionId,
+            targetAgent: parent.TargetAgent);
     }
 }

@@ -20,6 +20,7 @@ public sealed record SubmitJobRequest(string IdempotencyKey, string Instruction,
 {
     /// <summary>Backend name from <see cref="Agents.Backends.BackendCatalog"/>; null means fake.</summary>
     public string? Backend { get; init; }
+    public string? TargetAgent { get; init; }
 
     public string? Model { get; init; }
     public string? Effort { get; init; }

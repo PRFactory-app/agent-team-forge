@@ -19,12 +19,14 @@ public sealed class ListJobsTests
         var accepted = f.Accept().Execute(new SubmitJobRequest("lead-web", "hello", null, false)
         {
             LeadSessionId = session.SessionId,
+            Cwd = workspace,
         });
 
         Assert.Null(accepted.Error);
         var listed = Assert.Single(f.List().Execute(new ListJobsRequest()).Page!.Jobs);
         Assert.Equal(session.SessionId, listed.LeadSessionId);
         Assert.Equal(workspace, listed.LeadWorkspace);
+        Assert.Equal(workspace, listed.Cwd);
     }
 
     [Fact]
