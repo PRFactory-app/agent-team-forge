@@ -80,6 +80,20 @@ public sealed class CodexExecBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task Completed_turn_with_only_tool_calls_has_empty_result()
+    {
+        var codex = FakeCodex(
+            $$"""{"type":"thread.started","thread_id":"{{ThreadId}}"}""",
+            """{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"ok"}}""",
+            """{"type":"turn.completed"}""");
+
+        var evidence = await RunAsync(new CodexExecBackend(codex), new BackendRequest("job-empty", "corr-empty", "x", "") { WorkingDirectory = _dir.Path });
+
+        Assert.Contains(new BackendEvidence.Result("corr-empty", ""), evidence);
+        Assert.DoesNotContain(evidence, e => e is BackendEvidence.ProtocolError);
+    }
+
+    [Fact]
     public async Task Oversized_agent_message_cannot_complete_as_empty_result()
     {
         var codex = FakeCodex(
