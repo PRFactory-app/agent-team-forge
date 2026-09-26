@@ -51,6 +51,69 @@ public sealed class FollowUpJobTests
     }
 
     [Fact]
+    public async Task Interrupt_cancels_running_turn_and_resumes_its_session()
+    {
+        using var f = new JobFixture();
+        var running = new ScriptedBackend(r => [new BackendEvidence.Session(r.Correlation, "same-session")]) { Hangs = true };
+        var parent = f.Submit("parent");
+        using var dispatcher = new DispatchJob(f.Store, running, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+        var attempt = dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+        await Bounded.Until(() => f.Store.GetJob(parent.JobId)!.SessionId == "same-session", "session evidence");
+
+        var followUp = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept(), dispatcher.CancelRunning);
+        Assert.Equal(JobErrors.ParentNotReady,
+            followUp.Execute(new FollowUpRequest(parent.JobId, "wait", "not-interrupting")).Error);
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(parent.JobId)!.Status);
+        Assert.Equal(0, running.Terminations);
+
+        var child = followUp.Execute(new FollowUpRequest(parent.JobId, "new prompt", "child") { Interrupt = true });
+        Assert.Equal("accepted", child.Outcome);
+        await attempt.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+        var cancelled = f.Store.GetJob(parent.JobId)!;
+        Assert.Equal((JobStatus.Cancelled, "interrupted"), (cancelled.Status, cancelled.ReasonCode));
+        Assert.Equal("interrupted", f.Store.GetRuns(parent.JobId).Single().ReasonCode);
+        Assert.Equal(1, running.Terminations);
+
+        var resumed = Agent("ignored");
+        using var next = new DispatchJob(f.Store, resumed, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+        await next.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+        Assert.Equal("same-session", resumed.Started.Single().ResumeSessionId);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(child.Job!.JobId)!.Status);
+    }
+
+    [Fact]
+    public async Task Interrupt_racing_completion_always_accepts_the_follow_up()
+    {
+        using var f = new JobFixture();
+        using var finish = new ManualResetEventSlim();
+        IEnumerable<BackendEvidence> Script(BackendRequest request)
+        {
+            yield return new BackendEvidence.Session(request.Correlation, "race-session");
+            finish.Wait(Bounded.ScenarioDeadline);
+            yield return new BackendEvidence.Result(request.Correlation, "done");
+        }
+
+        var backend = new ScriptedBackend(Script);
+        var parent = f.Submit("parent");
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+        var attempt = Task.Run(() => dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None), TestContext.Current.CancellationToken);
+        await Bounded.Until(() => f.Store.GetJob(parent.JobId)!.SessionId == "race-session", "session evidence");
+        var followUp = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept(), dispatcher.CancelRunning);
+        var pending = Task.Run(() => followUp.Execute(new FollowUpRequest(parent.JobId, "after", "child") { Interrupt = true }), TestContext.Current.CancellationToken);
+        finish.Set();
+        var child = await pending;
+        await attempt.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+        Assert.Equal("accepted", child.Outcome);
+        Assert.Contains(f.Store.GetJob(parent.JobId)!.Status, new[] { JobStatus.Completed, JobStatus.Cancelled });
+        Assert.Equal("race-session", f.Store.GetJob(parent.JobId)!.SessionId);
+        var resumed = Agent("unused");
+        using var next = new DispatchJob(f.Store, resumed, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+        await next.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+        Assert.Equal("race-session", resumed.Started.Single().ResumeSessionId);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(child.Job!.JobId)!.Status);
+    }
+
+    [Fact]
     public void Follow_up_is_refused_until_the_parent_has_finished_with_a_session()
     {
         using var f = new JobFixture();

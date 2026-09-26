@@ -43,6 +43,22 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             return new AcceptOutcome(AcceptKind.QueueFull, null);
         }
 
+        JobRecord? parent = null;
+        if (job.ParentJobId is { } parentId)
+        {
+            parent = GetJob(connection, tx, parentId);
+            if (parent is null || parent.Principal != job.Principal || parent.Team != job.Team)
+            {
+                return new AcceptOutcome(AcceptKind.ParentNotFound, null);
+            }
+
+            if (parent.SessionId is null || parent.Status is not (JobStatus.Completed or JobStatus.Cancelled)
+                && !(job.InterruptParent && parent.Status == JobStatus.Running))
+            {
+                return new AcceptOutcome(AcceptKind.ParentNotReady, null);
+            }
+        }
+
         var jobId = "job_" + Guid.CreateVersion7().ToString("N");
         var worktreePath = job.CreateWorktree ? Path.Combine(WorktreeRoot, jobId) : job.WorktreePath;
         var worktreeBranch = job.CreateWorktree ? $"atf/job-{jobId}" : job.WorktreeBranch;
@@ -68,6 +84,13 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 WHERE target_key=$key AND generation=$generation
                 """, ("$id", jobId), ("$key", job.WakeTargetKey), ("$generation", job.WakeGeneration.Value));
         }
+        var interrupted = parent?.Status == JobStatus.Running ? parent.JobId : null;
+        if (interrupted is not null)
+        {
+            // The child intent and stop_job's cancellation commit together. A
+            // racing completion wins before this transaction or is fenced out.
+            CancelInTransaction(connection, tx, parent!, "interrupted");
+        }
         checkpoints.Hit(DurabilityCheckpoints.AcceptBeforeCommit);
         tx.Commit();
 
@@ -81,7 +104,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             WorktreeBranch = worktreeBranch,
             WorktreeBase = job.WorktreeBase,
             TimeoutSeconds = job.TimeoutSeconds,
-        });
+        }, interrupted);
     });
 
     /// <summary>
@@ -201,32 +224,40 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         }
 
         var running = job.Status == JobStatus.Running;
-        var changed = job.Status is JobStatus.Queued or JobStatus.Running;
+        var changed = CancelInTransaction(connection, tx, job, reason);
         if (changed)
         {
-            var now = Now();
-            if (running)
-            {
-                Execute(connection, tx, """
-                    UPDATE runs SET state='cancelled', reason_code=$reason, finished_at=$now
-                    WHERE job_id=$id AND state='started';
-                    """, ("$id", jobId), ("$now", now), ("$reason", reason));
-            }
-            else
-            {
-                Execute(connection, tx, "UPDATE dispatch_intents SET state='attempted' WHERE job_id=$id AND state='unattempted'", ("$id", jobId));
-            }
-
-            Execute(connection, tx, """
-                UPDATE jobs SET status='cancelled', reason_code=$reason, updated_at=$now WHERE job_id=$id;
-                INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'cancelled', $now);
-                """, ("$id", jobId), ("$now", now), ("$reason", reason));
             tx.Commit();
             job = GetJob(connection, null, jobId)!;
         }
 
         return new CancelOutcome(job, running, changed);
     });
+
+    static bool CancelInTransaction(SqliteConnection connection, SqliteTransaction tx, JobRecord job, string reason)
+    {
+        if (job.Status is not (JobStatus.Queued or JobStatus.Running))
+        {
+            return false;
+        }
+
+        var now = Now();
+        if (job.Status == JobStatus.Running)
+        {
+            Execute(connection, tx, "UPDATE runs SET state='cancelled', reason_code=$reason, finished_at=$now WHERE job_id=$id AND state='started'",
+                ("$id", job.JobId), ("$now", now), ("$reason", reason));
+        }
+        else
+        {
+            Execute(connection, tx, "UPDATE dispatch_intents SET state='attempted' WHERE job_id=$id AND state='unattempted'", ("$id", job.JobId));
+        }
+
+        Execute(connection, tx, """
+            UPDATE jobs SET status='cancelled', reason_code=$reason, updated_at=$now WHERE job_id=$id;
+            INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'cancelled', $now);
+            """, ("$id", job.JobId), ("$now", now), ("$reason", reason));
+        return true;
+    }
 
     /// <summary>Cancels every queued job whose queue deadline has passed; returns their ids.</summary>
     public IReadOnlyList<string> ExpireQueued() => Write(connection =>

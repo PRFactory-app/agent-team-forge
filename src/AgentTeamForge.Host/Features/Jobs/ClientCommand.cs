@@ -31,6 +31,7 @@ public static class ClientCommand
                 JobId = options.GetValueOrDefault("job"),
                 IdempotencyKey = options.GetValueOrDefault("key"),
                 Instruction = options.GetValueOrDefault("instruction"),
+                Interrupt = options.ContainsKey("interrupt"),
                 TimeoutSeconds = Seconds(options, "timeout"),
                 QueueTtlSeconds = Seconds(options, "queue-ttl"),
             },
@@ -49,7 +50,7 @@ public static class ClientCommand
         if (request is null)
         {
             Console.Error.WriteLine("usage: atf client <submit|follow-up|get|stop|list> --state-dir DIR "
-                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--worktree] [--timeout S] [--queue-ttl S] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT [--timeout S] [--queue-ttl S]] | stop ID | [--status S] [--limit N] [--cursor C]]");
+                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--worktree] [--timeout S] [--queue-ttl S] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT [--interrupt] [--timeout S] [--queue-ttl S]] | stop ID | [--status S] [--limit N] [--cursor C]]");
             return 64;
         }
 
