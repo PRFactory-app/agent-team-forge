@@ -29,6 +29,9 @@
   let leadOptionsKey = '';
   const tickets = new Map();
   const newAgent = { pending: null, sending: false };
+  let modelOptions = {};
+  const recentCwds = new Map();
+  let pickedDirectory = null;
   let timer = null;
   let ticketTimer = null;
   let listSeq = 0;
@@ -78,6 +81,8 @@
     leadOptionsKey = '';
     newAgent.pending = null;
     newAgent.sending = false;
+    modelOptions = {};
+    recentCwds.clear();
     $('console').hidden = true;
     $('login').hidden = false;
     setStatus(message, 'error');
@@ -127,6 +132,7 @@
 
   async function loadConfig() {
     const r = await api('GET', '/api/config');
+    modelOptions = r?.model_options || {};
     const select = $('new-agent-backend');
     select.replaceChildren();
     for (const backend of (r?.backends || []).filter(name => ['claude', 'codex', 'pi'].includes(name))) {
@@ -139,7 +145,81 @@
       select.disabled = true;
       $('new-agent-submit').disabled = true;
     }
+    syncModelOptions();
     newAgentControls();
+  }
+
+  function syncModelOptions() {
+    const backend = $('new-agent-backend').value;
+    const choices = modelOptions[backend] || { models: [], efforts: [] };
+    const model = $('new-agent-model');
+    const prior = model.value;
+    model.replaceChildren();
+    for (const value of choices.models) {
+      const option = element('option', '', value);
+      option.value = value;
+      model.append(option);
+    }
+    model.value = choices.models.includes(prior) ? prior :
+      (choices.models.includes('medium') ? 'medium' : choices.models[0] || '');
+    const effort = $('new-agent-effort');
+    effort.replaceChildren();
+    const defaultOption = element('option', '', 'Backend default');
+    defaultOption.value = '';
+    effort.append(defaultOption);
+    for (const value of choices.efforts) {
+      const option = element('option', '', value);
+      option.value = value;
+      effort.append(option);
+    }
+    $('new-agent-effort-field').hidden = !choices.efforts.length;
+    effort.disabled = !choices.efforts.length || newAgent.sending || !!newAgent.pending;
+  }
+
+  function renderRecentCwds() {
+    const list = $('new-agent-recent-list');
+    list.replaceChildren();
+    for (const path of recentCwds.keys()) {
+      const button = element('button', '', path);
+      button.type = 'button';
+      button.addEventListener('click', () => { $('new-agent-cwd').value = path; });
+      list.append(button);
+    }
+    $('new-agent-recent').hidden = !recentCwds.size;
+  }
+
+  async function browseDirectory(path) {
+    const status = $('new-agent-picker-status');
+    status.textContent = 'Loading…';
+    const r = await api('GET', '/api/directories?path=' + encodeURIComponent(path));
+    if (!r || r.error || !r.path) {
+      status.textContent = 'Cannot list that directory.';
+      return;
+    }
+    pickedDirectory = r.path;
+    status.textContent = '';
+    const crumbs = $('new-agent-breadcrumb');
+    crumbs.replaceChildren();
+    const parts = r.path.split('/').filter(Boolean);
+    let location = '';
+    const paths = ['/'];
+    for (const part of parts) { location += '/' + part; paths.push(location); }
+    paths.forEach((partPath, index) => {
+      const button = element('button', '', index === 0 ? '/' : parts[index - 1]);
+      button.type = 'button';
+      button.addEventListener('click', () => browseDirectory(partPath));
+      crumbs.append(button);
+    });
+    const list = $('new-agent-directory-list');
+    list.replaceChildren();
+    for (const child of r.directories || []) {
+      const button = element('button', '', child.name + '/');
+      button.type = 'button';
+      button.addEventListener('click', () => browseDirectory(child.path));
+      list.append(button);
+    }
+    if (!list.children.length) list.append(element('span', '', 'No subdirectories'));
+    $('new-agent-picker').hidden = false;
   }
 
   function syncLeadOptions() {
@@ -163,6 +243,9 @@
   function newAgentControls() {
     const busy = newAgent.sending || !!newAgent.pending;
     for (const control of $('new-agent-form').querySelectorAll('input, select, textarea')) control.disabled = busy;
+    $('new-agent-effort').disabled = busy || $('new-agent-effort-field').hidden;
+    $('new-agent-browse').disabled = busy;
+    $('new-agent-use-dir').disabled = busy;
     $('new-agent-backend').disabled = busy || !$('new-agent-backend').options.length
       || !['claude', 'codex', 'pi'].includes($('new-agent-backend').value);
     $('new-agent-submit').disabled = busy || $('new-agent-backend').disabled;
@@ -176,6 +259,7 @@
       const leadId = $('new-agent-lead').value || null;
       newAgent.pending = {
         backend: $('new-agent-backend').value,
+        name: $('new-agent-name').value.trim() || null,
         model: $('new-agent-model').value.trim() || null,
         effort: $('new-agent-effort').value.trim() || null,
         cwd: $('new-agent-cwd').value.trim(),
@@ -207,7 +291,7 @@
       result.className = 'warn';
     } else {
       result.textContent = r.error === 'invalid_request' || r.error === 'web_bad_request'
-        ? 'Rejected: use an existing absolute directory and model/effort values without shell characters.'
+        ? 'Rejected: check the name, model, effort, and existing absolute directory.'
         : 'Rejected: ' + r.error;
       result.className = 'error';
       newAgent.pending = null;
@@ -713,6 +797,11 @@
     $('page-next').disabled = !nextCursor;
     $('page-number').textContent = 'Page ' + (pageIndex + 1);
     const jobs = (r.page && r.page.jobs) || [];
+    for (const job of jobs) {
+      if (job.cwd && !recentCwds.has(job.cwd)) recentCwds.set(job.cwd, true);
+      if (recentCwds.size > 8) recentCwds.delete(recentCwds.keys().next().value);
+    }
+    renderRecentCwds();
     const counts = { yellow: 0, green: 0, red: 0, grey: 0 };
     const groups = new Map();
     for (const j of jobs) {
@@ -874,6 +963,13 @@
       if (!form.hidden) $('new-agent-cwd').focus();
     });
     $('new-agent-form').addEventListener('submit', e => { e.preventDefault(); submitNewAgent(); });
+    $('new-agent-backend').addEventListener('change', syncModelOptions);
+    $('new-agent-browse').addEventListener('click', () => browseDirectory($('new-agent-cwd').value.trim() || '/'));
+    $('new-agent-use-dir').addEventListener('click', () => {
+      if (pickedDirectory) $('new-agent-cwd').value = pickedDirectory;
+      $('new-agent-picker').hidden = true;
+    });
+    $('new-agent-close-picker').addEventListener('click', () => { $('new-agent-picker').hidden = true; });
     $('new-agent-retry').addEventListener('click', submitNewAgent);
     $('new-agent-discard').addEventListener('click', () => {
       newAgent.pending = null;

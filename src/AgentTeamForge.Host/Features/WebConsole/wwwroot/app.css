@@ -103,6 +103,13 @@ main { padding-top: 23px; }
 .new-agent-directory { grid-column: span 2; }
 .new-agent-form input, .new-agent-form select, .new-agent-form textarea { font: 11.5px/1.6 var(--font-mono); }
 .new-agent-fields input, .new-agent-fields select { width: 100%; min-width: 0; }
+.new-agent-fields > button { align-self: end; }
+.directory-recent, .directory-picker { display: grid; gap: 8px; min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--secondary); font-size: 12px; }
+.directory-recent > div, .directory-breadcrumb, .directory-picker-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.directory-recent button { max-width: 100%; overflow-wrap: anywhere; text-align: left; }
+.directory-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 5px; max-height: 220px; overflow: auto; }
+.directory-list button { min-width: 0; overflow-wrap: anywhere; text-align: left; }
+.directory-breadcrumb { overflow-wrap: anywhere; }
 .new-agent-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--divider); }
 .new-agent-actions span, .join-ticket-form [role="status"] { min-width: 0; overflow-wrap: anywhere; color: var(--muted); font: 11px/1.6 var(--font-mono); }
 #jobs { display: grid; gap: 22px; margin: 22px 0; }

@@ -10,6 +10,25 @@ public sealed class ModelSelectionTests
 {
     static IReadOnlyCollection<string> AllModels(string _) => ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"];
 
+    [Fact]
+    public void Console_choices_match_resolved_tiers_and_backend_effort_rules()
+    {
+        foreach (var backend in new[] { "codex", "pi" })
+        {
+            var options = ModelSelection.ConsoleOptions[backend];
+            Assert.Empty(options.Efforts);
+            foreach (var tier in options.Models)
+            {
+                Assert.True(ModelSelection.ValidConsoleSelection(backend, tier, null));
+                Assert.NotNull(ModelSelection.Resolve(backend, tier, null, AllModels).Model);
+            }
+        }
+        Assert.DoesNotContain("high-fast", ModelSelection.ConsoleOptions["pi"].Models);
+        Assert.DoesNotContain("medium-fast", ModelSelection.ConsoleOptions["codex"].Models);
+        Assert.False(ModelSelection.ValidConsoleSelection("codex", "high", "low"));
+        Assert.True(ModelSelection.ValidConsoleSelection("claude", "opus", "medium"));
+    }
+
     [Theory]
     [InlineData("cheapest", "gpt-6-luna", "high")]
     [InlineData("low", "gpt-6-luna", "xhigh")]
@@ -169,7 +188,8 @@ public sealed class ModelSelectionTests
         using var fixture = new JobFixture();
         var accept = new AcceptJob(fixture.Store, JobFixture.Operator, fixture.Limits, fixture.TestProfile,
             fixture.Admission, ["fake", "codex"], AllModels);
-        var parent = accept.Execute(new SubmitJobRequest("parent", "task", null, false) { Backend = "codex", Model = "cheapest" }).Job!;
+        var parent = accept.Execute(new SubmitJobRequest("parent", "task", null, false)
+        { Backend = "codex", Model = "cheapest", TargetAgent = "codex-named" }).Job!;
         var backend = new ScriptedBackend(r =>
         [
             new BackendEvidence.Ack(r.Correlation),
@@ -188,6 +208,7 @@ public sealed class ModelSelectionTests
         var unavailable = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f4") { Model = "gpt-7" });
 
         Assert.Equal(("gpt-6-luna", "high"), (inherited.Model, inherited.Effort));
+        Assert.Equal("codex-named", fixture.Store.GetJob(inherited.JobId)!.TargetAgent);
         Assert.Equal(("gpt-6-luna", "low"), (effortOnly.Model, effortOnly.Effort));
         Assert.Equal(("gpt-6-astra", "medium"), (tier.Model, tier.Effort));
         Assert.Contains("not available", unavailable.Error);

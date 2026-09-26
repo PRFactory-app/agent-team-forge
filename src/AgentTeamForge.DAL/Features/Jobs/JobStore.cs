@@ -17,6 +17,65 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         j.backend, j.cwd, j.parent_job_id, j.session_id, j.worktree_path, j.worktree_branch, j.worktree_base, j.timeout_s
         """;
 
+    const string SessionPeers = """
+        SELECT k.job_id FROM jobs j LEFT JOIN jobs p ON p.job_id=j.parent_job_id
+        JOIN jobs k ON k.backend=j.backend
+        LEFT JOIN jobs q ON q.job_id=k.parent_job_id
+        WHERE j.job_id=$id AND (k.job_id=j.job_id OR
+            coalesce(k.session_id,q.session_id)=coalesce(j.session_id,p.session_id))
+        """;
+
+    static bool SessionFenced(SqliteConnection connection, SqliteTransaction? tx, string jobId) =>
+        Scalar(connection, tx, $"SELECT count(*) FROM jobs WHERE session_fenced=1 AND job_id IN ({SessionPeers})", ("$id", jobId)) > 0;
+
+    public IReadOnlyList<string> GetSessionJobs(string jobId) => Read(connection =>
+    {
+        using var command = Command(connection, null, SessionPeers, ("$id", jobId));
+        using var reader = command.ExecuteReader();
+        var ids = new List<string>();
+        while (reader.Read()) { ids.Add(reader.GetString(0)); }
+        return (IReadOnlyList<string>)ids;
+    });
+
+    public bool IsSessionFenced(string jobId) => Read(connection => SessionFenced(connection, null, jobId));
+
+    public void FenceSession(string jobId) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        Execute(connection, tx, "UPDATE jobs SET session_fenced=1 WHERE job_id=$id", ("$id", jobId));
+        tx.Commit();
+        return 0;
+    });
+
+    // Prevent a queued sibling from claiming between ownership verification and stop.
+    public bool TryFenceSessionForStop(string jobId) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        if (Scalar(connection, tx, $"SELECT count(*) FROM jobs WHERE status='running' AND job_id IN ({SessionPeers})", ("$id", jobId)) > 0)
+        {
+            return false;
+        }
+        Execute(connection, tx, "UPDATE jobs SET session_fenced=1 WHERE job_id=$id", ("$id", jobId));
+        tx.Commit();
+        return true;
+    });
+
+    public void ReconcileStoppedJob(string jobId) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        Execute(connection, tx, "UPDATE jobs SET session_fenced=0 WHERE job_id=$id", ("$id", jobId));
+        tx.Commit();
+        return 0;
+    });
+
+    public void ReconcileStoppedSession(string jobId) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        Execute(connection, tx, $"UPDATE jobs SET session_fenced=0 WHERE job_id IN ({SessionPeers})", ("$id", jobId));
+        tx.Commit();
+        return 0;
+    });
+
     public string WorktreeRoot => Path.Combine(Path.GetDirectoryName(database.Path)!, "worktrees");
 
     /// <summary>
@@ -54,7 +113,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
             // Failed/needs_reconciliation parents were checked idle by the caller while
             // already terminal; an interrupt saw a running parent, so its later end is unchecked.
-            if (parent.SessionId is null || !(parent.Status is JobStatus.Completed or JobStatus.Cancelled
+            if (parent.SessionId is null || SessionFenced(connection, tx, parent.JobId) || !(parent.Status is JobStatus.Completed or JobStatus.Cancelled
                 || (job.InterruptParent ? parent.Status == JobStatus.Running : parent.Status is JobStatus.Failed or JobStatus.NeedsReconciliation)))
             {
                 return new AcceptOutcome(AcceptKind.ParentNotReady, null);
@@ -125,9 +184,9 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             SELECT i.job_id FROM dispatch_intents i JOIN jobs j ON j.job_id = i.job_id
             WHERE i.state='unattempted' AND j.status='queued'
               AND (j.queue_deadline IS NULL OR j.queue_deadline > $now) AND NOT EXISTS (
-                SELECT 1 FROM jobs p JOIN jobs k ON k.status='running'
+                SELECT 1 FROM jobs p JOIN jobs k ON (k.status='running' OR k.session_fenced=1)
                 WHERE p.job_id = j.parent_job_id
-                  AND (k.job_id = p.job_id OR k.session_id = p.session_id OR EXISTS (
+                  AND k.backend=p.backend AND (k.job_id = p.job_id OR k.session_id = p.session_id OR EXISTS (
                       SELECT 1 FROM jobs q WHERE q.job_id = k.parent_job_id AND q.session_id = p.session_id)))
             ORDER BY i.created_at, i.rowid LIMIT 1
             """, ("$now", Now()));
@@ -257,7 +316,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         }
 
         Execute(connection, tx, """
-            UPDATE jobs SET status='cancelled', reason_code=$reason, updated_at=$now WHERE job_id=$id;
+            UPDATE jobs SET session_fenced=max(session_fenced, status='running'), status='cancelled', reason_code=$reason, updated_at=$now WHERE job_id=$id;
             INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'cancelled', $now);
             """, ("$id", job.JobId), ("$now", now), ("$reason", reason));
         return true;
@@ -310,7 +369,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             }
 
             var jobUpdated = Execute(connection, tx, """
-                UPDATE jobs SET status=$status, reason_code=$reason, result_text=$result, updated_at=$now
+                UPDATE jobs SET status=$status, session_fenced=max(session_fenced, $status='needs_reconciliation'), reason_code=$reason, result_text=$result, updated_at=$now
                 WHERE job_id=$id AND status='running';
                 """,
                 ("$status", jobStatus), ("$reason", reason), ("$result", result), ("$now", now), ("$id", run.JobId));
@@ -354,7 +413,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             Execute(connection, tx, """
                 UPDATE runs SET state='needs_reconciliation', reason_code='daemon_restart_uncertain', finished_at=$now
                 WHERE job_id=$id AND state='started';
-                UPDATE jobs SET status='needs_reconciliation', reason_code='daemon_restart_uncertain', updated_at=$now
+                UPDATE jobs SET status='needs_reconciliation', session_fenced=1, reason_code='daemon_restart_uncertain', updated_at=$now
                 WHERE job_id=$id AND status='running';
                 INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'needs_reconciliation', $now);
                 """,
@@ -449,7 +508,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         using var command = Command(connection, null, """
             SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at, j.worktree_path, j.worktree_branch,
                    j.backend, j.session_id, j.parent_job_id, j.lead_session_id, j.target_agent, j.options,
-                   (SELECT s.workspace FROM lead_sessions s WHERE s.session_id=j.lead_session_id AND s.closed_at IS NULL)
+                   (SELECT s.workspace FROM lead_sessions s WHERE s.session_id=j.lead_session_id AND s.closed_at IS NULL), j.cwd
             FROM jobs j
             WHERE j.principal=$p AND j.team=$t
               AND ($lead IS NULL OR j.lead_session_id=$lead OR ($workspace IS NOT NULL AND j.lead_session_id IN (SELECT session_id FROM lead_sessions WHERE workspace=$workspace)))
@@ -479,6 +538,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 TargetAgent = reader.GetString(12),
                 Options = NullableString(reader, 13),
                 LeadWorkspace = NullableString(reader, 14),
+                Cwd = NullableString(reader, 15),
             });
         }
 

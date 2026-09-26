@@ -19,13 +19,16 @@ namespace AgentTeamForge.Host.Features.WebConsole;
 /// <summary>Browser follow-up body. The key comes from the page and is reused only by an explicit operator retry.</summary>
 public sealed record WebFollowUpBody(string? Instruction, string? IdempotencyKey, bool Interrupt = false, string? Model = null, string? Effort = null);
 public sealed record WebSubmitBody(string? Backend, string? Instruction, string? IdempotencyKey, string? Cwd,
-    string? Model = null, string? Effort = null, string? LeadSessionId = null, string? Workspace = null);
+    string? Model = null, string? Effort = null, string? LeadSessionId = null, string? Workspace = null, string? Name = null);
 public sealed record WebJoinTicketBody(string? Name, string? Workspace, string? Note = null);
+public sealed record WebDirectoryEntry(string Name, string Path);
+public sealed record WebDirectoryList(string Path, string? Parent, IReadOnlyList<WebDirectoryEntry> Directories);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 [JsonSerializable(typeof(WebFollowUpBody))]
 [JsonSerializable(typeof(WebSubmitBody))]
 [JsonSerializable(typeof(WebJoinTicketBody))]
+[JsonSerializable(typeof(WebDirectoryList))]
 public sealed partial class WebConsoleJson : JsonSerializerContext;
 
 /// <summary>
@@ -163,6 +166,12 @@ public sealed class WebConsoleServer : IAsyncDisposable
             return;
         }
 
+        if (HttpMethods.IsGet(request.Method) && path == "/api/directories")
+        {
+            await ListDirectoriesAsync(ctx);
+            return;
+        }
+
         var segments = path["/api/".Length..].Split('/');
         var ipc = (request.Method, segments) switch
         {
@@ -226,6 +235,35 @@ public sealed class WebConsoleServer : IAsyncDisposable
         await WriteAsync(ctx, StatusCodes.Status200OK, response);
     }
 
+    static async Task ListDirectoriesAsync(HttpContext ctx)
+    {
+        var values = ctx.Request.Query["path"];
+        if (values.Count != 1 || values[0] is not { Length: > 0 and <= 4096 } path
+            || !Path.IsPathFullyQualified(path) || !Directory.Exists(path))
+        {
+            await Reject(ctx, StatusCodes.Status400BadRequest, BadRequest);
+            return;
+        }
+
+        try
+        {
+            var directory = new DirectoryInfo(Path.GetFullPath(path));
+            var children = directory.EnumerateDirectories()
+                .Where(child => (child.Attributes & FileAttributes.ReparsePoint) == 0)
+                .Take(100)
+                .Select(child => new WebDirectoryEntry(child.Name, child.FullName))
+                .OrderBy(child => child.Name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var parent = directory.Parent?.FullName;
+            ctx.Response.ContentType = "application/json; charset=utf-8";
+            await JsonSerializer.SerializeAsync(ctx.Response.Body, new WebDirectoryList(directory.FullName, parent, children), WebConsoleJson.Default.WebDirectoryList);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            await Reject(ctx, StatusCodes.Status400BadRequest, BadRequest);
+        }
+    }
+
     static async Task<IpcRequest?> ReadFollowUpAsync(HttpContext ctx, string jobId)
     {
         var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebFollowUpBody);
@@ -257,7 +295,8 @@ public sealed class WebConsoleServer : IAsyncDisposable
                 IdempotencyKey: { Length: > 0 and <= MaxKeyChars } key, Cwd: { Length: > 0 and <= 4096 } cwd
             }
             || string.IsNullOrWhiteSpace(instruction) || !Path.IsPathFullyQualified(cwd) || !Directory.Exists(cwd)
-            || !AcceptJob.ValidOption(body.Model) || !AcceptJob.ValidOption(body.Effort)
+            || !ModelSelection.ValidConsoleSelection(body.Backend, body.Model, body.Effort)
+            || body.Name is not null && (!AcceptJob.ValidAgentName(body.Name) || body.Name == "fake-agent")
             || (body.LeadSessionId is null) != (body.Workspace is null)
             || body.LeadSessionId is not null && (!Guid.TryParseExact(body.LeadSessionId, "D", out _)
                 || !Path.IsPathFullyQualified(body.Workspace!)))
@@ -268,6 +307,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
         {
             Op = IpcProtocol.JobSubmit,
             Backend = body.Backend,
+            TargetAgent = body.Name ?? body.Backend + "-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..8],
             Instruction = instruction,
             IdempotencyKey = key,
             Cwd = cwd,
