@@ -29,6 +29,7 @@ public sealed record IpcRequest
     public string? Since { get; init; }
     public int? Limit { get; init; }
     public long? Offset { get; init; }
+    public long? AfterCursor { get; init; }
     public int? MaxBytes { get; init; }
     public string? Cursor { get; init; }
     public int? OlderThanDays { get; init; }
@@ -41,7 +42,7 @@ public sealed record IpcRequest
     public string? WakeHome { get; init; }
 }
 
-public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null);
+public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, JobActivityPage? Activity = null);
 
 public static class IpcProtocol
 {
@@ -50,6 +51,7 @@ public static class IpcProtocol
     public const string JobSubmit = "job_submit";
     public const string JobGet = "job_get";
     public const string JobOutput = "job_output";
+    public const string JobActivity = "get_job_activity";
     public const string JobFollowUp = "job_follow_up";
     public const string JobStop = "job_stop";
     public const string JobList = "job_list";
@@ -77,5 +79,6 @@ public static class IpcProtocol
 [JsonSerializable(typeof(JobView))]
 [JsonSerializable(typeof(JobListPage))]
 [JsonSerializable(typeof(JobOutput))]
+[JsonSerializable(typeof(JobActivityPage))]
 [JsonSerializable(typeof(AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo))]
 public sealed partial class IpcJson : JsonSerializerContext;

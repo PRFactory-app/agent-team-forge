@@ -11,7 +11,7 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// Reports committed state only: `running` means an attempt-start is committed,
 /// not that a live process was observed. Never dispatches, acknowledges or resends.
 /// </summary>
-public sealed class ListJobs(JobStore store, BoundPrincipal principal)
+public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? logs = null)
 {
     public const int DefaultPageSize = 20;
     public const int MaxPageSize = 50;
@@ -49,6 +49,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal)
             Backend = r.Backend,
             SessionId = r.SessionId,
             ParentJobId = r.ParentJobId,
+            LastActivity = logs?.LastActivity(r.JobId, r.Backend ?? ""),
         }).ToList();
         return new JobListResult(new JobListPage(jobs, limit, hasMore, hasMore ? jobs[^1].JobId : null), null);
     }
@@ -70,6 +71,7 @@ public sealed record JobSummary(string JobId, string Status, string? ReasonCode,
     public string? ParentJobId { get; init; }
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }
+    public string? LastActivity { get; init; }
 }
 
 /// <summary>One page, newest first. `NextCursor` is set exactly when `HasMore` is true.</summary>

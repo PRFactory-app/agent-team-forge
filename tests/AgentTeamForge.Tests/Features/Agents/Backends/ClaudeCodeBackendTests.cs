@@ -49,7 +49,7 @@ public sealed class ClaudeCodeBackendTests : IDisposable
 
         // The session id is chosen up front and reported before any output.
         var argv = File.ReadAllLines(_dir.File("argv"));
-        Assert.Equal(["-p", "--output-format", "json", "--dangerously-skip-permissions", "--session-id"], argv[..^1]);
+        Assert.Equal(["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--session-id"], argv[..^1]);
         var chosen = argv[^1];
         Assert.True(Guid.TryParse(chosen, out _));
         Assert.Equal<BackendEvidence>(
@@ -67,7 +67,28 @@ public sealed class ClaudeCodeBackendTests : IDisposable
         var evidence = await RunAsync(backend, new BackendRequest("j2", "c2", "more", "") { ResumeSessionId = "s-1" });
 
         Assert.Contains(new BackendEvidence.Result("c2", "again"), evidence);
-        Assert.Equal(["-p", "--output-format", "json", "--dangerously-skip-permissions", "--resume", "s-1"], File.ReadAllLines(_dir.File("argv")));
+        Assert.Equal(["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--resume", "s-1"], File.ReadAllLines(_dir.File("argv")));
+    }
+
+    [Fact]
+    public async Task Stream_events_before_final_result_preserve_session_and_error_parsing()
+    {
+        var backend = new ClaudeCodeBackend(FakeClaude("""
+            {"type":"system","subtype":"init","session_id":"s-1"}
+            {"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}
+            {"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s-1"}
+            """));
+        var evidence = await RunAsync(backend, new BackendRequest("j-stream", "c-stream", "work", ""));
+        Assert.Contains(new BackendEvidence.Result("c-stream", "done"), evidence);
+        Assert.Contains(new BackendEvidence.Session("c-stream", "s-1"), evidence);
+
+        backend = new ClaudeCodeBackend(FakeClaude("""
+            {"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}
+            {"type":"result","subtype":"error_max_turns","is_error":true,"session_id":"s-2"}
+            """));
+        evidence = await RunAsync(backend, new BackendRequest("j-error", "c-error", "work", ""));
+        Assert.Contains(new BackendEvidence.Session("c-error", "s-2"), evidence);
+        Assert.Contains(new BackendEvidence.ProtocolError("claude_error:error_max_turns"), evidence);
     }
 
     [Fact]
