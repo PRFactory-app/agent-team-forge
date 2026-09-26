@@ -378,7 +378,8 @@ public sealed class DispatchJob : IDisposable
         }
         catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested)
         {
-            // Daemon shutdown: leave the attempt started; restart recovery quarantines it.
+            // Leave the attempt started for restart recovery, but stop its owned process/session.
+            active.TerminateOnce(TryTerminate);
         }
         catch (OperationCanceledException)
         {
