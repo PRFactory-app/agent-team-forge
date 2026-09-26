@@ -285,7 +285,7 @@
   }
 
   function activityPanel(container, jobId) {
-    const section = element('section', 'card-activity');
+    const section = element('section', 'activity-transcript');
     section.append(element('h4', '', 'Activity'));
     const list = element('ol', 'activity-entries');
     list.setAttribute('aria-label', 'Agent activity');
@@ -571,10 +571,14 @@
         if (j.updated_at) cardMeta.append(element('span', '', 'updated ' + age(j.updated_at) + ' ago'));
         const preview = j.last_activity || j.reason_code;
         open.append(row, chips);
-        if (preview) open.append(element('span', 'card-last-activity', '› ' + preview));
+        if (preview) open.append(element('span', 'card-activity', '› ' + preview));
         open.append(cardMeta);
         const side = element('div', 'card-side');
-        side.append(element('span', 'elapsed', age(j.accepted_at)), state);
+        side.append(element('span', 'elapsed', age(j.accepted_at)));
+        if (j.status === 'running' && j.updated_at) {
+          side.append(element('span', 'beat', 'last update ' + age(j.updated_at) + ' ago'));
+        }
+        side.append(state);
         card.append(open, side);
         const panel = cardPanel(card, key, j.session_id ? [j] : [], false, j);
         open.setAttribute('aria-controls', panel.id);
