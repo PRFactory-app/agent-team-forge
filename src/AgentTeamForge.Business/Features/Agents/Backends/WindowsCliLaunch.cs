@@ -50,6 +50,33 @@ internal static class WindowsCliLaunch
 
     internal static string PowerShellCommand(string shim, IEnumerable<string> args) =>
         "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); "
-        + "& " + string.Join(' ', new[] { shim }.Concat(args).Select(PowerShellText.Quote))
+        + "& " + string.Join(' ', new[] { shim }.Concat(args.Select(ShimArgument)).Select(PowerShellText.Quote))
         + "; exit $LASTEXITCODE";
+
+    /// <summary>
+    /// Windows PowerShell 5.1 (and pwsh for .cmd/.bat) passes native arguments without escaping
+    /// embedded double quotes, so the shim's runtime would strip them from JSON/TOML values.
+    /// Pre-escape them by MSVC argv rules; PowerShell only adds the surrounding quotes.
+    /// </summary>
+    internal static string ShimArgument(string arg)
+    {
+        if (!arg.Contains('"'))
+        {
+            return arg;
+        }
+        var escaped = new System.Text.StringBuilder();
+        var backslashes = 0;
+        foreach (var c in arg)
+        {
+            if (c == '\\')
+            {
+                backslashes++;
+                continue;
+            }
+            escaped.Append('\\', c == '"' ? backslashes * 2 + 1 : backslashes).Append(c);
+            backslashes = 0;
+        }
+        // PowerShell wraps an argument with whitespace in quotes; trailing backslashes must not escape that quote.
+        return escaped.Append('\\', arg.Any(char.IsWhiteSpace) ? backslashes * 2 : backslashes).ToString();
+    }
 }

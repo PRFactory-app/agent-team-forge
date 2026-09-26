@@ -1,4 +1,5 @@
 using System.Text;
+using AgentTeamForge.DAL.Files;
 using AgentTeamForge.Host.Hosting;
 
 namespace AgentTeamForge.Host.Features.WebConsole;
@@ -59,12 +60,7 @@ public static class WebConsoleToken
 
     static void Write(string path, string token)
     {
-        using var file = new FileStream(path, new FileStreamOptions
-        {
-            Mode = FileMode.CreateNew,
-            Access = FileAccess.Write,
-            UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
-        });
+        using var file = new FileStream(path, PrivateFiles.Options(FileMode.CreateNew, FileAccess.Write));
         file.Write(Encoding.ASCII.GetBytes(token));
         file.Flush(flushToDisk: true);
     }

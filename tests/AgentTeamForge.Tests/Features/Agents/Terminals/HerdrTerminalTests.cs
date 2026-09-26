@@ -90,6 +90,50 @@ public class HerdrTerminalTests
         Assert.DoesNotContain(fake.Calls, c => c.Args is ["session", "stop" or "delete", ..]);
     }
 
+    [Fact]
+    public async Task SharedPlacement_ClosesOnlyRecordedTab()
+    {
+        var fake = new FakeHerdr { SharedRunning = true };
+        var terminal = Terminal(fake);
+        var session = await terminal.ExistingSessionAsync("default", CancellationToken.None);
+        Assert.True(session.Shared);
+        Assert.Empty(fake.Detached);
+        var binding = await terminal.OpenAgentTabAsync(session, "agent-a", "/work", Bootstrap, CancellationToken.None,
+            onCreated: created => session = created);
+        Assert.Equal("w1:t2", binding.TabId);
+        await terminal.StopOwnedSessionAsync(session, CancellationToken.None);
+        Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["session", "stop" or "delete", ..] or ["workspace" or "tab", "close", ..]);
+
+        fake.TabReplaced = true;
+        await Assert.ThrowsAsync<HerdrLaunchException>(() => terminal.StopOwnedSessionAsync(session, CancellationToken.None));
+        Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
+    }
+
+    [Fact]
+    public async Task SharedPlacement_MissingSessionFailsBeforeCreatingAnything()
+    {
+        var fake = new FakeHerdr();
+        var error = await Assert.ThrowsAsync<HerdrLaunchException>(() => Terminal(fake).ExistingSessionAsync("missing", CancellationToken.None));
+        Assert.Contains("not running", error.Message);
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["tab", "create", ..] or ["session", "stop" or "delete", ..]);
+    }
+
+    [Fact]
+    public async Task SharedPlacement_RestartStopUsesDurablePaneRecord()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true };
+        var terminal = Terminal(fake);
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("herdr/bootstrap"))
+        { JobId = "job-shared", HerdrPlacement = "herdr-session:default" };
+        await new HerdrAgentControl(terminal).StartAsync(launch, CancellationToken.None);
+        Assert.True(File.Exists(HerdrOwnedSessions.PathFor(launch)));
+        Assert.True(new HerdrAgentControl(terminal).StopJobs(state.Path, ["job-shared"]));
+        Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["session", "stop" or "delete", ..]);
+    }
+
     [Theory]
     [InlineData(Replacement.NewTerminal)]
     [InlineData(Replacement.PaneGone)]
@@ -378,6 +422,37 @@ public class HerdrTerminalTests
         }
     }
 
+    [Fact]
+    public async Task RealHerdr_SharedTabLeavesSessionRunning()
+    {
+        Assert.SkipUnless(Environment.GetEnvironmentVariable("ATF_HERDR_INTEGRATION") == "1", "isolated Herdr integration is opt-in");
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var home = state.File("home");
+        Directory.CreateDirectory(home);
+        var seed = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
+            .ToDictionary(e => (string)e.Key, e => (string?)e.Value, StringComparer.Ordinal);
+        seed["HOME"] = home;
+        var terminal = new HerdrTerminal(new HerdrTerminalOptions { Environment = seed, SessionPrefix = "atf-test-shared-" });
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var owned = await terminal.StartSessionAsync(deadline.Token);
+        try
+        {
+            var shared = await terminal.ExistingSessionAsync(owned.SessionName, deadline.Token);
+            var bootstrap = state.File("bootstrap");
+            var binding = await terminal.OpenAgentTabAsync(shared, "atf-live-test", state.Path, bootstrap, deadline.Token,
+                onCreated: created => shared = created);
+            var other = await terminal.ExistingSessionAsync(owned.SessionName, deadline.Token);
+            var otherBinding = await terminal.OpenAgentTabAsync(other, "atf-live-other", state.Path, state.File("other-bootstrap"), deadline.Token,
+                onCreated: created => other = created);
+            Assert.Null(await terminal.VerifyBindingAsync(binding, deadline.Token));
+            await terminal.StopOwnedSessionAsync(shared, deadline.Token);
+            Assert.Null(await terminal.VerifyBindingAsync(otherBinding, deadline.Token));
+            await terminal.StopOwnedSessionAsync(other, deadline.Token);
+            Assert.NotNull(await terminal.ExistingSessionAsync(owned.SessionName, deadline.Token));
+        }
+        finally { await terminal.StopOwnedSessionAsync(owned, CancellationToken.None); }
+    }
+
     private static ProcessStartInfo Sh(string script)
     {
         var psi = new ProcessStartInfo("sh") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
@@ -413,6 +488,8 @@ public class HerdrTerminalTests
         public SpawnFault Fault { get; init; }
 
         public bool Preexisting { get; init; }
+        public bool SharedRunning { get; init; }
+        public bool TabReplaced { get; set; }
 
         public bool Installed { get; init; } = true;
 
@@ -476,6 +553,8 @@ public class HerdrTerminalTests
                 ["workspace", "create", ..] => Fault == SpawnFault.WorkspaceCreateFails ? Err("workspace_failed") : Ok("""{"result":{"workspace":{"workspace_id":"w1","label":"x"}}}"""),
                 ["workspace", "list"] => Ok(new JsonObject { ["result"] = new JsonObject { ["workspaces"] = new JsonArray(new JsonObject { ["workspace_id"] = "w1", ["label"] = Label(), }) } }.ToJsonString()),
                 ["tab", "create", ..] => Ok("""{"result":{"root_pane":{"pane_id":"w1:p2","tab_id":"w1:t2","terminal_id":"term_a"},"tab":{"tab_id":"w1:t2"}}}"""),
+                ["tab", "get", "w1:t2"] => Ok(new JsonObject { ["result"] = new JsonObject { ["tab"] = new JsonObject { ["tab_id"] = "w1:t2", ["workspace_id"] = TabReplaced ? "other" : "w1" } } }.ToJsonString()),
+                ["pane", "close", "w1:p2"] => Ok("{}"),
                 ["pane", "get", "w1:p2"] => _paneGone ? Err("pane_not_found") : Ok(new JsonObject { ["result"] = new JsonObject { ["pane"] = new JsonObject { ["pane_id"] = "w1:p2", ["tab_id"] = "w1:t2", ["terminal_id"] = _terminal } } }.ToJsonString()),
                 ["pane", "process-info", "--pane", "w1:p2"] => Ok("""{"result":{"process_info":{"pane_id":"w1:p2","shell_pid":""" + ShellPid + "}}}"),
                 ["session", "stop" or "delete", ..] => Ok("{}"),
@@ -518,6 +597,7 @@ public class HerdrTerminalTests
         }
 
         public IReadOnlyList<ProcessIdentity> FindServers(string sessionName) =>
+            SharedRunning && sessionName == "default" ? [new(ServerPid, _serverStart)] :
             !_running || sessionName != _name ? []
             : Fault == SpawnFault.ForeignServerProcess ? [new(ServerPid, _serverStart), new(ServerPid + 1, 5)]
             : [new(ServerPid, _serverStart)];

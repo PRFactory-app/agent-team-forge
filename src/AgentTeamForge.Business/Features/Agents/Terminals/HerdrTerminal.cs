@@ -38,6 +38,11 @@ public sealed record HerdrTerminalOptions
 public sealed record OwnedHerdrSession(string SessionName, string SocketPath, int ServerPid, ulong ServerStartTicks, string OwnerLabel, string WorkspaceId)
 {
     public string? JobId { get; init; }
+    public bool Shared { get; init; }
+    public string? TabId { get; init; }
+    public string? PaneId { get; init; }
+    public string? TerminalId { get; init; }
+    public string? TabLabel { get; init; }
 }
 
 /// <summary>One agent tab; valid only while the same server, pane terminal and shell process still host it.</summary>
@@ -117,12 +122,37 @@ public sealed class HerdrTerminal
         }
     }
 
+    /// <summary>Bind to a running session without acquiring ownership of its session or workspace.</summary>
+    public async Task<OwnedHerdrSession> ExistingSessionAsync(string name, CancellationToken cancellationToken)
+    {
+        await RequireVisibleProviderAsync(cancellationToken);
+        var listed = HerdrOwnership.Find(await GlobalAsync(cancellationToken, "session", "list", "--json"), name);
+        if (listed?["running"] is not JsonValue running || !running.TryGetValue<bool>(out var isRunning) || !isRunning
+            || listed["socket_path"] is not JsonValue socketValue || !socketValue.TryGetValue<string>(out var socket)
+            || !Path.IsPathRooted(socket) || _runner.FindServers(name) is not [var server])
+        {
+            throw new HerdrLaunchException($"Herdr session '{name}' is not running as one identifiable server");
+        }
+        var workspaces = await OwnedAsync(socket, cancellationToken, "workspace", "list");
+        var workspace = (workspaces["result"]?["workspaces"] as JsonArray)?.OfType<JsonObject>()
+            .Select(w => Text(w["workspace_id"])).FirstOrDefault(id => id is not null)
+            ?? throw new HerdrLaunchException($"Herdr session '{name}' has no workspace for a new tab");
+        return new(name, socket, server.Pid, server.StartTicks, "", workspace) { Shared = true };
+    }
+
+    public string? CheckExistingSession(string name)
+    {
+        try { _ = ExistingSessionAsync(name, CancellationToken.None).GetAwaiter().GetResult(); return null; }
+        catch (Exception e) when (e is HerdrLaunchException or InteractiveTerminalUnavailableException)
+        { return e.Message; }
+    }
+
     /// <summary>
     /// Opens one visible, unfocused tab in the owned workspace and proves that its shell is a child of
     /// the recorded server carrying exactly this bootstrap path. The tab is never closed on failure.
     /// </summary>
     public async Task<HerdrTabBinding> OpenAgentTabAsync(OwnedHerdrSession session, string label, string cwd, string bootstrapFile, CancellationToken cancellationToken,
-        bool bypassClaudeWorkspaceTrust = false)
+        (string Name, string Value)? workspaceTrustEnvironment = null, Action<OwnedHerdrSession>? onCreated = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(label);
         ArgumentException.ThrowIfNullOrEmpty(cwd);
@@ -137,19 +167,20 @@ public sealed class HerdrTerminal
 
         var args = new List<string> { "tab", "create", "--workspace", session.WorkspaceId, "--cwd", cwd, "--label", label,
             "--env", BootstrapVariable + "=" + bootstrapFile, "--no-focus" };
-        if (bypassClaudeWorkspaceTrust)
+        if (workspaceTrustEnvironment is { } trust)
         {
             // Claude's per-process trust latch. Inject it only into this owned launch;
             // inherited CLAUDE_CODE_* context remains excluded by LaunchEnvironment.
             // In Claude Code 2.1.x it only marks the workspace trusted without writing
             // ~/.claude.json (so project settings' permission rules apply); it does not
             // enable a sandbox or touch telemetry. The bypass warning is skipped via --settings.
-            args.AddRange(["--env", "CLAUDE_CODE_SANDBOXED=1"]);
+            args.AddRange(["--env", trust.Name + "=" + trust.Value]);
         }
         var created = await OwnedAsync(session.SocketPath, cancellationToken, [.. args]);
         var tab = Str(created, "result", "root_pane", "tab_id");
         var pane = Str(created, "result", "root_pane", "pane_id");
         var terminal = Str(created, "result", "root_pane", "terminal_id");
+        onCreated?.Invoke(session with { TabId = tab, PaneId = pane, TerminalId = terminal, TabLabel = label });
 
         var clock = Stopwatch.StartNew();
         while (true)
@@ -202,6 +233,11 @@ public sealed class HerdrTerminal
     /// <summary>Stops and deletes the session only after proving ownership; refuses otherwise.</summary>
     public async Task StopOwnedSessionAsync(OwnedHerdrSession session, CancellationToken cancellationToken)
     {
+        if (session.Shared)
+        {
+            await StopSharedTabAsync(session, cancellationToken);
+            return;
+        }
         var sessions = await GlobalAsync(cancellationToken, "session", "list", "--json");
         var identityMatches = ServerProblem(session) is null;
         var workspaces = identityMatches ? await OwnedAsync(session.SocketPath, cancellationToken, "workspace", "list") : null;
@@ -226,6 +262,33 @@ public sealed class HerdrTerminal
             return;
         }
         await StopOwnedSessionAsync(session, cancellationToken);
+    }
+
+    async Task StopSharedTabAsync(OwnedHerdrSession session, CancellationToken cancellationToken)
+    {
+        if (session.TabId is null || session.PaneId is null || session.TerminalId is null)
+        {
+            throw new HerdrLaunchException("shared tab ownership record is incomplete");
+        }
+        if (ServerProblem(session) is { } problem) { throw new HerdrLaunchException("teardown refused: " + problem); }
+        JsonNode tab;
+        JsonNode pane;
+        try
+        {
+            tab = await OwnedAsync(session.SocketPath, cancellationToken, "tab", "get", session.TabId);
+            pane = await OwnedAsync(session.SocketPath, cancellationToken, "pane", "get", session.PaneId);
+        }
+        catch (HerdrLaunchException e) when (e.Message.Contains("not_found", StringComparison.Ordinal)) { return; }
+        var tabFacts = tab["result"]?["tab"];
+        var paneFacts = pane["result"]?["pane"];
+        if (Text(tabFacts?["tab_id"]) != session.TabId || Text(tabFacts?["workspace_id"]) != session.WorkspaceId
+            || Text(paneFacts?["pane_id"]) != session.PaneId || Text(paneFacts?["tab_id"]) != session.TabId
+            || Text(paneFacts?["terminal_id"]) != session.TerminalId)
+        {
+            throw new HerdrLaunchException("teardown refused: recorded shared tab or pane identity changed");
+        }
+        // Closing a tab could also close panes another client added later. Target only our recorded root pane.
+        await OwnedAsync(session.SocketPath, cancellationToken, "pane", "close", session.PaneId);
     }
 
     /// <summary>A raw command against the owned server, after re-proving its identity.</summary>
@@ -257,7 +320,7 @@ public sealed class HerdrTerminal
     }
 
     async Task<string?> OwnershipProblemAsync(OwnedHerdrSession session, CancellationToken cancellationToken) =>
-        ServerProblem(session) ?? (HerdrOwnership.HasLabel(await OwnedAsync(session.SocketPath, cancellationToken, "workspace", "list"), session.OwnerLabel)
+        ServerProblem(session) ?? (session.Shared || HerdrOwnership.HasLabel(await OwnedAsync(session.SocketPath, cancellationToken, "workspace", "list"), session.OwnerLabel)
             ? null
             : "owner label workspace missing from the running server");
 

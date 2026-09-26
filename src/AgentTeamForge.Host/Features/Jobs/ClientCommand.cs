@@ -40,6 +40,7 @@ public static class ClientCommand
                 Backend = options.GetValueOrDefault("backend"),
                 Model = options.GetValueOrDefault("model"),
                 Effort = options.GetValueOrDefault("effort"),
+                HerdrPlacement = options.GetValueOrDefault("herdr-placement"),
                 Cwd = options.TryGetValue("cwd", out var cwd) ? Path.GetFullPath(cwd) : null,
                 Worktree = options.ContainsKey("worktree"),
                 TimeoutSeconds = Seconds(options, "timeout"),
@@ -74,7 +75,7 @@ public static class ClientCommand
         if (request is null)
         {
             Console.Error.WriteLine("usage: atf client <submit|follow-up|get|stop|list|logs> --state-dir DIR "
-                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--model M] [--effort E] [--cwd DIR] [--worktree] [--timeout S] [--queue-ttl S] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT [--interrupt] [--model M] [--effort E] [--timeout S] [--queue-ttl S]] | stop ID | [--status S] [--backend B] [--since ISO-TIME] [--limit N] [--cursor C]]");
+                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--model M] [--effort E] [--herdr-placement own-session|herdr-session:NAME] [--cwd DIR] [--worktree] [--timeout S] [--queue-ttl S] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT [--interrupt] [--model M] [--effort E] [--timeout S] [--queue-ttl S]] | stop ID | [--status S] [--backend B] [--since ISO-TIME] [--limit N] [--cursor C]]");
             return 64;
         }
 

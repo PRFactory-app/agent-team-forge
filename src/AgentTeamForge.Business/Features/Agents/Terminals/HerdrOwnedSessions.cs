@@ -6,6 +6,14 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 /// <summary>Durable ownership proof for Herdr sessions left alive across interrupted turns.</summary>
 public static class HerdrOwnedSessions
 {
+    public static (string Session, string? TabId, string? TabLabel)? Location(string stateRoot, string jobId)
+    {
+        foreach (var (_, session) in Read(stateRoot, _ => { }))
+        {
+            if (session.JobId == jobId) { return (session.SessionName, session.TabId, session.TabLabel); }
+        }
+        return null;
+    }
     internal static string PathFor(InteractiveLaunch launch) => System.IO.Path.ChangeExtension(launch.BootstrapPath, ".owned.json");
 
     internal static void Save(InteractiveLaunch launch, OwnedHerdrSession session)

@@ -19,9 +19,10 @@ namespace AgentTeamForge.Host.Features.WebConsole;
 /// <summary>Browser follow-up body. The key comes from the page and is reused only by an explicit operator retry.</summary>
 public sealed record WebFollowUpBody(string? Instruction, string? IdempotencyKey, bool Interrupt = false, string? Model = null, string? Effort = null);
 public sealed record WebSubmitBody(string? Backend, string? Instruction, string? IdempotencyKey, string? Cwd,
-    string? Model = null, string? Effort = null, string? LeadSessionId = null, string? Workspace = null, string? Name = null);
+    string? Model = null, string? Effort = null, string? LeadSessionId = null, string? Workspace = null, string? Name = null, string? HerdrPlacement = null);
 public sealed record WebJoinTicketBody(string? Name, string? Workspace, string? Note = null);
 public sealed record WebTierBody(string? Backend, string? Tier, string? Model, string? Effort, bool ResetAll = false);
+public sealed record WebHerdrPlacementBody(string? HerdrPlacement);
 public sealed record WebDirectoryEntry(string Name, string Path);
 public sealed record WebDirectoryList(string Path, string? Parent, IReadOnlyList<WebDirectoryEntry> Directories);
 
@@ -30,6 +31,7 @@ public sealed record WebDirectoryList(string Path, string? Parent, IReadOnlyList
 [JsonSerializable(typeof(WebSubmitBody))]
 [JsonSerializable(typeof(WebJoinTicketBody))]
 [JsonSerializable(typeof(WebTierBody))]
+[JsonSerializable(typeof(WebHerdrPlacementBody))]
 [JsonSerializable(typeof(WebDirectoryList))]
 public sealed partial class WebConsoleJson : JsonSerializerContext;
 
@@ -187,6 +189,8 @@ public sealed class WebConsoleServer : IAsyncDisposable
             ("GET", ["config"]) => new IpcRequest { Op = IpcProtocol.JobCapabilities },
             ("GET", ["settings", "tiers"]) => new IpcRequest { Op = IpcProtocol.TierSettingsGet },
             ("PUT", ["settings", "tiers"]) => await ReadTierAsync(ctx),
+            ("GET", ["settings", "herdr-placement"]) => new IpcRequest { Op = IpcProtocol.HerdrPlacementGet },
+            ("PUT", ["settings", "herdr-placement"]) => await ReadHerdrPlacementAsync(ctx),
             ("POST", ["jobs"]) => await ReadSubmitAsync(ctx),
             ("GET", ["jobs", var id]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobGet, JobId = id },
             ("GET", ["jobs", var id, "output"]) when ValidId(id) => new IpcRequest
@@ -309,6 +313,13 @@ public sealed class WebConsoleServer : IAsyncDisposable
         };
     }
 
+    static async Task<IpcRequest?> ReadHerdrPlacementAsync(HttpContext ctx)
+    {
+        var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebHerdrPlacementBody);
+        return body?.HerdrPlacement is null ? null : new IpcRequest
+        { Op = IpcProtocol.HerdrPlacementPut, HerdrPlacement = body.HerdrPlacement };
+    }
+
     static async Task<IpcRequest?> ReadSubmitAsync(HttpContext ctx)
     {
         var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebSubmitBody);
@@ -336,6 +347,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
             Cwd = cwd,
             Model = body.Model,
             Effort = body.Effort,
+            HerdrPlacement = body.HerdrPlacement,
             LeadSessionId = body.LeadSessionId,
             Workspace = body.Workspace
         };
