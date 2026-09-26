@@ -88,7 +88,7 @@
     const dot = document.createElement('span');
     dot.className = 'dot';
     dot.setAttribute('aria-hidden', 'true');
-    span.append(dot, document.createTextNode(label));
+    span.append(dot, element('span', 'state-label', label));
     return span;
   }
 
@@ -460,7 +460,7 @@
       const tree = element('div', 'agent-tree');
       for (const j of groupJobs) {
         const key = 'job:' + j.job_id;
-        const card = element('article', 'agent-node' + (key === expandedKey ? ' selected' : ''));
+        const card = element('article', 'agent-node' + (j.status === 'completed' ? ' settled' : '') + (key === expandedKey ? ' selected' : ''));
         const open = element('button', 'card-main');
         open.type = 'button';
         open.dataset.toggleKey = key;
@@ -475,14 +475,15 @@
         const chips = element('span', 'chips');
         if (j.backend) chips.append(backendChip(j.backend));
         if (j.model) chips.append(element('span', 'chip', j.model));
-        if (j.effort) chips.append(element('span', 'chip subtle', j.effort));
+        if (j.effort) chips.append(element('span', 'chip subtle', 'effort ' + j.effort));
         const state = element('span', 'badge ' + (j.status === 'completed' ? 'done' : j.light),
           j.status === 'completed' ? 'done' : j.status.replaceAll('_', ' '));
         const cardMeta = element('span', 'card-meta');
         cardMeta.append(element('span', '', 'accepted ' + age(j.accepted_at) + ' ago'));
         if (j.updated_at) cardMeta.append(element('span', '', 'updated ' + age(j.updated_at) + ' ago'));
         if (j.reason_code) cardMeta.append(element('span', 'reason', '› ' + j.reason_code));
-        open.append(row, chips, cardMeta);
+        row.append(chips);
+        open.append(row, cardMeta);
         const side = element('div', 'card-side');
         side.append(element('span', 'elapsed', age(j.accepted_at)), state);
         card.append(open, side);
