@@ -101,10 +101,18 @@ For isolation, set `worktree: true` on MCP `submit_job`, or add `--worktree`
 to CLI submit with `--cwd` inside a Git checkout. The job view and list show
 the worktree path and branch; follow-ups reuse that checkout.
 
+To bound a job's run time, pass `timeout_s` (1–86400) to MCP `submit_job` or
+`follow_up`, or `--timeout S` to CLI submit/follow-up; the job is cancelled
+with reason `timeout` that many seconds after it starts running. `queue_ttl_s` /
+`--queue-ttl S` cancels (reason `queue_ttl`) a job that has not started in time.
+
 ## Native wake
 
+A Codex lead opened in a new repository may show **Trust this folder** once,
+even in permission bypass mode; accept it before leaving the lead unattended.
+
 Claude Code, Codex, and Pi MCP hosts may receive a notice-only wake after
-completion; read results with `get_job`. If Codex doesn't pass `CODEX_THREAD_ID`
+completion; the notice names `list_jobs` and `get_job`, which hold the result. If Codex doesn't pass `CODEX_THREAD_ID`
 to MCP, read it with a shell tool and call `register_codex_wake(thread_id="<thread-id>")` before submit.
 CLI calls and generic sessions without a detected host get no wake. Pi needs
 the bundled extension and same state directory:

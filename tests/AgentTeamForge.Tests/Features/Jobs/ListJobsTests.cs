@@ -1,4 +1,5 @@
 using AgentTeamForge.Business;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.Tests.Support;
@@ -148,6 +149,39 @@ public sealed class ListJobsTests
         Assert.Equal(uncertain.JobId, reconcile.JobId);
         Assert.Equal("backend_eof", reconcile.ReasonCode);
         Assert.Empty(f.List().Execute(new ListJobsRequest(Status: JobStatus.Failed)).Page!.Jobs);
+    }
+
+    [Fact]
+    public void History_filters_backend_and_since_across_pages()
+    {
+        using var f = new JobFixture();
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => new ScriptedBackend(_ => []))
+            .Register(BackendCatalog.Codex, () => new ScriptedBackend(_ => []));
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
+        var old = accept.Execute(new SubmitJobRequest("old", "first", null, false) { Backend = BackendCatalog.Codex }).Job!;
+        using (var connection = new SqliteConnection($"Data Source={f.DatabasePath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE jobs SET accepted_at=$old WHERE job_id=$id";
+            command.Parameters.AddWithValue("$old", DateTimeOffset.UtcNow.AddDays(-1).ToString("O"));
+            command.Parameters.AddWithValue("$id", old.JobId);
+            command.ExecuteNonQuery();
+        }
+        var cutoff = DateTimeOffset.UtcNow.AddHours(-1).ToString("O");
+        var recent = accept.Execute(new SubmitJobRequest("recent", "second", null, false) { Backend = BackendCatalog.Codex }).Job!;
+        var fake = f.Submit("fake");
+
+        var codex = f.List().Execute(new ListJobsRequest(Backend: BackendCatalog.Codex, Limit: 1)).Page!;
+        Assert.Single(codex.Jobs);
+        Assert.Equal(BackendCatalog.Codex, codex.Jobs[0].Backend);
+        Assert.True(codex.HasMore);
+        var next = f.List().Execute(new ListJobsRequest(Backend: BackendCatalog.Codex, Limit: 1, Cursor: codex.NextCursor)).Page!;
+        Assert.Equal(new[] { old.JobId, recent.JobId }.OrderDescending(StringComparer.Ordinal),
+            codex.Jobs.Concat(next.Jobs).Select(j => j.JobId));
+        Assert.DoesNotContain(fake.JobId, codex.Jobs.Concat(next.Jobs).Select(j => j.JobId));
+        Assert.Equal([recent.JobId], f.List().Execute(new ListJobsRequest(Backend: BackendCatalog.Codex, Since: cutoff)).Page!.Jobs.Select(j => j.JobId));
+        Assert.Equal(JobErrors.InvalidRequest, f.List().Execute(new ListJobsRequest(Since: "not-a-date")).Error);
     }
 
     [Fact]

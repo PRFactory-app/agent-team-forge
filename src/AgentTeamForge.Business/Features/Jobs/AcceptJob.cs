@@ -63,7 +63,8 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
     /// <summary>Durable acceptance shared by submit and follow-up; one admission-gated transaction.</summary>
     internal JobResult Admit(string operation, string key, string instruction, string options, string backend, string? cwd, string? parentJobId,
         string? wakeKey = null, long? wakeGeneration = null, bool createWorktree = false, string? worktreeBase = null,
-        string? worktreePath = null, string? worktreeBranch = null, int? timeoutSeconds = null, int? queueTtlSeconds = null, string? leadSessionId = null)
+        string? worktreePath = null, string? worktreeBranch = null, int? timeoutSeconds = null, int? queueTtlSeconds = null,
+        bool interruptParent = false, Action<string>? cancelRunning = null, string? leadSessionId = null)
     {
         if (!admission.TryEnter())
         {
@@ -86,6 +87,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
                 Backend = backend,
                 Cwd = cwd,
                 ParentJobId = parentJobId,
+                InterruptParent = interruptParent,
                 CreateWorktree = createWorktree,
                 WorktreeBase = worktreeBase,
                 WorktreePath = worktreePath,
@@ -105,6 +107,13 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
                 return JobResult.Fail(JobErrors.FromStorage(ex));
             }
 
+            if (outcome.InterruptedJobId is { } interrupted)
+            {
+                // The cancellation and child intent are already durable. The
+                // daemon holds the claim gate until this owned run is stopped.
+                cancelRunning?.Invoke(interrupted);
+            }
+
             switch (outcome.Kind)
             {
                 case AcceptKind.Accepted:
@@ -113,6 +122,10 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
                     return JobResult.Ok(GetJob.ToView(outcome.Job!), "existing");
                 case AcceptKind.Conflict:
                     return JobResult.Fail(JobErrors.IdempotencyConflict);
+                case AcceptKind.ParentNotReady:
+                    return JobResult.Fail(JobErrors.ParentNotReady);
+                case AcceptKind.ParentNotFound:
+                    return JobResult.Fail(JobErrors.NotFound);
                 default:
                     return JobResult.Fail(JobErrors.QueueFull);
             }

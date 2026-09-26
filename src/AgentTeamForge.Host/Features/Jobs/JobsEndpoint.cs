@@ -78,6 +78,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     TimeoutSeconds = request.TimeoutSeconds,
                     QueueTtlSeconds = request.QueueTtlSeconds,
                     LeadSessionId = request.LeadSessionId,
+                    Interrupt = request.Interrupt,
                     WakeKey = request.WakeKey,
                     WakeGeneration = request.WakeGeneration,
                 }));
@@ -102,7 +103,12 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 }
                 return new IpcResponse(true, Outcome: "output", Output: logs.Read(request.JobId!, request.Offset ?? 0, request.MaxBytes ?? JobLogs.MaxReadBytes));
             case IpcProtocol.JobList:
-                var listed = list.Execute(new ListJobsRequest(request.Status, request.Limit, request.Cursor) { LeadSessionId = request.LeadSessionId, AllWorkspace = request.AllWorkspace, Workspace = request.Workspace });
+                var listed = list.Execute(new ListJobsRequest(request.Status, request.Limit, request.Cursor, request.Backend, request.Since)
+                {
+                    LeadSessionId = request.LeadSessionId,
+                    AllWorkspace = request.AllWorkspace,
+                    Workspace = request.Workspace,
+                });
                 return listed.Error is null ? new IpcResponse(true, Outcome: "listed", Page: listed.Page) : new IpcResponse(false, listed.Error);
             case IpcProtocol.JobPrune:
                 if (prune is null || request.OlderThanDays is not (>= 1 and <= 36500))

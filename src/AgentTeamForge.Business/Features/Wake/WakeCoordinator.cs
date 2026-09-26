@@ -90,7 +90,7 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
                 continue;
             }
             // Notice-only: job IDs and result content stay in get_job.
-            var notice = $"[AgentTeamForge wake] {snapshot.Unread} completed job(s) await reading. Call job_list and job_get.";
+            var notice = $"[AgentTeamForge wake] {snapshot.Unread} completed job(s) await reading. Call list_jobs and get_job.";
             bool posted;
             try { posted = await poster.PostAsync(target, notice, cancellationToken); }
             catch (Exception ex) when (ex is not OperationCanceledException)
