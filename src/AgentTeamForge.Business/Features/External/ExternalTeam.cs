@@ -203,6 +203,8 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
 
     public bool CloseTeam(string teamId) => members.CloseTeam(teamId, now());
 
+    public bool RevokeMember(string teamId, string name) => members.RevokeMember(teamId, name, now());
+
     public ExternalResult Leave(string? token)
     {
         var secret = MemberSecret(token);

@@ -135,6 +135,7 @@ public sealed class PRFactoryTeamStore(JobDatabase database)
     public void MarkTicketUploaded(string server, Guid id, string member) => UpdateExternal(server, id, member, "ticket_uploaded=1");
     public void SetReplySeq(string server, Guid id, string member, long seq) => UpdateExternal(server, id, member, "reply_seq=$seq", seq);
     public void MarkExternalClosed(string server, Guid id) => UpdateExternal(server, id, null, "closed=1");
+    public void MarkExternalClosed(string server, Guid id, string member) => UpdateExternal(server, id, member, "closed=1");
 
     void UpdateExternal(string server, Guid id, string? member, string set, long? seq = null)
     {
