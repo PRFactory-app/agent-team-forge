@@ -33,6 +33,7 @@ public sealed record SubmitJobRequest(string IdempotencyKey, string Instruction,
     public int? QueueTtlSeconds { get; init; }
 
     /// <summary>Registered wake target of the submitting bridge; bound in the accept transaction.</summary>
+    public string? LeadSessionId { get; init; }
     public string? WakeKey { get; init; }
     public long? WakeGeneration { get; init; }
 }
@@ -44,6 +45,7 @@ public sealed record FollowUpRequest(string ParentJobId, string Instruction, str
     public int? TimeoutSeconds { get; init; }
     public int? QueueTtlSeconds { get; init; }
 
+    public string? LeadSessionId { get; init; }
     public string? WakeKey { get; init; }
     public long? WakeGeneration { get; init; }
 }

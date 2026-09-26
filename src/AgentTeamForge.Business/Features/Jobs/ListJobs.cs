@@ -33,7 +33,8 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal)
         {
             // One extra row decides truncation without a separate count query.
             var since = request.Since is null ? null : DateTimeOffset.Parse(request.Since, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind).ToUniversalTime().ToString("O");
-            rows = store.ListJobs(principal.Principal, principal.Team, request.Status, request.Backend, since, request.Cursor, limit + 1);
+            rows = store.ListJobs(principal.Principal, principal.Team, request.Status, request.Backend, since, request.Cursor, limit + 1,
+                request.LeadSessionId, request.AllWorkspace ? request.Workspace : null);
         }
         catch (StorageException ex)
         {
@@ -54,7 +55,12 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal)
 }
 
 /// <summary>Optional exact status filter, page size and opaque continuation cursor; no other query surface.</summary>
-public sealed record ListJobsRequest(string? Status = null, int? Limit = null, string? Cursor = null, string? Backend = null, string? Since = null);
+public sealed record ListJobsRequest(string? Status = null, int? Limit = null, string? Cursor = null, string? Backend = null, string? Since = null)
+{
+    public string? LeadSessionId { get; init; }
+    public bool AllWorkspace { get; init; }
+    public string? Workspace { get; init; }
+}
 
 /// <summary>Inspection view of a job; use job_get for its result.</summary>
 public sealed record JobSummary(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)

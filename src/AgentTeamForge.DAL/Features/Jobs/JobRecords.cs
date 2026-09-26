@@ -38,6 +38,8 @@ public sealed record NewJob(
     /// <summary>Queued time allowed from the acceptance commit; null means no queue TTL.</summary>
     public int? QueueTtlSeconds { get; init; }
 
+    public string? LeadSessionId { get; init; }
+
     public string? WakeTargetKey { get; init; }
 
     public long? WakeGeneration { get; init; }
