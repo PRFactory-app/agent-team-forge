@@ -53,6 +53,9 @@ public sealed class ExternalTeamTests
         Assert.Equal("member-2", team.CreateTicket(lead.SessionId, lead.Workspace, "member", null).Ticket!.Name);
         var joined = team.Join(lead.SessionId, ticket.Token).Member!;
         Assert.Equal(joined, team.Join(lead.SessionId, ticket.Token).Member);
+        // The ticket alone must not derive the member token offline once it expires.
+        Assert.NotEqual(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes("atf-member:" + ticket.Token))).ToLowerInvariant(), joined.MemberToken);
         Assert.Equal("invalid_or_expired_token", team.Join(lead.SessionId, "bad").Error);
         Assert.Equal("invalid_or_expired_token", team.Join(lead.SessionId, "x" + ticket.Token[1..]).Error);
 
@@ -76,6 +79,8 @@ public sealed class ExternalTeamTests
         Assert.True(team.SendFromLead(b.SessionId, b.Workspace, "member", "private for b").Ok);
         Assert.Empty(team.Read(aToken, null, null).Inbox!.Messages);
         Assert.Equal("private for b", Assert.Single(team.Read(bToken, null, null).Inbox!.Messages).Text);
+        Assert.Equal("invalid_request", team.Read($"wam1:{b.SessionId}:{aToken}", null, null).Error);
+        Assert.True(team.Read($"wam1:{a.SessionId}:{aToken}", null, null).Ok);
         Assert.True(team.Leave(aToken).Ok);
         Assert.True(team.Leave(aToken).AlreadyLeft);
         Assert.Equal("membership_revoked", team.Read(aToken, null, null).Error);

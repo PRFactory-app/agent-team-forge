@@ -123,7 +123,7 @@ public sealed class ExternalMemberStore(JobDatabase database)
         using var select = db.CreateCommand();
         select.Transaction = tx;
         select.CommandText = """
-            SELECT m.name,m.ticket_used_at,m.token_hash FROM external_members m JOIN external_teams t ON t.team_id=m.team_id
+            SELECT m.name,m.ticket_used_at,m.token_hash,m.member_id FROM external_members m JOIN external_teams t ON t.team_id=m.team_id
             WHERE m.team_id=$team AND m.ticket_hash=$hash
             AND m.ticket_expires>$now AND m.left_at IS NULL AND t.closed_at IS NULL
             """;
@@ -133,6 +133,7 @@ public sealed class ExternalMemberStore(JobDatabase database)
         string name;
         bool used;
         string? storedHash;
+        string memberId;
         using (var reader = select.ExecuteReader())
         {
             if (!reader.Read())
@@ -143,11 +144,13 @@ public sealed class ExternalMemberStore(JobDatabase database)
             name = reader.GetString(0);
             used = !reader.IsDBNull(1);
             storedHash = reader.IsDBNull(2) ? null : reader.GetString(2);
+            memberId = reader.GetString(3);
         }
 
         // The ticket remains the recovery credential until expiry. Derivation makes a lost
-        // join reply recoverable without storing a bearer token in plaintext.
-        var token = Hash("atf-member:" + ticket);
+        // join reply recoverable without storing a bearer token in plaintext; the private
+        // member ID keeps a leaked ticket from deriving the token offline after expiry.
+        var token = Hash("atf-member:" + memberId + ":" + ticket);
         if (used)
         {
             return storedHash == Hash(token) ? new JoinedMember(teamId, name, token) : null;
@@ -274,21 +277,6 @@ public sealed class ExternalMemberStore(JobDatabase database)
 
         tx.Commit();
         return true;
-    }
-
-    public ExternalInbox? ReadMember(string token, long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent = null)
-    {
-        using var db = database.OpenConnection();
-        using var tx = db.BeginTransaction(deferred: false);
-        var member = FindMember(db, tx, token);
-        if (member is null)
-        {
-            return null;
-        }
-
-        var inbox = Read(db, tx, member.Value.Team, member.Value.Id, sinceSeq, limit, now, fromAgent);
-        tx.Commit();
-        return inbox;
     }
 
     public ExternalInbox? ReadMemberCompat(string token, long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent)
