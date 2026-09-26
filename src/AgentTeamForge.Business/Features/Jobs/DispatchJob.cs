@@ -226,10 +226,16 @@ public sealed class DispatchJob : IDisposable
                 return;
             }
 
+            if (!JobWorktree.Prepare(claim.Job))
+            {
+                End(run, JobStatus.Failed, "worktree_unavailable");
+                return;
+            }
+
             var request = new BackendRequest(claim.Job.JobId, claim.Correlation, claim.Job.Instruction, claim.Job.Options)
             {
                 ResumeSessionId = resumeSessionId,
-                WorkingDirectory = claim.Job.Cwd,
+                WorkingDirectory = JobWorktree.WorkingDirectory(claim.Job),
             };
             var starting = Task.Run(() => backend.Start(request), CancellationToken.None);
             try

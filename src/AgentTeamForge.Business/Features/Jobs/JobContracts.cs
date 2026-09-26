@@ -24,6 +24,8 @@ public sealed record SubmitJobRequest(string IdempotencyKey, string Instruction,
     /// <summary>Absolute existing directory the agent runs in; null uses the daemon default.</summary>
     public string? Cwd { get; init; }
 
+    public bool Worktree { get; init; }
+
     /// <summary>Registered wake target of the submitting bridge; bound in the accept transaction.</summary>
     public string? WakeKey { get; init; }
     public long? WakeGeneration { get; init; }
@@ -48,6 +50,7 @@ public static class JobErrors
     public const string DaemonUnhealthy = "daemon_unhealthy";
     public const string BackendUnavailable = "backend_unavailable";
     public const string ParentNotReady = "parent_not_ready";
+    public const string CwdNotGitRepo = "cwd_not_git_repo";
 
     public static string FromStorage(StorageException ex) => ex.Failure == StorageFailure.Busy ? StorageBusy : StorageUnavailable;
 }
@@ -62,6 +65,9 @@ public sealed record JobView(string JobId, string Status, string? Result, string
     public string? ParentJobId { get; init; }
 
     public string? Cwd { get; init; }
+
+    public string? WorktreePath { get; init; }
+    public string? WorktreeBranch { get; init; }
 }
 
 public sealed record JobResult(JobView? Job, string? Outcome, string? Error)

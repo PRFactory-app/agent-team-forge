@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -82,7 +82,14 @@ static class Schema
         CREATE INDEX wake_jobs_target ON wake_jobs(target_key, read_at);
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3];
+    /// <summary>v4: opt-in per-job git worktree.</summary>
+    const string V4 = """
+        ALTER TABLE jobs ADD COLUMN worktree_path TEXT;
+        ALTER TABLE jobs ADD COLUMN worktree_branch TEXT;
+        ALTER TABLE jobs ADD COLUMN worktree_base TEXT;
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

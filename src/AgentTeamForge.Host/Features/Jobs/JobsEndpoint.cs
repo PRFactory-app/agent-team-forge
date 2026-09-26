@@ -18,6 +18,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 {
                     Backend = request.Backend,
                     Cwd = request.Cwd,
+                    Worktree = request.Worktree,
                     WakeKey = request.WakeKey,
                     WakeGeneration = request.WakeGeneration,
                 }));

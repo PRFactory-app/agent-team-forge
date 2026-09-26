@@ -14,8 +14,10 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         j.job_id, j.principal, j.team, j.target_agent, j.idempotency_key, j.instruction, j.options,
         j.status, j.reason_code, j.result_text,
         (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id),
-        j.backend, j.cwd, j.parent_job_id, j.session_id
+        j.backend, j.cwd, j.parent_job_id, j.session_id, j.worktree_path, j.worktree_branch, j.worktree_base
         """;
+
+    public string WorktreeRoot => Path.Combine(Path.GetDirectoryName(database.Path)!, "worktrees");
 
     /// <summary>
     /// Stores job + scoped key/fingerprint + unattempted intent + acceptance event
@@ -42,18 +44,21 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         }
 
         var jobId = "job_" + Guid.CreateVersion7().ToString("N");
+        var worktreePath = job.CreateWorktree ? Path.Combine(WorktreeRoot, jobId) : job.WorktreePath;
+        var worktreeBranch = job.CreateWorktree ? $"atf/job-{jobId}" : job.WorktreeBranch;
         var now = Now();
         Execute(connection, tx, """
             INSERT INTO jobs(job_id, principal, team, target_agent, operation, idempotency_key, fingerprint,
-                             instruction, options, backend, cwd, parent_job_id, status, accepted_at, updated_at)
-            VALUES ($id, $p, $t, $a, $o, $k, $f, $i, $opt, $b, $cwd, $parent, 'queued', $now, $now);
+                             instruction, options, backend, cwd, parent_job_id, worktree_path, worktree_branch, worktree_base, status, accepted_at, updated_at)
+            VALUES ($id, $p, $t, $a, $o, $k, $f, $i, $opt, $b, $cwd, $parent, $wtpath, $wtbranch, $wtbase, 'queued', $now, $now);
             INSERT INTO dispatch_intents(job_id, state, created_at) VALUES ($id, 'unattempted', $now);
             INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'accepted', $now);
             """,
             ("$id", jobId), ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent),
             ("$o", job.Operation), ("$k", job.IdempotencyKey), ("$f", job.Fingerprint),
             ("$i", job.Instruction), ("$opt", job.Options), ("$b", job.Backend), ("$cwd", job.Cwd),
-            ("$parent", job.ParentJobId), ("$now", now));
+            ("$parent", job.ParentJobId), ("$wtpath", worktreePath), ("$wtbranch", worktreeBranch),
+            ("$wtbase", job.WorktreeBase), ("$now", now));
         if (job.WakeTargetKey is not null && job.WakeGeneration is not null)
         {
             Execute(connection, tx, """
@@ -69,7 +74,12 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         // here would otherwise be reported as a storage error for an accepted job.
         return new AcceptOutcome(AcceptKind.Accepted, new JobRecord(jobId, job.Principal, job.Team, job.TargetAgent,
             job.IdempotencyKey, job.Instruction, job.Options, JobStatus.Queued, null, null, 0,
-            job.Backend, job.Cwd, job.ParentJobId, null));
+            job.Backend, job.Cwd, job.ParentJobId, null)
+        {
+            WorktreePath = worktreePath,
+            WorktreeBranch = worktreeBranch,
+            WorktreeBase = job.WorktreeBase,
+        });
     });
 
     /// <summary>
@@ -321,7 +331,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     public IReadOnlyList<JobSummaryRecord> ListJobs(string principal, string team, string? status, string? beforeJobId, int take) => Read(connection =>
     {
         using var command = Command(connection, null, """
-            SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at
+            SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at, j.worktree_path, j.worktree_branch
             FROM jobs j
             WHERE j.principal=$p AND j.team=$t
               AND ($status IS NULL OR j.status=$status)
@@ -335,7 +345,11 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         while (reader.Read())
         {
             jobs.Add(new JobSummaryRecord(reader.GetString(0), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetString(2),
-                reader.GetInt32(3), reader.GetString(4), reader.GetString(5)));
+                reader.GetInt32(3), reader.GetString(4), reader.GetString(5))
+            {
+                WorktreePath = NullableString(reader, 6),
+                WorktreeBranch = NullableString(reader, 7),
+            });
         }
 
         return (IReadOnlyList<JobSummaryRecord>)jobs;
@@ -355,14 +369,19 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             return null;
         }
 
-        return (ReadJob(reader), reader.GetString(15));
+        return (ReadJob(reader), reader.GetString(18));
     }
 
     static JobRecord ReadJob(SqliteDataReader reader) => new(
         reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
         reader.GetString(5), reader.GetString(6), reader.GetString(7),
         NullableString(reader, 8), NullableString(reader, 9), reader.GetInt32(10),
-        reader.GetString(11), NullableString(reader, 12), NullableString(reader, 13), NullableString(reader, 14));
+        reader.GetString(11), NullableString(reader, 12), NullableString(reader, 13), NullableString(reader, 14))
+    {
+        WorktreePath = NullableString(reader, 15),
+        WorktreeBranch = NullableString(reader, 16),
+        WorktreeBase = NullableString(reader, 17),
+    };
 
     static string? NullableString(SqliteDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
 

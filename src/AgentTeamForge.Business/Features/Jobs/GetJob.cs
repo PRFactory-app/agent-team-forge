@@ -48,6 +48,8 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal)
         Backend = job.Backend,
         SessionId = job.SessionId,
         ParentJobId = job.ParentJobId,
-        Cwd = job.Cwd,
+        Cwd = job.WorktreePath ?? job.Cwd,
+        WorktreePath = job.WorktreePath,
+        WorktreeBranch = job.WorktreeBranch,
     };
 }
