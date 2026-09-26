@@ -27,11 +27,14 @@ durable structured state. Claude Code, Codex and Pi remain external agent progra
 model loops implemented here. An external orchestrator may connect through an
 optional future integration.
 
-There is no application dashboard now. The human-facing surface is primarily
-service installation/setup and diagnostics. **Host**, rather than UI, names the
-project because it also contains CLI entry points, MCP, IPC, composition, and
-daemon lifecycle. The agents' real terminal TUIs are external applications, not
-AgentTeamForge UI components.
+Human-facing surfaces are service setup/diagnostics and the newly requested
+small **text-only operator web console** (F27): status/output, human follow-up
+and confirmed agent stop. A plan and static HTML mockup precede implementation;
+there is no working web application yet. **Host**, rather than UI, remains the
+project name because it also contains CLI entry points, MCP, IPC, composition
+and daemon lifecycle. The console reuses authenticated application contracts,
+not a second scheduler or direct DB access. The agents' real terminal TUIs stay
+external applications; the console is not their terminal emulator.
 
 ## 2. Vertical slices come first
 

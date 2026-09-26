@@ -8,7 +8,7 @@ combines their tested vertical slices into a release-candidate evidence baseline
 for P08. Testing, threat analysis, security controls, TDD and code review belong
 to every feature phase; P07 is not their first occurrence.
 
-Authority: [shared brief and template](README.md), [canonical F01–F26 scope](../../product-scope.md),
+Authority: [shared brief and template](README.md), [canonical F01–F27 scope](../../product-scope.md),
 [waterfall roadmap](../../roadmap.md), [contributor policy](../../../AGENTS.md),
 [architecture](../../architecture.md), [delivery and recovery plan](../../plan.md),
 [PoC cases](../../poc.md), [terminal contract](../../terminal-modes.md),
@@ -38,7 +38,7 @@ native Windows Pi installed qualification from P05 in both selected launch modes
 bounded nesting, supported cooperative attachment/join and the available but
 opt-in generic connector. Local-only operation remains independent of a server.
 
-Excluded: new dashboard, mandatory cloud/telemetry, new backend vendors/RIDs,
+Excluded: rich dashboard beyond the scoped F27 console, mandatory cloud/telemetry, new backend vendors/RIDs,
 arbitrary Desktop adoption, distributed scheduler, custom model loop, blanket
 exactly-once external effects, or seamless adoption of arbitrary processes and
 stdio. Publication, license selection, signing authority and release operation
@@ -89,7 +89,7 @@ contradictions. P01 must still freeze measured limits and evidence-backed cells:
   prove Codex-lead self-wake.
 
 Freeze these contracts and their remaining numeric/migration/version details
-before qualification. F01–F26 remains canonical; historical R IDs are aliases.
+before qualification. F01–F27 remains canonical; historical R IDs are aliases.
 
 ### Two freezes, not indefinite retesting
 
@@ -174,7 +174,7 @@ required cells. Document selection and residual risk, never silently omit cells.
 | Native candidate CI/lab | Published JIT/AOT MCP/SQLite/process paths on each RID; package install/upgrade, bounded stress, storage faults, consistent backup/restore. | Native compiler/SDK and OS runners; isolated volumes and accounts; cross-build does not count as runtime evidence. |
 | Booked desktop lab | Actual Herdr/Linux and selected Windows/macOS terminals with real agents, human input, neighboring tabs, service identity, lock/logout, controller/daemon death and wake. | Real desktop access, human operator, backend credentials and approved model budget. Headless hosted CI is insufficient. |
 | Controlled resilience/performance lab | Reboot/storage-fault exercises, per-platform soak and same-machine JIT/AOT comparisons, destructive cases on disposable state only. | Reserve hardware/time/disk and cleanup owner; power interruption needs separate authorization and facilities. |
-| Final acceptance | Fresh-profile operator walkthrough on each platform plus integrated extension/connector demonstrations. | Independent operator availability and recorded steps; no dashboard or external cloud account required. |
+| Final acceptance | Fresh-profile operator walkthrough on each platform plus integrated extension/connector demonstrations. | Independent operator availability and recorded steps; F27 console included, no external cloud account required. |
 
 Book Windows/macOS GUI access early. Missing access blocks required cells; it
 does not lower their priority or remove their cost. Real model tests use small
@@ -408,7 +408,7 @@ this plan does not claim commands or evidence directories already exist.
 
 | Gate | Reproducible verification and exact success criterion | Evidence class and blockers |
 | --- | --- | --- |
-| P07-G01 — Entry and provenance | W01 ledger covers F01–F26 and all C/L/T definitions; accepted P01–P06 artifacts and RC hashes match; every old failure and contract conflict has disposition; independent plan review recorded. | Documentary plus inherited execution evidence. Missing P05/P06 handoffs, limits, review or required cells blocks entry. |
+| P07-G01 — Entry and provenance | W01 ledger covers F01–F27 and all C/L/T definitions; accepted P01–P06 artifacts and RC hashes match; every old failure and contract conflict has disposition; independent plan review recorded. | Documentary plus inherited execution evidence. Missing P05/P06 handoffs, limits, review or required cells blocks entry. |
 | P07-G02 — Native installed matrix | W02 package recipe runs on each real RID; published AOT invokes MCP/JSON/SQLite/WAL/process paths, actual service context and explicit-mode doctor; all required mode/platform cells for all three managed backends pass relevant lifecycle/terminal assertions, including P07-PI01–PI04 and native Windows Pi installed tests. Zero unanalyzed AOT warnings. | Native OS plus real agents/GUI; fake smoke alone insufficient. Missing machine, provider, credentials or safe native capability blocks affected required gate. |
 | P07-G03 — Security and supply chain | W02/W03 component/provenance/license review and sentinel/adversarial scenarios: zero unauthorized effects/disclosure/escalation, zero secret leakage, no unsafe path or tampered update accepted; all critical/high exposures resolved or documented false positives. | Real files/IPC/accounts/native launch plus repeatable fakes for races; scanner output alone insufficient. Unknown origin/redistribution rights, unsafe grants or unreviewed findings block. |
 | P07-G04 — Integrated execution and authority | Run W03 team/Pi/join/connector scenarios: one scoped operation, bounded ancestor reservations, no unread skip, no second execution owner; revoked/stale identities cannot authorize new effects/export; connector off makes no contact. | Real Pi/cooperative hosts and actual generic connector transport plus race fixtures. Fakes do not qualify live capabilities; unsupported required cells block full exit; Pi attachment or lead wake cannot substitute for the managed backend. |
@@ -487,7 +487,7 @@ record applicability per assertion, not a blanket two-backend case expansion.
 | P07-PI03 | Genuine Pi TUI human input wins and pauses automation until authorized verified idle. Native interrupt preserves session/tab; separate authorized stop verifies descendants stopped and neighboring sessions untouched. Headless tests its explicit policy separately. Text/model self-report cannot complete work. Supplements C21/C22, L04 and T05/T08/T15/T16; consumes P05-PI03. | G02/G03/G05/G09 |
 | P07-PI04 | Actual installed Windows Pi .cmd/Node launch chain passes quoting/Unicode paths/argument boundaries, trusted discovery, user profile/credentials, ACL/private bootstrap, inherited handles, Job Objects/descendants and selected user-desktop binding. Run PI01–PI03 in both modes; locked/logged-out/Session-0/absent-GUI and revoked-credential negatives never launch elsewhere or fall back. Supplements C25/C27/C29 and T01–T03/T11–T14; consumes P05-PI04. Linux, cross-build and fake-only runs cannot pass. | G02/G03/G05/G09/G10 |
 
-### F01–F26 and full-product additions
+### F01–F27 and full-product additions
 
 | Features | Integrated evidence beyond or alongside C/L/T | Packages / gates |
 | --- | --- | --- |
@@ -523,7 +523,8 @@ Record actual actions/results; do not assert exact prose strings.
 3. Kill controller/lead plus bridge, not daemon. Work continues under accepted
    budgets; a pending approval stays blocked. Fresh authorized controller retrieves
    results and unacked messages; stale controller cannot ack or acquire lead power.
-   Show compact CLI diagnostics, not a dashboard or model polling loop.
+   Show compact CLI diagnostics and the F27 text console, not an analytics dashboard
+   or model polling loop.
 4. Demonstrate bounded nested delegation and reject sibling control/excess depth;
    interrupt one active turn preserving TUI, then separately stop one owned agent
    without touching neighboring tabs. Missing interrupt confirmation stays visible.
@@ -661,7 +662,7 @@ return through explicit change control. Hand P08:
 
 - [ ] Accepted P01–P06 inputs, independent P07 plan review and frozen decisions exist.
 - [ ] P07-W01–W07 complete and P07-G01–G10 supported by final-candidate evidence.
-- [ ] All F01–F26 and C01–C32/L01–L12/T01–T19 obligations accounted for, including
+- [ ] All F01–F27 and C01–C32/L01–L12/T01–T19 obligations accounted for, including
   P07-PI01–PI04, nesting, cooperative join, connector and installed T13/T14;
   native Windows Pi in both modes is mandatory, no fake/Linux/cross-build pass.
 - [ ] Required three-platform published AOT/MCP/SQLite/service/real-agent cells
@@ -691,3 +692,11 @@ security verdict, SDK/AOT compatibility or platform support. No code/test/build,
 SDK installation, model run/change, Git operation or other-agent invocation is
 part of this task. Reproducible documentation check tooling remains an implementation
 setup follow-up where absent; planned execution gates above remain unrun.
+
+## F27 scope addition — operator text console
+
+F27 is an additional full-release obligation: qualify status/output freshness and bounds, authenticated follow-up/stop parity, XSS/CSRF/Origin/Host defenses, browser disconnect survival and selected real OS/browser contexts. Static HTML mock behavior does not prove runtime security or backend capability. Map console plan work packages/tests into the same evidence ledger.
+
+See [the console plan and HTML mockup](../../ui/operator-console-plan.md). This explicit
+user addition supersedes earlier blanket dashboard exclusions; richer analytics,
+remote administration and terminal emulation remain outside scope.

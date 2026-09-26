@@ -48,6 +48,7 @@ not an available command yet.
 | [Full product scope](docs/product-scope.md) | Feature inventory, supported-product acceptance, and option boundaries. |
 | [Waterfall roadmap](docs/roadmap.md) | Eight ordered phases, phase plans, dependencies, gates, early demo and full release. |
 | [Phase planning brief](docs/planning/full-product/README.md) | Shared requirements and phase-document ownership. |
+| [Operator console plan](docs/ui/operator-console-plan.md) / [HTML mockup](docs/ui/operator-console-mockup.html) | Planned local text-only agent status, human follow-up and confirmed stop; static mockup, not a working runtime UI. |
 | [Next M0 spike plan](docs/spikes/m0-durable-core-plan.md) | Bounded fake-backend MCP/IPC/SQLite/AOT slice, TDD and crash gates; implementation awaits plan review and authorization. |
 | [Independent plan review](docs/plan-review.md) | Original Claude Opus findings and re-review for the earlier M0 plan; not approval of later architecture/spike documents. |
 | [Review resolutions](docs/review-resolutions.md) | Per-finding dispositions, corrections, and document-validation boundaries. |
@@ -95,6 +96,13 @@ These are design goals. They count as verified only after the corresponding
 roadmap gates pass with recorded evidence.
 
 ## Next steps
+
+Implementation runs in separate feature worktrees with Claude coding and Codex
+GPT-6 Sol high verifying/integrating; see [the active M0 lanes](docs/spikes/m0-integration-plan.md).
+The new core uses `AgentTeamForge.slnx`. Its isolated .NET 11 RC1 SDK is available;
+the existing interactive experiment remains .NET 10 until explicitly migrated.
+The operator web console is currently plan/mockup only and does not delay the
+first durable execution checkpoint.
 
 Baseline and review the [complete product scope](docs/product-scope.md) and
 [ordered phase plans](docs/roadmap.md). Continue the separately authorized

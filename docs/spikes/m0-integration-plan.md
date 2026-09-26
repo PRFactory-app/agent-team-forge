@@ -22,6 +22,8 @@ and AOT evidence still require execution.
 | `spike/m0-durable-core` | Fresh Claude Opus/medium; only `spikes/m0-durable-core/` and necessary local build configuration. | Three-project fake-core slice with focused TDD, reproducible client-loss demo and report. Independent GPT review before promotion. |
 | `spike/m0-codex-safety` | Fresh Claude Opus/medium; interactive spike launch ownership, Codex history/binding/foreign-turn logic and their focused tests. Do not edit transport/Herdr CLI files owned below. | Close applicable re-review findings or explicitly block unsolved native protocol gaps; do not advertise unsafe dispatch as supported. |
 | `spike/m0-transport-bounds` | Fresh Claude Opus/medium; interactive spike JSON-RPC/WebSocket and bounded Herdr CLI I/O plus focused tests only. | Whole-operation deadlines, atomic pending quotas, bounded output and honest uncertain-write classification. |
+| `spike/m0-claude-isolation` | Fresh Claude Opus/medium; unsafe Claude dispatch/control gates and hook-output bounds, `Program.cs` entry points and focused tests. | Unsafe origin/cancel paths refused before effects; concurrent hook storage remains bounded. No false claim of solved native Claude support. |
+| `verify/m0-e2e` | Independent Codex GPT-6 Sol, tier high; isolated verification worktree. | Snapshot-bound code reviews and reproducible negative tests for each small feature handoff. |
 | `integration/m0-e2e` | Independent Codex GPT-6 Sol, tier high; merge coordinator, not another feature author. | Small reviewed commits merged in dependency order, combined gates, conflict record and runnable checkpoint instructions. |
 
 Each branch has its own worktree. No two agents write the same worktree or shared
@@ -41,9 +43,11 @@ Do not publish feature branches or raw evidence automatically.
 4. Codex integrator merges reviewed transport and safety fixes independently of
    the fake-core lane. Then merge the reviewed fake core. Run format/build/tests
    after each merge and rerun combined failure scenarios; record source hashes.
-5. Conflict resolution must preserve both slices' invariants and tests. Sol-authored
-   executable resolutions receive Claude review. Escalate semantic contract
-   conflicts rather than choosing whichever branch makes compilation easier.
+5. Conflict resolution must preserve both slices' invariants and tests. Current
+   staffing keeps Claude on code and Codex on verification: semantic executable
+   fixes return to a Claude writer, then independent Codex reviews the result.
+   The integrator resolves mechanical conflicts and coordinates that handoff.
+   Escalate contract conflicts rather than choosing whichever branch compiles.
 6. A fresh adapter-integration slice connects the reviewed real Codex path to the
    reviewed durable core. Keep fake-core and live-agent claims separate. A new
    contract change receives focused plan review, not another full roadmap cycle.

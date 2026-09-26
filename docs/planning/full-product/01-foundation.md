@@ -62,7 +62,7 @@ Two distinct outputs prevent paper approval:
 ### Full-product requirements and traceability seed
 
 [Product scope](../../product-scope.md#2-product-feature-inventory) owns canonical
-F01–F26. R01–R15 below are phase-local groupings, not competing scope IDs; use
+F01–F27. R01–R16 below are phase-local groupings, not competing scope IDs; use
 [the synthesis crosswalk](contracts.md#1-scope-ids-and-phase-ownership).
 Every requirement is mandatory unless explicitly an option. Preserve canonical
 identity and disposition in downstream evidence.
@@ -84,6 +84,7 @@ identity and disposition in downstream evidence.
 | R13 | Optional generic external connector uses same local policy/API, durable external IDs, explicit lease/offline ownership and export consent. Local use makes no connector contact. | P06, P07; C28 plus lease/revoke/outage/duplicate/export-denial tests. |
 | R14 | .NET 11, exactly Host → Business → DAL, feature-first; published JIT/AOT evidence, measured resource limits and reproducible dependency inventory. | P01–P08; package proof, dependency check, published smoke and PoC measurement workloads. |
 | R15 | Public documentation, distribution, compatibility/security lifecycle, notices and operator recovery runbooks; no unlicensed publication. | P08; release checklist, clean-user walkthrough, owner license/publication decisions. |
+| R16 | Small authenticated local text-only web console for agent status/output, human follow-up and confirmed agent stop; no terminal emulation or additional production project. | F27; plan/static HTML first, P04 shared projections/control, P05 Host web role, P07 browser/security/platform evidence, P08 public usage. |
 
 Traceability record format: canonical F ID → local R grouping → capability cell → work package →
 case/command → environment and artifact hash → result (`planned`, `blocked`,
@@ -169,7 +170,8 @@ disabled, outbound-only when enabled, no remote administrative listener.
 
 ### Explicit exclusions and options
 
-No dashboard/web UI, custom agent model loop, mandatory cloud/telemetry, billing,
+No rich analytics/remote-admin UI beyond the scoped F27 console, custom agent
+model loop, mandatory cloud/telemetry, billing,
 distributed scheduler, broad legacy API compatibility, arbitrary Desktop/process
 attachment, exactly-once external effects, seamless process/stdio adoption after
 daemon death, or replacing another worker. Extra vendors, architectures,
@@ -256,7 +258,7 @@ buildout. Relative sizes include evidence and review, not external waiting time.
 
 | Package | Result, deliverables and meaningful tests | Host / Business / DAL touchpoints | Dependency; size/confidence |
 | --- | --- | --- | --- |
-| P01-W01 | Baseline F01–F26 mapped through local R01–R15, candidate cells, decision owners, threat model and case ledger accepted for investigation. Inventory evidence without promoting historical passes. Independent major-plan review precedes probe implementation. | Host public claims; Business policies; DAL invariants. | Shared brief; M/high. |
+| P01-W01 | Baseline F01–F27 mapped through local R01–R16, candidate cells, decision owners, threat model and case ledger accepted for investigation. Inventory evidence without promoting historical passes. Independent major-plan review precedes probe implementation. | Host public claims; Business policies; DAL invariants. | Shared brief; M/high. |
 | P01-W02 | Fix or replace unsafe spike paths in bounded harnesses; publish eight-finding disposition and Claude cancel/origin ADR. Red-first regressions in §5; opposite-family review and re-review. Demonstrate exact supported delivery/result/cancel contract. | Host diagnostics/bootstrap; Business adapters/ownership; DAL atomic claim contract represented in harness. | W01; L/low. |
 | P01-W03 | Pin public .NET 11 SDK candidate `11.0.100-rc.1.26425.128`, actual ref pack and restored package/native-asset versions. Minimal MCP→IPC→Business→SQLite slice publishes/runs JIT and AOT on all three platforms; bounded process and crash proof. Save warnings, package locks, binary hashes and reproducible commands. | Host role registration/JSON/MCP; Business process policy; DAL SQLite transaction/native assets. | W02; L/medium-low. |
 | P01-W04 | Select platform/provider/service contexts early. Real Claude/Codex first/follow-up/result/interrupt plus T04/T07/T10 in temporary production-style contexts; probe T13/T14, human activity, targeted neighboring-tab safety, credentials and logout. Record OS/RID/provider matrix and launcher decision. | Host user-session/service boundary and doctor; Business terminal bindings; DAL persisted ownership/config contract. | W03; L/low, real machine access. |
@@ -326,7 +328,7 @@ future deliverables, not commands claimed to exist.
 
 | Gate | Reproducible verification method | Exact success criterion / evidence class | Blocking condition |
 | --- | --- | --- | --- |
-| P01-G01 | Review canonical F01–F26 through local R01–R15, threats, matrix and decisions against shared brief; complete case ledger and independent major-plan review. | Every MUST has delivery owner, cell and test; scope decisions explicitly recorded by owner. Documentary only. | Missing mandatory feature, unowned requirement, absent review or owner decision. |
+| P01-G01 | Review canonical F01–F27 through local R01–R16, threats, matrix and decisions against shared brief; complete case ledger and independent major-plan review. | Every MUST has delivery owner, cell and test; scope decisions explicitly recorded by owner. Documentary only. | Missing mandatory feature, unowned requirement, absent review or owner decision. |
 | P01-G02 | Restore pinned SDK/packages; compile ref-pack API probes; publish and run W03 on Linux x64, Windows x64, macOS arm64. Invoke MCP/SQLite/IPC/JSON and fake child paths; compare JIT/AOT. | All three native environments pass; exact native assets/package graph recorded; zero unanalyzed trim/AOT warnings; bridge does not open DB. Real OS plus fake backend, not interactive proof. | Missing environment/toolchain, incompatible API/package/native asset, unreviewed suppression or AOT fallback. |
 | P01-G03 | W02 regression suite and opposite-family fix re-review; bounded real Claude/Codex controls on selected pinned versions. | B01–B08 and observation gaps closed; trusted origin and verified native interrupt with preserved TUI; C08/C09, C13–C16, C21–C25, T08/T15/T16/T17/T18/T19 mapped explicitly. | Any blocking finding, ambiguous Claude origin/cancel, unauthorized bypass, unverified stop/approval. |
 | P01-G04 | W04 per-platform real T04/T07/T10 under temporary production context; T05/T08/T11/T13/T14/T15 plus headless first-result-interrupt/stop smoke. | Both Claude/Codex TUIs usable by human, correct follow-up/result/binding, no client-owned lifetime or neighbor damage; GUI absence fails visibly; both modes verified. Real GUI/service evidence; L08–L12 feasibility subset only. | Missing machine/human, Session 0/GUI failure, wrong credentials, silent fallback, unowned survivor. |
@@ -447,7 +449,7 @@ Hours-scale demo is separate; no full-product calendar promise is credible here.
 
 ### Exit checklist
 
-- [ ] Canonical F01–F26 mapped through local R01–R15 and all mandatory target cells accepted; exact tested versions and
+- [ ] Canonical F01–F27 mapped through local R01–R16 and all mandatory target cells accepted; exact tested versions and
   support boundaries frozen, including Pi, independent join and wake.
 - [ ] D01–D05 resolved at their deadlines; G01–G07 passed with reproducible,
   sanitized artifacts. Unsupported mandatory capability has not been waived.

@@ -46,7 +46,8 @@ owner through explicit change control. P06 extends attachment/join, additional
 lead-host integration and the generic opt-in connector; P07 performs
 cumulative qualification; **P08 owns final public release and distribution approval**.
 
-End-user setup/installation and diagnostics remain the main UI. No dashboard,
+End-user setup/installation, diagnostics and the scoped F27 text operator console
+are the human surfaces. No rich analytics dashboard,
 custom terminal UI, model loop, cloud service, automatic telemetry, mandatory
 connector, arbitrary Desktop attachment or additional production assembly.
 Additional architectures/providers are optional decisions, not implied support.
@@ -607,3 +608,11 @@ runtime behavior, GUI support, package/signature validity, independent approval 
 rendering in every Markdown tool. Runtime format/lint/build/AOT/tests and all live
 UAT remain unrun. Reproducible document tooling should be added during implementation
 setup if absent; no tooling or other file is added in this planning task.
+
+## F27 scope addition — operator text console
+
+P05 delivers the scoped F27 local text web console inside Host, reusing P04 operations and private daemon IPC. Plan and HTML mockup precede implementation. Add authenticated-loopback/CSRF/Origin/Host checks, safe output rendering, stale/disconnected states, idempotent follow-up and confirmed targeted stop to installed-platform qualification. No fourth project, terminal emulator or second scheduler.
+
+See [the console plan and HTML mockup](../../ui/operator-console-plan.md). This explicit
+user addition supersedes earlier blanket dashboard exclusions; richer analytics,
+remote administration and terminal emulation remain outside scope.

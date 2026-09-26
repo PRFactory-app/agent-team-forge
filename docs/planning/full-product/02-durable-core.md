@@ -16,7 +16,7 @@ The [shared brief](README.md) controls scope and waterfall order. This plan uses
 [.NET 11 research](../../research/net11-process-api.md). The expanded baseline
 in the shared brief supersedes older roadmap deferrals, not their safety rules.
 
-Canonical requirements are [F01–F26](../../product-scope.md#2-product-feature-inventory),
+Canonical requirements are [F01–F27](../../product-scope.md#2-product-feature-inventory),
 not P01's local R groups; use [the crosswalk](contracts.md#1-scope-ids-and-phase-ownership).
 P02 primarily delivers F01–F04/F09 and foundations for F11/F22/F24; downstream
 phases retain full qualification obligations.

@@ -9,7 +9,7 @@ already mandatory in P03 alongside Claude Code and Codex; P06 reuses it, not
 implements it for the first time. Execution order remains
 P01 → P02 → P03 → P04 → P05 → P06 → P07 → P08.
 
-Canonical feature scope is [F01–F26](../../product-scope.md). Binding inputs are
+Canonical feature scope is [F01–F27](../../product-scope.md). Binding inputs are
 [the brief](README.md), [cross-phase contracts](contracts.md),
 [roadmap](../../roadmap.md),
 [architecture](../../architecture.md), [execution contracts](../../plan.md),

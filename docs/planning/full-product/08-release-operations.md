@@ -6,7 +6,7 @@
 public, installable, maintainable AgentTeamForge release after P07 qualification:
 reviewed source and notices, reproducible native packages, truthful onboarding,
 reversible deployment, and an operational owner. Primary features are **F18,
-F25 and F26**; release acceptance covers **F01–F26**, not only these three.
+F25 and F26**; release acceptance covers **F01–F27**, not only these three.
 
 Follow the [shared planning brief](README.md), [product scope](../../product-scope.md),
 [roadmap](../../roadmap.md), [architecture](../../architecture.md),
@@ -24,7 +24,7 @@ are authored concurrently or later; this plan does not invent their gate IDs.
 
 P08 finishes distribution and operational acceptance of P05 packaging and P07
 qualification. It does not rebuild those subsystems, replace system testing with
-document checks, or add a dashboard, telemetry, mandatory remote service,
+document checks, or add a rich dashboard beyond F27, telemetry, mandatory remote service,
 distributed scheduler or custom model loop. Exactly three production projects
 remain: **Host → Business → DAL**. Documentation and release metadata require no
 new production assembly.
@@ -114,7 +114,7 @@ All tests below are proposed acceptance work, not commands or gates already run.
   maintainer, security contact, reviewer and release approver; patch/support
   commitments, signing choice and .NET servicing policy. Do not select these on
   the owner's behalf. Resolve redistribution rights for bundled components.
-- **Tests:** reconcile candidate hashes and F01–F26 ledger against P07; reject a
+- **Tests:** reconcile candidate hashes and F01–F27 ledger against P07; reject a
   missing required platform/capability or unsigned-off review, not just mark it
   unsupported. Record unresolved decisions as blockers with an owner.
 
@@ -455,7 +455,7 @@ claimed to exist. Missing access blocks rather than waives a required gate.
 
 | Gate | Reproducible method and exact success criterion | Evidence type and blockers |
 | --- | --- | --- |
-| **P08-G01 — Entry and authority** | Reconcile P01–P07 acceptance and all 26 feature rows with candidate; record owner license/name/channel/support decisions and independent plan review. Every mandatory predecessor gate accepted; no blocking finding or unowned required decision. | Documentary review, not runtime or cryptographic signing. Missing P07 acceptance/owner consent blocks. |
+| **P08-G01 — Entry and authority** | Reconcile P01–P07 acceptance and all 27 feature rows with candidate; record owner license/name/channel/support decisions and independent plan review. Every mandatory predecessor gate accepted; no blocking finding or unowned required decision. | Documentary review, not runtime or cryptographic signing. Missing P07 acceptance/owner consent blocks. |
 | **P08-G02 — Public disclosure and rights** | Execute W02 current-tree/full-history/package/log scans and manual origin/license review against exact proposed public inventory; approved fixtures only, all findings resolved or justified false positives, required notices present. Repeat before publication. | Scan plus human review. Ignore rules or cleaned prose alone fail; inaccessible history, unclear rights or credential exposure blocks. |
 | **P08-G03 — Reproducible native supply chain** | Two clean builds per required RID reproduce unsigned payload; final artifacts match SBOM/provenance and notices. Actual AOT/MCP/IPC/SQLite/process smoke passes on each OS. Apply W03 SDK/GA policy. | Real Linux x64, Windows x64, selected macOS architecture; synthetic protocol checks supplement. Cross-build/JIT/spike-only evidence fails. |
 | **P08-G04 — Distribution verification** | Fetch W04 staged final packages; verify manifest identity and checksum; validate selected signing trust policy. Tampered/wrong-RID/incompatible versions and invalid signatures when used are rejected before activation. | Actual channel/package tests; controlled tampering fixtures. Unconsented identities, absent channel-required signing or unknown trust model blocks. |
@@ -465,7 +465,7 @@ claimed to exist. Missing access blocks rather than waives a required gate.
 | **P08-G08 — Compatibility maintenance** | W08 matrix has evidence for every required row; run canary contract and real control smoke for all three backends, including actual Windows Pi launcher/lifecycle after affected updates, simulate upstream regression and route a patch decision. Support/EOL/deprecation commitments accepted by owner. | Fake protocol regressions plus real backend/terminal/host checks. Unknown versions never silently supported; no test access/maintainer blocks required claims. |
 | **P08-G09 — Promotion and post-release identity** | Owner approves staged stop/go; hashes of qualified, canary and promoted artifacts equal; fresh public downloads pass verification and clean-profile install/doctor/MCP/job smoke on each OS. | Actual consumer channels and platforms. No publication authorization means blocked, not simulated pass; any byte change returns to candidate qualification. |
 | **P08-G10 — Maintainer handoff** | W10 owner rehearsal locates/reproduces release inputs, handles synthetic incident and verifies recovery; all required policy/access responsibilities accepted, nonblocking follow-ups assigned. | Practical dry run and owner acceptance. Empty role names or aspirational SLAs fail. |
-| **P08-G11 — Full-product closure** | Review all P01–P08 mandatory gates, F01–F26 ledger, accepted reviews/re-reviews, public docs/links, final artifact identities and limitations. All mandatory gates pass; no unresolved blocking finding; owner explicitly approves full-product designation. | Cumulative evidence, not a new runtime claim. Any mandatory gap restricts designation to an explicitly scoped preview. |
+| **P08-G11 — Full-product closure** | Review all P01–P08 mandatory gates, F01–F27 ledger, accepted reviews/re-reviews, public docs/links, final artifact identities and limitations. All mandatory gates pass; no unresolved blocking finding; owner explicitly approves full-product designation. | Cumulative evidence, not a new runtime claim. Any mandatory gap restricts designation to an explicitly scoped preview. |
 
 ### Supplemental Pi release cases — unchanged historical C/L/T identities
 
@@ -603,10 +603,18 @@ invented delivery date or promise of full release within hours.
       handoff accepted by a real owner; nonblocking follow-ups explicitly assigned.
 - [ ] Applicable format/lint/build/tests/native-platform gates and bounded doc/link
       checks recorded honestly; unavailable or unrun checks remain visible.
-- [ ] P08-G01–G11 and every mandatory prior phase gate pass, F01–F26 evidence ledger
+- [ ] P08-G01–G11 and every mandatory prior phase gate pass, F01–F27 evidence ledger
       is complete, and owner approves full-product status.
 
 Only then may the roadmap's final status become **full-product release accepted**.
 This file does not update that status. A Linux demo, JIT-only build, prerelease
 preview, partial platform set or limited integration release retains explicit
 scope exclusions and cannot stand in for completed P08 or the full baseline.
+
+## F27 scope addition — operator text console
+
+F27 public onboarding includes opening the authenticated local text console, reading agent status/output, sending a durable human follow-up and confirming targeted stop. Explain security and stale/unsupported states. Qualify shipped web assets with the same candidate identity; the static planning mockup is not a released UI.
+
+See [the console plan and HTML mockup](../../ui/operator-console-plan.md). This explicit
+user addition supersedes earlier blanket dashboard exclusions; richer analytics,
+remote administration and terminal emulation remain outside scope.

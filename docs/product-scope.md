@@ -50,6 +50,7 @@ fallback to a smaller product.
 | F24 | .NET 11 build, reproducible packaging and Native AOT validation with actual MCP/SQLite/process paths on every claimed RID. | P01, P02, P05, P07 | Required target; a JIT-only preview is labelled separately. Any final AOT scope change needs explicit approval. |
 | F25 | Public contributor/user docs, license and third-party notices, sanitized examples, release artifacts and support matrix. | P08 | Required; Git/publication remains separately authorized. |
 | F26 | Performance/resource evidence, upgrade regression checks, operational recovery/runbooks and maintained compatibility policy. | P07, P08 | Required; no unmeasured memory/token savings claim. |
+| F27 | Small text-only, cross-platform operator web console: agent status/output, human follow-up and confirmed whole-agent stop through the same authenticated application contracts. | P04 projections/control; P05 Host web surface; P07 qualification; P08 docs | Explicit user addition. Plan and static HTML mockup first; no production UI approval implied. Authenticated loopback by default, no terminal emulation, second scheduler or fourth production project. |
 
 A phase owns implementation, but cross-cutting safety and testing are continuous.
 For example, P07 validates the integrated product; it does not postpone
@@ -61,7 +62,7 @@ These are tracked options rather than automatic requirements for full v1:
 
 | Option | Decision needed before adding scope |
 | --- | --- |
-| Product web/TUI dashboard | User value and maintenance budget; setup/CLI already provide the required human interface. |
+| Rich analytics dashboard, custom terminal emulator or remote web administration | Separate user-value, security and maintenance decision; F27's small local text console is already in scope. |
 | More backend vendors or arbitrary terminal providers | Public supported protocol, test access, and a real capability need. |
 | More CPU architectures | Actual package, native dependency and GUI/process testing for each RID. |
 | Legacy MCP compatibility facade or in-place session migration | Concrete consumer need, bounded compatibility contract and rollback. |

@@ -2,12 +2,12 @@
 
 **Draft synthesis, not independent approval.** This document resolves boundaries
 between phase drafts. It does not waive a safety or platform gate. The
-[product scope](../../product-scope.md) owns global F01–F26 requirements; phase
+[product scope](../../product-scope.md) owns global F01–F27 requirements; phase
 work packages and gates refine them.
 
 ## 1. Scope IDs and phase ownership
 
-P01's R01–R15 are phase-local requirement groupings, not a competing product
+P01's R01–R16 are phase-local requirement groupings, not a competing product
 scope. Use this crosswalk in the final evidence ledger:
 
 | P01 grouping | Canonical feature IDs |
@@ -27,6 +27,7 @@ scope. Use this crosswalk in the final evidence ledger:
 | R13 | F21 |
 | R14 | F24, F26 |
 | R15 | F23, F25, F26 |
+| R16 | F27 |
 
 Every F row must have implementation ownership and final qualification, not only
 a documentation reference. C/L/T cases remain the original PoC/terminal case
@@ -153,3 +154,17 @@ AOT remains a full-release target. A labelled JIT-only experiment is useful but
 cannot pass required AOT gates. SDK/package installation, platform access, model
 budget, license and publication remain explicitly authorized actions, not effects
 of accepting a document.
+
+## 7. Scoped operator console addition
+
+The user explicitly added F27 after the initial baseline: a small cross-platform
+text-only web console for status/output, human follow-up and confirmed whole-agent
+stop. This supersedes blanket no-web-UI exclusions, not the ban on a custom model
+loop, rich analytics dashboard or terminal emulator. Plan and static HTML mockup
+come first; implementation requires review of the new HTTP/security boundary.
+
+P04 owns shared authorized projections/control; P05 owns the Host web surface and
+packaging; P07 verifies browser security, bounded output, lifecycle and real-platform
+behavior; P08 documents operation. Exactly three projects remain. Only the daemon
+opens runtime SQLite; the browser is another client and never owns accepted work.
+See [the console plan](../../ui/operator-console-plan.md) and its mockup.

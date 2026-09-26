@@ -70,8 +70,14 @@ compatibility layer for other orchestration systems.
   proven cross-feature needs; add interfaces for real boundaries/substitution.
 - Deliver behavior end to end with pragmatic TDD, not all DAL work followed by
   all Business work followed by Host. Tests are not additional production layers.
-- Human-facing UI is currently setup/installation and diagnostics; do not build
-  a dashboard. `Host` is the project name, not `UI`.
+- Human-facing UI includes setup/diagnostics and a **small text-only operator
+  web console** requested for cross-platform debugging: agent status/output,
+  human follow-up and confirmed whole-agent stop. Start with a plan and static
+  HTML mockup; production implementation follows design review. Reuse existing
+  daemon authority/use cases, default to authenticated loopback access, and do
+  not build a terminal emulator, analytics dashboard or second scheduler.
+  This scoped console supersedes earlier blanket no-web-UI exclusions.
+  `Host` remains the project name; do not add a fourth UI production project.
 - Use the real solution name **`AgentTeamForge.slnx`** and production project
   names from the outset of the new core; do not carry `AtfSpike` or `.Spike`
   naming into the product. Retire superseded spike projects and temporary
@@ -98,10 +104,18 @@ compatibility layer for other orchestration systems.
 - Parallel implementation uses separate feature branches/worktrees and explicit
   slice ownership. Maintain an integration branch per milestone; use an
   independent **Codex GPT-6 Sol (tier high)** integrator to merge reviewed slices,
-  resolve conflicts and run combined gates. Integration is not review approval:
-  GPT-authored conflict-resolution code needs Claude review. Never resolve a
-  conflict by dropping safety tests or weakening a contract. Keep merge inputs
+  resolve conflicts and run combined gates. Integration is not review approval.
+  Current staffing is **Claude for implementation only; Codex for verification,
+  code review and integration**. Route semantic/runtime conflict fixes back to
+  a Claude writer, then let independent Codex verify; do not silently create a
+  same-family self-approved implementation in the integration lane. Never resolve
+  a conflict by dropping safety tests or weakening a contract. Keep merge inputs
   small, snapshot-bound and backed by a complete epic plan.
+- Aim for approximately five to six useful parallel agents while independent
+  work exists. Small child coding tasks are allowed when tools support them,
+  ownership is disjoint and the parent reviews the handoff; coordinate capacity
+  rather than creating an unbounded fan-out tree. Do not manufacture busywork or
+  bypass prerequisite safety decisions merely to maintain a head count.
 
 This section is the authoritative contributor review policy. General references
 elsewhere to independent review must be interpreted using these rules.

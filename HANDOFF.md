@@ -12,8 +12,13 @@ implementation attempt was stopped and redirected to C#/.NET. Earlier non-.NET
 snippets do not qualify as M0 implementation. The concurrent spike's runtime
 results are not validated by this architecture/documentation update.
 
-The latest request is a **complete waterfall product plan**, with one GPT-6
-Astra/medium planning agent per phase. The near-term real Linux demo remains a
+The **complete waterfall product plan** has one GPT-6 Astra/medium-authored
+plan per phase. Current priority is continuous bounded implementation toward a
+runnable E2E checkpoint: roughly six parallel lanes, Claude writing code and
+Codex GPT-6 Sol high verifying/reviewing/integrating separate worktrees. See
+[the execution allocation](docs/spikes/m0-integration-plan.md). A later user
+addition requests a small text-only operator web console; Pi Astra/medium owns
+its plan and static HTML mockup first, not production UI implementation. The near-term real Linux demo remains a
 checkpoint, not the full scope. Interactive-spike safety repairs are separately
 in progress after independent GPT review; no adapter safety approval is implied.
 The full-product phase plans do not by themselves authorize implementation or
@@ -24,7 +29,11 @@ The user subsequently authorized Git initialization and a public GitHub reposito
 Local Git now uses `main`; initial staging is documentation plus ignore rules,
 not unreviewed spike source or raw evidence. GitHub creation/push is waiting for
 the owner to create the selected organization. Do not publish under the earlier
-personal-account destination without a new decision. No license has been selected.
+personal-account destination without a new decision. No license has been selected. `.tools/dotnet11/` contains the separately
+user-authorized SDK `11.0.100-rc.1.26425.128` with official SHA-512 verified;
+command-scoped `DOTNET_ROOT`/`PATH` are required, global SDK configuration is
+unchanged. The old M0 writer was killed at the user's request; its live test
+sessions and source remain preserved. Fresh feature workers own the repairs.
 
 All project documentation must be in **English**. The conversation with the user
 may remain in Swedish. The user specifically requested a **Sol subagent** for the

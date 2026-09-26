@@ -70,9 +70,20 @@ addressed.
 
 See the [planning brief](planning/full-product/README.md) for common constraints
 and authoring conventions, and [cross-phase contracts](planning/full-product/contracts.md)
-for resolved scope, schema, cursor, wake and limit boundaries. The 26-feature inventory in [product scope](product-scope.md#2-product-feature-inventory)
+for resolved scope, schema, cursor, wake and limit boundaries. The 27-feature inventory in [product scope](product-scope.md#2-product-feature-inventory)
 provides the feature-to-phase mapping; each phase supplies finer work-package
 and gate traceability.
+
+### Added operator console scope (F27)
+
+The user added a small OS-independent text web console for debugging: inspect
+agent status/output, send human follow-up and confirm whole-agent stop. See
+[the plan](ui/operator-console-plan.md) and [static HTML mockup](ui/operator-console-mockup.html).
+This replaces blanket no-web-UI exclusions, not the boundary against a rich
+dashboard or terminal emulator. P04 owns shared authorized operations, P05 the
+Host web surface, P07 security/platform qualification and P08 documentation.
+Plan/mockup first; runtime implementation awaits the scoped design decision and
+review. It does not block the already-running fake-core checkpoint.
 
 ## 4. Near-term end-to-end checkpoint
 
@@ -182,7 +193,7 @@ actual native Windows spawn, follow-up, results, interrupt/stop and reconnect;
 P05 verifies installed contexts. Linux runs and cross-builds cannot prove Windows
 support. Supported join, additional lead-host integration and connector features
 are planned in P06. A public Linux-only preview may be useful, but
-is not a full-product release. Arbitrary Desktop attachment, custom dashboards,
+is not a full-product release. Arbitrary Desktop attachment, rich dashboards beyond the scoped F27 operator console,
 new vendors/RIDs, broad legacy compatibility and seamless arbitrary process
 adoption remain [decision-gated options](product-scope.md#3-explicit-option-boundary).
 
@@ -208,7 +219,7 @@ availability, and release signing/distribution decisions. CPU time or number of
 agents does not remove these dependencies.
 
 Optimize time-to-feedback through the labelled P03 demonstration and parallel
-reviews. Do not pad the critical path with an unnecessary dashboard, generic
+reviews. Do not pad the critical path with an unnecessary analytics dashboard, generic
 framework, exhaustive low-value tests, or a rewrite of existing agent CLIs.
 
 ## 9. Mapping from earlier milestone names

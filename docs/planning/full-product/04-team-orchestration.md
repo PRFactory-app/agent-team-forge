@@ -13,7 +13,7 @@ This is a draft plan, not implementation approval or runtime evidence. The
 [full-product brief](README.md) defines the expanded baseline and ordered phases;
 [cross-phase contracts](contracts.md) own synthesis decisions, and
 [product scope](../../product-scope.md#2-product-feature-inventory) owns canonical
-F01–F26. P01 R groups are local: use [the crosswalk](contracts.md#1-scope-ids-and-phase-ownership).
+F01–F27. P01 R groups are local: use [the crosswalk](contracts.md#1-scope-ids-and-phase-ownership).
 P04 primarily delivers F10–F15 and extends F03/F08; phase gates refine, not replace,
 canonical requirements. Earlier PoC restrictions on nesting
 are expanded here deliberately, not retroactively declared implemented. Preserve
@@ -40,7 +40,7 @@ service packaging are not prerequisites: use P03's explicit persisted mode and
 approved temporary production-style launch contexts.
 
 Excluded: distributed scheduling, automatic lead replacement, model planning
-loops, dashboard, arbitrary existing-session adoption, OS sandbox claims,
+loops, rich analytics dashboard, arbitrary existing-session adoption, OS sandbox claims,
 automatic merges, mandatory connector, and unrestricted nesting. Existing agent
 TUIs remain real interactive sessions; no log tails or silent headless fallback.
 
@@ -511,3 +511,11 @@ These checks cannot establish runtime correctness, host support, independent
 review or Markdown rendering across tools. Repository-wide code format/lint,
 build, AOT and live tests are unrun in this documentation-only task. Reproducible
 project-wide document tooling remains a setup follow-up if absent.
+
+## F27 scope addition — operator text console
+
+P04 supplies the same authorized bounded agent-status/output projection and durable human follow-up/targeted-stop operations for the F27 text web console. It does not create browser-specific job authority or bypass busy/foreign-activity policy. P05 owns the HTTP surface; existing CLI/MCP parity remains required.
+
+See [the console plan and HTML mockup](../../ui/operator-console-plan.md). This explicit
+user addition supersedes earlier blanket dashboard exclusions; richer analytics,
+remote administration and terminal emulation remain outside scope.

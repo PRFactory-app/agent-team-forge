@@ -45,8 +45,9 @@ scoped [Linux demo](../../spikes/e2e-demo-plan.md) while planning the full path.
   coverage targets. Independent plan review for major changes; opposite-model-
   family code review. No automatic review waiver from an earlier spike.
 - No mandatory external orchestrator, cloud, telemetry, distributed scheduler,
-  custom model loop, billing, or dashboard. Existing agent TUIs do not count as
-  building a product dashboard. Installation/setup remains the main product UI.
+  custom model loop, billing, or rich analytics dashboard. F27 adds a small
+  text-only local operator web console (plan/mockup first) alongside setup.
+  Existing agent TUIs remain external; no terminal emulator or fourth project.
 - Planning does not authorize Git initialization, license selection on behalf of
   the owner, publication, platform access, live model spending, or system changes.
 
@@ -77,8 +78,7 @@ name required external decisions/tests. Connector deployment remains opt-in.
 Each currently unsupported capability needs a gate or explicit scope decision,
 not simulated success.
 
-**Decision-gated options, not automatic v1 requirements:** custom dashboard/web
-UI, additional backend vendors beyond the named set, arbitrary legacy API
+**Decision-gated options, not automatic v1 requirements:** rich analytics/remote-admin UI beyond the scoped F27 console, additional backend vendors beyond the named set, arbitrary legacy API
 compatibility, multiplexing as an optimization, additional CPU architectures or
 terminal providers beyond the chosen support baseline, seamless arbitrary process
 adoption after daemon death, and replacing someone else's worker. Record where
