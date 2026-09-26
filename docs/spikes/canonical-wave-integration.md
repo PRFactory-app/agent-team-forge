@@ -104,3 +104,50 @@ The scenario manifest is in ignored
 `evidence/published-20260926T145807Z-mNsOnP/`; demo TRX and logs are in
 `.run/demo-20260926T145817Z-hDN7yh/`. `shellcheck` was unavailable. This
 requalification covers the Linux fake-core checkpoint only.
+
+## P2 private reads and D2 Herdr characterization
+
+The two Claude-authored slices and their independent Codex review records were
+merged without squash or conflicts, in this order:
+
+| Input | Source commit | Integration merge commit |
+| --- | --- | --- |
+| `feature/port-p2-private-reads` | `a7fbea1` | `970ac18` |
+| `review/port-p2` (approval) | `5033256` | `c0c3896` |
+| `feature/char-d2-herdr-launch` | `fc5e37f` | `30ac16d` |
+| `review/char-d2` (approval) | `d2ef9cc` | `40d7ebb` |
+
+The P2 review approved Linux x64 descriptor-bound private reads with two
+non-blocking source limitations recorded in `port-p2-review.md`. The D2 review
+approved only offline, test-only Herdr launch characterization; no live Herdr
+adapter or platform behavior was approved. The combined diff from `c39124e`
+adds these slices and their review records without altering the reviewed
+tooling fix. `git diff --check c39124e..40d7ebb` and `bash -n` on all four root
+scripts passed.
+
+On Linux 7.2.5-3-omarchy x86_64, with
+`DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet`
+(`11.0.100-rc.1.26425.128`), I ran root `scripts/verify.sh`, then
+`ATF_DEMO_BIN=<published atf> scripts/demo.sh` using the same SDK. The first
+`verify.sh` run passed restore, format, warning-free Release build, all **76/76**
+managed tests, and Native AOT publish, but one of **22** published scenarios
+failed: `Dispatcher_fault_stops_admission_instead_of_leaving_a_ready_daemon`
+received a null outcome where it expected `accepted`. Its result was **21/22**.
+I did not change source or tests. A direct rerun of `published-smoke.sh` against
+that same binary passed **22/22**, and its published-binary demo passed **1/1**.
+
+A fresh, complete `scripts/verify.sh` then passed restore, format, Release build
+with 0 warnings and 0 errors, **76/76** full tests (0 failed/skipped), Linux x64
+Native AOT publish, and **22/22** published process scenarios (0 failed/skipped).
+The published-binary demo against this second binary passed **1/1**. This
+intermittent published-scenario failure remains a test reliability follow-up;
+the successful reruns do not erase the first result.
+
+The final native `atf` is in ignored
+`artifacts/linux-x64-20260926T150211Z-EXAuQJ/` (9,792,752 bytes; SHA-256
+`16804f207f70a783ecb253d4d7d25d35295979d040fb2532c8d4c1384cbef61b`).
+Its scenario manifest is in ignored
+`evidence/published-20260926T150222Z-c7246Z/`; final demo logs and TRX are in
+ignored `.run/demo-20260926T150233Z-WpVrX8/`. The failed first run's TRX is in
+`evidence/published-20260926T150113Z-vqfU6A/`. All of this qualifies only the
+Linux fake-core checkpoint.
