@@ -1,6 +1,5 @@
 using AgentTeamForge.DAL.Files;
 using System.Diagnostics;
-using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -8,6 +7,7 @@ using System.Runtime.Versioning;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Host.Hosting;
+using AgentTeamForge.Host.Transport;
 
 namespace AgentTeamForge.Host.Features.Setup;
 
@@ -326,10 +326,18 @@ public static class SetupCommand
         for (var i = 0; i < 200; i++)
         {
             var pid = DaemonLock.ReadOwnerPid(state.LockFile);
-            if (pid is > 0 && (launched is null || pid != launched.Id || OperatingSystem.IsWindows() || ReadyLogged(state, pid.Value))
-                && await EndpointReadyAsync(state))
+            try
             {
-                return PrintRunningPid(state, quiet);
+                if (pid is > 0 && (launched is null || pid != launched.Id || OperatingSystem.IsWindows() || ReadyLogged(state, pid.Value))
+                    && await EndpointReadyAsync(state))
+                {
+                    return PrintRunningPid(state, quiet);
+                }
+            }
+            catch (UnauthorizedAccessException) when (OperatingSystem.IsWindows())
+            {
+                Console.Error.WriteLine($"error: {WindowsPipe.AccessDeniedMessage}");
+                return 1;
             }
             if (launched?.HasExited == true)
             {
@@ -375,8 +383,8 @@ public static class SetupCommand
         {
             if (OperatingSystem.IsWindows())
             {
-                using var pipe = new NamedPipeClientStream(".", state.Socket, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-                await pipe.ConnectAsync(50);
+                using var timeout = new CancellationTokenSource(50);
+                using var pipe = await WindowsPipe.ConnectAsync(state.Socket, timeout.Token);
             }
             else
             {

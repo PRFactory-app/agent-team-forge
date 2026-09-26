@@ -1,5 +1,4 @@
 using System.Net.Sockets;
-using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Text;
 using AgentTeamForge.Business;
@@ -87,8 +86,7 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
 
         while (!daemonLifetime.IsCancellationRequested)
         {
-            var pipe = new NamedPipeServerStream(socketPath, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances,
-                PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            var pipe = WindowsPipe.CreateServer(socketPath);
             try { await pipe.WaitForConnectionAsync(daemonLifetime); }
             catch (OperationCanceledException) { pipe.Dispose(); return; }
             if (!_slots.Wait(0, CancellationToken.None)) { pipe.Dispose(); continue; }
