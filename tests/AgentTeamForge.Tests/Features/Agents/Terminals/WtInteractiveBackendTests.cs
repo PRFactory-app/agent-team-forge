@@ -129,6 +129,34 @@ public sealed class WtInteractiveBackendTests
         Assert.EndsWith("exit 0\r\n", wrapper);
     }
 
+    [Fact]
+    public void FreshWindowsCodexDirectoryIsTrustedOnlyInTheLaunchArguments()
+    {
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", "C:\\code\\new dir", null, null, "C:\\state\\tab.ps1");
+        var args = WtTabControl.AgentArguments(launch, "task");
+
+        Assert.Equal(["-C", "C:\\code\\new dir"], args.SkipWhile(arg => arg != "-C").Take(2));
+        Assert.Equal(["-c", "projects={'C:\\code\\new dir'={trust_level='trusted'}}"],
+            args.SkipWhile(arg => arg != "-c").Take(2));
+        var wrapper = Encoding.UTF8.GetString(WtTabControl.WrapperBytes(launch, "task", "C:\\state\\tab.pid"));
+        Assert.Contains("projects={", wrapper);
+        Assert.DoesNotContain("CLAUDE_CODE_SANDBOXED =", wrapper);
+    }
+
+    [Fact]
+    public void FreshWindowsClaudeDirectoryGetsPerLaunchTrustAndBypass()
+    {
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", "C:\\code\\new dir", null, null, "C:\\state\\tab.ps1");
+        var args = WtTabControl.AgentArguments(launch, "task");
+
+        Assert.Equal(["--permission-mode", "bypassPermissions", "--settings", "{\"skipDangerousModePermissionPrompt\":true}"],
+            args.Skip(1).Take(4));
+        var wrapper = Encoding.UTF8.GetString(WtTabControl.WrapperBytes(launch, "task", "C:\\state\\tab.pid"));
+        Assert.True(wrapper.IndexOf("$env:CLAUDE_CODE_SANDBOXED = '1'", StringComparison.Ordinal) >
+            wrapper.IndexOf("Remove-Item -LiteralPath", StringComparison.Ordinal));
+        Assert.Contains("$start.Arguments = ", wrapper);
+    }
+
     [Theory]
     [InlineData(InteractiveAgentKind.Claude, "model=opus;effort=high", "--model", "opus", "--effort", "high")]
     [InlineData(InteractiveAgentKind.Codex, "model=gpt-6-sol;effort=xhigh", "-m", "gpt-6-sol", "-c", "model_reasoning_effort=\"xhigh\"")]
@@ -143,7 +171,7 @@ public sealed class WtInteractiveBackendTests
         await run.DeliverAsync(CancellationToken.None);
         var args = WtTabControl.AgentArguments(tabs.Launch!, "task");
         Assert.Equal([modelFlag, model], args.SkipWhile(arg => arg != modelFlag).Take(2));
-        Assert.Equal([effortFlag, effort], args.SkipWhile(arg => arg != effortFlag).Take(2));
+        Assert.Equal(effortFlag, args[args.ToList().IndexOf(effort) - 1]);
         Assert.Contains(kind switch { InteractiveAgentKind.Claude => "--resume", InteractiveAgentKind.Codex => "resume", _ => "--continue" }, args);
     }
 
@@ -173,6 +201,16 @@ public sealed class WtInteractiveBackendTests
     [InlineData("line\nbreak")]
     public void CmdShimArgumentsWithCmdMetacharactersAreRejected(string value) =>
         Assert.Throws<BackendNotStartedException>(() => WindowsCliLaunch.EnsureCmdSafe(["--model", value]));
+
+    [Theory]
+    [InlineData("{\"skipDangerousModePermissionPrompt\":true}", "{\\\"skipDangerousModePermissionPrompt\\\":true}")]
+    [InlineData("model_reasoning_effort=\"high\"", "model_reasoning_effort=\\\"high\\\"")]
+    [InlineData("projects={'C:\\a b'={trust_level='trusted'}}", "projects={'C:\\a b'={trust_level='trusted'}}")]
+    public void CmdShimArgumentsKeepEmbeddedQuotesThroughPowerShell(string value, string expected)
+    {
+        Assert.Equal(expected, WindowsCliLaunch.ShimArgument(value));
+        Assert.Contains(PowerShellText.Quote(expected), WindowsCliLaunch.PowerShellCommand("C:\\n\\claude.cmd", [value]));
+    }
 
     [Fact]
     public void CmdShimAcceptsOrdinaryArguments() =>
