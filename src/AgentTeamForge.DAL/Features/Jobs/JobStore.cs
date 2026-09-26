@@ -13,7 +13,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     const string JobColumns = """
         j.job_id, j.principal, j.team, j.target_agent, j.idempotency_key, j.instruction, j.options,
         j.status, j.reason_code, j.result_text,
-        (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id)
+        (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id),
+        j.backend, j.cwd, j.parent_job_id, j.session_id
         """;
 
     /// <summary>
@@ -44,14 +45,15 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         var now = Now();
         Execute(connection, tx, """
             INSERT INTO jobs(job_id, principal, team, target_agent, operation, idempotency_key, fingerprint,
-                             instruction, options, status, accepted_at, updated_at)
-            VALUES ($id, $p, $t, $a, $o, $k, $f, $i, $opt, 'queued', $now, $now);
+                             instruction, options, backend, cwd, parent_job_id, status, accepted_at, updated_at)
+            VALUES ($id, $p, $t, $a, $o, $k, $f, $i, $opt, $b, $cwd, $parent, 'queued', $now, $now);
             INSERT INTO dispatch_intents(job_id, state, created_at) VALUES ($id, 'unattempted', $now);
             INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'accepted', $now);
             """,
             ("$id", jobId), ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent),
             ("$o", job.Operation), ("$k", job.IdempotencyKey), ("$f", job.Fingerprint),
-            ("$i", job.Instruction), ("$opt", job.Options), ("$now", now));
+            ("$i", job.Instruction), ("$opt", job.Options), ("$b", job.Backend), ("$cwd", job.Cwd),
+            ("$parent", job.ParentJobId), ("$now", now));
         checkpoints.Hit(DurabilityCheckpoints.AcceptBeforeCommit);
         tx.Commit();
         return new AcceptOutcome(AcceptKind.Accepted, GetJob(connection, null, jobId));
@@ -110,6 +112,21 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             ("$gen", run.Generation), ("$corr", run.Correlation));
         tx.Commit();
         return 0;
+    });
+
+    /// <summary>Records the backend's native session on the job, fenced to the current started run.</summary>
+    public bool RecordSession(RunRef run, string sessionId) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        var updated = Execute(connection, tx, """
+            UPDATE jobs SET session_id=$sid, updated_at=$now
+            WHERE job_id=$id AND status='running' AND EXISTS (
+                SELECT 1 FROM runs WHERE run_id=$run AND job_id=$id AND generation=$gen AND correlation=$corr AND state='started')
+            """,
+            ("$sid", sessionId), ("$now", Now()), ("$id", run.JobId), ("$run", run.RunId),
+            ("$gen", run.Generation), ("$corr", run.Correlation));
+        tx.Commit();
+        return updated == 1;
     });
 
     /// <summary>
@@ -207,6 +224,22 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
     public JobRecord? GetJob(string jobId) => Read(connection => GetJob(connection, null, jobId));
 
+    /// <summary>Newest first, scoped to one principal/team.</summary>
+    public IReadOnlyList<JobRecord> ListJobs(string principal, string team, int limit) => Read(connection =>
+    {
+        using var command = Command(connection, null,
+            $"SELECT {JobColumns} FROM jobs j WHERE j.principal=$p AND j.team=$t ORDER BY j.accepted_at DESC, j.rowid DESC LIMIT $n",
+            ("$p", principal), ("$t", team), ("$n", limit));
+        using var reader = command.ExecuteReader();
+        var jobs = new List<JobRecord>();
+        while (reader.Read())
+        {
+            jobs.Add(ReadJob(reader));
+        }
+
+        return (IReadOnlyList<JobRecord>)jobs;
+    });
+
     public IReadOnlyList<EventRecord> GetEvents(string jobId) => Read(connection =>
     {
         using var command = Command(connection, null, "SELECT seq, job_id, run_id, kind FROM events WHERE job_id=$id ORDER BY seq", ("$id", jobId));
@@ -249,14 +282,16 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             return null;
         }
 
-        var job = new JobRecord(
-            reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
-            reader.GetString(5), reader.GetString(6), reader.GetString(7),
-            reader.IsDBNull(8) ? null : reader.GetString(8),
-            reader.IsDBNull(9) ? null : reader.GetString(9),
-            reader.GetInt32(10));
-        return (job, reader.GetString(11));
+        return (ReadJob(reader), reader.GetString(15));
     }
+
+    static JobRecord ReadJob(SqliteDataReader reader) => new(
+        reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
+        reader.GetString(5), reader.GetString(6), reader.GetString(7),
+        NullableString(reader, 8), NullableString(reader, 9), reader.GetInt32(10),
+        reader.GetString(11), NullableString(reader, 12), NullableString(reader, 13), NullableString(reader, 14));
+
+    static string? NullableString(SqliteDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
 
     static string? QueryString(SqliteConnection connection, SqliteTransaction? tx, string sql, params (string, object?)[] parameters)
     {

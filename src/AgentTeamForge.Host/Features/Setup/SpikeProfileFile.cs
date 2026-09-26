@@ -6,7 +6,11 @@ using AgentTeamForge.Host.Hosting;
 
 namespace AgentTeamForge.Host.Features.Setup;
 
-/// <summary>profile.json: the bound operator identity and spike limit overrides.</summary>
+/// <summary>
+/// profile.json: the bound operator identity, backend mode and limit overrides.
+/// Backend "agents" enables the real agent CLIs (plus fake); "fake" is fake only.
+/// A test profile never runs real agents.
+/// </summary>
 public sealed record SpikeProfileFile
 {
     public required string Principal { get; init; }
@@ -18,6 +22,13 @@ public sealed record SpikeProfileFile
     public int? MaxFakeRuntimeSeconds { get; init; }
 
     public const int MaxQueueLimit = 1_000;
+    public const string FakeBackends = "fake";
+    public const string AgentBackends = "agents";
+
+    /// <summary>Default turn deadline for real agents; the fake default stays short.</summary>
+    const int AgentRuntimeSeconds = 3_600;
+
+    public bool RealAgents => Backend == AgentBackends && !TestProfile;
 
     public BoundPrincipal Bound => new(Principal, Team, Agent);
 
@@ -29,7 +40,8 @@ public sealed record SpikeProfileFile
             return limits with
             {
                 QueueLimit = QueueLimit ?? limits.QueueLimit,
-                MaxFakeRuntime = MaxFakeRuntimeSeconds is { } s ? TimeSpan.FromSeconds(s) : limits.MaxFakeRuntime,
+                MaxFakeRuntime = MaxFakeRuntimeSeconds is { } s ? TimeSpan.FromSeconds(s)
+                    : RealAgents ? TimeSpan.FromSeconds(AgentRuntimeSeconds) : limits.MaxFakeRuntime,
             };
         }
     }
@@ -38,7 +50,7 @@ public sealed record SpikeProfileFile
     {
         var profile = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(state.ProfileFile), SetupJson.Default.SpikeProfileFile)
             ?? throw new StateDirectoryException("profile_invalid");
-        if (profile.Backend != "fake")
+        if (profile.Backend is not (FakeBackends or AgentBackends))
         {
             // Explicit selection only: there is no fallback from a real backend to fake.
             throw new StateDirectoryException("backend_unsupported");

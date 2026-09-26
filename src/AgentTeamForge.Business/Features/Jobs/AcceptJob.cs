@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 
@@ -10,21 +11,43 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// accepts it (or resolves the same key) before any acknowledgment. Nothing is
 /// read or written once the admission gate is closed.
 /// </summary>
-public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLimits limits, bool testProfile, AdmissionGate admission, Action onAccepted)
+public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLimits limits, bool testProfile, AdmissionGate admission, Action onAccepted,
+    IReadOnlyCollection<string>? backends = null)
 {
     public const string Operation = "job_submit";
+
+    const int MaxCwdChars = 4_096;
+
+    readonly IReadOnlyCollection<string> _backends = backends ?? [BackendCatalog.Fake];
 
     public JobResult Execute(SubmitJobRequest request)
     {
         var behavior = request.Behavior ?? FakeBehavior.Complete;
-        if (string.IsNullOrWhiteSpace(request.IdempotencyKey) || request.IdempotencyKey.Length > limits.MaxIdempotencyKeyChars
-            || request.Instruction is null || request.Instruction.Length == 0 || request.Instruction.Length > limits.MaxInstructionChars
+        var backend = request.Backend ?? BackendCatalog.Fake;
+        if (!IsValid(request.IdempotencyKey, request.Instruction)
             || !FakeBehavior.All.Contains(behavior)
-            || ((request.Hold || behavior != FakeBehavior.Complete) && !testProfile))
+            || ((request.Hold || behavior != FakeBehavior.Complete) && !testProfile)
+            || !TryNormalizeCwd(request.Cwd, out var cwd))
         {
             return JobResult.Fail(JobErrors.InvalidRequest);
         }
 
+        if (!_backends.Contains(backend))
+        {
+            return JobResult.Fail(JobErrors.BackendUnavailable);
+        }
+
+        var options = $"behavior={behavior};hold={(request.Hold ? 1 : 0)}";
+        return Admit(Operation, request.IdempotencyKey, request.Instruction, options, backend, cwd, null);
+    }
+
+    internal bool IsValid(string? key, string? instruction) =>
+        !string.IsNullOrWhiteSpace(key) && key.Length <= limits.MaxIdempotencyKeyChars
+        && !string.IsNullOrEmpty(instruction) && instruction.Length <= limits.MaxInstructionChars;
+
+    /// <summary>Durable acceptance shared by submit and follow-up; one admission-gated transaction.</summary>
+    internal JobResult Admit(string operation, string key, string instruction, string options, string backend, string? cwd, string? parentJobId)
+    {
         if (!admission.TryEnter())
         {
             return JobResult.Fail(JobErrors.DaemonUnhealthy);
@@ -32,7 +55,36 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
 
         try
         {
-            return Admit(request, behavior);
+            var job = new NewJob(principal.Principal, principal.Team, principal.Agent, operation, key,
+                Fingerprint(principal.Agent, instruction, options, backend, cwd ?? string.Empty, parentJobId ?? string.Empty), instruction, options)
+            {
+                Backend = backend,
+                Cwd = cwd,
+                ParentJobId = parentJobId,
+            };
+
+            AcceptOutcome outcome;
+            try
+            {
+                outcome = store.AcceptOrGet(job, limits.QueueLimit);
+            }
+            catch (StorageException ex)
+            {
+                return JobResult.Fail(JobErrors.FromStorage(ex));
+            }
+
+            switch (outcome.Kind)
+            {
+                case AcceptKind.Accepted:
+                    onAccepted();
+                    return JobResult.Ok(GetJob.ToView(outcome.Job!), "accepted");
+                case AcceptKind.Existing:
+                    return JobResult.Ok(GetJob.ToView(outcome.Job!), "existing");
+                case AcceptKind.Conflict:
+                    return JobResult.Fail(JobErrors.IdempotencyConflict);
+                default:
+                    return JobResult.Fail(JobErrors.QueueFull);
+            }
         }
         finally
         {
@@ -40,45 +92,32 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         }
     }
 
-    JobResult Admit(SubmitJobRequest request, string behavior)
+    static bool TryNormalizeCwd(string? cwd, out string? normalized)
     {
-        var options = $"behavior={behavior};hold={(request.Hold ? 1 : 0)}";
-        var job = new NewJob(principal.Principal, principal.Team, principal.Agent, Operation, request.IdempotencyKey,
-            Fingerprint(principal.Agent, request.Instruction, options), request.Instruction, options);
-
-        AcceptOutcome outcome;
-        try
+        normalized = null;
+        if (cwd is null)
         {
-            outcome = store.AcceptOrGet(job, limits.QueueLimit);
-        }
-        catch (StorageException ex)
-        {
-            return JobResult.Fail(ex.Failure == StorageFailure.Busy ? JobErrors.StorageBusy : JobErrors.StorageUnavailable);
+            return true;
         }
 
-        switch (outcome.Kind)
+        if (cwd.Length > MaxCwdChars || !Path.IsPathFullyQualified(cwd) || !Directory.Exists(cwd))
         {
-            case AcceptKind.Accepted:
-                onAccepted();
-                return JobResult.Ok(GetJob.ToView(outcome.Job!), "accepted");
-            case AcceptKind.Existing:
-                return JobResult.Ok(GetJob.ToView(outcome.Job!), "existing");
-            case AcceptKind.Conflict:
-                return JobResult.Fail(JobErrors.IdempotencyConflict);
-            default:
-                return JobResult.Fail(JobErrors.QueueFull);
+            return false;
         }
+
+        normalized = Path.GetFullPath(cwd);
+        return true;
     }
 
     /// <summary>
     /// Stable hash of validated semantic fields only (target, instruction,
-    /// execution options), length-prefixed so field boundaries cannot collide.
-    /// Transport request IDs and JSON property order never participate.
+    /// execution options, backend, cwd, parent), length-prefixed so field
+    /// boundaries cannot collide. Transport request IDs and JSON property order never participate.
     /// </summary>
-    internal static string Fingerprint(string target, string instruction, string options)
+    internal static string Fingerprint(params string[] fields)
     {
         var canonical = new StringBuilder("v1");
-        foreach (var field in new[] { target, instruction, options })
+        foreach (var field in fields)
         {
             canonical.Append('|').Append(field.Length).Append(':').Append(field);
         }
