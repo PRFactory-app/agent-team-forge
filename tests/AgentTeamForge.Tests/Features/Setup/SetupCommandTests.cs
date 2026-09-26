@@ -510,6 +510,10 @@ public sealed class SetupCommandTests
         Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["autostart"] = "on", ["apply"] = "true", ["state-dir"] = dir, ["force"] = "true" },
             Runner, binary, homePath: home));
         Assert.True(LoginAutostart.IsInstalled(home, "linux"));
+
+        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["autostart"] = "off", ["apply"] = "true", ["state-dir"] = dir },
+            Runner, binary, homePath: home));
+        Assert.False(LoginAutostart.IsInstalled(home, "linux"));
     }
 
     [Fact]

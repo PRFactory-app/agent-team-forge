@@ -93,7 +93,8 @@ public static class SetupCommand
 
         var unsafeBinary = UnsafeRegistrationPath(executable, home);
         var unsafeState = UnsafeRegistrationPath(dir, home);
-        if (!options.ContainsKey("force") && (unsafeBinary is not null || unsafeState is not null))
+        // Disabling autostart removes registrations only, so it never needs the guard.
+        if (!(autostart == "off" && !options.ContainsKey("mode")) && !options.ContainsKey("force") && (unsafeBinary is not null || unsafeState is not null))
         {
             Console.Error.WriteLine($"error: setup would write global client registrations using an unsafe {(unsafeBinary is not null ? "binary" : "state directory")} path: {unsafeBinary ?? unsafeState}");
             Console.Error.WriteLine("Use --force only if this is intentional. For testing, use atf start --state-dir DIR or atf mcp --state-dir DIR.");
