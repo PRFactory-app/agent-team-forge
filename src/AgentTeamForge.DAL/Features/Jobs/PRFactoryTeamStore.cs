@@ -1,5 +1,4 @@
 using AgentTeamForge.DAL.Sqlite;
-using Microsoft.Data.Sqlite;
 
 namespace AgentTeamForge.DAL.Features.Jobs;
 
@@ -42,7 +41,11 @@ public sealed class PRFactoryTeamStore(JobDatabase database)
         command.CommandText = "SELECT work_item_id, claimed_json, state, uploaded FROM prfactory_teams WHERE server=$server AND state='claimed' ORDER BY created_at";
         command.Parameters.AddWithValue("$server", server);
         using var reader = command.ExecuteReader();
-        while (reader.Read()) rows.Add(new(server, Guid.Parse(reader.GetString(0)), reader.GetString(1), reader.GetString(2), reader.GetInt32(3) != 0));
+        while (reader.Read())
+        {
+            rows.Add(new(server, Guid.Parse(reader.GetString(0)), reader.GetString(1), reader.GetString(2), reader.GetInt32(3) != 0));
+        }
+
         return rows;
     }
 
@@ -82,7 +85,11 @@ public sealed class PRFactoryTeamStore(JobDatabase database)
 
     public void Finish(string server, Guid id, string state)
     {
-        if (state is not ("completed" or "failed" or "refused")) throw new ArgumentOutOfRangeException(nameof(state));
+        if (state is not ("completed" or "failed" or "refused"))
+        {
+            throw new ArgumentOutOfRangeException(nameof(state));
+        }
+
         Update(server, id, "state=$state", state);
     }
 
@@ -94,7 +101,11 @@ public sealed class PRFactoryTeamStore(JobDatabase database)
         command.Parameters.AddWithValue("$server", server);
         command.Parameters.AddWithValue("$id", id.ToString("D"));
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
-        if (state is not null) command.Parameters.AddWithValue("$state", state);
+        if (state is not null)
+        {
+            command.Parameters.AddWithValue("$state", state);
+        }
+
         command.ExecuteNonQuery();
     }
 }

@@ -8,17 +8,29 @@ namespace AgentTeamForge.Host.Features.PRFactory;
 public sealed class PRFactoryWorkItems(
     string server, IReadOnlyList<RepositoryMapping> repositories, PRFactoryTeamStore teams,
     PRFactoryClient client, Func<SubmitJobRequest, JobResult> submit, Func<string, JobRecord?> getJob,
-    Action onAccepted)
+    Action onAccepted, Func<string, string?>? leadSessionFor = null)
 {
     public async Task TickAsync(Guid? machineId, CancellationToken ct)
     {
-        foreach (var pending in teams.Pending(server)) await AdvanceAsync(pending, ct);
+        foreach (var pending in teams.Pending(server))
+        {
+            await AdvanceAsync(pending, ct);
+        }
+
         var offered = await client.PollAsync(repositories.Select(r => r.Id), machineId, ct);
         foreach (var item in offered)
         {
-            if (item.Id == Guid.Empty || teams.Get(server, item.Id) is not null) continue;
+            if (item.Id == Guid.Empty || teams.Get(server, item.Id) is not null)
+            {
+                continue;
+            }
+
             var claimed = await client.ClaimAsync(item.Id, machineId, ct);
-            if (claimed is null || claimed.Id != item.Id) continue;
+            if (claimed is null || claimed.Id != item.Id)
+            {
+                continue;
+            }
+
             var json = JsonSerializer.Serialize(claimed, PRFactoryWorkItemJson.Default.PRFactoryWorkItem);
             teams.CreateIfAbsent(server, claimed.Id, json); // Commit before the first submit.
             await AdvanceAsync(teams.Get(server, claimed.Id)!, ct);
@@ -62,8 +74,21 @@ public sealed class PRFactoryWorkItems(
             await FinishAsync(team, item, false, "team recipe permits no concurrent children", repo.Directory, ct);
             return;
         }
-        var lead = await SubmitMemberAsync(team, item, "lead", item.AgentType, item.Model, item.Effort, item.Prompt, repo.Directory, ct);
-        if (lead is null) return;
+        JobRecord? lead;
+        try
+        {
+            lead = SubmitMember(item, "lead", item.AgentType, item.Model, item.Effort, item.Prompt, repo.Directory);
+        }
+        catch (PRFactoryJobSubmissionException ex)
+        {
+            await FinishAsync(team, item, false, ex.Message, repo.Directory, ct);
+            return;
+        }
+        if (lead is null)
+        {
+            return;
+        }
+
         var active = 0;
         var allJobs = new List<JobRecord> { lead };
         foreach (var member in members)
@@ -71,46 +96,93 @@ public sealed class PRFactoryWorkItems(
             var mapped = teams.MemberJob(server, item.Id, member.Name, 0);
             if (mapped is not null)
             {
-                var existing = getJob(mapped);
-                if (existing is null) throw new InvalidDataException("Persisted PRFactory job is missing");
+                var existing = getJob(mapped) ?? throw new InvalidDataException("Persisted PRFactory job is missing");
+
                 allJobs.Add(existing);
-                if (existing.Status is JobStatus.Queued or JobStatus.Running) active++;
+                if (existing.Status is JobStatus.Queued or JobStatus.Running)
+                {
+                    active++;
+                }
+
                 continue;
             }
-            if (active >= maxChildren) continue;
+            if (active >= maxChildren)
+            {
+                continue;
+            }
+
             var instruction = $"{item.Prompt}\n\nRole: {member.Role}\nMember: {member.Name}"
                 + (string.IsNullOrWhiteSpace(member.Notes) ? "" : $"\nNotes: {member.Notes}");
-            var child = await SubmitMemberAsync(team, item, member.Name, member.Backend ?? item.AgentType,
-                member.Model ?? item.Model, member.Effort ?? item.Effort, instruction, repo.Directory, ct);
-            if (child is null) return;
+            JobRecord? child;
+            try
+            {
+                child = SubmitMember(item, member.Name, member.Backend ?? item.AgentType,
+                    member.Model ?? item.Model, member.Effort ?? item.Effort, instruction, repo.Directory);
+            }
+            catch (PRFactoryJobSubmissionException ex)
+            {
+                await FinishAsync(team, item, false, ex.Message, repo.Directory, ct);
+                return;
+            }
+            if (child is null)
+            {
+                return;
+            }
+
             allJobs.Add(child);
-            if (child.Status is JobStatus.Queued or JobStatus.Running) active++;
+            if (child.Status is JobStatus.Queued or JobStatus.Running)
+            {
+                active++;
+            }
         }
-        if (allJobs.Count != members.Length + 1 || allJobs.Any(j => j.Status is JobStatus.Queued or JobStatus.Running)) return;
+        if (allJobs.Count != members.Length + 1 || allJobs.Any(j => j.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation))
+        {
+            return;
+        }
+
         var failed = allJobs.FirstOrDefault(j => j.Status != JobStatus.Completed);
         await FinishAsync(team, item, failed is null, failed?.ReasonCode ?? "job failed", repo.Directory, ct, lead.ResultText);
     }
 
-    Task<JobRecord?> SubmitMemberAsync(PRFactoryTeamRecord team, PRFactoryWorkItem item, string member,
-        PRFactoryAgentType agent, string? model, PRFactoryEffort? effort, string instruction, string cwd, CancellationToken ct)
+    JobRecord? SubmitMember(PRFactoryWorkItem item, string member,
+        PRFactoryAgentType agent, string? model, PRFactoryEffort? effort, string instruction, string cwd)
     {
         var existingId = teams.MemberJob(server, item.Id, member, 0);
-        if (existingId is not null) return Task.FromResult(getJob(existingId));
-        var backend = MapBackend(agent);
-        if (backend is null) throw new InvalidDataException($"Unsupported PRFactory backend: {agent}");
+        if (existingId is not null)
+        {
+            return getJob(existingId) ?? throw new InvalidDataException("Persisted PRFactory job is missing");
+        }
+
+        var backend = MapBackend(agent) ?? throw new InvalidDataException($"Unsupported PRFactory backend: {agent}");
         // The same key and exact request resolve a lost local acceptance response to one job.
         var prefix = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(server)))[..12];
         var memberKey = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(member)))[..12];
         var key = $"prf:{prefix}:{item.Id:N}:{memberKey}:0";
         var result = submit(new SubmitJobRequest(key, instruction, null, false)
         {
-            Backend = backend, Cwd = cwd, Model = model, Effort = effort?.ToString().ToLowerInvariant(),
+            Backend = backend,
+            Cwd = cwd,
+            Model = model,
+            Effort = effort?.ToString().ToLowerInvariant(),
+            LeadSessionId = leadSessionFor?.Invoke(cwd),
         });
-        if (result.Error is not null) throw new InvalidOperationException($"PRFactory job submit: {result.Error}");
+        if (result.Error is JobErrors.QueueFull or JobErrors.StorageBusy or JobErrors.DaemonUnhealthy)
+        {
+            return null;
+        }
+        if (result.Error is not null)
+        {
+            throw new PRFactoryJobSubmissionException($"PRFactory job submit: {result.Error}");
+        }
+
         var jobId = result.Job!.JobId;
         teams.RecordMember(server, item.Id, member, 0, jobId);
-        if (result.Outcome == "accepted") onAccepted();
-        return Task.FromResult(getJob(jobId));
+        if (result.Outcome == "accepted")
+        {
+            onAccepted();
+        }
+
+        return getJob(jobId);
     }
 
     async Task FinishAsync(PRFactoryTeamRecord team, PRFactoryWorkItem item, bool success, string error,
@@ -125,9 +197,27 @@ public sealed class PRFactoryWorkItems(
                 var root = Path.GetFullPath(cwd);
                 var file = Path.GetFullPath(Path.Combine(root, folder, output));
                 if (Path.GetFileName(output) != output || !file.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+                {
                     throw new InvalidDataException("PRFactory artefact path escapes repository");
-                if (File.Exists(file) && new FileInfo(file).LinkTarget is null)
+                }
+
+                var current = root;
+                foreach (var part in Path.GetRelativePath(root, Path.GetDirectoryName(file)!).Split(Path.DirectorySeparatorChar))
+                {
+                    current = Path.Combine(current, part);
+                    if (new DirectoryInfo(current).LinkTarget is not null)
+                    {
+                        throw new InvalidDataException("PRFactory artefact folder is a symbolic link");
+                    }
+                }
+                if (new FileInfo(file).LinkTarget is not null)
+                {
+                    throw new InvalidDataException("PRFactory artefact is a symbolic link");
+                }
+                if (File.Exists(file))
+                {
                     artefacts.Add(new PRFactoryArtefactFile(output, await File.ReadAllTextAsync(file, ct), null));
+                }
             }
             await client.UploadArtefactsAsync(item.Id, item.LeaseToken, artefacts, ct);
             teams.SetUploaded(server, item.Id);
@@ -146,7 +236,11 @@ public sealed class PRFactoryWorkItems(
 
     static bool HasSecondaries(PRFactoryWorkItem item)
     {
-        if (string.IsNullOrWhiteSpace(item.ContextJson)) return false;
+        if (string.IsNullOrWhiteSpace(item.ContextJson))
+        {
+            return false;
+        }
+
         try
         {
             using var document = JsonDocument.Parse(item.ContextJson);
@@ -154,7 +248,7 @@ public sealed class PRFactoryWorkItems(
                 && repositories.TryGetProperty("secondary", out var secondary)
                 && secondary.ValueKind == JsonValueKind.Array && secondary.GetArrayLength() > 0;
         }
-        catch (JsonException) { return false; }
+        catch (JsonException) { return true; }
     }
 
     static string? MapBackend(PRFactoryAgentType agent) => agent switch
@@ -164,4 +258,6 @@ public sealed class PRFactoryWorkItems(
         PRFactoryAgentType.PiAgent => "pi",
         _ => null,
     };
+
+    sealed class PRFactoryJobSubmissionException(string message) : Exception(message);
 }

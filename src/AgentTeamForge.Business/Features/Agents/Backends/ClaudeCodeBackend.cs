@@ -58,8 +58,15 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
         List<string> arguments = ["-p", "--output-format", "json", "--dangerously-skip-permissions"];
         foreach (var part in request.Options.Split(';', StringSplitOptions.RemoveEmptyEntries))
         {
-            if (part.Split('=', 2) is ["model", { Length: > 0 } model]) arguments.AddRange(["--model", model]);
-            if (part.Split('=', 2) is ["effort", { Length: > 0 } effort]) arguments.AddRange(["--effort", effort]);
+            if (part.Split('=', 2) is ["model", { Length: > 0 } model])
+            {
+                arguments.AddRange(["--model", model]);
+            }
+
+            if (part.Split('=', 2) is ["effort", { Length: > 0 } effort])
+            {
+                arguments.AddRange(["--effort", effort]);
+            }
         }
         arguments.AddRange(request.ResumeSessionId is null ? ["--session-id", sessionId] : ["--resume", sessionId]);
         return arguments;

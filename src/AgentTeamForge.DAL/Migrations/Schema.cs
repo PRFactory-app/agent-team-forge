@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 7;
+    public const int CurrentVersion = 8;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -121,8 +121,21 @@ static class Schema
         ALTER TABLE jobs ADD COLUMN queue_deadline TEXT;
         """;
 
-    /// <summary>v7: accepted PRFactory work and its stable member submissions.</summary>
     const string V7 = """
+        CREATE TABLE lead_sessions(
+            session_id TEXT PRIMARY KEY,
+            workspace TEXT NOT NULL,
+            binding_key TEXT NOT NULL,
+            lead_token TEXT NOT NULL,
+            wake_key TEXT,
+            updated_at TEXT NOT NULL);
+        CREATE INDEX lead_sessions_workspace ON lead_sessions(workspace, updated_at);
+        ALTER TABLE jobs ADD COLUMN lead_session_id TEXT;
+        CREATE INDEX jobs_lead_session ON jobs(lead_session_id, job_id);
+        """;
+
+    /// <summary>v8: accepted PRFactory work and its stable member submissions.</summary>
+    const string V8 = """
         CREATE TABLE prfactory_teams(
             server TEXT NOT NULL, work_item_id TEXT NOT NULL, claimed_json TEXT NOT NULL,
             state TEXT NOT NULL DEFAULT 'claimed', uploaded INTEGER NOT NULL DEFAULT 0,
@@ -135,7 +148,7 @@ static class Schema
             FOREIGN KEY(server, work_item_id) REFERENCES prfactory_teams(server, work_item_id));
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7];
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

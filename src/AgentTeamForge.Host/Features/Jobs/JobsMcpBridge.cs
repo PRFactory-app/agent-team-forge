@@ -74,12 +74,34 @@ public static class JobsMcpBridge
           "backend":{"type":"string","enum":["fake","claude","codex","pi"]},
           "since":{"type":"string","description":"Include jobs accepted at or after this ISO 8601 time."},
           "limit":{"type":"integer","minimum":1,"maximum":50,"description":"Page size; default 20."},
-          "cursor":{"type":"string","description":"next_cursor from the previous page."}}}
+          "cursor":{"type":"string","description":"next_cursor from the previous page."},
+          "all_workspace":{"type":"boolean","description":"Include every lead's jobs in this workspace."}}}
         """;
+
+    const string ResumeSchema = """{"type":"object","properties":{"session_id":{"type":"string"}},"required":["session_id"]}""";
+    const string EmptySchema = """{"type":"object","properties":{}}""";
 
     public static async Task<int> RunAsync(StateDirectory state, bool testProfile)
     {
         var client = new IpcClient(state, new SpikeLimits());
+        var workspace = Path.GetFullPath(Environment.CurrentDirectory);
+        var parentId = Environment.GetEnvironmentVariable("WIN_AGENT_TEAMS_PARENT_ID") ?? ParentPid().ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var bindingKey = $"identity=team-lead\nparent={parentId}\ncwd={workspace}";
+        string? sessionId = null;
+        async Task<IpcResponse> EnsureSessionAsync(CancellationToken cancellationToken)
+        {
+            if (sessionId is not null)
+            {
+                return new IpcResponse(true);
+            }
+            var started = await client.SendAsync(new IpcRequest { Op = IpcProtocol.SessionStart, Workspace = workspace, BindingKey = bindingKey }, cancellationToken);
+            if (started.Ok)
+            {
+                sessionId = started.Session?.SessionId;
+                await BindWakeAsync(cancellationToken);
+            }
+            return started;
+        }
         var wakeTarget = HostSessionWake.Resolve(state);
         long? wakeGeneration = null;
         async Task RegisterWakeAsync(CancellationToken cancellationToken)
@@ -96,11 +118,13 @@ public static class JobsMcpBridge
                 if (registration.Ok)
                 {
                     wakeGeneration = registration.WakeGeneration;
+                    await BindWakeAsync(cancellationToken);
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { }
         }
         await RegisterWakeAsync(CancellationToken.None);
+        await EnsureSessionAsync(CancellationToken.None);
         var tools = new List<Tool>
         {
             new() { Name = "submit_job", Description = "Durably submit a task to an agent (claude, codex or pi) run by the AgentTeamForge daemon. Returns the job; poll get_job for the result.", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
@@ -109,6 +133,8 @@ public static class JobsMcpBridge
             new() { Name = "stop_job", Description = "Cancel a queued or running job. A finished job is returned unchanged.", InputSchema = Parse(GetSchema) },
             new() { Name = "follow_up", Description = "Resume a job's native agent session. A running job needs interrupt=true; otherwise follow_up returns parent_not_ready.", InputSchema = Parse(FollowUpSchema) },
             new() { Name = "list_jobs", Description = "List jobs, newest first, one bounded page at a time.", InputSchema = Parse(ListSchema) },
+            new() { Name = "session_info", Description = "Report this lead's session and recoverable sessions in its workspace.", InputSchema = Parse(EmptySchema) },
+            new() { Name = "resume_session", Description = "Adopt a prior lead session and its jobs after a restart.", InputSchema = Parse(ResumeSchema) },
             new() { Name = "register_codex_wake", Description = "Register this Codex conversation for native job notices before submitting jobs. Read CODEX_THREAD_ID with a shell tool and pass it here; Codex does not always pass it to MCP servers.", InputSchema = Parse(CodexWakeSchema) },
             new() { Name = "job_submit", Description = "Durably submit a job to the AgentTeamForge daemon (spike).", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "job_get", Description = "Read a job's committed state and result (spike).", InputSchema = Parse(GetSchema) },
@@ -127,8 +153,28 @@ public static class JobsMcpBridge
                     var call = request.Params ?? throw new InvalidOperationException("missing params");
                     var args = call.Arguments ?? new Dictionary<string, JsonElement>();
                     await RegisterWakeAsync(cancellationToken);
+                    var started = await EnsureSessionAsync(cancellationToken);
                     IpcResponse response;
-                    if (call.Name == "register_codex_wake")
+                    if (!started.Ok)
+                    {
+                        response = started;
+                    }
+                    else if (call.Name == "session_info")
+                    {
+                        response = await client.SendAsync(new IpcRequest { Op = IpcProtocol.SessionInfo, LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
+                    }
+                    else if (call.Name == "resume_session")
+                    {
+                        var requested = String(args, "session_id");
+                        response = requested is null ? new IpcResponse(false, JobErrors.InvalidRequest)
+                            : await client.SendAsync(new IpcRequest { Op = IpcProtocol.SessionResume, LeadSessionId = requested, Workspace = workspace, BindingKey = bindingKey }, cancellationToken);
+                        if (response.Ok)
+                        {
+                            sessionId = response.Session!.SessionId;
+                            await BindWakeAsync(cancellationToken);
+                        }
+                    }
+                    else if (call.Name == "register_codex_wake")
                     {
                         var host = HostSessionWake.NearestHost();
                         var home = host?.Kind == "codex" ? HostSessionWake.CodexHome(host.Value.Pid) : null;
@@ -139,6 +185,7 @@ public static class JobsMcpBridge
                         {
                             wakeTarget = target;
                             wakeGeneration = generation;
+                            await BindWakeAsync(cancellationToken);
                         }
                     }
                     else
@@ -151,7 +198,7 @@ public static class JobsMcpBridge
                         }
                         response = ipc is null
                             ? new IpcResponse(false, rejection)
-                            : await client.SendAsync(ipc, cancellationToken);
+                            : await client.SendAsync(ipc with { LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
                     }
                     return new CallToolResult
                     {
@@ -162,6 +209,22 @@ public static class JobsMcpBridge
             },
         };
 
+        async Task BindWakeAsync(CancellationToken cancellationToken)
+        {
+            if (sessionId is not null && wakeTarget?.WakeKey is not null && wakeGeneration is long generation)
+            {
+                await client.SendAsync(new IpcRequest
+                {
+                    Op = IpcProtocol.SessionBindWake,
+                    LeadSessionId = sessionId,
+                    Workspace = workspace,
+                    WakeKey = wakeTarget.WakeKey,
+                    WakeGeneration = generation
+                }, cancellationToken);
+            }
+        }
+
+        await BindWakeAsync(CancellationToken.None);
         await using var server = McpServer.Create(new StdioServerTransport("agentteamforge"), options);
         await server.RunAsync();
         return 0;
@@ -208,7 +271,17 @@ public static class JobsMcpBridge
     static (IpcRequest?, string?) ListRequest(IDictionary<string, JsonElement> args) =>
         OptionalString(args, "status", out var status) && OptionalString(args, "cursor", out var cursor)
             && OptionalString(args, "backend", out var backend) && OptionalString(args, "since", out var since)
-            ? (new IpcRequest { Op = IpcProtocol.JobList, Status = status, Backend = backend, Since = since, Limit = Integer(args, "limit"), Cursor = cursor }, null)
+            && (!args.TryGetValue("all_workspace", out var all) || all.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            ? (new IpcRequest
+            {
+                Op = IpcProtocol.JobList,
+                Status = status,
+                Backend = backend,
+                Since = since,
+                Limit = Integer(args, "limit"),
+                Cursor = cursor,
+                AllWorkspace = args.TryGetValue("all_workspace", out var scope) && scope.ValueKind == JsonValueKind.True
+            }, null)
             : (null, JobErrors.InvalidRequest);
 
     static bool OptionalString(IDictionary<string, JsonElement> args, string name, out string? value)
@@ -239,6 +312,16 @@ public static class JobsMcpBridge
     static long? Long(IDictionary<string, JsonElement> args, string name) =>
         !args.TryGetValue(name, out var value) ? null
         : value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var n) ? n : -1;
+
+    static int ParentPid()
+    {
+        try
+        {
+            var line = File.ReadLines("/proc/self/status").FirstOrDefault(line => line.StartsWith("PPid:", StringComparison.Ordinal));
+            return line is not null && int.TryParse(line.AsSpan(5).Trim(), out var pid) ? pid : Environment.ProcessId;
+        }
+        catch (IOException) { return Environment.ProcessId; }
+    }
 
     static JsonElement Parse(string json)
     {

@@ -21,6 +21,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         // Record immediately: a later tab/start failure is still an owned session.
         try
         {
+            HerdrOwnedSessions.Save(launch, session);
             var binding = await terminal.OpenAgentTabAsync(session, launch.AgentName, launch.WorkingDirectory, launch.BootstrapPath, cancellationToken);
             _runs[launch.AgentName] = (session, binding);
             var args = new List<string> { "agent", "start", launch.AgentName, "--kind", Kind(launch.Kind), "--pane", binding.PaneId, "--timeout", "15000", "--" };
@@ -29,7 +30,11 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         }
         catch
         {
-            try { await terminal.StopOwnedSessionAsync(session, CancellationToken.None); }
+            try
+            {
+                await terminal.StopOwnedSessionAsync(session, CancellationToken.None);
+                HerdrOwnedSessions.Delete(launch);
+            }
             catch (HerdrLaunchException) { /* The original fault remains uncertain; never touch another session. */ }
             _runs.TryRemove(launch.AgentName, out _);
             throw;
@@ -104,6 +109,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         {
             terminal.StopOwnedSessionAsync(run.Session, CancellationToken.None).GetAwaiter().GetResult();
             _runs.TryRemove(launch.AgentName, out _);
+            HerdrOwnedSessions.Delete(launch);
         }
     }
 
@@ -137,6 +143,19 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(launch));
+        }
+        if (launch.Model is { Length: > 0 } model)
+        {
+            args.AddRange(launch.Kind == InteractiveAgentKind.Codex ? ["-m", model] : ["--model", model]);
+        }
+        if (launch.Effort is { Length: > 0 } effort)
+        {
+            switch (launch.Kind)
+            {
+                case InteractiveAgentKind.Claude: args.AddRange(["--effort", effort]); break;
+                case InteractiveAgentKind.Codex: args.AddRange(["-c", "model_reasoning_effort=\"" + effort + "\""]); break;
+                case InteractiveAgentKind.Pi: args.AddRange(["--thinking", effort]); break;
+            }
         }
         if (launch.ResumeSessionId is { } id)
         {

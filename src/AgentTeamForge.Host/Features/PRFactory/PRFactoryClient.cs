@@ -1,12 +1,11 @@
 using System.Net;
 using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 
 namespace AgentTeamForge.Host.Features.PRFactory;
 
-// Registration and heartbeat wire contract ported from PRFactory.Worker/Api/PRFactoryClient.cs
-// and Models/MachineRegistrationModels.cs. Work-item methods belong to later slices.
+// Worker wire contract ported from PRFactory.Worker/Api/PRFactoryClient.cs
+// and Models/MachineRegistrationModels.cs.
 public sealed record RegisterMachineRequest(string MachineName, string MachineFingerprint, string? OperatingSystem, string? WorkerVersion);
 public sealed class RegisterMachineResponse
 {
@@ -79,7 +78,11 @@ public sealed class PRFactoryClient(HttpClient httpClient)
             + $"&workerVersion={WorkerVersion}" + (machineId is Guid mid ? $"&machineId={mid:D}" : "");
         using var response = await httpClient.GetAsync("api/worker/poll?" + query, ct);
         RejectToken(response.StatusCode);
-        if (response.StatusCode == HttpStatusCode.NoContent) return [];
+        if (response.StatusCode == HttpStatusCode.NoContent)
+        {
+            return [];
+        }
+
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryPollResponse, ct))?.WorkItems ?? [];
     }
@@ -89,7 +92,11 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         using var response = await httpClient.PostAsJsonAsync($"api/worker/claim/{id:D}",
             new PRFactoryClaimRequest(Environment.MachineName, WorkerVersion, machineId), PRFactoryWorkItemJson.Default.PRFactoryClaimRequest, ct);
         RejectToken(response.StatusCode);
-        if (response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.NotFound) return null;
+        if (response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryClaimResponse, ct))?.WorkItem;
     }
@@ -109,7 +116,10 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         RejectToken(response.StatusCode);
         response.EnsureSuccessStatusCode();
         var receipt = await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryCompletionResponse, ct);
-        if (receipt?.Accepted != true) throw new HttpRequestException("PRFactory did not accept completion");
+        if (receipt?.Accepted != true)
+        {
+            throw new HttpRequestException("PRFactory did not accept completion");
+        }
     }
 
     public async Task FailAsync(Guid id, Guid? lease, string error, CancellationToken ct)
@@ -119,7 +129,10 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         RejectToken(response.StatusCode);
         response.EnsureSuccessStatusCode();
         var receipt = await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryFailureResponse, ct);
-        if (receipt?.Acknowledged != true) throw new HttpRequestException("PRFactory did not acknowledge failure");
+        if (receipt?.Acknowledged != true)
+        {
+            throw new HttpRequestException("PRFactory did not acknowledge failure");
+        }
     }
 
     static void RejectToken(HttpStatusCode status)

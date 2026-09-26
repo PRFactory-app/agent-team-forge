@@ -38,6 +38,8 @@ public sealed record NewJob(
     /// <summary>Queued time allowed from the acceptance commit; null means no queue TTL.</summary>
     public int? QueueTtlSeconds { get; init; }
 
+    public string? LeadSessionId { get; init; }
+
     public string? WakeTargetKey { get; init; }
 
     public long? WakeGeneration { get; init; }
@@ -93,6 +95,8 @@ public sealed record RunRecord(string RunId, long Generation, string Correlation
 public sealed record JobSummaryRecord(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)
 {
     public string? Backend { get; init; }
+    public string? SessionId { get; init; }
+    public string? ParentJobId { get; init; }
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }
 }
