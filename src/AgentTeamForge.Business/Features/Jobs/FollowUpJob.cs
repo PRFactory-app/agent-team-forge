@@ -5,9 +5,10 @@ namespace AgentTeamForge.Business.Features.Jobs;
 
 /// <summary>
 /// Accepts a new job that resumes the parent's recorded native session on the
-/// parent's backend and cwd. The parent must be finished and have a session.
+/// parent's backend and cwd. An interrupt cancels a running parent in the same
+/// transaction that accepts the new turn.
 /// </summary>
-public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, AcceptJob accept)
+public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, AcceptJob accept, Action<string>? cancelRunning = null)
 {
     public const string Operation = "job_follow_up";
 
@@ -37,14 +38,22 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
 
         // Resuming a session that is still in a turn would race the running agent.
         // A stopped parent's process tree was killed when its cancellation committed.
-        if (parent.SessionId is null || parent.Status is not (JobStatus.Completed or JobStatus.Cancelled))
+        if (parent.SessionId is null || parent.Status is not (JobStatus.Completed or JobStatus.Cancelled)
+            && !(request.Interrupt && parent.Status == JobStatus.Running))
         {
             return JobResult.Fail(JobErrors.ParentNotReady);
         }
 
-        return accept.Admit(Operation, request.IdempotencyKey, request.Instruction, "behavior=complete;hold=0",
+        if (request.Interrupt && parent.Status == JobStatus.Running && cancelRunning is null)
+        {
+            return JobResult.Fail(JobErrors.DaemonUnhealthy);
+        }
+
+        return accept.Admit(Operation, request.IdempotencyKey, request.Instruction,
+            "behavior=complete;hold=0" + (request.Interrupt ? ";interrupt=1" : ""),
             parent.Backend, parent.Cwd, parent.JobId, request.WakeKey, request.WakeGeneration, worktreeBase: parent.WorktreeBase,
             worktreePath: parent.WorktreePath, worktreeBranch: parent.WorktreeBranch,
-            timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds);
+            timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds,
+            interruptParent: request.Interrupt, cancelRunning: cancelRunning);
     }
 }

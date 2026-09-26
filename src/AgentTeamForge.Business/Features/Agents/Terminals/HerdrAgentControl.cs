@@ -62,6 +62,18 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         }
     }
 
+    public async Task InterruptAsync(InteractiveLaunch launch, CancellationToken cancellationToken)
+    {
+        var (session, binding) = Binding(launch);
+        if (await terminal.VerifyBindingAsync(binding, cancellationToken) is { } problem)
+        {
+            throw new HerdrLaunchException("refusing interrupt: " + problem);
+        }
+        await terminal.RunOwnedAsync(session, cancellationToken, "agent", "send-keys", binding.PaneId, "esc");
+        await terminal.RunOwnedAsync(session, cancellationToken, "agent", "wait", binding.PaneId,
+            "--until", "idle", "--until", "done", "--timeout", "15000");
+    }
+
     public async Task<InteractiveAgentStatus> StatusAsync(InteractiveLaunch launch, CancellationToken cancellationToken)
     {
         var (session, binding) = Binding(launch);
