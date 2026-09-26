@@ -41,8 +41,10 @@ ATF="$(pwd)/src/AgentTeamForge.Host/bin/Release/net11.0/atf"
 ```
 
 Use `--mode herdr` to record an interactive Herdr choice. Omit `--apply` to print
-the Claude Code and Codex MCP registration commands for review. `setup` creates
-private state under `$XDG_STATE_HOME/agentteamforge`, or
+the Claude Code and Codex MCP registration commands for review. `--apply`
+also sets `crossSessionInbound` to `accept` in the user's Claude
+settings so idle Claude leads receive native wake notices. Existing settings
+are preserved. `setup` creates private state under `$XDG_STATE_HOME/agentteamforge`, or
 `~/.local/state/agentteamforge`; `--state-dir DIR` overrides it. `start` prints
 the daemon PID and is safe to repeat. `atf stop` prints the `kill -TERM` command
 for the running daemon. This checkpoint still dispatches the fake backend; the
@@ -100,9 +102,8 @@ a time and agents run headless with bypassed permissions.
 
 For native notices in a Codex lead, read `CODEX_THREAD_ID` with a shell tool and
 call `register_codex_wake(thread_id)` before submitting jobs. For a Claude Code
-lead in bypass mode, launch it with `claude --settings /path/to/settings.json`;
-that file must contain
-`{"crossSessionInbound":"accept"}` so its inbox delivers the notice. For Pi,
+lead in bypass mode, run `atf setup --apply` with the chosen `--mode` before launching
+Claude so its inbox delivers the notice. For Pi,
 load `extensions/pi-wake` with `ATF_STATE_DIR` set to the daemon's state
 directory; see [Pi wake setup](extensions/pi-wake/README.md).
 
