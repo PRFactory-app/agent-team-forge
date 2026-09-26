@@ -140,9 +140,10 @@ internal static class ClientSetup
 
         var settings = ReadObject(settingsPath);
         var packages = settings["packages"] as JsonArray;
-        var adapterCurrent = packages?.Any(node => node?.GetValue<string>() == Adapter) == true;
-        var extensionCurrent = packages?.Any(node => node is not null && !node.GetValue<string>().StartsWith("npm:", StringComparison.Ordinal)
-            && Path.GetFullPath(node.GetValue<string>(), directory) == extension) == true;
+        var sources = packages?.Select(PackageSource).OfType<string>().ToList() ?? [];
+        var adapterCurrent = sources.Contains(Adapter);
+        var extensionCurrent = sources.Any(source => !source.Contains(':', StringComparison.Ordinal)
+            && Path.GetFullPath(source, directory) == extension);
         var mcp = ReadObject(mcpPath);
         var expected = new JsonObject
         {
@@ -211,6 +212,14 @@ internal static class ClientSetup
         Console.Out.WriteLine("pi: adapter, MCP and wake extension updated");
         return true;
     }
+
+    // Pi package entries are either a source string or an object with a "source" string.
+    static string? PackageSource(JsonNode? node) => node switch
+    {
+        JsonValue value when value.TryGetValue<string>(out var source) => source,
+        JsonObject entry when entry["source"] is JsonValue value && value.TryGetValue<string>(out var source) => source,
+        _ => null,
+    };
 
     static bool HasLine(string output, string label, string value) => output.Split('\n').Any(line =>
         line.Trim().StartsWith(label + " ", StringComparison.OrdinalIgnoreCase)

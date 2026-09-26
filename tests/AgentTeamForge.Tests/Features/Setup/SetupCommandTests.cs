@@ -59,7 +59,7 @@ public sealed class SetupCommandTests
         var piDir = Path.Combine(home, ".pi", "agent");
         Directory.CreateDirectory(piDir);
         File.WriteAllText(Path.Combine(piDir, "mcp.json"), """{"other":true,"mcpServers":{"other":{"command":"other"}}}""");
-        File.WriteAllText(Path.Combine(piDir, "settings.json"), """{"theme":"dark","packages":["npm:other"]}""");
+        File.WriteAllText(Path.Combine(piDir, "settings.json"), """{"theme":"dark","packages":[{"source":"npm:other","extensions":[]}]}""");
         var adds = 0;
         (int, string) Runner(string tool, IReadOnlyList<string> args)
         {
@@ -114,7 +114,7 @@ public sealed class SetupCommandTests
         Assert.Equal("other", piMcp.RootElement.GetProperty("mcpServers").GetProperty("other").GetProperty("command").GetString());
         using var piSettings = JsonDocument.Parse(firstPiSettings);
         Assert.Equal("dark", piSettings.RootElement.GetProperty("theme").GetString());
-        Assert.Contains(piSettings.RootElement.GetProperty("packages").EnumerateArray(), value => value.GetString() == "npm:other");
+        Assert.Contains(piSettings.RootElement.GetProperty("packages").EnumerateArray(), value => value.ValueKind == JsonValueKind.Object && value.GetProperty("source").GetString() == "npm:other");
         using var piState = JsonDocument.Parse(File.ReadAllText(Path.Combine(piDir, "agentteamforge.json")));
         Assert.Equal(options["state-dir"], piState.RootElement.GetProperty("stateDir").GetString());
     }
