@@ -28,6 +28,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
             || !FakeBehavior.All.Contains(behavior)
             || ((request.Hold || behavior != FakeBehavior.Complete) && !testProfile)
             || !ValidLimits(request.TimeoutSeconds, request.QueueTtlSeconds)
+            || !ValidOption(request.Model) || !ValidOption(request.Effort)
             || !TryNormalizeCwd(request.Cwd, out var cwd))
         {
             return JobResult.Fail(JobErrors.InvalidRequest);
@@ -45,6 +46,16 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         }
 
         var options = $"behavior={behavior};hold={(request.Hold ? 1 : 0)};worktree={(request.Worktree ? 1 : 0)}";
+        if (request.Model is not null)
+        {
+            options += $";model={request.Model}";
+        }
+
+        if (request.Effort is not null)
+        {
+            options += $";effort={request.Effort}";
+        }
+
         return Admit(Operation, request.IdempotencyKey, request.Instruction, options, backend,
             cwd, null, request.WakeKey, request.WakeGeneration, request.Worktree, baseCommit,
             timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds, leadSessionId: request.LeadSessionId);
@@ -55,6 +66,9 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         timeoutSeconds is null or (>= 1 and <= MaxLimitSeconds) && queueTtlSeconds is null or (>= 1 and <= MaxLimitSeconds);
 
     const int MaxLimitSeconds = 86_400;
+
+    static bool ValidOption(string? value) => value is null ||
+        (value.Length is > 0 and <= 128 && value[0] != '-' && !value.Any(c => char.IsControl(c) || c is ';' or '=' or '"'));
 
     internal bool IsValid(string? key, string? instruction) =>
         !string.IsNullOrWhiteSpace(key) && key.Length <= limits.MaxIdempotencyKeyChars

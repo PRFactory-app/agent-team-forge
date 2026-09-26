@@ -7,7 +7,7 @@ using System.Text.Json.Serialization;
 namespace AgentTeamForge.Business.Features.Agents.Backends;
 
 /// <summary>
-/// Headless Claude Code: one <c>claude -p --output-format json</c> process per
+/// Headless Claude Code: one <c>claude -p --output-format stream-json --verbose</c> process per
 /// turn. The instruction travels on stdin (not argv) so Start does not deliver
 /// it; a follow-up resumes the native session with <c>--resume</c>. A new
 /// session gets its id up front (<c>--session-id</c>), so it is recorded before
@@ -15,7 +15,7 @@ namespace AgentTeamForge.Business.Features.Agents.Backends;
 /// </summary>
 public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBackend
 {
-    /// <summary>Upper bound on the single JSON document claude prints.</summary>
+    /// <summary>Upper bound on one stream-json line.</summary>
     public const int MaxOutputBytes = 4 * 1024 * 1024;
 
     public IBackendRun Start(BackendRequest request)
@@ -38,6 +38,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             info.WorkingDirectory = cwd;
         }
         OrphanedBackendProcess.Mark(info, request.Correlation);
+        WindowsCliLaunch.Configure(info, "claude", executable == "claude");
 
         Process process;
         try
@@ -55,7 +56,19 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
 
     internal static List<string> Arguments(BackendRequest request, string sessionId)
     {
-        List<string> arguments = ["-p", "--output-format", "json", "--dangerously-skip-permissions"];
+        List<string> arguments = ["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"];
+        foreach (var part in request.Options.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (part.Split('=', 2) is ["model", { Length: > 0 } model])
+            {
+                arguments.AddRange(["--model", model]);
+            }
+
+            if (part.Split('=', 2) is ["effort", { Length: > 0 } effort])
+            {
+                arguments.AddRange(["--effort", effort]);
+            }
+        }
         arguments.AddRange(request.ResumeSessionId is null ? ["--session-id", sessionId] : ["--resume", sessionId]);
         return arguments;
     }
@@ -98,8 +111,27 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
 
             // Known before the turn ends: a stopped turn stays resumable.
             yield return new BackendEvidence.Session(correlation, sessionId);
-            var (output, overflow) = await ReadBoundedAsync(_stdout, cancellationToken);
-            if (overflow)
+            var final = Array.Empty<byte>();
+            var oversized = false;
+            await foreach (var line in ReadLinesAsync(_stdout, cancellationToken))
+            {
+                if (line is null)
+                {
+                    oversized = true;
+                    break;
+                }
+                try
+                {
+                    using var document = JsonDocument.Parse(line);
+                    if (document.RootElement.ValueKind == JsonValueKind.Object
+                        && document.RootElement.TryGetProperty("type", out var type) && type.ValueEquals("result"))
+                    {
+                        final = line;
+                    }
+                }
+                catch (JsonException) { }
+            }
+            if (oversized)
             {
                 TerminateOwnedChild();
                 yield return new BackendEvidence.ProtocolError("backend_output_too_large");
@@ -108,9 +140,9 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
 
             // A successful turn may itself mention these phrases; only a turn without a
             // result is checked for a missing native session.
-            var interpreted = Interpret(correlation, output).ToList();
+            var interpreted = Interpret(correlation, final).ToList();
             if (!newSession && !interpreted.Any(e => e is BackendEvidence.Result)
-                && (BackendSessionErrors.IsExpired(Encoding.UTF8.GetString(output))
+                && (BackendSessionErrors.IsExpired(Encoding.UTF8.GetString(final))
                     || await BackendSessionErrors.HasExpiredDiagnosticAsync(_stderrDrain, cancellationToken)))
             {
                 yield return new BackendEvidence.ProtocolError("session_expired");
@@ -216,22 +248,35 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             }
         }
 
-        static async Task<(byte[] Output, bool Overflow)> ReadBoundedAsync(Stream stream, CancellationToken cancellationToken)
+        static async IAsyncEnumerable<byte[]?> ReadLinesAsync(Stream stream, [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             var buffer = new MemoryStream();
             var chunk = new byte[16 * 1024];
             int read;
             while ((read = await stream.ReadAsync(chunk, cancellationToken)) > 0)
             {
-                if (buffer.Length + read > MaxOutputBytes)
+                for (var i = 0; i < read; i++)
                 {
-                    return ([], true);
+                    if (chunk[i] == (byte)'\n')
+                    {
+                        yield return buffer.ToArray();
+                        buffer.SetLength(0);
+                    }
+                    else
+                    {
+                        buffer.WriteByte(chunk[i]);
+                        if (buffer.Length > MaxOutputBytes)
+                        {
+                            yield return null;
+                            yield break;
+                        }
+                    }
                 }
-
-                buffer.Write(chunk, 0, read);
             }
-
-            return (buffer.ToArray(), false);
+            if (buffer.Length > 0)
+            {
+                yield return buffer.ToArray();
+            }
         }
 
         static async Task DrainAsync(Stream stream)
@@ -252,7 +297,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
         }
     }
 
-    /// <summary>Maps claude's JSON result document to Session then Result or ProtocolError.</summary>
+    /// <summary>Maps claude's final result event to Session then Result or ProtocolError.</summary>
     internal static IEnumerable<BackendEvidence> Interpret(string correlation, byte[] output)
     {
         ClaudeResult? result;
@@ -296,7 +341,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
     }
 }
 
-/// <summary>The fields of claude's <c>--output-format json</c> document that we use.</summary>
+/// <summary>The fields of claude's final stream-json result event that we use.</summary>
 public sealed record ClaudeResult(string? Type, string? Subtype, bool IsError, string? Result, string? SessionId);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]

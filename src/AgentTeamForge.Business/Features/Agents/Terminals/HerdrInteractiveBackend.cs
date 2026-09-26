@@ -45,7 +45,11 @@ public sealed class HerdrInteractiveBackend : IJobBackend
         var agentName = "atf" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(10));
         var piDirectory = _kind == InteractiveAgentKind.Pi ? PiDirectory(request) : null;
         var launch = new InteractiveLaunch(_kind, agentName, cwd, request.ResumeSessionId, piDirectory,
-            Path.Combine(_stateRoot, "herdr", agentName + ".bootstrap"));
+            Path.Combine(_stateRoot, "herdr", agentName + ".bootstrap"))
+        {
+            Model = Option(request.Options, "model"),
+            Effort = Option(request.Options, "effort"),
+        };
         try
         {
             // Dispatch calls Start on a worker. A failure after session creation is uncertain;
@@ -60,6 +64,9 @@ public sealed class HerdrInteractiveBackend : IJobBackend
     }
 
     void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions[sessionId] = launch;
+
+    static string? Option(string options, string name) => options.Split(';', StringSplitOptions.RemoveEmptyEntries)
+        .Select(part => part.Split('=', 2)).FirstOrDefault(pair => pair is [var key, { Length: > 0 }] && key == name)?[1];
 
     /// <summary>Closes an interrupted tab when its queued follow-up ends before claim.</summary>
     public void CloseUnclaimedSession(string sessionId)
@@ -258,7 +265,11 @@ public sealed class HerdrInteractiveBackend : IJobBackend
 }
 
 internal sealed record InteractiveLaunch(InteractiveAgentKind Kind, string AgentName, string WorkingDirectory,
-    string? ResumeSessionId, string? PiSessionDirectory, string BootstrapPath);
+    string? ResumeSessionId, string? PiSessionDirectory, string BootstrapPath)
+{
+    public string? Model { get; init; }
+    public string? Effort { get; init; }
+}
 
 internal enum InteractiveAgentStatus { Idle, Working, Done, Blocked, Unknown, Gone }
 

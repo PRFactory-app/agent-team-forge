@@ -66,4 +66,28 @@ public sealed class JobLogsTests
         Assert.Equal("tail", logs.Read("job", read.EndOffset - 4).Text);
         Assert.DoesNotContain("first", logs.Read("job", read.StartOffset).Text);
     }
+
+    [Fact]
+    public void Activity_call_checks_job_access_and_pages_plain_capture()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("activity");
+        var logs = new JobLogs(Path.GetDirectoryName(f.DatabasePath)!, plainOutput: true);
+        var write = logs.BeginRun(job.JobId, "run-1", "claude");
+        write("stdout", "first\nsecond\n"u8.ToArray());
+        var accept = f.Accept();
+        var endpoint = new JobsEndpoint(accept, f.Get(), new FollowUpJob(f.Store, JobFixture.Operator, accept), f.List(),
+            new StopJob(f.Store, JobFixture.Operator, _ => { }), new DurabilityCheckpoints(null), () => { }, logs: logs);
+        var first = endpoint.Handle(new IpcRequest { Op = IpcProtocol.JobActivity, JobId = job.JobId, Limit = 1 });
+        Assert.True(first.Ok);
+        Assert.Equal("first", Assert.Single(first.Activity!.Entries).Text);
+        var next = endpoint.Handle(new IpcRequest { Op = IpcProtocol.JobActivity, JobId = job.JobId, AfterCursor = first.Activity.NextCursor, Limit = 1 });
+        Assert.Equal("second", Assert.Single(next.Activity!.Entries).Text);
+
+        var denied = new JobsEndpoint(accept, f.Get(new("someone-else", "spike-team", "fake-agent")),
+            new FollowUpJob(f.Store, JobFixture.Operator, accept), f.List(), new StopJob(f.Store, JobFixture.Operator, _ => { }),
+            new DurabilityCheckpoints(null), () => { }, logs: logs)
+            .Handle(new IpcRequest { Op = IpcProtocol.JobActivity, JobId = job.JobId });
+        Assert.Equal(JobErrors.NotFound, denied.Error);
+    }
 }

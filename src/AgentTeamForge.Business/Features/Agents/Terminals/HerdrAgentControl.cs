@@ -144,6 +144,19 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
             default:
                 throw new ArgumentOutOfRangeException(nameof(launch));
         }
+        if (launch.Model is { Length: > 0 } model)
+        {
+            args.AddRange(launch.Kind == InteractiveAgentKind.Codex ? ["-m", model] : ["--model", model]);
+        }
+        if (launch.Effort is { Length: > 0 } effort)
+        {
+            switch (launch.Kind)
+            {
+                case InteractiveAgentKind.Claude: args.AddRange(["--effort", effort]); break;
+                case InteractiveAgentKind.Codex: args.AddRange(["-c", "model_reasoning_effort=\"" + effort + "\""]); break;
+                case InteractiveAgentKind.Pi: args.AddRange(["--thinking", effort]); break;
+            }
+        }
         if (launch.ResumeSessionId is { } id)
         {
             if (launch.Kind == InteractiveAgentKind.Claude)

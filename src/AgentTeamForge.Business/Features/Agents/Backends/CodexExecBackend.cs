@@ -37,6 +37,7 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
         {
             info.ArgumentList.Add(argument);
         }
+        WindowsCliLaunch.Configure(info, "codex", executable == "codex");
 
         Process process;
         try
@@ -61,6 +62,10 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
             if (part.Split('=', 2) is ["model", var model] && model.Length > 0)
             {
                 args.AddRange(["-m", model]);
+            }
+            if (part.Split('=', 2) is ["effort", { Length: > 0 } effort])
+            {
+                args.AddRange(["-c", "model_reasoning_effort=\"" + effort + "\""]);
             }
         }
 

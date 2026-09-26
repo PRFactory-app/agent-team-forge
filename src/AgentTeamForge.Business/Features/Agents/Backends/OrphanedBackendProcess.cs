@@ -3,7 +3,7 @@ using System.Text;
 
 namespace AgentTeamForge.Business.Features.Agents.Backends;
 
-/// <summary>Linux restart cleanup for backend processes started by an earlier daemon.</summary>
+/// <summary>Unix restart cleanup for backend processes started by an earlier daemon.</summary>
 public static class OrphanedBackendProcess
 {
     const string Marker = "ATF_RUN_CORRELATION";
@@ -11,9 +11,26 @@ public static class OrphanedBackendProcess
 
     public static void Mark(ProcessStartInfo info, string correlation) => info.Environment[Marker] = correlation;
 
-    /// <summary>Read-only Linux check used before reviving an uncertain native session.</summary>
+    /// <summary>Read-only Unix check used before reviving an uncertain native session.</summary>
     public static bool HasMarkedProcess(IReadOnlyCollection<string> correlations)
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            if (correlations.Count == 0)
+            {
+                return false;
+            }
+
+            var darwinMarkers = correlations.Select(c => $"{Marker}={c}").ToHashSet(StringComparer.Ordinal);
+            var pids = DarwinProcess.Pids();
+            if (pids.Count == 0)
+            {
+                return true; // ps failed: no proof.
+            }
+
+            // kern.procargs2 fails only for other users' processes, which cannot carry our marker.
+            return pids.Any(pid => DarwinProcess.Arguments(pid)?.Environment.Any(darwinMarkers.Contains) == true);
+        }
         if (!OperatingSystem.IsLinux() || correlations.Count == 0)
         {
             return true; // No proof that an uncertain run is idle on this platform.
@@ -59,6 +76,26 @@ public static class OrphanedBackendProcess
     /// </summary>
     public static int TerminateMarked(IReadOnlyCollection<string> correlations)
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            var darwinMarkers = correlations.Select(c => $"{Marker}={c}").ToHashSet(StringComparer.Ordinal);
+            var darwinKilled = 0;
+            foreach (var pid in DarwinProcess.Pids())
+            {
+                if (pid == Environment.ProcessId)
+                {
+                    continue;
+                }
+
+                var token = DarwinProcess.CreationToken(pid);
+                if (token is not null && DarwinProcess.Arguments(pid)?.Environment.Any(darwinMarkers.Contains) == true
+                    && DarwinProcess.SignalIfSame(pid, token.Value, SigKill))
+                {
+                    darwinKilled++;
+                }
+            }
+            return darwinKilled;
+        }
         if (!OperatingSystem.IsLinux() || correlations.Count == 0)
         {
             return 0;

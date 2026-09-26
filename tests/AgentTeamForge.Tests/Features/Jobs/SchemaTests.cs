@@ -127,6 +127,9 @@ public sealed class SchemaTests
                 ALTER TABLE wake_targets DROP COLUMN external_notified_seq;
                 ALTER TABLE wake_targets DROP COLUMN last_external_success;
                 ALTER TABLE lead_sessions DROP COLUMN closed_at;
+                DELETE FROM schema_migrations WHERE version=9;
+                DROP TABLE prfactory_members;
+                DROP TABLE prfactory_teams;
                 DELETE FROM schema_migrations WHERE version=8;
                 DROP INDEX jobs_lead_session;
                 ALTER TABLE jobs DROP COLUMN lead_session_id;

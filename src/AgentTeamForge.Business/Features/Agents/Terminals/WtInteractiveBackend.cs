@@ -8,20 +8,26 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 /// <summary>Runs an interactive agent in an owned Windows Terminal tab.</summary>
 public sealed class WtInteractiveBackend : IJobBackend
 {
+    public static int RecoverOwned(string stateRoot) => WtTabControl.RecoverOwned(stateRoot);
     readonly IWtTabControl _tabs;
     readonly IInteractiveTranscriptReader _transcripts;
     readonly InteractiveAgentKind _kind;
     readonly string _stateRoot;
+    readonly string _tabDirectory;
 
     public WtInteractiveBackend(InteractiveAgentKind kind, string stateRoot)
-        : this(new WtTabControl(), new InteractiveTranscriptReader(), kind, stateRoot) { }
+        : this(new WtTabControl(), new InteractiveTranscriptReader(), kind, stateRoot, "wt") { }
 
     internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot)
+        : this(tabs, transcripts, kind, stateRoot, "wt") { }
+
+    internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot, string tabDirectory)
     {
         _tabs = tabs;
         _transcripts = transcripts;
         _kind = kind;
         _stateRoot = stateRoot;
+        _tabDirectory = tabDirectory;
     }
 
     public IBackendRun Start(BackendRequest request)
@@ -36,7 +42,12 @@ public sealed class WtInteractiveBackend : IJobBackend
         var agentName = "atf" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(10));
         var piDirectory = _kind == InteractiveAgentKind.Pi ? PiDirectory(request) : null;
         var launch = new InteractiveLaunch(_kind, agentName, cwd, request.ResumeSessionId, piDirectory,
-            Path.Combine(_stateRoot, "wt", agentName + ".launch.ps1"));
+            Path.Combine(_stateRoot, _tabDirectory, agentName + (_tabDirectory == "wt" ? ".launch.ps1" : ".launch.sh")));
+        if (OperatingSystem.IsWindows())
+        {
+            // Reject unsafe .cmd shim arguments or hook paths here, where not-started is provable.
+            _ = WtTabControl.AgentArguments(launch, "");
+        }
         return new Run(_tabs, _transcripts, request, launch, DateTimeOffset.UtcNow);
     }
 

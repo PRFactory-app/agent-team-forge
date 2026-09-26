@@ -110,7 +110,7 @@ public static class PRFactoryConnection
         WritePrivate(Path.Combine(state.Path, TokenName), Encoding.UTF8.GetBytes(token));
         WritePrivate(Path.Combine(state.Path, SettingsName), JsonSerializer.SerializeToUtf8Bytes(settings, PRFactorySettingsJson.Default.PRFactorySettings));
         File.Delete(Path.Combine(state.Path, RejectedName));
-        Console.WriteLine("PRFactory enabled. The daemon will register this machine; no work items are claimed in this slice.");
+        Console.WriteLine("PRFactory enabled. The daemon will register this machine and poll for work items.");
         return 0;
     }
 

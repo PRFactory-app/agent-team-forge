@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 8;
+    public const int CurrentVersion = 9;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -134,7 +134,22 @@ static class Schema
         CREATE INDEX jobs_lead_session ON jobs(lead_session_id, job_id);
         """;
 
+    /// <summary>v8: accepted PRFactory work and its stable member submissions.</summary>
     const string V8 = """
+        CREATE TABLE prfactory_teams(
+            server TEXT NOT NULL, work_item_id TEXT NOT NULL, claimed_json TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'claimed', uploaded INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY(server, work_item_id));
+        CREATE TABLE prfactory_members(
+            server TEXT NOT NULL, work_item_id TEXT NOT NULL, member TEXT NOT NULL,
+            turn INTEGER NOT NULL, job_id TEXT NOT NULL,
+            PRIMARY KEY(server, work_item_id, member, turn),
+            FOREIGN KEY(server, work_item_id) REFERENCES prfactory_teams(server, work_item_id));
+        """;
+
+    /// <summary>v9: durable external teams, members and messages.</summary>
+    const string V9 = """
         ALTER TABLE lead_sessions ADD COLUMN closed_at TEXT;
         ALTER TABLE wake_targets ADD COLUMN external_notified_seq INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE wake_targets ADD COLUMN last_external_success TEXT;
@@ -172,7 +187,7 @@ static class Schema
         CREATE INDEX external_messages_wake ON external_messages(wake_key,read_at,seq);
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8];
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

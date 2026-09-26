@@ -38,6 +38,7 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
         {
             info.ArgumentList.Add(argument);
         }
+        WindowsCliLaunch.Configure(info, "pi", executable == "pi");
 
         Process process;
         try
@@ -74,6 +75,10 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
             else if (pair is ["thinking", { Length: > 0 } thinking])
             {
                 args.AddRange(["--thinking", thinking]);
+            }
+            else if (pair is ["effort", { Length: > 0 } effort])
+            {
+                args.AddRange(["--thinking", effort]);
             }
         }
 

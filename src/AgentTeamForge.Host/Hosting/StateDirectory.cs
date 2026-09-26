@@ -69,6 +69,10 @@ public sealed class StateDirectory
         {
             throw new StateDirectoryException("state_dir_not_private");
         }
+        if (OperatingSystem.IsWindows())
+        {
+            WindowsPrivatePaths.ValidateDirectory(full);
+        }
 
         var state = new StateDirectory(full);
         if (!OperatingSystem.IsWindows() && state.Socket.Length > 100)
@@ -87,7 +91,7 @@ public sealed class StateDirectory
     /// directories, sockets, symlinks, foreign or group/other-accessible files and
     /// oversize files fail closed as <c>private_file_unsafe</c> without blocking.
     /// Linux uses statx and O_NOFOLLOW; exercised on linux-x64. The Windows
-    /// branch checks type, link and size, with native ACL validation still pending.
+    /// branch checks type, link, size and the ACL on the opened handle.
     /// </summary>
     public static byte[] ReadPrivateFile(string path)
     {
@@ -104,20 +108,37 @@ public sealed class StateDirectory
                 throw new StateDirectoryException("private_file_unsafe");
             }
 
-            var bytes = File.ReadAllBytes(path);
-            if (bytes.Length > MaxPrivateFileBytes)
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            WindowsPrivatePaths.Validate(stream.SafeFileHandle);
+            if (stream.Length > MaxPrivateFileBytes)
+            {
+                throw new StateDirectoryException("private_file_unsafe");
+            }
+            var bytes = new byte[MaxPrivateFileBytes + 1];
+            var count = 0;
+            while (count < bytes.Length)
+            {
+                var read = stream.Read(bytes, count, bytes.Length - count);
+                if (read == 0)
+                {
+                    break;
+                }
+                count += read;
+            }
+            if (count > MaxPrivateFileBytes)
             {
                 throw new StateDirectoryException("private_file_unsafe");
             }
 
-            return bytes;
+            return bytes[..count];
         }
         if (Native.OpenNoFollow is not { } noFollow)
         {
             throw new StateDirectoryException("private_file_unsafe");
         }
 
-        var fd = Native.Open(path, Native.OpenReadOnly | Native.OpenNonBlocking | Native.OpenNoCtty | Native.OpenCloseOnExec | noFollow);
+        var flags = OperatingSystem.IsMacOS() ? noFollow | 0x1000000 | 4 : Native.OpenReadOnly | Native.OpenNonBlocking | Native.OpenNoCtty | Native.OpenCloseOnExec | noFollow;
+        var fd = Native.Open(path, flags);
         if (fd < 0)
         {
             // ELOOP (final symlink), ENXIO (socket), EACCES, ... are all unsafe.
@@ -125,6 +146,22 @@ public sealed class StateDirectory
         }
 
         using var handle = new SafeFileHandle(fd, ownsHandle: true);
+        if (OperatingSystem.IsMacOS())
+        {
+            if (!Native.DarwinPrivateFile(handle, MaxPrivateFileBytes))
+            {
+                throw new StateDirectoryException("private_file_unsafe");
+            }
+
+            var content = new byte[MaxPrivateFileBytes + 1];
+            var count = RandomAccess.Read(handle, content, 0);
+            if (count > MaxPrivateFileBytes)
+            {
+                throw new StateDirectoryException("private_file_unsafe");
+            }
+
+            return content[..count];
+        }
         const uint required = Native.StatxType | Native.StatxMode | Native.StatxUid | Native.StatxSize;
         if (Native.Statx(fd, "", Native.StatxEmptyPath, required, out var stat) != 0
             || (stat.Mask & required) != required

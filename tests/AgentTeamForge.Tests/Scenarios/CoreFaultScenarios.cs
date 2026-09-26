@@ -54,14 +54,20 @@ public sealed class CoreFaultScenarios
         await Bounded.Until(() => daemon.HasExited, "daemon to stop after a dispatcher fault");
         Assert.NotEqual(0, daemon.ExitCode);
         Assert.Contains(rig.DaemonLog, l => l.Contains("dispatcher_halted", StringComparison.Ordinal));
-        Assert.False((await rig.SubmitAsync("k-after-fault", "x")).Ok);
-
-        // The started attempt is never replayed or failed; restart keeps it uncertain.
-        await rig.StartDaemonAsync();
-        var job = (await rig.GetAsync(accepted.Job!.JobId)).Job!;
-        Assert.Equal(JobStatus.NeedsReconciliation, job.Status);
-        Assert.Equal(1, job.Attempts);
-        Assert.Equal(0, rig.Invocations(job.JobId));
+        // The next client call starts a fresh daemon; the failed dispatcher
+        // never remains available to accept work.
+        try
+        {
+            Assert.True((await rig.SubmitAsync("k-after-fault", "x")).Ok);
+            var job = (await rig.GetAsync(accepted.Job!.JobId)).Job!;
+            Assert.Equal(JobStatus.NeedsReconciliation, job.Status);
+            Assert.Equal(1, job.Attempts);
+            Assert.Equal(0, rig.Invocations(job.JobId));
+        }
+        finally
+        {
+            await rig.RunToExitAsync(["stop", "--state-dir", rig.StateDir]);
+        }
     }
 
     [Fact]
