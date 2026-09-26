@@ -107,12 +107,11 @@ public static class SetupCommand
                 return 1;
             }
 
-            using (var probe = DaemonLock.TryAcquire(state.LockFile))
+            // Do not probe the lock here: holding it even briefly can make the
+            // starting daemon lose the race and exit. setsid/sh exec keep the PID.
+            if (DaemonLock.ReadOwnerPid(state.LockFile) == process.Id && File.Exists(state.Socket))
             {
-                if (probe is null && File.Exists(state.Socket))
-                {
-                    return PrintRunningPid(state);
-                }
+                return PrintRunningPid(state);
             }
 
             await Task.Delay(50);
