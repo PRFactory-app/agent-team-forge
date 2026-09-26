@@ -80,6 +80,20 @@ public sealed class CodexExecBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task Oversized_agent_message_cannot_complete_as_empty_result()
+    {
+        var codex = FakeCodex(
+            $$"""{"type":"thread.started","thread_id":"{{ThreadId}}"}""",
+            """{"type":"item.completed","item":{"type":"agent_message","text":""" + new string('x', CodexExecBackend.MaxLineBytes) + "\"}}",
+            """{"type":"turn.completed"}""");
+
+        var evidence = await RunAsync(new CodexExecBackend(codex), new BackendRequest("job-large", "corr-large", "x", "") { WorkingDirectory = _dir.Path });
+
+        Assert.Equal(new BackendEvidence.ProtocolError("backend_line_too_long"), evidence[^1]);
+        Assert.DoesNotContain(evidence, e => e is BackendEvidence.Result);
+    }
+
+    [Fact]
     public void Missing_executable_never_starts()
     {
         var backend = new CodexExecBackend(_dir.File("no-such-codex"));

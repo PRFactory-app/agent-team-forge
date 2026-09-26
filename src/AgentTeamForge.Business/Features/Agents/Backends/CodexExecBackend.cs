@@ -13,7 +13,7 @@ namespace AgentTeamForge.Business.Features.Agents.Backends;
 /// </summary>
 public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
 {
-    /// <summary>Longer JSONL lines (typically huge tool output) are skipped, not buffered.</summary>
+    /// <summary>Longer JSONL lines are rejected without buffering them.</summary>
     internal const int MaxLineBytes = 4 * 1024 * 1024;
 
     internal const int MaxResultChars = 1024 * 1024;
@@ -106,13 +106,23 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
             var parser = new CodexEventParser(correlation);
             await foreach (var line in ReadLinesAsync(_process.StandardOutput.BaseStream, cancellationToken))
             {
+                if (line is null)
+                {
+                    TerminateOwnedChild();
+                    yield return new BackendEvidence.ProtocolError("backend_line_too_long");
+                    yield break;
+                }
+
                 foreach (var evidence in parser.Parse(line))
                 {
-                    yield return evidence;
                     if (evidence is BackendEvidence.ProtocolError)
                     {
+                        TerminateOwnedChild();
+                        yield return evidence;
                         yield break;
                     }
+
+                    yield return evidence;
                 }
             }
 
@@ -125,17 +135,16 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
             yield return new BackendEvidence.EndOfOutput();
         }
 
-        static async IAsyncEnumerable<byte[]> ReadLinesAsync(Stream stream, [EnumeratorCancellation] CancellationToken cancellationToken)
+        static async IAsyncEnumerable<byte[]?> ReadLinesAsync(Stream stream, [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             var buffer = new MemoryStream();
             var chunk = new byte[16 * 1024];
-            var skipping = false;
             while (true)
             {
                 var read = await stream.ReadAsync(chunk, cancellationToken);
                 if (read == 0)
                 {
-                    if (!skipping && buffer.Length > 0)
+                    if (buffer.Length > 0)
                     {
                         yield return buffer.ToArray();
                     }
@@ -151,26 +160,25 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
                         continue;
                     }
 
-                    if (!skipping)
+                    if (buffer.Length + i - start > MaxLineBytes)
                     {
-                        buffer.Write(chunk, start, i - start);
-                        yield return buffer.ToArray();
+                        yield return null;
+                        yield break;
                     }
 
+                    buffer.Write(chunk, start, i - start);
+                    yield return buffer.ToArray();
                     buffer.SetLength(0);
-                    skipping = false;
                     start = i + 1;
                 }
 
-                if (!skipping)
+                if (buffer.Length + read - start > MaxLineBytes)
                 {
-                    buffer.Write(chunk, start, read - start);
-                    if (buffer.Length > MaxLineBytes)
-                    {
-                        buffer.SetLength(0);
-                        skipping = true;
-                    }
+                    yield return null;
+                    yield break;
                 }
+
+                buffer.Write(chunk, start, read - start);
             }
         }
 
