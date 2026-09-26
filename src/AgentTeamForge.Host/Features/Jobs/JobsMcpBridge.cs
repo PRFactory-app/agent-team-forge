@@ -182,7 +182,7 @@ public static class JobsMcpBridge
             new() { Name = "external_read", Description = "Read this member's inbox using member_token and an optional cursor.", InputSchema = Parse(MemberReadSchema) },
             new() { Name = "external_set_wake", Description = "Opt this member into Codex queue notices. Pass an empty codex_thread_id to clear.", InputSchema = Parse(MemberWakeSchema) },
             new() { Name = "leave_team", Description = "Revoke this external membership without stopping its process.", InputSchema = Parse(LeaveSchema) },
-            new() { Name = "send_message", Description = "Send a durable message to an external member of this lead session.", InputSchema = Parse(LeadSendSchema) },
+            new() { Name = "send_message", Description = "Send a durable message to a joined external member of this AgentTeamForge lead session. This tool does not reach win-agent-teams members.", InputSchema = Parse(LeadSendSchema) },
             new() { Name = "read_messages", Description = "Read durable messages from external members of this lead session.", InputSchema = Parse(LeadReadSchema) },
             new() { Name = "job_submit", Description = "Durably submit a job to the AgentTeamForge daemon (spike).", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "job_get", Description = "Read a job's committed state and result (spike).", InputSchema = Parse(GetSchema) },

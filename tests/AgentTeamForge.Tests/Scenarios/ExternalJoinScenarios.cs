@@ -40,7 +40,10 @@ public sealed class ExternalJoinScenarios
         Assert.DoesNotContain(tools, tool => tool.Name == "create_join_ticket");
         var leadTools = await lead.ListToolsAsync(cancellationToken: TestContext.Current.CancellationToken);
         Assert.Contains(leadTools, tool => tool.Name == "send_message");
-        Assert.Equal("member_not_found", (await SpikeRig.CallAsync(lead, "send_message", new() { ["text"] = "self" })).Error);
+        var noRecipient = await SpikeRig.CallAsync(lead, "send_message", new() { ["text"] = "self" });
+        Assert.Equal("member_not_found", noRecipient.Error);
+        Assert.Contains("team-lead", noRecipient.ErrorDetail);
+        Assert.Contains("none", noRecipient.ErrorDetail);
 
         var ticketCall = await lead.CallToolAsync("create_join_ticket", new Dictionary<string, object?> { ["name"] = "visitor" },
             cancellationToken: TestContext.Current.CancellationToken);
@@ -73,6 +76,9 @@ public sealed class ExternalJoinScenarios
             ["codex_thread_id"] = thread,
             ["codex_home"] = codexHome
         })).Ok);
+        var unknown = await SpikeRig.CallAsync(lead, "send_message", new() { ["to"] = "team-lead", ["text"] = "report" });
+        Assert.Equal("member_not_found", unknown.Error);
+        Assert.Contains(joined.Name, unknown.ErrorDetail);
         Assert.True((await SpikeRig.CallAsync(lead, "send_message", new() { ["to"] = joined.Name, ["text"] = "work" })).Ok);
         await Bounded.Until(() => File.Exists(wakeLog) && File.ReadAllText(wakeLog).Contains(thread, StringComparison.Ordinal), "Codex queue wake");
         Assert.Contains("queue", File.ReadAllText(wakeLog));

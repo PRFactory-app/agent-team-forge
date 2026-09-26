@@ -365,6 +365,25 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return true;
     }
 
+    public IReadOnlyList<string> ActiveMemberNames(string teamId)
+    {
+        using var db = database.OpenConnection();
+        using var command = db.CreateCommand();
+        command.CommandText = """
+            SELECT m.name FROM external_members m JOIN external_teams t ON t.team_id=m.team_id
+            WHERE m.team_id=$team AND t.closed_at IS NULL AND m.active=1
+            ORDER BY m.name
+            """;
+        command.Parameters.AddWithValue("$team", teamId);
+        using var reader = command.ExecuteReader();
+        var names = new List<string>();
+        while (reader.Read())
+        {
+            names.Add(reader.GetString(0));
+        }
+        return names;
+    }
+
     static long NextSenderSeq(SqliteConnection db, SqliteTransaction tx, string teamId, string recipient, string sender)
     {
         using var command = db.CreateCommand();

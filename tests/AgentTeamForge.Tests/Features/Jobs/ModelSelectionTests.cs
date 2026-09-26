@@ -134,11 +134,10 @@ public sealed class ModelSelectionTests
         Assert.Equal("xx", File.ReadAllText(calls));
 
         File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        File.WriteAllText(script, $"#!/bin/sh\nprintf x >> '{calls}'\nsleep 5\n");
+        var completed = dir.File("completed");
+        File.WriteAllText(script, $"#!/bin/sh\nprintf x >> '{calls}'\nsleep 5\nprintf done >> '{completed}'\n");
         var hung = new BackendModelDiscovery(TimeSpan.FromMilliseconds(100), _ => script);
-        var start = System.Diagnostics.Stopwatch.StartNew();
         Assert.Empty(hung.GetModels("codex"));
-        Assert.True(start.Elapsed < TimeSpan.FromSeconds(2));
         Assert.Empty(hung.GetModels("codex"));
         Assert.Equal("xxx", File.ReadAllText(calls));
 
@@ -147,6 +146,7 @@ public sealed class ModelSelectionTests
         Assert.Empty(retried.GetModels("codex"));
         Assert.Empty(retried.GetModels("codex"));
         Assert.Equal("xxxxx", File.ReadAllText(calls));
+        Assert.False(File.Exists(completed));
     }
 
     [Theory]

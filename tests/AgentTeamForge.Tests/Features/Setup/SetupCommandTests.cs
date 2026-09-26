@@ -480,8 +480,11 @@ public sealed class SetupCommandTests
         Assert.False(LoginAutostart.IsInstalled(home, "macos"));
     }
 
-    [Fact]
-    public void AutostartOnSpellingEnablesForConfiguredStateInTempHome()
+    [Theory]
+    [InlineData("/tmp/atf")]
+    [InlineData("/home/safe/.worktrees/build/atf")]
+    [InlineData("/home/safe/atf")]
+    public void AutostartRequiresForceForUnsafeBinaryOrState(string binary)
     {
         if (!OperatingSystem.IsLinux())
         {
@@ -493,8 +496,19 @@ public sealed class SetupCommandTests
         Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = dir, ["force"] = "true" },
             NoClient, "/tmp/atf", homePath: home, interactive: false));
 
-        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["autostart"] = "on", ["apply"] = "true", ["state-dir"] = dir },
-            (_, _) => (0, ""), "/tmp/atf", homePath: home));
+        var calls = 0;
+        (int, string) Runner(string _, IReadOnlyList<string> __)
+        {
+            calls++;
+            return (0, "");
+        }
+        Assert.Equal(64, SetupCommand.Run(new Dictionary<string, string> { ["autostart"] = "on", ["apply"] = "true", ["state-dir"] = dir },
+            Runner, binary, homePath: home));
+        Assert.False(LoginAutostart.IsInstalled(home, "linux"));
+        Assert.Equal(0, calls);
+
+        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["autostart"] = "on", ["apply"] = "true", ["state-dir"] = dir, ["force"] = "true" },
+            Runner, binary, homePath: home));
         Assert.True(LoginAutostart.IsInstalled(home, "linux"));
     }
 

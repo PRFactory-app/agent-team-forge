@@ -91,11 +91,6 @@ public static class SetupCommand
             return ClientSetup.Reconcile(binary, dir, home, settingsPath, extensionPath, commandRunner, apply: false) ? 0 : 1;
         }
 
-        if (autostart is not null && !options.ContainsKey("mode"))
-        {
-            return LoginAutostart.Apply(home, binary, dir, enable: autostart == "true", commandRunner);
-        }
-
         var unsafeBinary = UnsafeRegistrationPath(executable, home);
         var unsafeState = UnsafeRegistrationPath(dir, home);
         if (!options.ContainsKey("force") && (unsafeBinary is not null || unsafeState is not null))
@@ -103,6 +98,11 @@ public static class SetupCommand
             Console.Error.WriteLine($"error: setup would write global client registrations using an unsafe {(unsafeBinary is not null ? "binary" : "state directory")} path: {unsafeBinary ?? unsafeState}");
             Console.Error.WriteLine("Use --force only if this is intentional. For testing, use atf start --state-dir DIR or atf mcp --state-dir DIR.");
             return 64;
+        }
+
+        if (autostart is not null && !options.ContainsKey("mode"))
+        {
+            return LoginAutostart.Apply(home, binary, dir, enable: autostart == "true", commandRunner);
         }
 
         if (!File.Exists(Path.Combine(dir, "profile.json")))

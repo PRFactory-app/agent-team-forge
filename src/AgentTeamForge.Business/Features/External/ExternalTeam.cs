@@ -8,7 +8,8 @@ using AgentTeamForge.DAL.Features.Wake;
 namespace AgentTeamForge.Business.Features.External;
 
 public sealed record ExternalResult(string? Error = null, JoinTicket? Ticket = null, JoinedMember? Member = null,
-    ExternalInbox? Inbox = null, long? WakeGeneration = null, bool? AlreadyLeft = null, string? Name = null)
+    ExternalInbox? Inbox = null, long? WakeGeneration = null, bool? AlreadyLeft = null, string? Name = null,
+    string? ErrorDetail = null)
 {
     public bool Ok => Error is null;
 }
@@ -107,9 +108,16 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
     {
         if (sessionId is null || workspace is null || !members.EnsureMcpTeam(sessionId, workspace, now()))
         {
-            return new("invalid_session");
+            return new("invalid_session", ErrorDetail: "No active AgentTeamForge lead session is available for send_message.");
         }
-        return SendToMember(sessionId, name, text);
+        var result = SendToMember(sessionId, name, text);
+        if (result.Error != "member_not_found")
+        {
+            return result;
+        }
+
+        var valid = members.ActiveMemberNames(sessionId);
+        return result with { ErrorDetail = $"Unknown recipient '{name}'. Valid recipients in this AgentTeamForge lead session: {(valid.Count == 0 ? "none (no external members have joined)" : string.Join(", ", valid))}." };
     }
 
     /// <summary>Send from a trusted daemon actor to a joined member; the wake scan sees only committed rows.</summary>

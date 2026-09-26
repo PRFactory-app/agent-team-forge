@@ -10,6 +10,28 @@ namespace AgentTeamForge.Tests.Features.External;
 public sealed class ExternalTeamTests
 {
     [Fact]
+    public void Lead_send_names_unknown_recipient_and_active_members()
+    {
+        using var f = new JobFixture();
+        var lead = new LeadSessionStore(f.Database).Start("/workspace/a", "lead-a");
+        var team = Team(f);
+        var noMembers = team.SendFromLead(lead.SessionId, lead.Workspace, "team-lead", "report");
+        Assert.Equal("member_not_found", noMembers.Error);
+        Assert.Contains("team-lead", noMembers.ErrorDetail);
+        Assert.Contains("none", noMembers.ErrorDetail);
+
+        var ticket = team.CreateTicket(lead.SessionId, lead.Workspace, "reviewer", null).Ticket!;
+        Assert.DoesNotContain("reviewer", team.SendFromLead(lead.SessionId, lead.Workspace, "team-lead", "report").ErrorDetail);
+        var token = team.Join(lead.SessionId, ticket.Token).Member!.MemberToken;
+        var unknown = team.SendFromLead(lead.SessionId, lead.Workspace, "team-lead", "report");
+        Assert.Equal("member_not_found", unknown.Error);
+        Assert.Contains("reviewer", unknown.ErrorDetail);
+        Assert.True(team.SendFromLead(lead.SessionId, lead.Workspace, "reviewer", "work").Ok);
+        Assert.Equal("work", Assert.Single(team.Read(token, null, null).Inbox!.Messages).Text);
+        Assert.Equal("invalid_session", team.SendFromLead(null, null, "reviewer", "report").Error);
+    }
+
+    [Fact]
     public void In_daemon_actor_can_own_team_without_mcp_lead_session()
     {
         using var f = new JobFixture();
