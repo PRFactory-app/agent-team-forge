@@ -15,15 +15,16 @@ internal static class DaemonEnvironment
         "CODEX_SANDBOX",
     ];
 
-    static readonly HashSet<string> Dropped = new(StringComparer.OrdinalIgnoreCase)
-    {
+    static readonly HashSet<string> Dropped =
+    [
+        with(StringComparer.OrdinalIgnoreCase),
         "CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_CHILD_SESSION",
         "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_SSE_PORT", "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
         "CODEX_THREAD_ID", "AGENT_NAME", "AGENT_PARENT_NAME", "AGENT_SESSION_ID",
         // An agent run by an earlier daemon carries its run marker; a daemon
         // that inherited it would be killed by its own orphan cleanup.
         "ATF_RUN_CORRELATION", "ATF_BOOTSTRAP_FILE", "ATF_DAEMON_LOG",
-    };
+    ];
 
     internal static void Scrub(IDictionary<string, string?> environment)
     {
