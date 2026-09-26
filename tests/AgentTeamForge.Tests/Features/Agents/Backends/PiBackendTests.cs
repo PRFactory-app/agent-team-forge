@@ -102,6 +102,27 @@ public sealed class PiBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task Oversized_tool_event_does_not_hide_final_answer()
+    {
+        var output = _dir.File("large.jsonl");
+        File.WriteAllLines(output,
+        [
+            """{"type":"session","id":"s1"}""",
+            """{"type":"agent_start"}""",
+            "{\"type\":\"tool_execution_end\",\"result\":\"" + new string('x', PiBackend.MaxLineBytes) + "\"}",
+            """{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}""",
+            """{"type":"agent_settled"}""",
+        ]);
+        var script = _dir.File("pi-large");
+        File.WriteAllText(script, "#!/usr/bin/env bash\ncat >/dev/null\ncat '" + output + "'\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        var evidence = await RunAsync(Request("x"), new PiBackend(script));
+
+        Assert.Contains(new BackendEvidence.Result("c1", "done"), evidence);
+    }
+
+    [Fact]
     public async Task Terminate_kills_the_owned_process_tree()
     {
         await using var run = _backend.Start(Request("x", "model=hang"));

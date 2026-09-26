@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Tests.Support;
 
@@ -117,42 +116,40 @@ public sealed class ClaudeCodeBackendTests : IDisposable
     }
 
     [Fact]
-    public async Task Oversized_output_terminates_the_owned_process()
+    public async Task Oversized_non_result_line_does_not_hide_final_result()
     {
-        var script = _dir.File("claude-overflow");
-        File.WriteAllText(script, "#!/usr/bin/env bash\ncat >/dev/null\nhead -c 4194305 /dev/zero\nsleep 30\n");
-        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        var backend = new ClaudeCodeBackend(script);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        var run = backend.Start(new BackendRequest("j-overflow", "c-overflow", "x", ""));
-        var pid = Assert.IsType<int>(run.ProcessId);
-        try
-        {
-            await run.DeliverAsync(timeout.Token);
-            List<BackendEvidence> evidence = [];
-            await foreach (var item in run.ReadEvidenceAsync(timeout.Token))
-            {
-                evidence.Add(item);
-            }
+        var output = new List<string>();
+        var backend = new ClaudeCodeBackend(FakeClaude(
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\""
+            + new string('x', ClaudeCodeBackend.MaxOutputBytes) + "\"}]}}\n"
+            + """{"type":"result","subtype":"success","is_error":false,"result":"done"}"""));
 
-            Assert.Contains(new BackendEvidence.ProtocolError("backend_output_too_large"), evidence);
-            try
-            {
-                using var child = Process.GetProcessById(pid);
-                Assert.True(child.WaitForExit(1000), "oversized output left the child running");
-            }
-            catch (ArgumentException)
-            {
-                // Already exited and reaped.
-            }
-        }
-        finally
+        var evidence = await RunAsync(backend, new BackendRequest("j-overflow", "c-overflow", "x", "")
         {
-            run.TerminateOwnedChild();
-            await run.DisposeAsync();
-        }
+            Output = (stream, bytes) =>
+            {
+                if (stream == "status")
+                {
+                    output.Add(System.Text.Encoding.UTF8.GetString(bytes.Span));
+                }
+            },
+        });
 
-        Assert.Throws<ArgumentException>(() => Process.GetProcessById(pid));
+        Assert.Contains(new BackendEvidence.Result("c-overflow", "done"), evidence);
+        Assert.Contains(output, line => line.Contains("omitted", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Oversized_final_result_is_not_accepted()
+    {
+        var backend = new ClaudeCodeBackend(FakeClaude(
+            "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\""
+            + new string('x', ClaudeCodeBackend.MaxOutputBytes) + "\"}"));
+
+        var evidence = await RunAsync(backend, new BackendRequest("j-overflow-result", "c-overflow-result", "x", ""));
+
+        Assert.Contains(new BackendEvidence.ProtocolError("backend_malformed_output"), evidence);
+        Assert.DoesNotContain(evidence, e => e is BackendEvidence.Result);
     }
 
     [Theory]

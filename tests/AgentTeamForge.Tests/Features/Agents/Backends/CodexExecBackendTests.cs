@@ -89,8 +89,22 @@ public sealed class CodexExecBackendTests : IDisposable
 
         var evidence = await RunAsync(new CodexExecBackend(codex), new BackendRequest("job-large", "corr-large", "x", "") { WorkingDirectory = _dir.Path });
 
-        Assert.Equal(new BackendEvidence.ProtocolError("backend_line_too_long"), evidence[^1]);
+        Assert.Contains(new BackendEvidence.ProtocolError("backend_malformed_output"), evidence);
         Assert.DoesNotContain(evidence, e => e is BackendEvidence.Result);
+    }
+
+    [Fact]
+    public async Task Oversized_tool_output_is_skipped_before_final_message()
+    {
+        var codex = FakeCodex(
+            $$"""{"type":"thread.started","thread_id":"{{ThreadId}}"}""",
+            "{\"type\":\"item.completed\",\"item\":{\"type\":\"command_execution\",\"aggregated_output\":\"" + new string('x', CodexExecBackend.MaxLineBytes) + "\"}}",
+            """{"type":"item.completed","item":{"type":"agent_message","text":"done"}}""",
+            """{"type":"turn.completed"}""");
+
+        var evidence = await RunAsync(new CodexExecBackend(codex), new BackendRequest("job-tool-large", "corr-tool-large", "x", ""));
+
+        Assert.Contains(new BackendEvidence.Result("corr-tool-large", "done"), evidence);
     }
 
     [Fact]

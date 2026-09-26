@@ -46,14 +46,14 @@ public sealed class JobLogsTests
         write("stdout", "first\n"u8.ToArray());
         var chunk = new byte[JobLogs.MaxReadBytes];
         Array.Fill(chunk, (byte)'x');
-        var written = logs.Read("job").EndOffset;
+        chunk[^1] = (byte)'\n';
         for (var i = 0; i < JobLogs.MaxLogBytes / chunk.Length + 2; i++)
         {
             write("stdout", chunk);
-            written += chunk.Length;
         }
         write("stderr", "tail"u8.ToArray());
-        written += "\n[stderr]\ntail".Length;
+        write("stderr", ReadOnlyMemory<byte>.Empty);
+        var written = logs.Read("job").EndOffset;
 
         var path = Path.Combine(state, "logs", "job.log");
         var bodyLength = new FileInfo(path).Length - 29;
@@ -63,7 +63,7 @@ public sealed class JobLogsTests
         Assert.Equal(written, read.EndOffset);
         Assert.Equal(read.EndOffset - bodyLength, read.StartOffset);
         Assert.Equal(read.StartOffset + 16, read.NextOffset);
-        Assert.Equal("tail", logs.Read("job", read.EndOffset - 4).Text);
+        Assert.Equal("tail\n", logs.Read("job", read.EndOffset - 5).Text);
         Assert.DoesNotContain("first", logs.Read("job", read.StartOffset).Text);
     }
 
