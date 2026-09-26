@@ -14,7 +14,8 @@ public static class FakeBehavior
         new HashSet<string>(StringComparer.Ordinal) { Complete, EofAfterAck, ExitAfterReceipt, MismatchedCorrelation, Hang, StallBeforeRead };
 }
 
-public sealed record SubmitJobRequest(string IdempotencyKey, string Instruction, string? Behavior, bool Hold);
+public sealed record SubmitJobRequest(string IdempotencyKey, string Instruction, string? Behavior, bool Hold,
+    string? WakeKey = null, long? WakeGeneration = null);
 
 /// <summary>Stable machine-readable error codes; English messages are not contract.</summary>
 public static class JobErrors

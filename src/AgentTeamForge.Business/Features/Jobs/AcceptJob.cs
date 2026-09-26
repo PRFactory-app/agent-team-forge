@@ -44,7 +44,8 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
     {
         var options = $"behavior={behavior};hold={(request.Hold ? 1 : 0)}";
         var job = new NewJob(principal.Principal, principal.Team, principal.Agent, Operation, request.IdempotencyKey,
-            Fingerprint(principal.Agent, request.Instruction, options), request.Instruction, options);
+            Fingerprint(principal.Agent, request.Instruction, options), request.Instruction, options,
+            request.WakeKey, request.WakeGeneration);
 
         AcceptOutcome outcome;
         try

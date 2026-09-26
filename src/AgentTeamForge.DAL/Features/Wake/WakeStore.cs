@@ -1,10 +1,9 @@
 using AgentTeamForge.DAL.Sqlite;
-using Microsoft.Data.Sqlite;
 
 namespace AgentTeamForge.DAL.Features.Wake;
 
 public sealed record WakeRegistration(string Key, long Generation, string Kind, string Address, string Secret, string Home);
-public sealed record WakeSnapshot(WakeRegistration Target, int Unread, long LatestSeq, long NotifiedSeq, DateTimeOffset? LastSuccess);
+public sealed record WakeSnapshot(WakeRegistration Target, int Unread, long LatestSeq, long NotifiedSeq, DateTimeOffset? LastSuccess, bool Outstanding);
 
 /// <summary>Committed wake routing and unread state. A posted notice is only a doorbell, never a read receipt.</summary>
 public sealed class WakeStore(JobDatabase database)
@@ -57,7 +56,8 @@ public sealed class WakeStore(JobDatabase database)
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT t.target_key, t.generation, t.kind, t.address, t.secret, t.home,
-                   count(w.job_id), coalesce(max(e.seq),0), t.notified_seq, t.last_success
+                   count(w.job_id), coalesce(max(e.seq),0), t.notified_seq, t.last_success,
+                   sum(CASE WHEN e.seq <= t.notified_seq THEN 1 ELSE 0 END)
             FROM wake_targets t
             JOIN wake_jobs w ON w.target_key=t.target_key AND w.read_at IS NULL
             JOIN jobs j ON j.job_id=w.job_id AND j.status IN ('completed','failed','needs_reconciliation')
@@ -70,7 +70,8 @@ public sealed class WakeStore(JobDatabase database)
         {
             var target = new WakeRegistration(reader.GetString(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetString(5));
             result.Add(new WakeSnapshot(target, reader.GetInt32(6), reader.GetInt64(7), reader.GetInt64(8),
-                reader.IsDBNull(9) ? null : DateTimeOffset.Parse(reader.GetString(9), System.Globalization.CultureInfo.InvariantCulture)));
+                reader.IsDBNull(9) ? null : DateTimeOffset.Parse(reader.GetString(9), System.Globalization.CultureInfo.InvariantCulture),
+                reader.GetInt64(10) > 0));
         }
         return result;
     }

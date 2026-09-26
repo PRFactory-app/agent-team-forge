@@ -2,6 +2,7 @@ using System.Text.Json;
 using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Hosting;
+using AgentTeamForge.Host.Features.Wake;
 using AgentTeamForge.Host.Transport;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -46,6 +47,22 @@ public static class JobsMcpBridge
     public static async Task<int> RunAsync(StateDirectory state, bool testProfile)
     {
         var client = new IpcClient(state, new SpikeLimits());
+        var wakeTarget = HostSessionWake.Resolve(state);
+        long? wakeGeneration = null;
+        async Task RegisterWakeAsync(CancellationToken cancellationToken)
+        {
+            if (wakeTarget is null || wakeGeneration is not null)
+            {
+                return;
+            }
+
+            var registration = await client.SendAsync(wakeTarget, cancellationToken);
+            if (registration.Ok)
+            {
+                wakeGeneration = registration.WakeGeneration;
+            }
+        }
+        await RegisterWakeAsync(CancellationToken.None);
         var tools = new List<Tool>
         {
             new() { Name = "job_submit", Description = "Durably submit a job to the AgentTeamForge daemon (spike).", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
@@ -64,7 +81,13 @@ public static class JobsMcpBridge
                 {
                     var call = request.Params ?? throw new InvalidOperationException("missing params");
                     var args = call.Arguments ?? new Dictionary<string, JsonElement>();
+                    await RegisterWakeAsync(cancellationToken);
                     var (ipc, rejection) = Map(call.Name, args, testProfile);
+                    if (ipc is not null && wakeTarget is not null && wakeGeneration is not null
+                        && ipc.Op is IpcProtocol.JobSubmit or IpcProtocol.JobGet)
+                    {
+                        ipc = ipc with { WakeKey = wakeTarget.WakeKey, WakeGeneration = wakeGeneration };
+                    }
                     var response = ipc is null
                         ? new IpcResponse(false, rejection)
                         : await client.SendAsync(ipc, cancellationToken);
