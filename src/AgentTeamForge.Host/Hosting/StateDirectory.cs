@@ -15,6 +15,19 @@ public sealed class StateDirectory
     public const UnixFileMode PrivateDir = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
     public const UnixFileMode PrivateFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
 
+    /// <summary>0700 on Linux; on Windows the state tree's inherited current-user ACL applies.</summary>
+    public static void CreatePrivateDirectory(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(path);
+        }
+        else
+        {
+            Directory.CreateDirectory(path, PrivateDir);
+        }
+    }
+
     /// <summary>
     /// Upper bound for operator.key (44 bytes as written by init) and profile.json
     /// (a few hundred bytes); generous headroom, but small enough that a replaced

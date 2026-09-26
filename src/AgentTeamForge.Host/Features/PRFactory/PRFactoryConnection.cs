@@ -152,7 +152,7 @@ public static class PRFactoryConnection
             {
                 Mode = FileMode.CreateNew,
                 Access = FileAccess.Write,
-                UnixCreateMode = StateDirectory.PrivateFile,
+                UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
             }))
             {
                 stream.Write(content);

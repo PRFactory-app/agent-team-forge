@@ -66,7 +66,7 @@ public static class InitCommand
         WritePrivate(state.CredentialFile, System.Text.Encoding.UTF8.GetBytes(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))));
         if (testProfile)
         {
-            Directory.CreateDirectory(state.BarrierDir, StateDirectory.PrivateDir);
+            StateDirectory.CreatePrivateDirectory(state.BarrierDir);
         }
 
         JobDatabase.Create(state.Database, profile.Limits.BusyTimeout);

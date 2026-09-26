@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Host.Hosting;
 
 namespace AgentTeamForge.Host.Features.Setup;
@@ -423,7 +424,7 @@ public static class SetupCommand
     internal static void EnableClaudeInbound(string path)
     {
         var parent = Path.GetDirectoryName(path)!;
-        Directory.CreateDirectory(parent, StateDirectory.PrivateDir);
+        StateDirectory.CreatePrivateDirectory(parent);
         using var existing = File.Exists(path)
             ? JsonDocument.Parse(File.ReadAllBytes(path), new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip })
             : null;
@@ -510,7 +511,9 @@ public static class SetupCommand
         {
             info.ArgumentList.Add("-NoProfile");
             info.ArgumentList.Add("-Command");
-            info.ArgumentList.Add("& " + string.Join(' ', new[] { tool }.Concat(args).Select(QuotePowerShell)));
+            // Keep the not-installed (127) and native exit-code contract of the direct launch.
+            info.ArgumentList.Add($"if (-not (Get-Command -Name {QuotePowerShell(tool)} -CommandType Application,ExternalScript -ErrorAction SilentlyContinue)) {{ exit 127 }}; & "
+                + string.Join(' ', new[] { tool }.Concat(args).Select(QuotePowerShell)) + "; exit $LASTEXITCODE");
         }
         else
         {
@@ -540,7 +543,7 @@ public static class SetupCommand
         ? "powershell -NoProfile -Command \"& " + string.Join(' ', new[] { tool }.Concat(args).Select(QuotePowerShell)) + "\""
         : string.Join(' ', new[] { tool }.Concat(args).Select(Quote));
 
-    static string QuotePowerShell(string value) => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
+    static string QuotePowerShell(string value) => PowerShellText.Quote(value);
 
     static string Quote(string value) => value.All(c => char.IsAsciiLetterOrDigit(c) || c is '/' or '-' or '_' or '.')
         ? value : "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";

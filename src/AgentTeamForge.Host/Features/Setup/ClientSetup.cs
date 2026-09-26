@@ -250,7 +250,7 @@ internal static class ClientSetup
 
     static void WriteObject(string path, JsonObject value)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!, StateDirectory.PrivateDir);
+        StateDirectory.CreatePrivateDirectory(Path.GetDirectoryName(path)!);
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
@@ -258,7 +258,7 @@ internal static class ClientSetup
             {
                 Mode = FileMode.CreateNew,
                 Access = FileAccess.Write,
-                UnixCreateMode = StateDirectory.PrivateFile,
+                UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
             }))
             {
                 using var writer = new Utf8JsonWriter(file, new JsonWriterOptions { Indented = true });

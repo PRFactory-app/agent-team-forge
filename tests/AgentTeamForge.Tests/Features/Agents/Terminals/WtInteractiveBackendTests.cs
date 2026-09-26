@@ -71,10 +71,39 @@ public sealed class WtInteractiveBackendTests
         var prompt = "first line; it's fine\nsecond — line";
         var wrapper = Encoding.UTF8.GetString(WtTabControl.WrapperBytes(launch, prompt, "C:\\state\\tab.pid"));
         Assert.StartsWith("\uFEFF", wrapper);
-        Assert.Contains("& 'codex' '--dangerously-bypass-approvals-and-sandbox' '-C' 'C:\\work''s repo' 'resume' 'native-1'", wrapper);
-        Assert.Contains("'first line; it''s fine\nsecond — line'", wrapper);
+        Assert.Contains("$start.FileName = 'codex'", wrapper);
+        Assert.Contains("$start.Arguments = '--dangerously-bypass-approvals-and-sandbox -C \"C:\\work''s repo\" resume native-1 \"first line; it''s fine\nsecond — line\"'", wrapper);
+        Assert.Contains("$start.WorkingDirectory = 'C:\\work''s repo'", wrapper);
         Assert.Contains("$PID | Out-File", wrapper);
         Assert.EndsWith("exit 0\r\n", wrapper);
+    }
+
+    [Fact]
+    public void TypographicQuotesCannotEndThePowerShellLiteral()
+    {
+        // PowerShell treats U+2018..U+201B as single quotes; undoubled they would end the
+        // literal and run the rest of an untrusted prompt as script.
+        Assert.Equal("'a\u2019\u2019; calc; \u2018\u2018b''c\u201A\u201A\u201B\u201B'",
+            PowerShellText.Quote("a\u2019; calc; \u2018b'c\u201A\u201B"));
+    }
+
+    [Fact]
+    public void NativeCommandLineKeepsQuotesAndBackslashesInOneArgument()
+    {
+        // Parsed back by CommandLineToArgvW: 2n backslashes + quote -> n and a delimiter,
+        // 2n+1 + quote -> n and a literal quote; other backslashes are literal.
+        Assert.Equal("plain \"\" \"say \\\"hi\\\" --flag \\\\\\\"x\" \"C:\\dir with space\\\\\"",
+            WtTabControl.CommandLine(["plain", "", "say \"hi\" --flag \\\"x", "C:\\dir with space\\"]));
+    }
+
+    [Fact]
+    public void OnlyChildrenStartedAfterTheWrapperAreOwned()
+    {
+        var wrapper = new DateTime(2026, 9, 26, 12, 0, 0, DateTimeKind.Utc);
+        Assert.True(WtTabControl.IsOwnedChild(wrapper.AddSeconds(1), wrapper));
+        // A process whose dead parent had the same PID still reports it as ParentProcessId.
+        Assert.False(WtTabControl.IsOwnedChild(wrapper.AddSeconds(-1), wrapper));
+        Assert.False(WtTabControl.IsOwnedChild(null, wrapper));
     }
 
     [Fact]

@@ -96,9 +96,14 @@ internal sealed class WtTabControl : IWtTabControl
         if (TryIdentity(tab.Pid) == tab.Created)
         {
             // Killing the agent child lets the wrapper reach exit 0, which closes its tab.
+            // Windows never reparents, so a process whose dead parent had this PID also
+            // reports it as ParentProcessId; only children started after the wrapper are ours.
             foreach (var child in DirectChildren(tab.Pid))
             {
-                KillTree(child);
+                if (IsOwnedChild(TryIdentity(child), tab.Created))
+                {
+                    KillTree(child);
+                }
             }
             for (var i = 0; i < 50 && TryIdentity(tab.Pid) == tab.Created; i++)
             {
@@ -126,7 +131,16 @@ internal sealed class WtTabControl : IWtTabControl
             "Get-ChildItem Env: | Where-Object { $_.Name -match '^(CLAUDE_CODE_|CLAUDE_TEAMS_|WIN_AGENT_TEAMS_|AGENT_)' -or $_.Name -in @('CLAUDECODE','CLAUDE_PID','CODEX_THREAD_ID') } | ForEach-Object { Remove-Item -LiteralPath ('Env:' + $_.Name) }",
             "Set-Location -LiteralPath " + Quote(launch.WorkingDirectory),
             "$PID | Out-File -FilePath " + Quote(sidecar) + " -Encoding ascii",
-            "& " + string.Join(' ', args.Select(Quote)),
+            // Windows PowerShell 5.1 does not escape embedded double quotes when it
+            // passes arguments to a native program, which splits or rewrites the
+            // prompt. Start the agent with a pre-built command line instead.
+            "$start = New-Object System.Diagnostics.ProcessStartInfo",
+            "$start.FileName = " + Quote(args[0]),
+            "$start.Arguments = " + Quote(CommandLine(args.Skip(1))),
+            "$start.WorkingDirectory = " + Quote(launch.WorkingDirectory),
+            "$start.UseShellExecute = $false",
+            "$agent = [System.Diagnostics.Process]::Start($start)",
+            "$agent.WaitForExit()",
             "exit 0"
         };
         // PowerShell 5.1 needs a UTF-8 BOM. Joining lines explicitly preserves
@@ -175,7 +189,31 @@ internal sealed class WtTabControl : IWtTabControl
         return args;
     }
 
-    static string Quote(string value) => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
+    static string Quote(string value) => PowerShellText.Quote(value);
+
+    /// <summary>Joins arguments so CommandLineToArgvW and the MSVC runtime split them back unchanged.</summary>
+    internal static string CommandLine(IEnumerable<string> args) => string.Join(' ', args.Select(arg =>
+    {
+        if (arg.Length > 0 && !arg.Any(c => c is ' ' or '\t' or '\n' or '\r' or '\v' or '"'))
+        {
+            return arg;
+        }
+
+        var quoted = new StringBuilder("\"");
+        var backslashes = 0;
+        foreach (var c in arg)
+        {
+            if (c == '\\')
+            {
+                backslashes++;
+                continue;
+            }
+            // Backslashes are literal unless they precede a quote.
+            quoted.Append('\\', c == '"' ? backslashes * 2 + 1 : backslashes).Append(c);
+            backslashes = 0;
+        }
+        return quoted.Append('\\', backslashes * 2).Append('"').ToString();
+    }));
 
     internal static string WindowsAgentBinary(string name)
     {
@@ -272,6 +310,9 @@ internal sealed class WtTabControl : IWtTabControl
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { return null; }
     }
+
+    internal static bool IsOwnedChild(DateTime? childStarted, DateTime wrapperStarted) =>
+        childStarted is { } started && started >= wrapperStarted;
 
     static int[] DirectChildren(int pid)
     {

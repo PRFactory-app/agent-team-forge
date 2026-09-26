@@ -68,7 +68,7 @@ public sealed class WtInteractiveBackend : IJobBackend
                 await tabs.StartAsync(launch, prompt, cancellationToken);
                 _launched = true;
             }
-            catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
             {
                 // wt.exe can hand the tab to an existing window before returning an error.
                 // A failed launch is uncertain, so the dispatcher must reconcile it.
