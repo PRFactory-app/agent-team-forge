@@ -29,8 +29,6 @@ public static class JobsMcpBridge
           "effort":{"type":"string","description":"Explicit effort for Claude or a raw/blank Codex/pi model. A capability tier owns its effort and ignores this override."},
           "instruction":{"type":"string","description":"Task for the agent."},
           "cwd":{"type":"string","description":"Absolute working directory for the agent (optional)."},
-          "model":{"type":"string","description":"Optional model slug (letters, digits, . _ / : + - @; cannot begin with -)."},
-          "effort":{"type":"string","description":"Optional reasoning effort (same safe option characters)."},
           "worktree":{"type":"boolean","description":"Create a private git worktree for this job from cwd's HEAD."},
           "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."},
         """ + LimitProperties;
