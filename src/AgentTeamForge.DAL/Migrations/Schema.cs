@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -63,7 +63,13 @@ static class Schema
         ALTER TABLE jobs ADD COLUMN session_id TEXT;
         """;
 
-    static readonly string[] Migrations = [V1, V2];
+    const string V3 = """
+        ALTER TABLE jobs ADD COLUMN worktree_path TEXT;
+        ALTER TABLE jobs ADD COLUMN worktree_branch TEXT;
+        ALTER TABLE jobs ADD COLUMN worktree_base TEXT;
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

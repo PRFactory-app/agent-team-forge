@@ -21,6 +21,7 @@ public static class ClientCommand
                 Hold = options.ContainsKey("hold"),
                 Backend = options.GetValueOrDefault("backend"),
                 Cwd = options.TryGetValue("cwd", out var cwd) ? Path.GetFullPath(cwd) : null,
+                Worktree = options.ContainsKey("worktree"),
             },
             "follow-up" => new IpcRequest
             {
@@ -43,7 +44,7 @@ public static class ClientCommand
         if (request is null)
         {
             Console.Error.WriteLine("usage: atf client <submit|follow-up|get|list> --state-dir DIR "
-                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT] | [--status S] [--limit N] [--cursor C]]");
+                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--worktree] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT] | [--status S] [--limit N] [--cursor C]]");
             return 64;
         }
 

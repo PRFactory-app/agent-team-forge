@@ -16,6 +16,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 {
                     Backend = request.Backend,
                     Cwd = request.Cwd,
+                    Worktree = request.Worktree,
                 }));
             case IpcProtocol.JobFollowUp:
                 return Accepted(followUp.Execute(new FollowUpRequest(request.JobId ?? string.Empty, request.Instruction ?? string.Empty, request.IdempotencyKey ?? string.Empty)));

@@ -17,6 +17,7 @@ public sealed record IpcRequest
     public string? JobId { get; init; }
     public string? Backend { get; init; }
     public string? Cwd { get; init; }
+    public bool Worktree { get; init; }
     public string? Status { get; init; }
     public int? Limit { get; init; }
     public string? Cursor { get; init; }
