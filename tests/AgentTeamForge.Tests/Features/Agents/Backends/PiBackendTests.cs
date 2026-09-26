@@ -102,6 +102,18 @@ public sealed class PiBackendTests : IDisposable
     }
 
     [Fact]
+    public void Settled_turn_without_assistant_message_has_empty_result_unless_a_line_was_skipped()
+    {
+        var settled = System.Text.Encoding.UTF8.GetBytes("""{"type":"agent_settled"}""");
+        var empty = new PiBackend.TurnState();
+        Assert.Equal([new BackendEvidence.Result("c1", "")], empty.Observe(settled, "c1"));
+
+        var skipped = new PiBackend.TurnState();
+        skipped.MarkSkippedLine();
+        Assert.Equal([new BackendEvidence.ProtocolError("backend_malformed_output")], skipped.Observe(settled, "c1"));
+    }
+
+    [Fact]
     public async Task Oversized_tool_event_does_not_hide_final_answer()
     {
         var output = _dir.File("large.jsonl");

@@ -1,15 +1,16 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using AgentTeamForge.Business.Features.Agents.Backends;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
 sealed record CapturedProcess(bool TimedOut, int ExitCode, string Stdout, bool StdoutTruncated, string Stderr, bool StderrTruncated);
 
-/// <summary>Linux process identity: PID plus kernel start time, so a reused PID is never adopted.</summary>
+/// <summary>PID plus kernel start time, so a reused PID is never adopted.</summary>
 sealed record ProcessIdentity(int Pid, ulong StartTicks);
 
-/// <summary>Subprocess and /proc boundary of <see cref="HerdrTerminal"/>; substituted by a fake in tests.</summary>
+/// <summary>Subprocess and process-inspection boundary of <see cref="HerdrTerminal"/>; substituted by a fake in tests.</summary>
 interface IHerdrProcessRunner
 {
     Task<CapturedProcess> CaptureAsync(ProcessStartInfo psi, TimeSpan timeout, int maxStdoutBytes, int maxStderrBytes, CancellationToken cancellationToken);
@@ -29,7 +30,7 @@ interface IHerdrProcessRunner
 
 /// <summary>
 /// Real runner: whole-operation deadline (exit plus output drain) and a byte cap per stream; output
-/// beyond the cap is still drained so the child never blocks on a full pipe. Linux /proc queries.
+/// beyond the cap is still drained so the child never blocks on a full pipe.
 /// </summary>
 sealed class HerdrProcessRunner : IHerdrProcessRunner
 {
@@ -81,6 +82,18 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
     public IReadOnlyList<ProcessIdentity> FindServers(string sessionName)
     {
         var result = new List<ProcessIdentity>();
+        if (OperatingSystem.IsMacOS())
+        {
+            foreach (var pid in DarwinProcess.Pids())
+            {
+                if (DarwinProcess.Arguments(pid) is { Args: [var executable, "--session", var name, "server"] }
+                    && Path.GetFileName(executable) == "herdr" && name == sessionName && Identity(pid) is { } identity)
+                {
+                    result.Add(identity);
+                }
+            }
+            return result;
+        }
         foreach (var dir in Directory.EnumerateDirectories("/proc"))
         {
             if (int.TryParse(Path.GetFileName(dir), NumberStyles.None, CultureInfo.InvariantCulture, out var pid) &&
@@ -92,16 +105,22 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
         return result;
     }
 
-    public ProcessIdentity? Identity(int pid) =>
-        Stat(pid) is { } rest && ulong.TryParse(rest[22 - 3], NumberStyles.None, CultureInfo.InvariantCulture, out var start) ? new(pid, start) : null;
+    public ProcessIdentity? Identity(int pid) => OperatingSystem.IsMacOS()
+        ? DarwinProcess.CreationToken(pid) is { } token ? new(pid, token) : null
+        : Stat(pid) is { } rest && ulong.TryParse(rest[22 - 3], NumberStyles.None, CultureInfo.InvariantCulture, out var start) ? new(pid, start) : null;
 
-    public int? ParentOf(int pid) =>
-        Stat(pid) is { } rest && int.TryParse(rest[4 - 3], NumberStyles.None, CultureInfo.InvariantCulture, out var ppid) ? ppid : null;
+    public int? ParentOf(int pid) => OperatingSystem.IsMacOS() ? DarwinProcess.ParentPid(pid)
+        : Stat(pid) is { } rest && int.TryParse(rest[4 - 3], NumberStyles.None, CultureInfo.InvariantCulture, out var ppid) ? ppid : null;
 
     public string? EnvironmentValue(int pid, string name)
     {
-        var raw = Read($"/proc/{pid}/environ");
         var prefix = name + "=";
+        if (OperatingSystem.IsMacOS())
+        {
+            return DarwinProcess.Arguments(pid)?.Environment.FirstOrDefault(e => e.StartsWith(prefix, StringComparison.Ordinal))?[prefix.Length..];
+        }
+
+        var raw = Read($"/proc/{pid}/environ");
         return raw?.Split('\0').FirstOrDefault(e => e.StartsWith(prefix, StringComparison.Ordinal))?[prefix.Length..];
     }
 

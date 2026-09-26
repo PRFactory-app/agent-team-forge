@@ -51,16 +51,17 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
 
     public async Task TickAsync(CancellationToken cancellationToken = default)
     {
-        var pending = store.Pending();
+        var pending = store.Pending().Concat(store.PendingExternal());
         var active = new HashSet<string>(StringComparer.Ordinal);
         foreach (var snapshot in pending)
         {
             var target = snapshot.Target;
-            active.Add(target.Key);
-            if (!states.TryGetValue(target.Key, out var state) || state.Generation != target.Generation)
+            var stateKey = target.Key + (snapshot.External ? ":external" : ":jobs");
+            active.Add(stateKey);
+            if (!states.TryGetValue(stateKey, out var state) || state.Generation != target.Generation)
             {
                 state = new State(target.Generation);
-                states[target.Key] = state;
+                states[stateKey] = state;
             }
             var current = now();
             if (current < state.Backoff.Until)
@@ -90,7 +91,9 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
                 continue;
             }
             // Notice-only: job IDs and result content stay in get_job.
-            var notice = $"[AgentTeamForge wake] {snapshot.Unread} completed job(s) await reading. Call list_jobs and get_job.";
+            var notice = snapshot.External
+                ? $"[AgentTeamForge wake] {snapshot.Unread} external message(s) await reading. Call external_read or read_messages."
+                : $"[AgentTeamForge wake] {snapshot.Unread} completed job(s) await reading. Call list_jobs and get_job.";
             bool posted;
             try { posted = await poster.PostAsync(target, notice, cancellationToken); }
             catch (Exception ex) when (ex is not OperationCanceledException)

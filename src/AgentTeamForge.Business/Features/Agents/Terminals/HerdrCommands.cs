@@ -42,8 +42,11 @@ static class HerdrCommands
         {
             throw new InvalidOperationException($"session {sessionName} already exists; refusing to adopt it");
         }
-        var psi = new ProcessStartInfo("setsid") { UseShellExecute = false };
-        foreach (var a in new[] { "-f", "sh", "-c", ServerScript, sessionName })
+        var psi = new ProcessStartInfo(OperatingSystem.IsMacOS() ? "/bin/sh" : "setsid") { UseShellExecute = false };
+        var args = OperatingSystem.IsMacOS()
+            ? new[] { "-c", ServerScript + " &", sessionName }
+            : ["-f", "sh", "-c", ServerScript, sessionName];
+        foreach (var a in args)
         {
             psi.ArgumentList.Add(a);
         }

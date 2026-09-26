@@ -54,6 +54,32 @@ public sealed class WorkItemTests
     }
 
     [Fact]
+    public async Task Lead_only_item_waits_for_its_job_to_finish()
+    {
+        using var dir = new TempStateDir();
+        var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var item = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            RepositoryId = Guid.NewGuid(),
+            AgentType = PRFactoryAgentType.Codex,
+            Prompt = "Do work"
+        };
+        var server = new FakeServer(item);
+        var teams = new PRFactoryTeamStore(db);
+        var job = NewJob("lead-job", "codex") with { Status = JobStatus.Running };
+        var adapter = new PRFactoryWorkItems("https://example.test", [new RepositoryMapping(item.RepositoryId, dir.Path)],
+            teams, new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
+            _ => JobResult.Ok(new JobView("lead-job", JobStatus.Running, null, null, 0), "accepted"), _ => job, () => { });
+
+        await adapter.TickAsync(null, CancellationToken.None);
+        Assert.Equal("claimed", teams.Get("https://example.test", item.Id)!.State);
+        job = job with { Status = JobStatus.Completed };
+        await adapter.TickAsync(null, CancellationToken.None);
+        Assert.Equal("completed", teams.Get("https://example.test", item.Id)!.State);
+    }
+
+    [Fact]
     public async Task Claim_team_jobs_artefacts_complete_and_restart_do_not_spawn_twice()
     {
         using var dir = new TempStateDir();

@@ -37,6 +37,7 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
         {
             info.ArgumentList.Add(argument);
         }
+        WindowsCliLaunch.Configure(info, "codex", executable == "codex");
 
         Process process;
         try
@@ -116,6 +117,7 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
                 if (line is null)
                 {
                     output?.Invoke("status", "[stdout line omitted: too large]\n"u8.ToArray());
+                    parser.MarkSkippedLine();
                     continue;
                 }
 
@@ -154,7 +156,17 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
             var skipping = false;
             while (true)
             {
-                var read = await stream.ReadAsync(chunk, cancellationToken);
+                int read;
+                Exception? failure = null;
+                try
+                {
+                    read = await stream.ReadAsync(chunk, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    read = 0;
+                    failure = ex;
+                }
                 if (read == 0)
                 {
                     if (skipping)
@@ -166,6 +178,10 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
                         yield return buffer.ToArray();
                     }
 
+                    if (failure is not null)
+                    {
+                        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(failure);
+                    }
                     yield break;
                 }
 
@@ -280,6 +296,9 @@ internal sealed class CodexEventParser(string correlation)
     string? _lastMessage;
     string? _error;
     bool _completed;
+    bool _skippedLine;
+
+    public void MarkSkippedLine() => _skippedLine = true;
 
     public IEnumerable<BackendEvidence> Parse(byte[] line)
     {
@@ -315,11 +334,11 @@ internal sealed class CodexEventParser(string correlation)
                     return [];
                 case "turn.completed":
                     _completed = true;
-                    if (_lastMessage is null)
+                    if (_lastMessage is null && _skippedLine)
                     {
                         return [new BackendEvidence.ProtocolError("backend_malformed_output")];
                     }
-                    var output = _lastMessage;
+                    var output = _lastMessage ?? string.Empty;
                     return [new BackendEvidence.Result(correlation, output.Length > CodexExecBackend.MaxResultChars ? output[..CodexExecBackend.MaxResultChars] : output)];
                 case "turn.failed":
                     return [new BackendEvidence.ProtocolError("codex_turn_failed")];

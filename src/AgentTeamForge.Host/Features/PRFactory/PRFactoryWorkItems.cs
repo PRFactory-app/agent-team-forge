@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Business.Features.External;
 using AgentTeamForge.DAL.Features.Jobs;
 
 namespace AgentTeamForge.Host.Features.PRFactory;
@@ -8,7 +9,8 @@ namespace AgentTeamForge.Host.Features.PRFactory;
 public sealed class PRFactoryWorkItems(
     string server, IReadOnlyList<RepositoryMapping> repositories, PRFactoryTeamStore teams,
     PRFactoryClient client, Func<SubmitJobRequest, JobResult> submit, Func<string, JobRecord?> getJob,
-    Action onAccepted, Func<string, string?>? leadSessionFor = null, Action<string>? log = null)
+    Action onAccepted, Func<string, string?>? leadSessionFor = null, Action<string>? log = null,
+    ExternalTeam? externalTeam = null)
 {
     public async Task TickAsync(Guid? machineId, CancellationToken ct)
     {
@@ -68,6 +70,7 @@ public sealed class PRFactoryWorkItems(
         }
         var plan = item.TeamPlan;
         var members = (plan?.Members ?? []).Where(m => !m.IsLead).OrderBy(m => m.Order).ToArray();
+        var externalNames = repo.ExternalMembers ?? [];
         if (members.Any(m => m.Name == "lead") || members.Select(m => m.Name).Distinct(StringComparer.Ordinal).Count() != members.Length
             || members.Any(m => string.IsNullOrWhiteSpace(m.Name) || m.MaxIterations is < 1)
             || (plan is not null && (plan.MaxConcurrentChildren < 0 || plan.FreeRoomCeiling < 0)))
@@ -75,15 +78,19 @@ public sealed class PRFactoryWorkItems(
             await FinishAsync(team, item, false, "invalid team recipe", repo.Directory, ct);
             return;
         }
-        if (MapBackend(item.AgentType) is null || members.Any(m => MapBackend(m.Backend ?? item.AgentType) is null))
+        if (MapBackend(item.AgentType) is null || members.Any(m => !externalNames.Contains(m.Name, StringComparer.Ordinal)
+            && MapBackend(m.Backend ?? item.AgentType) is null)
+            || externalNames.Any(name => !members.Any(m => m.Name == name))
+            || (externalNames.Length > 0 && externalTeam is null))
         {
             await FinishAsync(team, item, false, "unsupported agent backend", repo.Directory, ct);
             return;
         }
         // The recipe's free room is reserved for later command-driven turns. This slice submits
         // only declared members. MaxIterations is persisted in the claim and gates later turns.
-        var maxChildren = plan is null ? 0 : Math.Min(plan.MaxConcurrentChildren, members.Length);
-        if (members.Length > 0 && maxChildren == 0)
+        var managedMembers = members.Where(m => !externalNames.Contains(m.Name, StringComparer.Ordinal)).ToArray();
+        var maxChildren = plan is null ? 0 : Math.Min(plan.MaxConcurrentChildren, managedMembers.Length);
+        if (managedMembers.Length > 0 && maxChildren == 0)
         {
             await FinishAsync(team, item, false, "team recipe permits no concurrent children", repo.Directory, ct);
             return;
@@ -103,9 +110,28 @@ public sealed class PRFactoryWorkItems(
             return;
         }
 
+        bool externalRepliesDrained;
+        try
+        {
+            externalRepliesDrained = externalNames.Length == 0 || await AdvanceExternalAsync(item, externalNames, ct);
+        }
+        catch (PRFactoryLeaseLostException)
+        {
+            // Server cancel or reap: stop renewing join tickets and drop the item instead of retrying forever.
+            var externals = teams.ExternalMembers(server, item.Id);
+            if (externals.Count > 0)
+            {
+                externalTeam!.CloseTeam(externals[0].TeamId);
+                teams.MarkExternalClosed(server, item.Id);
+            }
+            teams.Finish(server, item.Id, "failed");
+            log?.Invoke($"PRFactory work item {item.Id:D} lease lost; external team closed");
+            return;
+        }
+
         var active = 0;
         var allJobs = new List<JobRecord> { lead };
-        foreach (var member in members)
+        foreach (var member in managedMembers)
         {
             var mapped = teams.MemberJob(server, item.Id, member.Name, 0);
             if (mapped is not null)
@@ -149,13 +175,35 @@ public sealed class PRFactoryWorkItems(
                 active++;
             }
         }
-        if (allJobs.Count != members.Length + 1 || allJobs.Any(j => j.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation))
+        var waitForManaged = managedMembers.Length > 0 || externalNames.Length == 0;
+        if (allJobs.Count != managedMembers.Length + 1 || !externalRepliesDrained
+            || (waitForManaged
+                ? allJobs.Any(j => j.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation)
+                : teams.ExternalMembers(server, item.Id).Any(e => !e.Closed)))
         {
             return;
         }
 
+        if (externalNames.Length > 0)
+        {
+            var externals = teams.ExternalMembers(server, item.Id);
+            var open = externals.Where(e => !e.Closed).ToList();
+            if (open.Count > 0)
+            {
+                // Revoke first so no reply can land after the drain; the next tick uploads the rest and closes.
+                foreach (var external in open)
+                {
+                    externalTeam!.RevokeMember(external.TeamId, external.ActualName);
+                    teams.MarkExternalClosed(server, item.Id, external.Member);
+                }
+                return;
+            }
+            externalTeam!.CloseTeam(externals[0].TeamId);
+            teams.MarkExternalClosed(server, item.Id);
+        }
         var failed = allJobs.FirstOrDefault(j => j.Status != JobStatus.Completed);
-        await FinishAsync(team, item, failed is null, failed?.ReasonCode ?? "job failed", repo.Directory, ct, lead.ResultText);
+        await FinishAsync(team, item, failed is null || !waitForManaged && lead.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation,
+            failed?.ReasonCode ?? "job failed", repo.Directory, ct, lead.ResultText);
     }
 
     JobRecord? SubmitMember(PRFactoryWorkItem item, string member,
@@ -197,6 +245,138 @@ public sealed class PRFactoryWorkItems(
         }
 
         return getJob(jobId);
+    }
+
+    async Task<bool> AdvanceExternalAsync(PRFactoryWorkItem item, string[] names, CancellationToken ct)
+    {
+        var actor = externalTeam!;
+        var owner = "prfactory:" + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes($"{server}|{item.RepositoryId:D}|{item.Id:D}")));
+        var existing = teams.ExternalMembers(server, item.Id);
+        var teamId = (existing.Count > 0 ? existing[0].TeamId : null) ?? actor.CreateActorTeam(owner)
+            ?? throw new InvalidDataException("Cannot create PRFactory actor team");
+        foreach (var name in names)
+        {
+            var external = teams.External(server, item.Id, name);
+            if (external is null)
+            {
+                var ticket = actor.CreateTicketForTeam(teamId, name, $"PRFactory work item {item.Id:D}").Ticket
+                    ?? throw new InvalidDataException("Cannot create external join ticket");
+                teams.RecordExternal(server, item.Id, name, ticket.Name, teamId, ticket.Token, ticket.ExpiresAt);
+                external = teams.External(server, item.Id, name)!;
+            }
+            if (!external.Closed && actor.RenewExpiredTicket(external.TeamId, external.ActualName) is { } renewed)
+            {
+                // An unjoined ticket expired; the fresh one appears in the private status snapshot.
+                teams.RenewExternal(server, item.Id, name, renewed.Token, renewed.ExpiresAt);
+            }
+            if (!external.TicketUploaded && !external.Closed)
+            {
+                // The ticket is a bearer secret; everyone in the tenant can read the agent stream,
+                // so publish only a notice. The owner reads the prompt via `atf prfactory status`.
+                var response = await client.UploadStreamAsync(item.Id, new PRFactoryStreamBatch(item.LeaseToken,
+                    $"join:{item.Id:N}:{name}",
+                    [new("member", teamId, name, "external", "Waiting", item.RepositoryId, "lead")],
+                    [new(name, 1, DateTimeOffset.UtcNow, "Record",
+                        $"External member {name} is waiting to join. On the connected machine run `atf prfactory status` for the private join prompt.",
+                        "join-notice")]), ct);
+                if (!response.AcceptedThroughSeq.TryGetValue(name, out var seq) || seq < 1)
+                {
+                    throw new HttpRequestException("PRFactory did not acknowledge join ticket line");
+                }
+
+                teams.MarkTicketUploaded(server, item.Id, name);
+            }
+        }
+
+        var lease = item.LeaseToken ?? throw new InvalidDataException("PRFactory external work requires a lease token");
+        var acks = new List<PRFactoryCommandAck>();
+        foreach (var command in await client.DrainCommandsAsync(item.Id, lease, ct))
+        {
+            if (!names.Contains(command.TargetAgentName, StringComparer.Ordinal))
+            {
+                continue;
+            }
+
+            var receipt = teams.CommandReceipt(server, item.Id, command.CommandId);
+            if (receipt is null)
+            {
+                if (command.Kind.Equals("SendMessage", StringComparison.OrdinalIgnoreCase))
+                {
+                    var target = teams.External(server, item.Id, command.TargetAgentName)!;
+                    if (target.Closed)
+                    {
+                        receipt = new(false, "member_closed");
+                    }
+                    else
+                    {
+                        var sent = actor.SendToMemberOnce(target.TeamId, target.ActualName, command.Text, "prfactory", command.CommandId.ToString("D"));
+                        if (sent.Error == "member_not_found" && !actor.HasLeft(target.TeamId, target.ActualName))
+                        {
+                            continue; // Await the participant joining before acknowledging.
+                        }
+
+                        receipt = new(sent.Ok, sent.Error == "member_not_found" ? "member_left" : sent.Error);
+                    }
+                }
+                else if (command.Kind.Equals("KillAgent", StringComparison.OrdinalIgnoreCase))
+                {
+                    var target = teams.External(server, item.Id, command.TargetAgentName)!;
+                    receipt = new(actor.RevokeMember(target.TeamId, target.ActualName), null);
+                    if (receipt.Accepted)
+                    {
+                        teams.MarkExternalClosed(server, item.Id, target.Member);
+                    }
+                }
+                else
+                {
+                    receipt = new(false, "unknown_kind");
+                }
+
+                teams.RecordCommand(server, item.Id, command.CommandId, receipt.Accepted, receipt.Reason);
+            }
+            acks.Add(new(command.CommandId, receipt.Accepted, receipt.Reason));
+        }
+        if (acks.Count > 0)
+        {
+            await client.AckCommandsAsync(item.Id, lease, acks, ct);
+        }
+
+        var externals = teams.ExternalMembers(server, item.Id);
+        foreach (var external in externals.Where(e => !e.Closed && actor.HasLeft(e.TeamId, e.ActualName)))
+        {
+            teams.MarkExternalClosed(server, item.Id, external.Member);
+        }
+
+        var cursor = externals.Min(e => e.ReplySeq);
+        var inbox = actor.ReadTeam(teamId, cursor, 50).Inbox;
+        if (inbox is null && externals.All(e => e.Closed))
+        {
+            return true; // The team closed after its last upload; retry remote completion.
+        }
+        if (inbox is null)
+        {
+            throw new InvalidDataException("PRFactory actor team is unavailable");
+        }
+        var lines = inbox.Messages
+            .Where(m => externals.Any(e => e.ActualName == m.From))
+            .Select(m => new PRFactoryStreamLine(externals.First(e => e.ActualName == m.From).Member,
+                m.Seq + 1, DateTimeOffset.Parse(m.CreatedAt), "Record", m.Text, "external-reply"))
+            .ToList();
+        if (lines.Count > 0)
+        {
+            var response = await client.UploadStreamAsync(item.Id, new PRFactoryStreamBatch(item.LeaseToken,
+                $"replies:{item.Id:N}:{cursor}:{inbox.NextSeq}", [], lines), ct);
+            if (lines.Any(line => !response.AcceptedThroughSeq.TryGetValue(line.AgentName, out var seq) || seq < line.Seq))
+            {
+                throw new HttpRequestException("PRFactory did not acknowledge external reply lines");
+            }
+        }
+        foreach (var external in externals)
+        {
+            teams.SetReplySeq(server, item.Id, external.Member, inbox.NextSeq);
+        }
+        return !inbox.HasMore;
     }
 
     async Task FinishAsync(PRFactoryTeamRecord team, PRFactoryWorkItem item, bool success, string error,

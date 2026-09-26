@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AgentTeamForge.Business;
 using AgentTeamForge.Host.Hosting;
+using AgentTeamForge.Host.Features.Setup;
 using AgentTeamForge.Host.Transport;
 
 namespace AgentTeamForge.Host.Features.Jobs;
@@ -17,6 +18,11 @@ public static class ClientCommand
             {
                 Console.Error.WriteLine("usage: atf client logs <id> [--follow] --state-dir DIR");
                 return 64;
+            }
+
+            if (!await EnsureDaemonAsync(state))
+            {
+                return 1;
             }
 
             return await LogsAsync(state, id, options.ContainsKey("follow"));
@@ -68,9 +74,20 @@ public static class ClientCommand
             return 64;
         }
 
+        if (!await EnsureDaemonAsync(state))
+        {
+            return 1;
+        }
+
         var response = await new IpcClient(state, new SpikeLimits()).SendAsync(request, CancellationToken.None);
         Console.Out.WriteLine(JsonSerializer.Serialize(response, IpcJson.Default.IpcResponse));
         return response.Ok ? 0 : 1;
+    }
+
+    static async Task<bool> EnsureDaemonAsync(StateDirectory state)
+    {
+        _ = StateDirectory.ReadPrivateFile(state.CredentialFile);
+        return await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = state.Path }, quiet: true) == 0;
     }
 
     /// <summary>An unparsable value is sent as 0 so the daemon rejects it rather than ignoring it.</summary>

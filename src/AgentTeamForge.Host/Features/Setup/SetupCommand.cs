@@ -1,9 +1,10 @@
 using System.Diagnostics;
-using System.Globalization;
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Globalization;
+using System.Runtime.Versioning;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Host.Hosting;
@@ -21,6 +22,16 @@ public static class SetupCommand
     {
         var check = options.ContainsKey("check");
         var apply = options.ContainsKey("apply");
+        var autostart = options.GetValueOrDefault("autostart");
+        if (autostart == "on")
+        {
+            autostart = "true";
+        }
+        if (autostart is not null and not ("true" or "off"))
+        {
+            Console.Error.WriteLine("error: --autostart must be on or off");
+            return 64;
+        }
         if (check && apply)
         {
             Console.Error.WriteLine("error: --check and --apply are mutually exclusive");
@@ -32,11 +43,17 @@ public static class SetupCommand
             Console.Error.WriteLine("error: --web-port must be between 1 and 65535");
             return 64;
         }
-        if (!options.TryGetValue("mode", out var mode) || mode is not ("headless" or "herdr" or "wt"))
+        var dir = ResolveStateDir(options);
+        var mode = options.GetValueOrDefault("mode");
+        if (mode is null && Directory.Exists(dir))
         {
-            if (!check)
+            mode = ConfiguredMode(StateDirectory.Open(dir));
+        }
+        if (mode is not ("headless" or "herdr" or "terminal" or "wt") || (!check && !options.ContainsKey("mode") && !(autostart is not null && apply)))
+        {
+            if (!check && !(autostart == "off" && apply && !options.ContainsKey("mode") && mode is null))
             {
-                Console.Error.WriteLine("usage: atf setup --mode headless|herdr|wt [--web-port PORT] [--state-dir DIR] [--apply|--check]");
+                Console.Error.WriteLine("usage: atf setup --mode headless|herdr|terminal|wt [--web-port PORT] [--autostart[=off]] [--state-dir DIR] [--apply|--check]");
                 return 64;
             }
         }
@@ -46,7 +63,6 @@ public static class SetupCommand
             return 64;
         }
 
-        var dir = ResolveStateDir(options);
         var home = homePath ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var binary = ClientSetup.StableBinary(executablePath ?? Environment.ProcessPath
             ?? throw new InvalidOperationException("Executable path unavailable"), home);
@@ -54,7 +70,13 @@ public static class SetupCommand
         var settingsPath = claudeSettingsPath ?? Path.Combine(home, ".claude", "settings.json");
         if (check)
         {
+            Console.Out.WriteLine($"Login autostart: {(LoginAutostart.IsInstalled(home) ? "on" : "off")}");
             return ClientSetup.Reconcile(binary, dir, home, settingsPath, extensionPath, commandRunner, apply: false) ? 0 : 1;
+        }
+
+        if (autostart is not null && apply && !options.ContainsKey("mode"))
+        {
+            return LoginAutostart.Apply(home, binary, dir, enable: autostart == "true", commandRunner);
         }
 
         if (!File.Exists(Path.Combine(dir, "profile.json")))
@@ -72,12 +94,19 @@ public static class SetupCommand
             Console.Error.WriteLine("error: setup requires an agents profile");
             return 78;
         }
-        WriteMode(state, mode!, options.TryGetValue("web-port", out webPortText)
-            ? int.Parse(webPortText, CultureInfo.InvariantCulture) : ConfiguredWebPort(state));
+        var settings = mode == "terminal" ? SelectMacTerminal(Environment.GetEnvironmentVariable("KITTY_LISTEN_ON"), commandRunner)
+            : new LaunchModeSettings(mode!);
+        var webPort = options.TryGetValue("web-port", out webPortText)
+            ? int.Parse(webPortText, CultureInfo.InvariantCulture) : ConfiguredWebPort(state);
+        WriteMode(state, settings with { WebPort = webPort });
 
         if (apply)
         {
             if (!ClientSetup.Reconcile(binary, state.Path, home, settingsPath, extensionPath, commandRunner, apply: true))
+            {
+                return 1;
+            }
+            if (autostart is not null && LoginAutostart.Apply(home, binary, state.Path, autostart == "true", commandRunner) != 0)
             {
                 return 1;
             }
@@ -96,75 +125,104 @@ public static class SetupCommand
         }
         else
         {
-            Console.Out.WriteLine($"Launch mode: {mode}. Run: {FormatCommand(binary, ["start", "--state-dir", state.Path])}");
+            Console.Out.WriteLine($"Launch mode: {mode}{(mode == "terminal" ? " (" + settings.TerminalProvider + ")" : "")}. Run: {FormatCommand(binary, ["start", "--state-dir", state.Path])}");
         }
         return 0;
     }
 
-    public static async Task<int> StartAsync(IReadOnlyDictionary<string, string> options, string? executablePath = null)
+    public static async Task<int> StartAsync(IReadOnlyDictionary<string, string> options, string? executablePath = null, bool quiet = false)
     {
         var state = StateDirectory.Open(ResolveStateDir(options));
-        _ = SpikeProfileFile.Load(state);
-        var mode = ReadMode(state);
+        var profile = SpikeProfileFile.Load(state);
+        var mode = ConfiguredMode(state) ?? (profile.TestProfile ? "headless" : ReadMode(state));
         if (!ModeAvailable(mode))
         {
             Console.Error.WriteLine($"error: launch mode {mode} is unavailable on this platform");
             return 64;
         }
+        // Concurrent starters (several MCP bridges) queue here so only one probes and
+        // launches; a probe must never overlap a starting daemon's own lock attempt.
+        using var gate = await AcquireStartGateAsync(state);
+        if (gate is null)
+        {
+            Console.Error.WriteLine($"error: another daemon start did not finish; see {state.Path}/daemon.log");
+            return 1;
+        }
         using (var probe = DaemonLock.TryAcquire(state.LockFile))
         {
             if (probe is null)
             {
-                return PrintRunningPid(state);
+                return await WaitForReadyAsync(state, quiet);
             }
         }
 
         var binary = Path.GetFullPath(executablePath ?? Environment.ProcessPath
             ?? throw new InvalidOperationException("Executable path unavailable"));
-        if (OperatingSystem.IsWindows())
+        try
         {
-            return await StartWindowsAsync(state, binary);
+            return OperatingSystem.IsWindows()
+                ? await StartWindowsAsync(state, binary, quiet)
+                : await StartPosixAsync(state, binary, quiet);
         }
-        // setsid separates the daemon from the invoking shell; the shell only
-        // redirects its streams and then execs the real atf process.
-        var info = new ProcessStartInfo("setsid") { UseShellExecute = false };
-        info.ArgumentList.Add("sh");
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException or ArgumentException)
+        {
+            Console.Error.WriteLine($"error: daemon could not start: {ex.Message}");
+            return 1;
+        }
+    }
+
+    static async Task<int> StartPosixAsync(StateDirectory state, string binary, bool quiet)
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (OperatingSystem.IsLinux()
+            && LoginAutostart.UseSystemdUserUnit(home, ClientSetup.StableBinary(binary, home), state.Path))
+        {
+            var service = new ProcessStartInfo("systemctl")
+            {
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            service.ArgumentList.Add("--user");
+            service.ArgumentList.Add("start");
+            service.ArgumentList.Add("agentteamforge.service");
+            DaemonEnvironment.Scrub(service.Environment);
+            using var starter = Process.Start(service) ?? throw new InvalidOperationException("systemctl launch failed");
+            starter.StandardInput.Close();
+            var output = starter.StandardOutput.ReadToEndAsync();
+            var error = starter.StandardError.ReadToEndAsync();
+            await starter.WaitForExitAsync();
+            if (starter.ExitCode != 0)
+            {
+                Console.Error.WriteLine($"error: systemd user daemon start failed: {(await error).Trim()} {(await output).Trim()}".Trim());
+                return 1;
+            }
+            await Task.WhenAll(output, error);
+            return await WaitForReadyAsync(state, quiet);
+        }
+        // Linux: setsid separates the daemon from the invoking shell; the shell only
+        // redirects its streams and then execs the real atf process. Darwin has no
+        // setsid(1): sh backgrounds the daemon and exits, so the launcher PID is not
+        // the daemon's and readiness is judged by the lock owner and endpoint alone.
+        var info = new ProcessStartInfo(OperatingSystem.IsMacOS() ? "/bin/sh" : "setsid") { UseShellExecute = false };
+        if (!OperatingSystem.IsMacOS())
+        {
+            info.ArgumentList.Add("sh");
+        }
         info.ArgumentList.Add("-c");
-        info.ArgumentList.Add("umask 077; exec \"$@\" </dev/null >>\"$ATF_DAEMON_LOG\" 2>&1");
+        info.ArgumentList.Add(OperatingSystem.IsMacOS()
+            ? "umask 077; \"$@\" </dev/null >>\"$ATF_DAEMON_LOG\" 2>&1 &"
+            : "umask 077; exec \"$@\" </dev/null >>\"$ATF_DAEMON_LOG\" 2>&1");
         info.ArgumentList.Add("sh");
         info.ArgumentList.Add(binary);
         info.ArgumentList.Add("daemon");
         info.ArgumentList.Add("--state-dir");
         info.ArgumentList.Add(state.Path);
+        DaemonEnvironment.Scrub(info.Environment);
         info.Environment["ATF_DAEMON_LOG"] = Path.Combine(state.Path, "daemon.log");
         using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
-        // The daemon holds the lock for its lifetime and writes its PID under that lock.
-        for (var i = 0; i < 100; i++)
-        {
-            if (process.HasExited)
-            {
-                using var other = DaemonLock.TryAcquire(state.LockFile);
-                if (other is null)
-                {
-                    return PrintRunningPid(state);
-                }
-
-                Console.Error.WriteLine($"error: daemon exited ({process.ExitCode}); see {state.Path}/daemon.log");
-                return 1;
-            }
-
-            // Do not probe the lock here: holding it even briefly can make the
-            // starting daemon lose the race and exit. setsid/sh exec keep the PID.
-            if (DaemonLock.ReadOwnerPid(state.LockFile) == process.Id && File.Exists(state.Socket))
-            {
-                return PrintRunningPid(state);
-            }
-
-            await Task.Delay(50);
-        }
-
-        Console.Error.WriteLine("error: daemon did not become ready");
-        return 1;
+        return await WaitForReadyAsync(state, quiet, OperatingSystem.IsMacOS() ? null : process);
     }
 
     public static int Stop(IReadOnlyDictionary<string, string> options)
@@ -185,6 +243,33 @@ public static class SetupCommand
         if (pid is null)
         {
             Console.Error.WriteLine("error: daemon lock is held but its PID is unavailable");
+            return 1;
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            var token = DarwinProcess.CreationToken(pid.Value);
+            if (token is null)
+            {
+                return StoppedDuringCheck(state);
+            }
+
+            if (!IsOurDaemon(pid.Value, state.Path))
+            {
+                Console.Error.WriteLine("error: lock PID is not this state's atf daemon; no signal sent");
+                return 1;
+            }
+            if (!DarwinProcess.SignalIfSame(pid.Value, token.Value, Native.SigTerm))
+            {
+                return StoppedDuringCheck(state);
+            }
+
+            for (var i = 0; i < 50; i++)
+            {
+                if (LockIsFree(state)) { Console.Out.WriteLine($"Stopped daemon {pid.Value}."); return 0; }
+                Thread.Sleep(100);
+            }
+            Console.Error.WriteLine($"error: daemon {pid.Value} did not stop within 5 seconds");
             return 1;
         }
 
@@ -238,35 +323,79 @@ public static class SetupCommand
         return 1;
     }
 
-    static async Task<int> StartWindowsAsync(StateDirectory state, string binary)
+    [SupportedOSPlatform("windows")]
+    static async Task<int> StartWindowsAsync(StateDirectory state, string binary, bool quiet)
     {
-        var info = new ProcessStartInfo(binary) { UseShellExecute = false, CreateNoWindow = true };
-        info.ArgumentList.Add("daemon");
-        info.ArgumentList.Add("--state-dir");
-        info.ArgumentList.Add(state.Path);
-        using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
-        for (var i = 0; i < 100; i++)
+        using var process = WindowsDaemonLauncher.Start(binary, state.Path);
+        return await WaitForReadyAsync(state, quiet, process);
+    }
+
+    static async Task<int> WaitForReadyAsync(StateDirectory state, bool quiet, Process? launched = null)
+    {
+        for (var i = 0; i < 200; i++)
         {
-            if (process.HasExited)
+            var pid = DaemonLock.ReadOwnerPid(state.LockFile);
+            if (pid is > 0 && (launched is null || pid != launched.Id || OperatingSystem.IsWindows() || ReadyLogged(state, pid.Value))
+                && await EndpointReadyAsync(state))
             {
-                Console.Error.WriteLine($"error: daemon exited ({process.ExitCode})");
-                return 1;
+                return PrintRunningPid(state, quiet);
             }
-            if (DaemonLock.ReadOwnerPid(state.LockFile) == process.Id)
+            if (launched?.HasExited == true)
             {
-                using var pipe = new NamedPipeClientStream(".", state.Socket, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-                try
+                using var other = DaemonLock.TryAcquire(state.LockFile);
+                if (other is not null)
                 {
-                    await pipe.ConnectAsync(50);
-                    return PrintRunningPid(state);
+                    Console.Error.WriteLine($"error: daemon exited ({launched.ExitCode}); see {state.Path}/daemon.log");
+                    return 1;
                 }
-                catch (TimeoutException) { }
-                catch (IOException) { }
             }
             await Task.Delay(50);
         }
-        Console.Error.WriteLine("error: daemon did not become ready");
+        Console.Error.WriteLine($"error: daemon did not become ready; see {state.Path}/daemon.log");
         return 1;
+    }
+
+    static async Task<DaemonLock?> AcquireStartGateAsync(StateDirectory state)
+    {
+        for (var i = 0; i < 300; i++)
+        {
+            if (DaemonLock.TryAcquire(Path.Combine(state.Path, "start.lock")) is { } gate)
+            {
+                return gate;
+            }
+            await Task.Delay(50);
+        }
+        return null;
+    }
+
+    static bool ReadyLogged(StateDirectory state, int pid)
+    {
+        try
+        {
+            return File.Exists(Path.Combine(state.Path, "daemon.log")) && File.ReadLines(Path.Combine(state.Path, "daemon.log"))
+                .Any(line => line == $"[atf-daemon] ready pid={pid}");
+        }
+        catch (IOException) { return false; }
+    }
+
+    static async Task<bool> EndpointReadyAsync(StateDirectory state)
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                using var pipe = new NamedPipeClientStream(".", state.Socket, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                await pipe.ConnectAsync(50);
+            }
+            else
+            {
+                using var socket = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.Unix, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Unspecified);
+                using var timeout = new CancellationTokenSource(50);
+                await socket.ConnectAsync(new System.Net.Sockets.UnixDomainSocketEndPoint(state.Socket), timeout.Token);
+            }
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or OperationCanceledException or TimeoutException) { return false; }
     }
 
     static int StopWindows(StateDirectory state)
@@ -285,6 +414,8 @@ public static class SetupCommand
         try
         {
             using var process = Process.GetProcessById(pid.Value);
+            // Settle owned agents first so their PowerShell wrappers close their tabs.
+            _ = WtInteractiveBackend.RecoverOwned(state.Path);
             process.Kill();
             process.WaitForExit(5000);
             Console.Out.WriteLine($"Stopped daemon {pid.Value}.");
@@ -334,6 +465,21 @@ public static class SetupCommand
 
     static bool IsOurDaemon(int pid, string statePath)
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            try
+            {
+                var args = DarwinProcess.Arguments(pid)?.Args;
+                return args is { Length: >= 4 } && Path.GetFileName(args[0]) == "atf"
+                    && args[1] == "daemon" && args[2] == "--state-dir"
+                    && Path.IsPathFullyQualified(args[3])
+                    && Path.TrimEndingDirectorySeparator(Path.GetFullPath(args[3])) == Path.TrimEndingDirectorySeparator(statePath);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                return false;
+            }
+        }
         try
         {
             var proc = $"/proc/{pid}";
@@ -389,7 +535,7 @@ public static class SetupCommand
             : Path.Combine(Environment.GetEnvironmentVariable("XDG_STATE_HOME") is { Length: > 0 } xdg ? xdg :
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state"), "agentteamforge"));
 
-    static int PrintRunningPid(StateDirectory state)
+    static int PrintRunningPid(StateDirectory state, bool quiet = false)
     {
         var pid = DaemonLock.ReadOwnerPid(state.LockFile);
         if (pid is null)
@@ -398,11 +544,14 @@ public static class SetupCommand
             return 1;
         }
 
-        Console.Out.WriteLine(pid.Value);
+        if (!quiet)
+        {
+            Console.Out.WriteLine(pid.Value);
+        }
         return 0;
     }
 
-    static void WriteMode(StateDirectory state, string mode, int webPort)
+    static void WriteMode(StateDirectory state, LaunchModeSettings settings)
     {
         var path = Path.Combine(state.Path, SettingsFile);
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -415,7 +564,7 @@ public static class SetupCommand
                 UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
             }))
             {
-                JsonSerializer.Serialize(file, new LaunchModeSettings(mode) { WebPort = webPort }, SetupCommandJson.Default.LaunchModeSettings);
+                JsonSerializer.Serialize(file, settings, SetupCommandJson.Default.LaunchModeSettings);
                 file.Flush(flushToDisk: true);
             }
 
@@ -486,37 +635,66 @@ public static class SetupCommand
         }
     }
 
-    static string ReadMode(StateDirectory state)
-    {
-        var settings = ReadSettings(state);
-        if (settings.Mode is not ("headless" or "herdr" or "wt"))
-        {
-            throw new StateDirectoryException("launch_mode_invalid");
-        }
-
-        return settings.Mode;
-    }
-
     static LaunchModeSettings ReadSettings(StateDirectory state)
     {
         var path = Path.Combine(state.Path, SettingsFile);
         var settings = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(path), SetupCommandJson.Default.LaunchModeSettings);
-        if (settings?.WebPort is not (>= 1 and <= 65535))
+        if (settings?.Mode is not ("headless" or "herdr" or "terminal" or "wt")
+            || settings.Mode == "terminal" && (settings.TerminalProvider is not ("terminal" or "kitty")
+                || settings.TerminalProvider == "kitty" && (settings.KittyAddress is null || settings.KittyBinary is null))
+            || settings.WebPort is not (>= 1 and <= 65535))
         {
-            throw new StateDirectoryException("web_port_invalid");
+            throw new StateDirectoryException("launch_mode_invalid");
         }
+
         return settings;
+    }
+
+    static string ReadMode(StateDirectory state) => ReadSettings(state).Mode;
+
+    internal static LaunchModeSettings SelectMacTerminal(string? address,
+        Func<string, IReadOnlyList<string>, (int ExitCode, string Output)> runner, string? kittyBinary = null)
+    {
+        if (address is { Length: > 0 } && address.StartsWith("unix:", StringComparison.Ordinal)
+            && (kittyBinary ?? FindExecutable("kitty")) is { } binary)
+        {
+            try
+            {
+                if (runner(binary, ["@", "--to", address, "ls"]).ExitCode == 0)
+                {
+                    return new("terminal", "kitty", address, binary);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception) { }
+        }
+        return new("terminal", "terminal");
+    }
+
+    static string? FindExecutable(string name)
+    {
+        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+        {
+            if (directory.Length > 0 && File.Exists(Path.Combine(directory, name)))
+            {
+                return Path.Combine(directory, name);
+            }
+        }
+        return null;
     }
 
     static bool ModeAvailable(string mode) => mode switch
     {
         "wt" => OperatingSystem.IsWindows(),
-        "herdr" => OperatingSystem.IsLinux(),
+        "terminal" => OperatingSystem.IsMacOS(),
+        "herdr" => OperatingSystem.IsLinux() || OperatingSystem.IsMacOS(),
         _ => true,
     };
 
     internal static string? ConfiguredMode(StateDirectory state) =>
         File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadMode(state) : null;
+
+    internal static LaunchModeSettings? ConfiguredTerminal(StateDirectory state) =>
+        File.Exists(Path.Combine(state.Path, SettingsFile)) && ReadSettings(state) is { Mode: "terminal" } settings ? settings : null;
 
     public static int ConfiguredWebPort(StateDirectory state) =>
         File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadSettings(state).WebPort : DefaultWebPort;
@@ -571,7 +749,7 @@ public static class SetupCommand
         ? value : "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
 }
 
-public sealed record LaunchModeSettings(string Mode)
+public sealed record LaunchModeSettings(string Mode, string? TerminalProvider = null, string? KittyAddress = null, string? KittyBinary = null)
 {
     public int WebPort { get; init; } = SetupCommand.DefaultWebPort;
 }

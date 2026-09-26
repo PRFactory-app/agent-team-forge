@@ -53,6 +53,11 @@ public sealed class IpcClient
         {
             if (OperatingSystem.IsWindows())
             {
+                // ConnectAsync polls an absent pipe until the deadline; a missing daemon must fail fast.
+                if (!await WindowsPipe.AppearsAsync(() => WindowsPipe.Exists(_state.Socket), TimeSpan.FromMilliseconds(250), deadline.Token))
+                {
+                    return new IpcResponse(false, IpcProtocol.DaemonUnavailable);
+                }
                 await using var pipe = new NamedPipeClientStream(".", _state.Socket, PipeDirection.InOut,
                     PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                 using var abort = deadline.Token.Register(pipe.Dispose);

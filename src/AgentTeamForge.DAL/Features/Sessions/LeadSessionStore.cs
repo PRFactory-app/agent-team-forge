@@ -61,7 +61,7 @@ public sealed class LeadSessionStore(JobDatabase database)
         // session, so a bridge restart under the same parent re-adopts it, not the
         // empty session it started with.
         command.CommandText = """
-            UPDATE lead_sessions SET binding_key=$binding, updated_at=$now WHERE session_id=$id AND workspace=$workspace;
+            UPDATE lead_sessions SET binding_key=$binding, updated_at=$now WHERE session_id=$id AND workspace=$workspace AND closed_at IS NULL;
             SELECT changes();
             """;
         command.Parameters.AddWithValue("$binding", bindingKey);
@@ -97,6 +97,36 @@ public sealed class LeadSessionStore(JobDatabase database)
 
     public bool Exists(string id, string workspace) => Info(id, workspace) is not null;
 
+    /// <summary>Explicitly close a lead. Joined tokens are revoked in the same transaction.</summary>
+    public bool Close(string id, string workspace)
+    {
+        using var connection = database.OpenConnection();
+        using var tx = connection.BeginTransaction(deferred: false);
+        using var command = connection.CreateCommand();
+        command.Transaction = tx;
+        command.CommandText = """
+            UPDATE lead_sessions SET closed_at=$now,binding_key='',wake_key=NULL
+            WHERE session_id=$id AND workspace=$workspace AND closed_at IS NULL
+            """;
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$id", id);
+        command.Parameters.AddWithValue("$workspace", workspace);
+        if (command.ExecuteNonQuery() != 1)
+        {
+            return false;
+        }
+
+        command.CommandText = """
+            UPDATE external_teams SET closed_at=$now,wake_key=NULL WHERE lead_session_id=$id AND closed_at IS NULL;
+            UPDATE external_members SET active=0,left_at=$now,wake_key=NULL
+            WHERE team_id=$id AND left_at IS NULL;
+            UPDATE external_messages SET wake_key=NULL,read_at=COALESCE(read_at,$now) WHERE team_id=$id;
+            """;
+        command.ExecuteNonQuery();
+        tx.Commit();
+        return true;
+    }
+
     /// <summary>Move unread notices to the current bridge after a restart or late wake registration.</summary>
     public void BindWake(string id, string key, long generation)
     {
@@ -105,7 +135,9 @@ public sealed class LeadSessionStore(JobDatabase database)
         using var command = connection.CreateCommand();
         command.Transaction = tx;
         command.CommandText = """
-            UPDATE lead_sessions SET wake_key=$key WHERE session_id=$id
+            UPDATE lead_sessions SET wake_key=$key WHERE session_id=$id AND closed_at IS NULL
+            AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
+            UPDATE external_teams SET wake_key=$key WHERE lead_session_id=$id AND closed_at IS NULL
             AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
             UPDATE wake_jobs SET target_key=$key, read_at=NULL WHERE job_id IN
                 (SELECT job_id FROM jobs WHERE lead_session_id=$id)
@@ -114,6 +146,8 @@ public sealed class LeadSessionStore(JobDatabase database)
                 SELECT j.job_id,$key FROM jobs j WHERE j.lead_session_id=$id
                 AND NOT EXISTS (SELECT 1 FROM wake_jobs w WHERE w.job_id=j.job_id)
                 AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
+            UPDATE external_messages SET wake_key=$key WHERE team_id=$id AND recipient='lead'
+                AND read_at IS NULL AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
             """;
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$key", key);
@@ -128,7 +162,7 @@ public sealed class LeadSessionStore(JobDatabase database)
         command.CommandText = """
             SELECT s.session_id,s.binding_key,s.lead_token,s.updated_at,count(j.job_id)
             FROM lead_sessions s LEFT JOIN jobs j ON j.lead_session_id=s.session_id
-            WHERE s.workspace=$workspace GROUP BY s.session_id ORDER BY s.updated_at DESC
+            WHERE s.workspace=$workspace AND s.closed_at IS NULL GROUP BY s.session_id ORDER BY s.updated_at DESC
             """;
         command.Parameters.AddWithValue("$workspace", workspace);
         using var reader = command.ExecuteReader();

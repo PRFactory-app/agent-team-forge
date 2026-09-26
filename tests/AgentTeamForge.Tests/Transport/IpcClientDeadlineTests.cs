@@ -23,6 +23,16 @@ public sealed class IpcClientDeadlineTests
     static readonly IpcRequest Submit = new() { Op = IpcProtocol.JobSubmit, IdempotencyKey = "k", Instruction = "x" };
 
     [Fact]
+    public async Task Absent_windows_pipe_is_detected_after_a_short_grace_not_the_budget()
+    {
+        var watch = Stopwatch.StartNew();
+        Assert.False(await WindowsPipe.AppearsAsync(() => false, TimeSpan.FromMilliseconds(100), CancellationToken.None));
+        Assert.True(watch.Elapsed < Slack);
+        var probes = 0;
+        Assert.True(await WindowsPipe.AppearsAsync(() => ++probes > 2, TimeSpan.FromSeconds(5), CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Peer_that_never_accepts_is_bounded_and_provably_unsent()
     {
         using var peer = new FakePeer(accept: false);

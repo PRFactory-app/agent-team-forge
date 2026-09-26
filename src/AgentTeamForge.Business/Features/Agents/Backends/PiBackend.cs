@@ -38,6 +38,7 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
         {
             info.ArgumentList.Add(argument);
         }
+        WindowsCliLaunch.Configure(info, "pi", executable == "pi");
 
         Process process;
         try
@@ -119,7 +120,11 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
 
             var turn = new TurnState();
             await foreach (var line in ReadLinesAsync(_stdout, cancellationToken,
-                () => output?.Invoke("status", "[stdout line omitted: too large]\n"u8.ToArray())))
+                () =>
+                {
+                    turn.MarkSkippedLine();
+                    output?.Invoke("status", "[stdout line omitted: too large]\n"u8.ToArray());
+                }))
             {
                 foreach (var evidence in turn.Observe(line, correlation))
                 {
@@ -194,6 +199,9 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
         bool _finished;
         string? _text;
         string? _stopReason;
+        bool _skippedLine;
+
+        public void MarkSkippedLine() => _skippedLine = true;
 
         public IEnumerable<BackendEvidence> Observe(ReadOnlyMemory<byte> line, string correlation)
         {
@@ -246,7 +254,8 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
             _finished = true;
             return (_text, _stopReason) switch
             {
-                (null, _) => new BackendEvidence.ProtocolError("pi_no_result"),
+                (null, _) when _skippedLine => new BackendEvidence.ProtocolError("backend_malformed_output"),
+                (null, _) => new BackendEvidence.Result(correlation, string.Empty),
                 (_, "error" or "aborted") => new BackendEvidence.ProtocolError("pi_" + _stopReason),
                 ({ Length: > MaxResultChars }, _) => new BackendEvidence.ProtocolError("backend_result_too_long"),
                 var (text, _) => new BackendEvidence.Result(correlation, text),
@@ -299,7 +308,17 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
         var skipping = false;
         while (true)
         {
-            var read = await stream.ReadAsync(chunk, cancellationToken);
+            int read;
+            Exception? failure = null;
+            try
+            {
+                read = await stream.ReadAsync(chunk, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                read = 0;
+                failure = ex;
+            }
             if (read == 0)
             {
                 if (skipping)
@@ -311,6 +330,10 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
                     yield return buffer.ToArray();
                 }
 
+                if (failure is not null)
+                {
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(failure);
+                }
                 yield break;
             }
 

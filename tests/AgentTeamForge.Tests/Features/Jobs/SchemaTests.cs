@@ -121,6 +121,21 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE external_sender_cursors;
+                DROP INDEX external_messages_sender_position;
+                ALTER TABLE external_messages DROP COLUMN sender_seq;
+                DELETE FROM schema_migrations WHERE version=11;
+                DROP TABLE prfactory_command_receipts;
+                DROP TABLE external_delivery_keys;
+                DROP TABLE prfactory_external;
+                DELETE FROM schema_migrations WHERE version=10;
+                DROP TABLE external_messages;
+                DROP TABLE external_members;
+                DROP TABLE external_teams;
+                ALTER TABLE wake_targets DROP COLUMN external_notified_seq;
+                ALTER TABLE wake_targets DROP COLUMN last_external_success;
+                ALTER TABLE lead_sessions DROP COLUMN closed_at;
+                DELETE FROM schema_migrations WHERE version=9;
                 DROP TABLE prfactory_members;
                 DROP TABLE prfactory_teams;
                 DELETE FROM schema_migrations WHERE version=8;
@@ -146,6 +161,39 @@ public sealed class SchemaTests
         query.CommandText = "PRAGMA foreign_key_check";
         using var violations = query.ExecuteReader();
         Assert.False(violations.Read());
+    }
+
+    [Fact]
+    public void Version_10_external_messages_gain_stable_sender_positions_and_cursor()
+    {
+        using var dir = new TempStateDir();
+        var path = dir.File("jobs.db");
+        JobDatabase.Create(path, TimeSpan.FromSeconds(1));
+        using (var connection = new SqliteConnection($"Data Source={path};Pooling=False"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                DROP TABLE external_sender_cursors;
+                DROP INDEX external_messages_sender_position;
+                ALTER TABLE external_messages DROP COLUMN sender_seq;
+                DELETE FROM schema_migrations WHERE version=11;
+                INSERT INTO external_teams(team_id,owner_key,created_at) VALUES ('team','owner','old');
+                INSERT INTO external_messages(team_id,sender,recipient,text,created_at,read_at)
+                VALUES ('team','agent','lead','one','old','old'),
+                       ('team','agent','lead','two','old',NULL);
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        JobDatabase.Open(path, TimeSpan.FromSeconds(1));
+        using var check = new SqliteConnection($"Data Source={path};Pooling=False");
+        check.Open();
+        using var query = check.CreateCommand();
+        query.CommandText = "SELECT group_concat(sender_seq, ',') FROM (SELECT sender_seq FROM external_messages ORDER BY seq)";
+        Assert.Equal("1,2", query.ExecuteScalar());
+        query.CommandText = "SELECT high_water || ',' || cursor FROM external_sender_cursors WHERE team_id='team' AND recipient='lead' AND sender='agent'";
+        Assert.Equal("2,1", query.ExecuteScalar());
     }
 
     [Fact]

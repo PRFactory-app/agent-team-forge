@@ -1,6 +1,23 @@
 # Linux quickstart
 
-Windows Terminal (`wt`) mode: **ported, untested on Windows**. Windows validation remains on a Windows machine.
+Windows Terminal (`wt`) mode and its console retry, owned-tab cleanup, Windows
+hooks, Pi wake extension, shim launch, and private-file ACL checks are **ported,
+untested on Windows**. Windows validation remains on a Windows machine.
+
+macOS arm64: **prepared, untested**. Install the `osx-arm64` release bundle with
+`install.sh`, then run `atf setup --mode terminal --apply` and `atf start`.
+Terminal.app is the default host and needs no extra install. Its AppleScript
+`do script` launch may open a window rather than a tab; the tester should check
+the placement. If kitty is
+running with a `KITTY_LISTEN_ON=unix:...` remote-control socket and responds
+to `kitty @ --to "$KITTY_LISTEN_ON" ls` during setup, setup selects kitty tabs.
+The selected host is saved for daemon restarts; if kitty later becomes
+unavailable, jobs report a launch failure rather than switching hosts.
+`atf setup --mode herdr --apply` is also available after `brew install herdr`;
+`atf setup --mode headless --apply` selects background agents. Claude native
+wake is unavailable on macOS; poll `get_job`
+to check for results. Please report the daemon log and `atf doctor` output from
+the volunteer run.
 
 ## Build or publish
 
@@ -23,6 +40,9 @@ The pinned SDK is `11.0.100-rc.1.26425.128`; Native AOT needs Linux compiler/lin
 
 ## Set up and run
 
+Install once; the daemon starts on first agent use or CLI client call. To start
+it at login instead, add `--autostart` to setup. Login autostart is off by default.
+
 Setup requires `--mode`; a fresh headless setup creates a real-agent profile.
 `--apply` registers both MCP clients and sets `crossSessionInbound` to `accept`
 in Claude's `~/.claude/settings.json`, preserving existing settings. Install
@@ -30,10 +50,13 @@ both client CLIs first; log in to each backend CLI you plan to use:
 
 ~~~bash
 atf setup --mode headless --apply
-atf start
 ~~~
 
-For visible interactive agents, run `atf setup --mode herdr --apply` with Herdr installed, then `atf start`.
+For visible interactive agents, run `atf setup --mode herdr --apply` with Herdr installed.
+To enable login startup after setup, run `atf setup --autostart --apply`. To
+remove it, run `atf setup --autostart=off --apply`; `atf doctor` reports whether
+it is installed. `atf start` remains available when you want to start the
+daemon explicitly.
 
 State defaults to `$XDG_STATE_HOME/agentteamforge` or
 `~/.local/state/agentteamforge` if unset; pass one `--state-dir DIR` to override:
@@ -41,7 +64,6 @@ State defaults to `$XDG_STATE_HOME/agentteamforge` or
 ~~~bash
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agentteamforge"
 atf setup --mode headless --state-dir "$STATE" --apply
-atf start --state-dir "$STATE"
 ~~~
 
 `atf start` prints its PID and is safe to repeat. It runs up to 8 jobs
@@ -88,6 +110,38 @@ ATF="$(command -v atf)"
 claude mcp add --scope user agentteamforge -- "$ATF" mcp --state-dir "$STATE"
 codex mcp add agentteamforge -- "$ATF" mcp --state-dir "$STATE"
 ~~~
+
+## Join a Claude lead from Codex Desktop
+
+The Claude Code lead uses its normal `agentteamforge` MCP entry. Add a second,
+restricted MCP entry for the manually started Codex Desktop session, using the
+same ATF daemon state directory and an absolute `atf` apphost path:
+
+~~~bash
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agentteamforge"
+ATF="$(realpath "$(command -v atf)")"
+codex mcp add --env ATF_EXTERNAL_ONLY=1 agentteamforge-external -- \
+  "$ATF" mcp --state-dir "$STATE"
+~~~
+
+Restart or reload Codex Desktop so it sees `agentteamforge-external`. That entry
+offers only `join_team`, `external_read`, `external_send`, `external_set_wake`,
+and `leave_team`; it does not create a lead session. In the Claude lead, call
+`create_join_ticket(name="codex-desktop")` and paste its `join_prompt` into the
+Codex Desktop conversation. Codex calls `join_team(session_id=..., token=...)`
+once and saves the returned `member_token`. The ticket expires after ten minutes
+and cannot be reused.
+
+For Codex queue notices, read the current Desktop conversation's
+`CODEX_THREAD_ID` and absolute `CODEX_HOME` in that session, then call
+`external_set_wake(member_token=..., codex_thread_id=..., codex_home=...)`.
+The lead sends work with `send_message(to="codex-desktop", text="...")`.
+Codex receives a notice to call `external_read(member_token=...)`, then replies
+with `external_send(member_token=..., text="...")`. The lead calls
+`read_messages()` for the reply. The queue notice is best effort, so
+`external_read` remains the fallback. `follow_up_agent` in win-agent-teams
+does not resume an external member; `send_message` is its pull-inbox path.
+Call `leave_team(member_token=...)` only when leaving permanently.
 
 ## Submit and inspect jobs
 

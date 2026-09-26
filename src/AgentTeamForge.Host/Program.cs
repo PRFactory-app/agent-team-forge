@@ -37,6 +37,8 @@ try
                 options.GetValueOrDefault("backends"));
         case "setup":
             return SetupCommand.Run(options);
+        case "terminal-token":
+            return TerminalTokenCommand.Run(options);
         case "doctor":
             options["check"] = "true";
             return SetupCommand.Run(options);
@@ -55,8 +57,8 @@ try
         case "mcp" when options.TryGetValue("state-dir", out var mcpDir):
             var mcpState = StateDirectory.Open(mcpDir);
             return await JobsMcpBridge.RunAsync(mcpState, SpikeProfileFile.Load(mcpState).TestProfile);
-        case "web":
-            return WebConsoleCommand.Run(StateDirectory.Open(SetupCommand.ResolveStateDir(options)), options);
+        case "web" when options.TryGetValue("state-dir", out var webDir):
+            return WebConsoleCommand.Run(StateDirectory.Open(webDir), options);
         case "client" when args.Length > 1 && options.TryGetValue("state-dir", out var clientDir):
             return await ClientCommand.RunAsync(StateDirectory.Open(clientDir), args[1], options,
                 args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordinal) ? args[2] : null);
@@ -72,7 +74,7 @@ catch (StateDirectoryException ex)
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: atf --version | setup --mode headless|herdr|wt [--web-port PORT] [--state-dir DIR] [--apply|--check] | doctor [--state-dir DIR] | start|stop [--state-dir DIR] | web [--open] [--rotate-token] [--state-dir DIR] | uninstall [--purge] [--state-dir DIR] | prfactory connect|disconnect|status [--state-dir DIR] [--url HTTPS_URL --repo ID=DIR, token on stdin] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
+    Console.Error.WriteLine("usage: atf --version | setup --mode headless|herdr|terminal|wt [--web-port PORT] [--autostart[=off]] [--state-dir DIR] [--apply|--check] | doctor [--state-dir DIR] | start|stop [--state-dir DIR] | web [--open] [--rotate-token] [--state-dir DIR] | uninstall [--purge] [--state-dir DIR] | prfactory connect|disconnect|status [--state-dir DIR] [--url HTTPS_URL --repo ID=DIR --external ID:MEMBER, token on stdin] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
     return 64;
 }
 
@@ -87,6 +89,12 @@ static Dictionary<string, string> ParseOptions(string[] rest)
         }
 
         var name = rest[i][2..];
+        var equals = name.IndexOf('=');
+        if (equals >= 0)
+        {
+            options[name[..equals]] = name[(equals + 1)..];
+            continue;
+        }
         var hasValue = i + 1 < rest.Length && !rest[i + 1].StartsWith("--", StringComparison.Ordinal);
         options[name] = hasValue ? rest[++i] : "true";
     }

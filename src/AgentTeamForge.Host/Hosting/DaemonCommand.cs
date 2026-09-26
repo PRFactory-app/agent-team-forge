@@ -5,9 +5,11 @@ using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Business.Features.External;
 using AgentTeamForge.Business.Features.Recovery;
 using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Features.External;
 using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Host.Features.FakeBackend;
@@ -28,14 +30,24 @@ public static class DaemonCommand
 {
     public static async Task<int> RunAsync(StateDirectory state, string? crashAt, string? failAt)
     {
+        if (OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("ATF_DAEMON_LOG") is { } logPath)
+        {
+            var log = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+            {
+                AutoFlush = true,
+            };
+            Console.SetOut(log);
+            Console.SetError(log);
+        }
         var profile = SpikeProfileFile.Load(state);
         var launchMode = SetupCommand.ConfiguredMode(state);
-        if (launchMode is "herdr" or "wt" && !profile.RealAgents)
+        if (launchMode is "herdr" or "terminal" or "wt" && !profile.RealAgents)
         {
             Log($"error: {launchMode} mode requires an agents profile");
             return 78;
         }
-        if (launchMode == "wt" && !OperatingSystem.IsWindows() || launchMode == "herdr" && !OperatingSystem.IsLinux())
+        if (launchMode == "wt" && !OperatingSystem.IsWindows() || launchMode == "terminal" && !OperatingSystem.IsMacOS()
+            || launchMode == "herdr" && !(OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()))
         {
             Log($"error: {launchMode} mode is unavailable on this platform");
             return 64;
@@ -46,7 +58,14 @@ public static class DaemonCommand
             return 64;
         }
 
-        using var daemonLock = DaemonLock.TryAcquire(state.LockFile);
+        // Retry briefly: a client's momentary liveness probe must not make a starting daemon give up.
+        var daemonLock = DaemonLock.TryAcquire(state.LockFile);
+        for (var attempt = 0; daemonLock is null && attempt < 20; attempt++)
+        {
+            await Task.Delay(25);
+            daemonLock = DaemonLock.TryAcquire(state.LockFile);
+        }
+        using var ownedLock = daemonLock;
         if (daemonLock is null)
         {
             // Another live daemon owns the endpoint; touch nothing.
@@ -85,7 +104,8 @@ public static class DaemonCommand
 
         var store = new JobStore(database, checkpoints);
         var jobLogs = new JobLogs(state.Path, Log, launchMode is "herdr" or "wt");
-        var prune = new PruneJob(new PruneJobs(database), state.Path);
+        var externalMembers = new ExternalMemberStore(database);
+        var prune = new PruneJob(new PruneJobs(database), state.Path, externalMembers);
         var wakeStore = new WakeStore(database);
         void RecoverHerdr()
         {
@@ -98,8 +118,20 @@ public static class DaemonCommand
             var terminal = new HerdrTerminal(new HerdrTerminalOptions { Environment = recoveryEnvironment });
             HerdrOwnedSessions.Recover(state.Path, session => terminal.RecoverOwnedSessionAsync(session, CancellationToken.None), Log);
         }
-        var quarantined = new RecoverOnStartup(store, RecoverHerdr).Execute();
+        var quarantined = new RecoverOnStartup(store, () =>
+        {
+            RecoverHerdr();
+            if (OperatingSystem.IsMacOS())
+            {
+                MacInteractiveBackend.Recover(state.Path, Log);
+            }
+        }).Execute();
         Log($"recovery: quarantined {quarantined.Count} uncertain attempt(s)");
+        if (OperatingSystem.IsWindows())
+        {
+            // Not gated on the current mode: tabs from an earlier wt setup are still ours.
+            Log($"recovery: settled {WtInteractiveBackend.RecoverOwned(state.Path)} owned Windows tab(s)");
+        }
 
         var backendEnv = new Dictionary<string, string>();
         if (profile.TestProfile)
@@ -108,7 +140,7 @@ public static class DaemonCommand
         }
 
         var backends = BackendCatalog.Create(
-            new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits), profile.RealAgents && launchMode is not ("herdr" or "wt"));
+            new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits), profile.RealAgents && launchMode is not ("herdr" or "terminal" or "wt"));
         var interactiveBackends = new List<IInteractiveSessionStop>();
         if (launchMode == "herdr")
         {
@@ -134,10 +166,23 @@ public static class DaemonCommand
             backends.Register(BackendCatalog.Codex, () => codex);
             backends.Register(BackendCatalog.Pi, () => pi);
         }
+        if (launchMode == "terminal")
+        {
+            var settings = SetupCommand.ConfiguredTerminal(state)!;
+            MacInteractiveBackend Interactive(InteractiveAgentKind kind) => new(kind, state.Path,
+                settings.TerminalProvider!, settings.KittyAddress, settings.KittyBinary);
+            var claude = Interactive(InteractiveAgentKind.Claude);
+            var codex = Interactive(InteractiveAgentKind.Codex);
+            var pi = Interactive(InteractiveAgentKind.Pi);
+            backends.Register(BackendCatalog.Claude, () => claude);
+            backends.Register(BackendCatalog.Codex, () => codex);
+            backends.Register(BackendCatalog.Pi, () => pi);
+        }
         Log($"backends: {string.Join(',', backends.Names)}");
         var admission = new AdmissionGate();
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs);
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
+        var externalTeam = new ExternalTeam(externalMembers, wakeStore);
         // Remote claims have their own lead identity and cannot borrow the local MCP lead.
         var connectorAccept = new AcceptJob(store, new BoundPrincipal("prfactory", "connector", "connector-lead"),
             limits, profile.TestProfile, admission, backends.Names);
@@ -146,7 +191,7 @@ public static class DaemonCommand
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
             new ListJobs(store, profile.Bound, jobLogs),
             new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
-            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), new StopAgent(store, profile.Bound, backends));
+            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends));
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
@@ -176,10 +221,13 @@ public static class DaemonCommand
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path), Log).RunAsync(lifetime.Token);
         var pruning = profile.AutoPrune ? RunPruneAsync(prune, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
         var prfactory = PRFactoryHeartbeat.RunAsync(state, lifetime.Token, log: Log,
-            onConnected: (client, settings, machineId, ct) =>
-                new PRFactoryWorkItems(settings.Url, settings.Repositories, connectorTeams, client,
+            onConnected: async (client, settings, machineId, ct) =>
+            {
+                await new PRFactoryWorkItems(settings.Url, settings.Repositories, connectorTeams, client,
                     connectorAccept.Execute, store.GetJob, dispatcher.Signal,
-                    cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId, Log).TickAsync(machineId, ct));
+                    cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId, Log, externalTeam).TickAsync(machineId, ct);
+                PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
+            });
         await Task.WhenAny(serving, dispatching);
 
         // The dispatcher only returns on its own when halted or faulted; it closed
