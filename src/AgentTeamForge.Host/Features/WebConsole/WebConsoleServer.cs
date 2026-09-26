@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Transport;
 using AgentTeamForge.Host.Hosting;
@@ -17,9 +18,14 @@ namespace AgentTeamForge.Host.Features.WebConsole;
 
 /// <summary>Browser follow-up body. The key comes from the page and is reused only by an explicit operator retry.</summary>
 public sealed record WebFollowUpBody(string? Instruction, string? IdempotencyKey, bool Interrupt = false);
+public sealed record WebSubmitBody(string? Backend, string? Instruction, string? IdempotencyKey, string? Cwd,
+    string? Model = null, string? Effort = null, string? LeadSessionId = null, string? Workspace = null);
+public sealed record WebJoinTicketBody(string? Name, string? Workspace, string? Note = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 [JsonSerializable(typeof(WebFollowUpBody))]
+[JsonSerializable(typeof(WebSubmitBody))]
+[JsonSerializable(typeof(WebJoinTicketBody))]
 public sealed partial class WebConsoleJson : JsonSerializerContext;
 
 /// <summary>
@@ -167,6 +173,8 @@ public sealed class WebConsoleServer : IAsyncDisposable
                 Cursor = request.Query["cursor"].Count == 0 ? null : request.Query["cursor"].ToString(),
                 OrderByActivity = true,
             },
+            ("GET", ["config"]) => new IpcRequest { Op = IpcProtocol.JobCapabilities },
+            ("POST", ["jobs"]) => await ReadSubmitAsync(ctx),
             ("GET", ["jobs", var id]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobGet, JobId = id },
             ("GET", ["jobs", var id, "output"]) when ValidId(id) => new IpcRequest
             {
@@ -185,6 +193,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
             ("POST", ["jobs", var id, "follow-up"]) when ValidId(id) => await ReadFollowUpAsync(ctx, id),
             ("POST", ["jobs", var id, "stop"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStop, JobId = id },
             ("POST", ["jobs", var id, "stop-agent"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStopAgent, JobId = id },
+            ("POST", ["leads", var id, "join-ticket"]) when Guid.TryParseExact(id, "D", out _) => await ReadJoinTicketAsync(ctx, id),
             _ => null,
         };
         if (ipc is null)
@@ -219,22 +228,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
 
     static async Task<IpcRequest?> ReadFollowUpAsync(HttpContext ctx, string jobId)
     {
-        var request = ctx.Request;
-        if (request.ContentType is not { } type || !type.StartsWith("application/json", StringComparison.OrdinalIgnoreCase)
-            || request.ContentLength is not (> 0 and <= MaxBodyBytes))
-        {
-            return null;
-        }
-
-        WebFollowUpBody? body;
-        try
-        {
-            body = await JsonSerializer.DeserializeAsync(request.Body, WebConsoleJson.Default.WebFollowUpBody, ctx.RequestAborted);
-        }
-        catch (Exception ex) when (ex is JsonException or BadHttpRequestException or IOException)
-        {
-            return null;
-        }
+        var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebFollowUpBody);
 
         if (body is not { Instruction: { Length: > 0 and <= MaxInstructionChars } instruction, IdempotencyKey: { Length: > 0 and <= MaxKeyChars } key }
             || string.IsNullOrWhiteSpace(instruction))
@@ -243,6 +237,67 @@ public sealed class WebConsoleServer : IAsyncDisposable
         }
 
         return new IpcRequest { Op = IpcProtocol.JobFollowUp, JobId = jobId, Instruction = instruction, IdempotencyKey = key, Interrupt = body.Interrupt };
+    }
+
+    static async Task<IpcRequest?> ReadSubmitAsync(HttpContext ctx)
+    {
+        var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebSubmitBody);
+        if (body is not
+            {
+                Backend: "claude" or "codex" or "pi", Instruction: { Length: > 0 and <= MaxInstructionChars } instruction,
+                IdempotencyKey: { Length: > 0 and <= MaxKeyChars } key, Cwd: { Length: > 0 and <= 4096 } cwd
+            }
+            || string.IsNullOrWhiteSpace(instruction) || !Path.IsPathFullyQualified(cwd) || !Directory.Exists(cwd)
+            || !AcceptJob.ValidOption(body.Model) || !AcceptJob.ValidOption(body.Effort)
+            || (body.LeadSessionId is null) != (body.Workspace is null)
+            || body.LeadSessionId is not null && (!Guid.TryParseExact(body.LeadSessionId, "D", out _)
+                || !Path.IsPathFullyQualified(body.Workspace!)))
+        {
+            return null;
+        }
+        return new IpcRequest
+        {
+            Op = IpcProtocol.JobSubmit,
+            Backend = body.Backend,
+            Instruction = instruction,
+            IdempotencyKey = key,
+            Cwd = cwd,
+            Model = body.Model,
+            Effort = body.Effort,
+            LeadSessionId = body.LeadSessionId,
+            Workspace = body.Workspace
+        };
+    }
+
+    static async Task<IpcRequest?> ReadJoinTicketAsync(HttpContext ctx, string leadId)
+    {
+        var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebJoinTicketBody);
+        if (body is not { Name: { Length: > 0 and <= 64 } name, Workspace: { Length: > 0 and <= 4096 } workspace }
+            || !name.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')
+            || !Path.IsPathFullyQualified(workspace) || body.Note is { Length: > 4096 })
+        {
+            return null;
+        }
+        return new IpcRequest
+        {
+            Op = IpcProtocol.ExternalTicket,
+            LeadSessionId = leadId,
+            Workspace = workspace,
+            MemberName = name,
+            Note = body.Note
+        };
+    }
+
+    static async Task<T?> ReadBodyAsync<T>(HttpContext ctx, JsonTypeInfo<T> typeInfo)
+    {
+        var request = ctx.Request;
+        if (request.ContentType is not { } type || !type.StartsWith("application/json", StringComparison.OrdinalIgnoreCase)
+            || request.ContentLength is not (> 0 and <= MaxBodyBytes))
+        {
+            return default;
+        }
+        try { return await JsonSerializer.DeserializeAsync(request.Body, typeInfo, ctx.RequestAborted); }
+        catch (Exception ex) when (ex is JsonException or BadHttpRequestException or IOException) { return default; }
     }
 
     static bool ValidId(string id) => id.Length is > 0 and <= 128 && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');

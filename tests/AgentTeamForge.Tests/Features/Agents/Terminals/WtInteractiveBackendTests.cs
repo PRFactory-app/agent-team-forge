@@ -74,10 +74,80 @@ public sealed class WtInteractiveBackendTests
         var wrapper = Encoding.UTF8.GetString(WtTabControl.WrapperBytes(launch, prompt, "C:\\state\\tab.pid"));
         Assert.StartsWith("\uFEFF", wrapper);
         Assert.Contains("$start.FileName = 'codex'", wrapper);
-        Assert.Contains("$start.Arguments = '--dangerously-bypass-approvals-and-sandbox -C \"C:\\work''s repo\" resume native-1 \"first line; it''s fine\nsecond — line\"'", wrapper);
+        Assert.Contains("$start.Arguments = '--dangerously-bypass-approvals-and-sandbox -C", wrapper);
+        Assert.Contains("resume native-1", wrapper);
+        Assert.Contains("first line; it''s fine\nsecond — line", wrapper);
         Assert.Contains("$start.WorkingDirectory = 'C:\\work''s repo'", wrapper);
-        Assert.Contains("$PID | Out-File", wrapper);
+        Assert.Contains("$PID.ToString() + '|'", wrapper);
         Assert.EndsWith("exit 0\r\n", wrapper);
+    }
+
+    [Fact]
+    public void WindowsHookAndShimArgumentsKeepThePromptOutOfCmd()
+    {
+        var hooks = WtTabControl.CodexHookArguments("C:\\state\\codex-hook.cmd");
+        Assert.Contains(hooks, value => value.Contains("commandWindows='C:\\state\\codex-hook.cmd'", StringComparison.Ordinal));
+        Assert.Contains("--dangerously-bypass-hook-trust", hooks);
+        Assert.Equal("@C:\\state\\task.txt", WtTabControl.ShimPrompt(InteractiveAgentKind.Pi, "C:\\state\\task.txt"));
+        Assert.DoesNotContain('\n', WtTabControl.ShimPrompt(InteractiveAgentKind.Claude, "C:\\state\\task.txt"));
+    }
+
+    [Fact]
+    public void HeadlessShimCommandKeepsArgumentsSeparateFromInstructionStdin()
+    {
+        var command = WindowsCliLaunch.PowerShellCommand("C:\\Program Files\\pi.cmd", ["--model", "a model"]);
+        Assert.Contains("& 'C:\\Program Files\\pi.cmd' '--model' 'a model'", command);
+        Assert.DoesNotContain("task instruction", command);
+    }
+
+    [Theory]
+    [InlineData("gpt&calc")]
+    [InlineData("C:\\repo|x")]
+    [InlineData("%USERPROFILE%")]
+    [InlineData("a^b")]
+    [InlineData("line\nbreak")]
+    public void CmdShimArgumentsWithCmdMetacharactersAreRejected(string value) =>
+        Assert.Throws<BackendNotStartedException>(() => WindowsCliLaunch.EnsureCmdSafe(["--model", value]));
+
+    [Fact]
+    public void CmdShimAcceptsOrdinaryArguments() =>
+        WindowsCliLaunch.EnsureCmdSafe(["-c", "model_reasoning_effort=\"high\"", "C:\\Users\\A B\\repo", "hooks.Stop=[{hooks=[{type='command'}]}]"]);
+
+    [Fact]
+    public void RecoveryRequiresCreationTimeAlongsidePid()
+    {
+        var sidecar = Path.Combine(Path.GetTempPath(), "atf-sidecar-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            File.WriteAllText(sidecar, "4242");
+            Assert.Null(WtTabControl.TryReadOwned(sidecar, "wrapper.ps1"));
+            File.WriteAllText(sidecar, "4242|638945424000000000");
+            var owned = WtTabControl.TryReadOwned(sidecar, "wrapper.ps1");
+            Assert.Equal(4242, owned?.Pid);
+            Assert.Equal(new DateTime(638945424000000000, DateTimeKind.Utc), owned?.Created);
+        }
+        finally { File.Delete(sidecar); }
+    }
+
+    [Fact]
+    public void RecoveryStopsOnlyTabsWhosePidStillHasTheRecordedIdentity()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "atf-wt-recovery-" + Guid.NewGuid().ToString("N"));
+        var directory = Path.Combine(root, "wt");
+        Directory.CreateDirectory(directory);
+        var created = new DateTime(638945424000000000, DateTimeKind.Utc);
+        try
+        {
+            File.WriteAllText(Path.Combine(directory, "atfvalid.pid"), $"4242|{created.Ticks}");
+            File.WriteAllText(Path.Combine(directory, "atfstale.pid"), $"5252|{created.Ticks}");
+            var stopped = new List<int>();
+            var count = WtTabControl.RecoverOwned(root,
+                pid => pid == 4242 ? created : created.AddSeconds(1),
+                tab => { stopped.Add(tab.Pid); return true; });
+            Assert.Equal(1, count);
+            Assert.Equal([4242], stopped);
+        }
+        finally { Directory.Delete(root, recursive: true); }
     }
 
     [Fact]

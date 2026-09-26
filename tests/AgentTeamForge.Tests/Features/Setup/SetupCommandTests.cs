@@ -8,6 +8,13 @@ namespace AgentTeamForge.Tests.Features.Setup;
 public sealed class SetupCommandTests
 {
     [Fact]
+    public void WindowsDrivePathIsALocalPiExtensionSource()
+    {
+        Assert.True(ClientSetup.IsLocalPackageSource(@"C:\Program Files\AgentTeamForge\extensions\pi-wake"));
+        Assert.False(ClientSetup.IsLocalPackageSource("npm:pi-mcp-adapter"));
+    }
+
+    [Fact]
     public void StableBinaryFollowsCurrentReleaseLink()
     {
         using var temp = new TempStateDir();
@@ -62,6 +69,20 @@ public sealed class SetupCommandTests
         using var temp = new TempStateDir();
         var dir = temp.File("state");
         Assert.Equal(64, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "wt", ["state-dir"] = dir }));
+        Assert.False(Directory.Exists(dir));
+    }
+
+    [Fact]
+    public void MacTerminalModeIsRejectedOffMacBeforeCreatingState()
+    {
+        if (OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        using var temp = new TempStateDir();
+        var dir = temp.File("state");
+        Assert.Equal(64, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "terminal", ["state-dir"] = dir }));
         Assert.False(Directory.Exists(dir));
     }
 
@@ -167,16 +188,11 @@ public sealed class SetupCommandTests
     [Fact]
     public async Task StartDetectsOwnedRunningDaemon()
     {
-        using var temp = new TempStateDir();
-        var dir = temp.File("state");
-        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = dir },
-            (_, _) => throw new InvalidOperationException(), "/tmp/atf"));
-        var state = StateDirectory.Open(dir);
-        using var daemonLock = DaemonLock.TryAcquire(state.LockFile);
-        Assert.NotNull(daemonLock);
-        daemonLock.WriteOwnerPid();
-
-        Assert.Equal(0, await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = dir }, "/missing/atf"));
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        var daemon = await rig.StartDaemonAsync();
+        Assert.Equal(0, await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = rig.StateDir }, "/missing/atf", quiet: true));
+        Assert.False(daemon.HasExited);
     }
 
     [Fact]
@@ -189,10 +205,6 @@ public sealed class SetupCommandTests
 
         var state = StateDirectory.Open(dir);
         Assert.Equal("herdr", SetupCommand.ConfiguredMode(state));
-        using var daemonLock = DaemonLock.TryAcquire(state.LockFile);
-        Assert.NotNull(daemonLock);
-        daemonLock.WriteOwnerPid();
-        Assert.Equal(0, await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = dir }, "/missing/atf"));
         Assert.False(File.Exists(state.Socket));
     }
 
@@ -225,5 +237,130 @@ public sealed class SetupCommandTests
         Assert.Equal(0, secondExit);
         Assert.Empty(secondError);
         Assert.Contains("Daemon is not running.", secondOutput);
+    }
+
+    [Fact]
+    public async Task ConcurrentBridgesStartOneDaemonThatSurvivesBridgeExit()
+    {
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        try
+        {
+            var bridges = await Task.WhenAll(rig.StartBridgeAsync("lead-one"), rig.StartBridgeAsync("lead-two"));
+            var state = StateDirectory.Open(rig.StateDir);
+            var pid = DaemonLock.ReadOwnerPid(state.LockFile);
+            Assert.True(pid > 0);
+            Assert.Single(File.ReadLines(Path.Combine(rig.StateDir, "daemon.log")),
+                line => line.StartsWith("[atf-daemon] ready pid=", StringComparison.Ordinal));
+            Assert.All(bridges, bridge => Assert.False(bridge.Process.HasExited));
+
+            foreach (var (process, client) in bridges)
+            {
+                await client.DisposeAsync();
+                process.Kill();
+                await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+            }
+
+            Assert.Equal(pid, DaemonLock.ReadOwnerPid(state.LockFile));
+            Assert.True((await rig.ClientAsync("list")).Ok);
+            Assert.Equal(pid, DaemonLock.ReadOwnerPid(state.LockFile));
+        }
+        finally
+        {
+            await rig.RunToExitAsync(["stop", "--state-dir", rig.StateDir]);
+        }
+    }
+
+    [Fact]
+    public void LoginAutostartWritesAndRemovesLinuxUnitAndMacPlistInTempHome()
+    {
+        using var temp = new TempStateDir();
+        var home = temp.File("home");
+        var calls = new List<string>();
+        (int, string) Runner(string tool, IReadOnlyList<string> args)
+        {
+            calls.Add(tool + " " + string.Join(' ', args));
+            return (0, "");
+        }
+
+        var binary = "/tmp/atf binary";
+        var state = "/tmp/atf state";
+        Assert.Equal(0, LoginAutostart.Apply(home, binary, state, true, Runner, "linux"));
+        var unit = File.ReadAllText(LoginAutostart.FilePath(home, "linux"));
+        Assert.Contains("ExecStart=\"/tmp/atf binary\" daemon --state-dir \"/tmp/atf state\"", unit);
+        Assert.Contains("WantedBy=default.target", unit);
+        Assert.Contains("Environment=\"PATH=" + Environment.GetEnvironmentVariable("PATH"), unit);
+        Assert.Contains("systemctl --user enable agentteamforge.service", calls);
+        Assert.Equal(0, LoginAutostart.Apply(home, binary, state, false, Runner, "linux"));
+        Assert.False(LoginAutostart.IsInstalled(home, "linux"));
+
+        Assert.Equal(0, LoginAutostart.Apply(home, binary, state, true, Runner, "macos"));
+        var plist = File.ReadAllText(LoginAutostart.FilePath(home, "macos"));
+        Assert.Contains("<string>/tmp/atf binary</string>", plist);
+        Assert.Contains("<key>RunAtLoad</key><true/>", plist);
+        Assert.Contains("<key>PATH</key>", plist);
+        Assert.Equal(0, LoginAutostart.Apply(home, binary, state, false, Runner, "macos"));
+        Assert.False(LoginAutostart.IsInstalled(home, "macos"));
+    }
+
+    [Fact]
+    public void AutostartOnSpellingEnablesForConfiguredStateInTempHome()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        using var temp = new TempStateDir();
+        var dir = temp.File("state");
+        var home = temp.File("home");
+        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = dir },
+            (_, _) => throw new InvalidOperationException(), "/tmp/atf", homePath: home));
+
+        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["autostart"] = "on", ["apply"] = "true", ["state-dir"] = dir },
+            (_, _) => (0, ""), "/tmp/atf", homePath: home));
+        Assert.True(LoginAutostart.IsInstalled(home, "linux"));
+    }
+
+    [Fact]
+    public void DaemonEnvironmentDropsLeadIdentityAndKeepsAgentConfiguration()
+    {
+        var kept = new[]
+        {
+            "PATH", "HOME", "HTTPS_PROXY", "XDG_RUNTIME_DIR", "SSH_AUTH_SOCK", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "CODEX_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_USE_BEDROCK", "GH_TOKEN", "SystemRoot",
+        };
+        var dropped = new[]
+        {
+            "CLAUDECODE", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT",
+            "HERDR_PANE_ID", "CODEX_THREAD_ID", "AGENT_NAME", "WIN_AGENT_TEAMS_PARENT_ID", "ATF_RUN_CORRELATION",
+        };
+        var environment = kept.Concat(dropped).ToDictionary(key => key, key => (string?)"value");
+
+        DaemonEnvironment.Scrub(environment);
+
+        Assert.Equal(kept.Order(), environment.Keys.Order());
+    }
+
+    [Fact]
+    public void FailedSystemdEnableRestoresUnitAndChoiceTracksInstalledFile()
+    {
+        using var temp = new TempStateDir();
+        var home = temp.File("home");
+        var path = LoginAutostart.FilePath(home, "linux");
+        Assert.False(LoginAutostart.UseSystemdUserUnit(home, "/tmp/atf", "/tmp/state"));
+        static (int, string) FailEnable(string _, IReadOnlyList<string> args) => args.Contains("enable") ? (1, "failed") : (0, "");
+
+        Assert.Equal(1, LoginAutostart.Apply(home, "/tmp/atf", "/tmp/state", true, FailEnable, "linux"));
+        Assert.False(File.Exists(path));
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "old unit");
+        Assert.Equal(1, LoginAutostart.Apply(home, "/tmp/atf", "/tmp/state", true, FailEnable, "linux"));
+        Assert.Equal("old unit", File.ReadAllText(path));
+
+        File.WriteAllText(path, LoginAutostart.LinuxUnit("/tmp/atf", "/tmp/state", "/usr/bin"));
+        Assert.True(LoginAutostart.UseSystemdUserUnit(home, "/tmp/atf", "/tmp/state"));
+        Assert.False(LoginAutostart.UseSystemdUserUnit(home, "/tmp/other/atf", "/tmp/state"));
+        Assert.False(LoginAutostart.UseSystemdUserUnit(home, "/tmp/atf", "/tmp/other-state"));
     }
 }

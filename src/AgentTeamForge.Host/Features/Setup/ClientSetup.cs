@@ -80,7 +80,7 @@ internal static class ClientSetup
             Console.Out.WriteLine($"{client}: MCP registration updated");
         }
 
-        if (run("claude", ["--version"]).ExitCode != 127)
+        if (!OperatingSystem.IsWindows() && run("claude", ["--version"]).ExitCode != 127)
         {
             try
             {
@@ -142,8 +142,9 @@ internal static class ClientSetup
         var packages = settings["packages"] as JsonArray;
         var sources = packages?.Select(PackageSource).OfType<string>().ToList() ?? [];
         var adapterCurrent = sources.Contains(Adapter);
-        var extensionCurrent = sources.Any(source => !source.Contains(':', StringComparison.Ordinal)
-            && Path.GetFullPath(source, directory) == extension);
+        var extensionCurrent = sources.Any(source => IsLocalPackageSource(source)
+            && Path.GetFullPath(source, directory).Equals(extension,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
         var mcp = ReadObject(mcpPath);
         var expected = new JsonObject
         {
@@ -220,6 +221,9 @@ internal static class ClientSetup
         JsonObject entry when entry["source"] is JsonValue value && value.TryGetValue<string>(out var source) => source,
         _ => null,
     };
+
+    internal static bool IsLocalPackageSource(string source) => !source.Contains(':', StringComparison.Ordinal)
+        || source.Length >= 3 && char.IsAsciiLetter(source[0]) && source[1] == ':' && source[2] is '\\' or '/';
 
     static bool HasLine(string output, string label, string value) => output.Split('\n').Any(line =>
         line.Trim().StartsWith(label + " ", StringComparison.OrdinalIgnoreCase)

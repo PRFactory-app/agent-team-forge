@@ -2,6 +2,7 @@ using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Features.Sessions;
 using AgentTeamForge.Tests.Support;
 using Microsoft.Data.Sqlite;
 
@@ -9,6 +10,23 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 
 public sealed class ListJobsTests
 {
+    [Fact]
+    public void Listed_lead_job_exposes_its_registered_workspace_for_console_actions()
+    {
+        using var f = new JobFixture();
+        var workspace = Environment.CurrentDirectory;
+        var session = new LeadSessionStore(f.Database).Start(workspace, "web-console-test");
+        var accepted = f.Accept().Execute(new SubmitJobRequest("lead-web", "hello", null, false)
+        {
+            LeadSessionId = session.SessionId,
+        });
+
+        Assert.Null(accepted.Error);
+        var listed = Assert.Single(f.List().Execute(new ListJobsRequest()).Page!.Jobs);
+        Assert.Equal(session.SessionId, listed.LeadSessionId);
+        Assert.Equal(workspace, listed.LeadWorkspace);
+    }
+
     [Fact]
     public void Lists_only_jobs_of_the_bound_principal_and_team()
     {

@@ -41,7 +41,7 @@ public sealed record OwnedHerdrSession(string SessionName, string SocketPath, in
 public sealed record HerdrTabBinding(OwnedHerdrSession Session, string TabId, string PaneId, string TerminalId, int ShellPid, ulong ShellStartTicks);
 
 /// <summary>
-/// Linux interactive terminal provider: owns one fresh Herdr session per call to
+/// Unix interactive terminal provider: owns one fresh Herdr session per call to
 /// <see cref="StartSessionAsync"/> and opens one visible tab per agent. Every CLI call is bounded in
 /// time and output. Failures never stop, delete or close anything whose ownership is unproven.
 /// Starting the agent TUI inside the tab belongs to the backend slices.
@@ -222,7 +222,7 @@ public sealed class HerdrTerminal
 
     async Task RequireVisibleProviderAsync(CancellationToken cancellationToken)
     {
-        if (string.IsNullOrEmpty(Env("WAYLAND_DISPLAY")) && string.IsNullOrEmpty(Env("DISPLAY")))
+        if (!OperatingSystem.IsMacOS() && string.IsNullOrEmpty(Env("WAYLAND_DISPLAY")) && string.IsNullOrEmpty(Env("DISPLAY")))
         {
             throw new InteractiveTerminalUnavailableException("interactive Herdr launch needs a graphical desktop session (WAYLAND_DISPLAY or DISPLAY); " +
                 "headless execution is available only as an explicit launch-mode choice");

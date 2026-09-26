@@ -24,6 +24,9 @@ public sealed class MachineHeartbeatResponse
 [JsonSerializable(typeof(MachineHeartbeatResponse))]
 internal sealed partial class PRFactoryWireJson : JsonSerializerContext;
 
+/// <summary>The server no longer leases this work item to us (cancelled, reaped or reclaimed).</summary>
+public sealed class PRFactoryLeaseLostException(Guid id) : Exception($"PRFactory work item {id:D} is no longer leased to this worker");
+
 public sealed class WorkerTokenRejectedException : Exception
 {
     public WorkerTokenRejectedException() : base("PRFactory rejected the worker token") { }
@@ -99,6 +102,41 @@ public sealed class PRFactoryClient(HttpClient httpClient)
 
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryClaimResponse, ct))?.WorkItem;
+    }
+
+    public async Task<IReadOnlyList<PRFactoryCommand>> DrainCommandsAsync(Guid id, Guid lease, CancellationToken ct)
+    {
+        using var response = await httpClient.GetAsync($"api/worker/work-items/{id:D}/agent-commands?leaseToken={lease:D}", ct);
+        RejectToken(response.StatusCode);
+        if (response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.NotFound)
+        {
+            throw new PRFactoryLeaseLostException(id);
+        }
+        response.EnsureSuccessStatusCode();
+        return (await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryCommandDrainResponse, ct))?.Commands ?? [];
+    }
+
+    public async Task AckCommandsAsync(Guid id, Guid lease, List<PRFactoryCommandAck> acks, CancellationToken ct)
+    {
+        using var response = await httpClient.PostAsJsonAsync($"api/worker/work-items/{id:D}/agent-commands/ack",
+            new PRFactoryCommandAckRequest(lease, acks), PRFactoryWorkItemJson.Default.PRFactoryCommandAckRequest, ct);
+        RejectToken(response.StatusCode);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task<PRFactoryStreamResponse> UploadStreamAsync(Guid id, PRFactoryStreamBatch batch, CancellationToken ct)
+    {
+        using var response = await httpClient.PostAsJsonAsync($"api/worker/work-items/{id:D}/agent-stream",
+            batch, PRFactoryWorkItemJson.Default.PRFactoryStreamBatch, ct);
+        RejectToken(response.StatusCode);
+        response.EnsureSuccessStatusCode();
+        var receipt = await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryStreamResponse, ct);
+        if (receipt?.Accepted != true)
+        {
+            throw new HttpRequestException("PRFactory did not accept agent stream");
+        }
+
+        return receipt;
     }
 
     public async Task UploadArtefactsAsync(Guid id, Guid? lease, List<PRFactoryArtefactFile> artefacts, CancellationToken ct)

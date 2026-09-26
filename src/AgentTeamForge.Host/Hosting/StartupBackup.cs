@@ -88,7 +88,12 @@ internal static class StartupBackup
             return File.ReadAllText("/proc/sys/kernel/random/boot_id").Trim();
         }
 
-        // Untested on Windows/macOS: one backup per UTC day instead of a boot id.
+        if (OperatingSystem.IsMacOS() && Native.DarwinBootTime() is { } boot)
+        {
+            return "darwin-" + boot.ToString(CultureInfo.InvariantCulture);
+        }
+
+        // Fallback if boot identity is unavailable.
         return DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
     }
 }

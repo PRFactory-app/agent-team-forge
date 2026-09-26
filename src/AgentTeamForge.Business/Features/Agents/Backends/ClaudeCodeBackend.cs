@@ -38,6 +38,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             info.WorkingDirectory = cwd;
         }
         OrphanedBackendProcess.Mark(info, request.Correlation);
+        WindowsCliLaunch.Configure(info, "claude", executable == "claude");
 
         Process process;
         try
@@ -245,8 +246,23 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             var chunk = new byte[16 * 1024];
             var skipping = false;
             int read;
-            while ((read = await stream.ReadAsync(chunk, cancellationToken)) > 0)
+            Exception? failure = null;
+            while (true)
             {
+                try
+                {
+                    read = await stream.ReadAsync(chunk, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    read = 0;
+                    failure = ex;
+                }
+                if (read == 0)
+                {
+                    break;
+                }
+
                 for (var i = 0; i < read; i++)
                 {
                     if (chunk[i] == (byte)'\n')
@@ -273,6 +289,10 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             else if (buffer.Length > 0)
             {
                 yield return buffer.ToArray();
+            }
+            if (failure is not null)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(failure);
             }
         }
 

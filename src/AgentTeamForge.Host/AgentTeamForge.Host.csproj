@@ -18,6 +18,18 @@
     <EmbeddedResource Include="Features/WebConsole/wwwroot/*" LogicalName="WebConsole.%(Filename)%(Extension)" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="../../extensions/pi-wake/index.ts;../../extensions/pi-wake/package.json">
+      <Link>extensions/pi-wake/%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="../../extensions/pi-wake/src/*.ts">
+      <Link>extensions/pi-wake/src/%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+  <ItemGroup>
     <InternalsVisibleTo Include="AgentTeamForge.Tests" />
   </ItemGroup>
 </Project>

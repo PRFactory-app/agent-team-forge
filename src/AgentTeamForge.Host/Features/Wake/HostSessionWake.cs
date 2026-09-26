@@ -10,7 +10,8 @@ public static class HostSessionWake
 {
     public static IpcRequest? Resolve(StateDirectory state)
     {
-        var host = OperatingSystem.IsLinux() ? NearestHost() : null;
+        var host = OperatingSystem.IsLinux() ? NearestHost()
+            : OperatingSystem.IsWindows() ? WindowsHostAncestry.NearestHost() : null;
         if ((host is null && !OperatingSystem.IsLinux() || host?.Kind == "codex")
             && Environment.GetEnvironmentVariable("CODEX_THREAD_ID") is { Length: > 0 } thread)
         {
@@ -19,7 +20,7 @@ public static class HostSessionWake
             return ForCodexThread(thread, home);
         }
 
-        if (!OperatingSystem.IsLinux())
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsWindows())
         {
             return null;
         }
@@ -29,7 +30,7 @@ public static class HostSessionWake
             return null;
         }
 
-        if (host.Value.Kind == "claude")
+        if (host.Value.Kind == "claude" && OperatingSystem.IsLinux())
         {
             var socket = Environment.GetEnvironmentVariable("CLAUDE_CODE_MESSAGING_SOCKET");
             var token = Environment.GetEnvironmentVariable("CLAUDE_CODE_MESSAGING_TOKEN");

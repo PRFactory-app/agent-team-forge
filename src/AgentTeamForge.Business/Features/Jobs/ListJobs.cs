@@ -50,6 +50,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
             SessionId = r.SessionId,
             ParentJobId = r.ParentJobId,
             LeadSessionId = r.LeadSessionId,
+            LeadWorkspace = r.LeadWorkspace,
             TargetAgent = r.TargetAgent,
             Model = Option(r.Options, "model"),
             Effort = Option(r.Options, "effort"),
@@ -81,6 +82,7 @@ public sealed record JobSummary(string JobId, string Status, string? ReasonCode,
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }
     public string? LeadSessionId { get; init; }
+    public string? LeadWorkspace { get; init; }
     public string? TargetAgent { get; init; }
     public string? Model { get; init; }
     public string? Effort { get; init; }

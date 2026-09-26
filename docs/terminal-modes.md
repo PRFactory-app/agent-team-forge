@@ -6,13 +6,18 @@ During setup, the user must choose how agents are launched:
 
 - **Interactive on Linux:** in **Herdr**.
 - **Interactive on Windows:** in a **visible terminal tab**.
-- **Interactive on macOS:** an equivalent **visible terminal tab**.
+- **Interactive on macOS:** Terminal.app sessions by default, kitty tabs when its
+  remote-control socket works during setup; Herdr remains an explicit option
+  (prepared, untested on macOS).
 - **Headless:** available only through an explicit setup choice.
 
 The user specified Herdr for Linux. Windows Terminal (`atf setup --mode wt`)
-is the first Windows provider: ported from win-agent-teams, untested on Windows. Terminal.app and iTerm2 are macOS candidates; the first
-supported provider will be selected through an M0 spike, not an assumption that
-their APIs are equivalent.
+is the first Windows provider: ported from win-agent-teams, untested on Windows.
+macOS `terminal` mode hosts an agent process in Terminal.app through AppleScript
+or in a kitty tab through remote control. The agent PID and kernel start token,
+not the terminal app, determine process ownership. Herdr remains available.
+Terminal.app may open a window rather than a tab through `do script`; this and
+runtime behavior remain untested until a volunteer runs it on a Mac.
 
 Interactive operation is a first-class mode and must not be deferred to a later
 attached/Desktop feature. The earlier headless-only scope has been superseded.

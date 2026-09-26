@@ -2,14 +2,17 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AgentTeamForge.Host.Hosting;
+using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Features.External;
 
 namespace AgentTeamForge.Host.Features.PRFactory;
 
-public sealed record RepositoryMapping(Guid Id, string Directory);
+public sealed record RepositoryMapping(Guid Id, string Directory, string[]? ExternalMembers = null);
 public sealed record PRFactorySettings(string Url, RepositoryMapping[] Repositories);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, WriteIndented = true)]
 [JsonSerializable(typeof(PRFactorySettings))]
+[JsonSerializable(typeof(string[]))]
 internal sealed partial class PRFactorySettingsJson : JsonSerializerContext;
 
 /// <summary>Owner-private, opt-in connector settings. The token is kept apart from printable settings.</summary>
@@ -18,6 +21,7 @@ public static class PRFactoryConnection
     const string SettingsName = "prfactory.json";
     const string TokenName = "prfactory.token";
     const string RejectedName = "prfactory.rejected";
+    const string JoinsName = "prfactory-joins.json";
 
     public static int Run(StateDirectory state, string action, IReadOnlyDictionary<string, string> options, IReadOnlyList<string> args, TextReader tokenInput)
     {
@@ -29,6 +33,7 @@ public static class PRFactoryConnection
                 File.Delete(Path.Combine(state.Path, SettingsName));
                 File.Delete(Path.Combine(state.Path, TokenName));
                 File.Delete(Path.Combine(state.Path, RejectedName));
+                File.Delete(Path.Combine(state.Path, JoinsName));
                 Console.WriteLine("PRFactory disconnected.");
                 return 0;
             case "status":
@@ -42,6 +47,19 @@ public static class PRFactoryConnection
                 foreach (var repository in settings.Repositories)
                 {
                     Console.WriteLine($"{repository.Id:D}={repository.Directory}");
+                    if (repository.ExternalMembers is { Length: > 0 })
+                    {
+                        Console.WriteLine($"  external members: {string.Join(", ", repository.ExternalMembers)}");
+                    }
+                }
+                var joinsPath = Path.Combine(state.Path, JoinsName);
+                if (File.Exists(joinsPath))
+                {
+                    var prompts = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(joinsPath), PRFactorySettingsJson.Default.StringArray) ?? [];
+                    foreach (var prompt in prompts)
+                    {
+                        Console.WriteLine(prompt);
+                    }
                 }
                 if (File.Exists(Path.Combine(state.Path, RejectedName)))
                 {
@@ -104,19 +122,47 @@ public static class PRFactoryConnection
             return InvalidMapping();
         }
 
+        var externalSpecs = new List<string>();
+        for (var i = 0; i < args.Count; i++)
+        {
+            if (args[i] == "--external" && i + 1 < args.Count)
+            {
+                externalSpecs.Add(args[++i]);
+            }
+        }
+
+        foreach (var spec in externalSpecs)
+        {
+            var split = spec.IndexOf(':');
+            if (split < 1 || !Guid.TryParse(spec[..split], out var id) || split == spec.Length - 1
+                || !System.Text.RegularExpressions.Regex.IsMatch(spec[(split + 1)..], "^[A-Za-z0-9_-]{1,64}$"))
+            {
+                return InvalidMapping();
+            }
+
+            var index = mappings.FindIndex(m => m.Id == id);
+            if (index < 0 || mappings[index].ExternalMembers?.Contains(spec[(split + 1)..], StringComparer.Ordinal) == true)
+            {
+                return InvalidMapping();
+            }
+
+            mappings[index] = mappings[index] with { ExternalMembers = [.. mappings[index].ExternalMembers ?? [], spec[(split + 1)..]] };
+        }
+
         var settings = new PRFactorySettings(uri.GetLeftPart(UriPartial.Path).TrimEnd('/'), [.. mappings]);
         // Publish the token first; a daemon racing this write sees either the old
         // configuration or the new token, and never a partial private file.
         WritePrivate(Path.Combine(state.Path, TokenName), Encoding.UTF8.GetBytes(token));
         WritePrivate(Path.Combine(state.Path, SettingsName), JsonSerializer.SerializeToUtf8Bytes(settings, PRFactorySettingsJson.Default.PRFactorySettings));
         File.Delete(Path.Combine(state.Path, RejectedName));
+        File.Delete(Path.Combine(state.Path, JoinsName));
         Console.WriteLine("PRFactory enabled. The daemon will register this machine and poll for work items.");
         return 0;
     }
 
     static int InvalidMapping()
     {
-        Console.Error.WriteLine("error: require unique --repo <repository-guid>=<existing-local-directory>");
+        Console.Error.WriteLine("error: require unique --repo <repository-guid>=<existing-local-directory> and optional --external <repository-guid>:<recipe-member>");
         return 64;
     }
 
@@ -130,7 +176,8 @@ public static class PRFactoryConnection
         var settings = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(path), PRFactorySettingsJson.Default.PRFactorySettings);
         if (settings is null || !Uri.TryCreate(settings.Url, UriKind.Absolute, out var url) || url.Scheme != Uri.UriSchemeHttps
             || url.AbsolutePath != "/" || settings.Repositories is not { Length: > 0 }
-            || settings.Repositories.Any(r => r.Id == Guid.Empty || !System.IO.Directory.Exists(r.Directory)))
+            || settings.Repositories.Any(r => r.Id == Guid.Empty || !System.IO.Directory.Exists(r.Directory)
+                || r.ExternalMembers is { } names && names.Any(n => !System.Text.RegularExpressions.Regex.IsMatch(n, "^[A-Za-z0-9_-]{1,64}$"))))
         {
             throw new StateDirectoryException("prfactory_settings_invalid");
         }
@@ -142,6 +189,18 @@ public static class PRFactoryConnection
     public static void MarkRejected(StateDirectory state) => WritePrivate(Path.Combine(state.Path, RejectedName), "rejected"u8.ToArray());
 
     public static bool IsRejected(StateDirectory state) => File.Exists(Path.Combine(state.Path, RejectedName));
+
+    /// <summary>Publish a private, read-only CLI snapshot after a daemon connector tick.</summary>
+    public static void PublishJoinTickets(StateDirectory state, PRFactoryTeamStore teams, string server)
+    {
+        var prompts = teams.Pending(server)
+            .SelectMany(team => teams.ExternalMembers(server, team.WorkItemId)
+                .Where(member => !member.Closed && member.TicketExpires > DateTimeOffset.UtcNow)
+                .Select(member => $"Work item {team.WorkItemId:D}, external member {member.Member}: "
+                    + new JoinTicket(member.TeamId, member.ActualName, member.TicketToken, member.TicketExpires).JoinPrompt))
+            .ToArray();
+        WritePrivate(Path.Combine(state.Path, JoinsName), JsonSerializer.SerializeToUtf8Bytes(prompts, PRFactorySettingsJson.Default.StringArray));
+    }
 
     public static void WritePrivate(string path, byte[] content)
     {

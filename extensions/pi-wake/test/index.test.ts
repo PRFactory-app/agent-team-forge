@@ -1,4 +1,4 @@
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -74,6 +74,24 @@ describe("AgentTeamForge Pi adapter", () => {
     } finally {
       await handlers.session_shutdown();
       await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("writes running and waiting state from Pi events", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "atf-pi-state-"));
+    process.env.ATF_STATE_DIR = dir;
+    const handlers: Record<string, () => Promise<void> | void> = {};
+    activate({
+      on: (name: string, handler: () => Promise<void> | void) => { handlers[name] = handler; },
+    } as never);
+    const marker = path.join(dir, `pi-state-${process.pid}.json`);
+    try {
+      handlers.turn_start();
+      expect(JSON.parse(await readFile(marker, "utf8")).state).toBe("running");
+      handlers.agent_settled();
+      expect(JSON.parse(await readFile(marker, "utf8")).state).toBe("waiting");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });

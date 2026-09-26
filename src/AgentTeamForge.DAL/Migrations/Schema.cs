@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 8;
+    public const int CurrentVersion = 11;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -148,7 +148,84 @@ static class Schema
             FOREIGN KEY(server, work_item_id) REFERENCES prfactory_teams(server, work_item_id));
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8];
+    /// <summary>v9: durable external teams, members and messages.</summary>
+    const string V9 = """
+        ALTER TABLE lead_sessions ADD COLUMN closed_at TEXT;
+        ALTER TABLE wake_targets ADD COLUMN external_notified_seq INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE wake_targets ADD COLUMN last_external_success TEXT;
+        CREATE TABLE external_teams(
+            team_id TEXT PRIMARY KEY,
+            owner_key TEXT NOT NULL UNIQUE,
+            lead_session_id TEXT UNIQUE REFERENCES lead_sessions(session_id),
+            wake_key TEXT,
+            created_at TEXT NOT NULL,
+            closed_at TEXT);
+        CREATE TABLE external_members(
+            member_id TEXT PRIMARY KEY,
+            team_id TEXT NOT NULL REFERENCES external_teams(team_id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            note TEXT NOT NULL,
+            ticket_hash TEXT NOT NULL UNIQUE,
+            ticket_expires TEXT NOT NULL,
+            ticket_used_at TEXT,
+            token_hash TEXT UNIQUE,
+            active INTEGER NOT NULL DEFAULT 0,
+            wake_key TEXT,
+            created_at TEXT NOT NULL,
+            left_at TEXT,
+            UNIQUE(team_id,name));
+        CREATE TABLE external_messages(
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id TEXT NOT NULL REFERENCES external_teams(team_id) ON DELETE CASCADE,
+            sender TEXT NOT NULL,
+            recipient TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            read_at TEXT,
+            wake_key TEXT);
+        CREATE INDEX external_messages_inbox ON external_messages(team_id,recipient,seq);
+        CREATE INDEX external_messages_wake ON external_messages(wake_key,read_at,seq);
+        """;
+
+    const string V10 = """
+        CREATE TABLE prfactory_external(
+            server TEXT NOT NULL, work_item_id TEXT NOT NULL, member TEXT NOT NULL,
+            actual_name TEXT NOT NULL, team_id TEXT NOT NULL, ticket_token TEXT NOT NULL,
+            ticket_expires TEXT NOT NULL, ticket_uploaded INTEGER NOT NULL DEFAULT 0,
+            reply_seq INTEGER NOT NULL DEFAULT 0, closed INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(server, work_item_id, member),
+            FOREIGN KEY(server, work_item_id) REFERENCES prfactory_teams(server, work_item_id));
+        CREATE TABLE external_delivery_keys(
+            team_id TEXT NOT NULL, command_id TEXT NOT NULL,
+            PRIMARY KEY(team_id, command_id));
+        CREATE TABLE prfactory_command_receipts(
+            server TEXT NOT NULL, work_item_id TEXT NOT NULL, command_id TEXT NOT NULL,
+            accepted INTEGER NOT NULL, reason TEXT,
+            PRIMARY KEY(server, work_item_id, command_id),
+            FOREIGN KEY(server, work_item_id) REFERENCES prfactory_teams(server, work_item_id));
+        """;
+
+    /// <summary>v11: durable sender positions and read cursors survive message retention.</summary>
+    const string V11 = """
+        ALTER TABLE external_messages ADD COLUMN sender_seq INTEGER NOT NULL DEFAULT 0;
+        WITH numbered AS (
+            SELECT seq, ROW_NUMBER() OVER (PARTITION BY team_id,recipient,sender ORDER BY seq) AS position
+            FROM external_messages)
+        UPDATE external_messages SET sender_seq=(SELECT position FROM numbered WHERE numbered.seq=external_messages.seq);
+        CREATE TABLE external_sender_cursors(
+            team_id TEXT NOT NULL REFERENCES external_teams(team_id) ON DELETE CASCADE,
+            recipient TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            high_water INTEGER NOT NULL DEFAULT 0,
+            cursor INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(team_id,recipient,sender));
+        INSERT INTO external_sender_cursors(team_id,recipient,sender,high_water,cursor)
+        SELECT team_id,recipient,sender,MAX(sender_seq),COALESCE(MAX(CASE WHEN read_at IS NOT NULL THEN sender_seq END),0)
+        FROM external_messages GROUP BY team_id,recipient,sender;
+        CREATE INDEX external_messages_sender_position ON external_messages(team_id,recipient,sender,sender_seq);
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused
