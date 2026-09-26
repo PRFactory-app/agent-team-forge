@@ -48,6 +48,22 @@ atf start --state-dir "$STATE"
 concurrently by default. `atf stop` safely sends SIGTERM to this state's daemon;
 add `--state-dir "$STATE"` when using an override.
 
+## Web console
+
+The daemon serves a small text console on `127.0.0.1:8765` in every launch
+mode. Print its link with `atf web`, or use `atf web --open` to open it in a
+browser. With a custom state directory, add `--state-dir "$STATE"`.
+
+The link carries the console token in a `#token=...` fragment. The page keeps
+it in that tab's session storage and removes it from the address bar. The token
+is stored separately from the daemon's IPC credential in the owner-private
+`web-console.key` state file. Run `atf web --rotate-token` to revoke old links
+immediately and print a new one.
+
+To change the port, run `atf setup --mode headless --web-port 8766` (or use your
+configured launch mode), then restart the daemon. If the port is occupied, the
+daemon logs that the web console is unavailable and continues serving jobs.
+
 ## Register Claude Code and Codex manually
 
 To register manually, use the same state path and absolute published apphost:
@@ -125,7 +141,8 @@ ATF_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/agentteamforge" pi -e "$(re
 
 ## State, database, and logs
 
-The owner-private state directory holds profile, credential, mode, socket, lock,
+The owner-private state directory holds profile, IPC credential, web console
+token, mode, socket, lock,
 `jobs.db`, daemon output in `daemon.log`, job output in `logs/<job-id>.log`, and
 worktrees under `worktrees/<job-id>`; worktrees remain for manual cleanup.
 

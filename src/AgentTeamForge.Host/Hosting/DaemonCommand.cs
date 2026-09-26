@@ -14,6 +14,7 @@ using AgentTeamForge.Host.Features.FakeBackend;
 using AgentTeamForge.Host.Features.Jobs;
 using AgentTeamForge.Host.Features.PRFactory;
 using AgentTeamForge.Host.Features.Setup;
+using AgentTeamForge.Host.Features.WebConsole;
 using AgentTeamForge.Host.Transport;
 
 namespace AgentTeamForge.Host.Hosting;
@@ -149,8 +150,21 @@ public static class DaemonCommand
         using var sigint = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGINT, context => { context.Cancel = true; lifetime.Cancel(); });
 
         using var listener = OperatingSystem.IsWindows() ? null : server.Bind();
-        Log($"ready pid={Environment.ProcessId}");
         var serving = OperatingSystem.IsWindows() ? server.ServeWindowsAsync(lifetime.Token) : server.ServeAsync(listener!, lifetime.Token);
+        WebConsoleServer? webConsole = null;
+        var webPort = SetupCommand.ConfiguredWebPort(state);
+        try
+        {
+            WebConsoleToken.Ensure(state);
+            var webClient = new IpcClient(state, limits, TimeSpan.FromSeconds(15));
+            webConsole = await WebConsoleServer.StartAsync(webPort, () => WebConsoleToken.Read(state), webClient.SendAsync);
+            Log($"web console listening on {webConsole.Url}");
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            Log($"web console unavailable on 127.0.0.1:{webPort}: {ex.GetType().Name}: {ex.Message}");
+        }
+        Log($"ready pid={Environment.ProcessId}");
         var dispatching = dispatcher.RunAsync(lifetime.Token);
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path), Log).RunAsync(lifetime.Token);
         var pruning = profile.AutoPrune ? RunPruneAsync(prune, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
@@ -176,6 +190,11 @@ public static class DaemonCommand
         await waking;
         await pruning;
         await prfactory;
+        if (webConsole is not null)
+        {
+            await webConsole.StopAsync();
+            await webConsole.DisposeAsync();
+        }
         try
         {
             await dispatching;

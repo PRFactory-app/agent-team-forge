@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
@@ -13,6 +14,7 @@ namespace AgentTeamForge.Host.Features.Setup;
 public static class SetupCommand
 {
     const string SettingsFile = "launch-mode.json";
+    public const int DefaultWebPort = 8765;
 
     public static int Run(IReadOnlyDictionary<string, string> options, Func<string, IReadOnlyList<string>, (int ExitCode, string Output)>? commandRunner = null,
         string? executablePath = null, string? claudeSettingsPath = null, string? homePath = null, string? extensionPath = null)
@@ -24,11 +26,17 @@ public static class SetupCommand
             Console.Error.WriteLine("error: --check and --apply are mutually exclusive");
             return 64;
         }
+        if (options.TryGetValue("web-port", out var webPortText)
+            && (!int.TryParse(webPortText, NumberStyles.None, CultureInfo.InvariantCulture, out var parsedPort) || parsedPort is < 1 or > 65535))
+        {
+            Console.Error.WriteLine("error: --web-port must be between 1 and 65535");
+            return 64;
+        }
         if (!options.TryGetValue("mode", out var mode) || mode is not ("headless" or "herdr" or "wt"))
         {
             if (!check)
             {
-                Console.Error.WriteLine("usage: atf setup --mode headless|herdr|wt [--state-dir DIR] [--apply|--check]");
+                Console.Error.WriteLine("usage: atf setup --mode headless|herdr|wt [--web-port PORT] [--state-dir DIR] [--apply|--check]");
                 return 64;
             }
         }
@@ -64,7 +72,8 @@ public static class SetupCommand
             Console.Error.WriteLine("error: setup requires an agents profile");
             return 78;
         }
-        WriteMode(state, mode!);
+        WriteMode(state, mode!, options.TryGetValue("web-port", out webPortText)
+            ? int.Parse(webPortText, CultureInfo.InvariantCulture) : ConfiguredWebPort(state));
 
         if (apply)
         {
@@ -393,7 +402,7 @@ public static class SetupCommand
         return 0;
     }
 
-    static void WriteMode(StateDirectory state, string mode)
+    static void WriteMode(StateDirectory state, string mode, int webPort)
     {
         var path = Path.Combine(state.Path, SettingsFile);
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -406,7 +415,7 @@ public static class SetupCommand
                 UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
             }))
             {
-                JsonSerializer.Serialize(file, new LaunchModeSettings(mode), SetupCommandJson.Default.LaunchModeSettings);
+                JsonSerializer.Serialize(file, new LaunchModeSettings(mode) { WebPort = webPort }, SetupCommandJson.Default.LaunchModeSettings);
                 file.Flush(flushToDisk: true);
             }
 
@@ -479,14 +488,24 @@ public static class SetupCommand
 
     static string ReadMode(StateDirectory state)
     {
-        var path = Path.Combine(state.Path, SettingsFile);
-        var settings = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(path), SetupCommandJson.Default.LaunchModeSettings);
-        if (settings?.Mode is not ("headless" or "herdr" or "wt"))
+        var settings = ReadSettings(state);
+        if (settings.Mode is not ("headless" or "herdr" or "wt"))
         {
             throw new StateDirectoryException("launch_mode_invalid");
         }
 
         return settings.Mode;
+    }
+
+    static LaunchModeSettings ReadSettings(StateDirectory state)
+    {
+        var path = Path.Combine(state.Path, SettingsFile);
+        var settings = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(path), SetupCommandJson.Default.LaunchModeSettings);
+        if (settings?.WebPort is not (>= 1 and <= 65535))
+        {
+            throw new StateDirectoryException("web_port_invalid");
+        }
+        return settings;
     }
 
     static bool ModeAvailable(string mode) => mode switch
@@ -498,6 +517,9 @@ public static class SetupCommand
 
     internal static string? ConfiguredMode(StateDirectory state) =>
         File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadMode(state) : null;
+
+    public static int ConfiguredWebPort(StateDirectory state) =>
+        File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadSettings(state).WebPort : DefaultWebPort;
 
     internal static (int ExitCode, string Output) RunCommand(string tool, IReadOnlyList<string> args)
     {
@@ -549,7 +571,10 @@ public static class SetupCommand
         ? value : "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
 }
 
-public sealed record LaunchModeSettings(string Mode);
+public sealed record LaunchModeSettings(string Mode)
+{
+    public int WebPort { get; init; } = SetupCommand.DefaultWebPort;
+}
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower, WriteIndented = true)]
 [JsonSerializable(typeof(LaunchModeSettings))]

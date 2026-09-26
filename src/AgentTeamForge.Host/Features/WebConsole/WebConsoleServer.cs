@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AgentTeamForge.Host.Transport;
+using AgentTeamForge.Host.Hosting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -59,16 +60,16 @@ public sealed class WebConsoleServer : IAsyncDisposable
 
     readonly WebApplication _app;
     readonly Func<IpcRequest, CancellationToken, Task<IpcResponse>> _send;
-    readonly byte[] _token;
+    readonly Func<string> _token;
     readonly SemaphoreSlim _calls = new(MaxConcurrentCalls, MaxConcurrentCalls);
     string _host = string.Empty;
     string _origin = string.Empty;
 
-    WebConsoleServer(WebApplication app, Func<IpcRequest, CancellationToken, Task<IpcResponse>> send, string token)
+    WebConsoleServer(WebApplication app, Func<IpcRequest, CancellationToken, Task<IpcResponse>> send, Func<string> token)
     {
         _app = app;
         _send = send;
-        _token = Encoding.UTF8.GetBytes(token);
+        _token = token;
     }
 
     public int Port { get; private set; }
@@ -76,11 +77,15 @@ public sealed class WebConsoleServer : IAsyncDisposable
     public static string NewToken() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     /// <summary>Binds 127.0.0.1:<paramref name="port"/> (0 = ephemeral) and starts serving.</summary>
-    public static async Task<WebConsoleServer> StartAsync(int port, string token, Func<IpcRequest, CancellationToken, Task<IpcResponse>> send)
+    public static Task<WebConsoleServer> StartAsync(int port, string token, Func<IpcRequest, CancellationToken, Task<IpcResponse>> send) =>
+        StartAsync(port, () => token, send);
+
+    /// <summary>Reads the current bearer on each API call so rotation takes effect without a daemon restart.</summary>
+    public static async Task<WebConsoleServer> StartAsync(int port, Func<string> token, Func<IpcRequest, CancellationToken, Task<IpcResponse>> send)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(port, 0);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(port, 65535);
-        ArgumentOutOfRangeException.ThrowIfLessThan(token.Length, 32);
+        ArgumentOutOfRangeException.ThrowIfLessThan(token().Length, 32);
 
         // Empty builder: no config files, env-var URLs or logging providers (headers are never logged).
         var builder = WebApplication.CreateEmptyBuilder(new WebApplicationOptions());
@@ -98,7 +103,12 @@ public sealed class WebConsoleServer : IAsyncDisposable
         var app = builder.Build();
         var server = new WebConsoleServer(app, send, token);
         app.Run(server.HandleAsync);
-        await app.StartAsync();
+        try { await app.StartAsync(); }
+        catch
+        {
+            await app.DisposeAsync();
+            throw;
+        }
         var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
         server.Port = new Uri(address).Port;
         server._host = $"127.0.0.1:{server.Port}";
@@ -236,7 +246,14 @@ public sealed class WebConsoleServer : IAsyncDisposable
             return false;
         }
 
-        return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(value["Bearer ".Length..]), _token);
+        try
+        {
+            return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(value["Bearer ".Length..]), Encoding.UTF8.GetBytes(_token()));
+        }
+        catch (StateDirectoryException)
+        {
+            return false;
+        }
     }
 
     static async Task ServeAssetAsync(HttpContext ctx, string path)

@@ -35,6 +35,23 @@ public sealed class SetupCommandTests
     }
 
     [Fact]
+    public void Setup_configures_web_port_and_preserves_it_on_rerun()
+    {
+        using var temp = new TempStateDir();
+        var dir = temp.File("state");
+        var options = new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = dir, ["web-port"] = "9123" };
+        Assert.Equal(64, SetupCommand.Run(new Dictionary<string, string>(options) { ["web-port"] = "0" }));
+        Assert.False(Directory.Exists(dir));
+
+        Assert.Equal(0, SetupCommand.Run(options, executablePath: "/tmp/atf", homePath: temp.File("home")));
+        var state = StateDirectory.Open(dir);
+        Assert.Equal(9123, SetupCommand.ConfiguredWebPort(state));
+        options.Remove("web-port");
+        Assert.Equal(0, SetupCommand.Run(options, executablePath: "/tmp/atf", homePath: temp.File("home")));
+        Assert.Equal(9123, SetupCommand.ConfiguredWebPort(state));
+    }
+
+    [Fact]
     public void WtModeIsRejectedOnLinuxBeforeCreatingState()
     {
         if (OperatingSystem.IsWindows())

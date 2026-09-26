@@ -1,41 +1,46 @@
-using System.Globalization;
-using System.Runtime.InteropServices;
-using AgentTeamForge.Business;
+using System.ComponentModel;
+using System.Diagnostics;
+using AgentTeamForge.Host.Features.Setup;
 using AgentTeamForge.Host.Hosting;
-using AgentTeamForge.Host.Transport;
 
 namespace AgentTeamForge.Host.Features.WebConsole;
 
-/// <summary>
-/// <c>atf web --state-dir DIR --port PORT</c>: a separate client process serving the
-/// operator console on 127.0.0.1. It prints a fragment-token URL and a fresh per-run bearer to this
-/// (authorized) startup console only; the daemon credential never leaves the process.
-/// </summary>
+/// <summary>Print the daemon-hosted console link; rotate its bearer only on request.</summary>
 public static class WebConsoleCommand
 {
-    static readonly TimeSpan CallBudget = TimeSpan.FromSeconds(15);
-
-    public static async Task<int> RunAsync(StateDirectory state, IReadOnlyDictionary<string, string> options)
+    public static int Run(StateDirectory state, IReadOnlyDictionary<string, string> options)
     {
-        if (!options.TryGetValue("port", out var portText)
-            || !int.TryParse(portText, NumberStyles.None, CultureInfo.InvariantCulture, out var port) || port > 65535)
+        if (options.ContainsKey("port"))
         {
-            Console.Error.WriteLine("usage: atf web --state-dir DIR --port PORT   (binds 127.0.0.1 only; 0 = ephemeral)");
+            Console.Error.WriteLine("error: configure the console port with atf setup --web-port PORT");
             return 64;
         }
 
-        var client = new IpcClient(state, new SpikeLimits(), CallBudget);
-        var token = WebConsoleServer.NewToken();
-        await using var server = await WebConsoleServer.StartAsync(port, token, client.SendAsync);
-        Console.Out.WriteLine($"url {server.Url}#token={token}");
-        Console.Out.WriteLine($"token {token}");
-        Console.Out.Flush();
+        var port = SetupCommand.ConfiguredWebPort(state);
+        var token = options.ContainsKey("rotate-token") ? WebConsoleToken.Rotate(state) : WebConsoleToken.Ensure(state);
+        var url = $"http://127.0.0.1:{port}/#token={token}";
+        Console.Out.WriteLine($"url {url}");
+        if (!options.ContainsKey("open"))
+        {
+            return 0;
+        }
 
-        var stop = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; stop.TrySetResult(); });
-        using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, context => { context.Cancel = true; stop.TrySetResult(); });
-        await stop.Task;
-        await server.StopAsync();
-        return 0;
+        try
+        {
+            var info = OperatingSystem.IsWindows()
+                ? new ProcessStartInfo(url) { UseShellExecute = true }
+                : new ProcessStartInfo(OperatingSystem.IsMacOS() ? "open" : "xdg-open") { UseShellExecute = false };
+            if (!OperatingSystem.IsWindows())
+            {
+                info.ArgumentList.Add(url);
+            }
+            using var process = Process.Start(info) ?? throw new Win32Exception("browser opener unavailable");
+            return 0;
+        }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
+        {
+            Console.Error.WriteLine($"error: could not open browser: {ex.Message}");
+            return 1;
+        }
     }
 }
