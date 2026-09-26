@@ -20,8 +20,10 @@ public sealed record SpikeProfileFile
     public bool TestProfile { get; init; }
     public int? QueueLimit { get; init; }
     public int? MaxFakeRuntimeSeconds { get; init; }
+    public int? MaxConcurrentJobs { get; init; }
 
     public const int MaxQueueLimit = 1_000;
+    public const int MaxConcurrencyLimit = 64;
     public const string FakeBackends = "fake";
     public const string AgentBackends = "agents";
 
@@ -40,6 +42,7 @@ public sealed record SpikeProfileFile
             return limits with
             {
                 QueueLimit = QueueLimit ?? limits.QueueLimit,
+                MaxConcurrentJobs = MaxConcurrentJobs ?? limits.MaxConcurrentJobs,
                 MaxFakeRuntime = MaxFakeRuntimeSeconds is { } s ? TimeSpan.FromSeconds(s)
                     : RealAgents ? TimeSpan.FromSeconds(AgentRuntimeSeconds) : limits.MaxFakeRuntime,
             };
@@ -56,7 +59,8 @@ public sealed record SpikeProfileFile
             throw new StateDirectoryException("backend_unsupported");
         }
 
-        if (!LimitsAreValid(profile.QueueLimit, profile.MaxFakeRuntimeSeconds))
+        if (!LimitsAreValid(profile.QueueLimit, profile.MaxFakeRuntimeSeconds)
+            || profile.MaxConcurrentJobs is not (null or (>= 1 and <= MaxConcurrencyLimit)))
         {
             // Refused before the daemon binds or reports readiness.
             throw new StateDirectoryException("profile_invalid_limits");

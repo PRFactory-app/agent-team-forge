@@ -6,10 +6,12 @@ using AgentTeamForge.DAL.Sqlite;
 namespace AgentTeamForge.Business.Features.Jobs;
 
 /// <summary>
-/// Single dispatcher: claims one unattempted intent at a time, commits the
-/// attempt-start before any backend effect, and turns backend evidence into
-/// exactly one fenced terminal write. Driven by the daemon lifetime token only.
-/// One deadline bounds the whole effect: start, delivery and evidence reading.
+/// Dispatcher: claims unattempted intents and runs up to
+/// <see cref="SpikeLimits.MaxConcurrentJobs"/> attempts at once (the store keeps
+/// turns on one native session serial). Each attempt commits its start before any
+/// backend effect and turns backend evidence into exactly one fenced terminal
+/// write. Driven by the daemon lifetime token only. One deadline bounds the
+/// whole effect of an attempt: start, delivery and evidence reading.
 /// </summary>
 public sealed class DispatchJob : IDisposable
 {
@@ -17,13 +19,16 @@ public sealed class DispatchJob : IDisposable
     public static readonly TimeSpan MaxAllowedRuntime = TimeSpan.FromHours(24);
 
     readonly SemaphoreSlim _signal = new(0);
+    readonly CancellationTokenSource _halted = new();
     readonly SemaphoreSlim _claimGate = new(1, 1);
+    readonly Lock _haltClaimGate = new();
     readonly JobStore store;
     readonly BackendCatalog backends;
     readonly SpikeLimits limits;
     readonly DurabilityCheckpoints checkpoints;
     readonly AdmissionGate admission;
     readonly Action<string> log;
+    string? _haltReason;
 
     /// <summary>Single-backend convenience: serves jobs whose backend is "fake".</summary>
     public DispatchJob(JobStore store, IJobBackend backend, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log)
@@ -39,6 +44,8 @@ public sealed class DispatchJob : IDisposable
             throw new ArgumentOutOfRangeException(nameof(limits), limits.MaxFakeRuntime, "max runtime must be positive and bounded");
         }
 
+        ArgumentOutOfRangeException.ThrowIfLessThan(limits.MaxConcurrentJobs, 1, nameof(limits));
+
         this.store = store;
         this.backends = backends;
         this.limits = limits;
@@ -50,10 +57,11 @@ public sealed class DispatchJob : IDisposable
     /// <summary>
     /// Why the dispatcher stopped claiming work (terminal_write_failed or
     /// dispatcher_fault); null while healthy. Setting it closes admission at the
-    /// same instant; <see cref="RunAsync"/> then returns and the host exits
-    /// unhealthy. Restart quarantines the run.
+    /// same instant and stops in-flight attempts as a shutdown would (left
+    /// started); <see cref="RunAsync"/> then returns and the host exits
+    /// unhealthy. Restart quarantines those runs.
     /// </summary>
-    public string? HaltReason { get; private set; }
+    public string? HaltReason => Volatile.Read(ref _haltReason);
 
     public bool Halted => HaltReason is not null;
 
@@ -69,6 +77,7 @@ public sealed class DispatchJob : IDisposable
     public void Dispose()
     {
         _signal.Dispose();
+        _halted.Dispose();
         _claimGate.Dispose();
     }
 
@@ -80,9 +89,12 @@ public sealed class DispatchJob : IDisposable
     /// <summary>Admission is closed whenever this returns or throws, halted or shut down.</summary>
     public async Task RunAsync(CancellationToken daemonLifetime)
     {
+        using var stopping = CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, _halted.Token);
+        using var slots = new SemaphoreSlim(limits.MaxConcurrentJobs);
+        var inFlight = new List<Task>();
         try
         {
-            await ClaimLoopAsync(daemonLifetime);
+            await ClaimLoopAsync(slots, inFlight, stopping.Token);
         }
         catch
         {
@@ -91,21 +103,50 @@ public sealed class DispatchJob : IDisposable
         }
         finally
         {
-            admission.Close(HaltReason ?? "daemon_stopping");
+            try
+            {
+                // Attempts observe the stopping token; wait so none outlives the dispatcher.
+                await Task.WhenAll(inFlight);
+            }
+            finally
+            {
+                admission.Close(HaltReason ?? "daemon_stopping");
+            }
         }
     }
 
-    async Task ClaimLoopAsync(CancellationToken daemonLifetime)
+    async Task ClaimLoopAsync(SemaphoreSlim slots, List<Task> inFlight, CancellationToken stopping)
     {
-        while (!daemonLifetime.IsCancellationRequested && !Halted)
+        while (!stopping.IsCancellationRequested && !Halted)
         {
+            inFlight.RemoveAll(t => t.IsCompletedSuccessfully);
+            try
+            {
+                await slots.WaitAsync(stopping);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
             AttemptClaim? claim;
             try
             {
-                await _claimGate.WaitAsync(daemonLifetime);
+                await _claimGate.WaitAsync(stopping);
                 try
                 {
-                    claim = store.BeginNextAttempt();
+                    lock (_haltClaimGate)
+                    {
+                        // WaitAsync can grant a slot as halt cancels it. The
+                        // claim and halt decision must share one fence.
+                        if (stopping.IsCancellationRequested || Halted)
+                        {
+                            slots.Release();
+                            return;
+                        }
+
+                        claim = store.BeginNextAttempt();
+                    }
                 }
                 finally
                 {
@@ -117,22 +158,25 @@ public sealed class DispatchJob : IDisposable
                 log($"dispatch claim failed: {ex.Failure}");
                 claim = null;
             }
-            catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested)
+            catch (OperationCanceledException) when (stopping.IsCancellationRequested)
             {
+                slots.Release();
                 return;
             }
             catch (Exception ex)
             {
                 log($"dispatch claim fault: {ex.GetType().Name}");
+                slots.Release();
                 Halt("dispatcher_fault");
                 return;
             }
 
             if (claim is null)
             {
+                slots.Release();
                 try
                 {
-                    await _signal.WaitAsync(TimeSpan.FromSeconds(1), daemonLifetime);
+                    await _signal.WaitAsync(TimeSpan.FromSeconds(1), stopping);
                 }
                 catch (OperationCanceledException)
                 {
@@ -142,7 +186,25 @@ public sealed class DispatchJob : IDisposable
                 continue;
             }
 
-            await RunAttemptAsync(claim, daemonLifetime);
+            inFlight.Add(Task.Run(async () =>
+            {
+                try
+                {
+                    await RunAttemptAsync(claim, stopping);
+                }
+                catch
+                {
+                    Halt("dispatcher_fault");
+                    throw;
+                }
+                finally
+                {
+                    slots.Release();
+
+                    // A finished turn may unblock a follow-up waiting on its session.
+                    _signal.Release();
+                }
+            }, CancellationToken.None));
         }
     }
 
@@ -315,8 +377,13 @@ public sealed class DispatchJob : IDisposable
 
     void Halt(string reason)
     {
-        HaltReason ??= reason;
-        admission.Close(HaltReason);
+        lock (_haltClaimGate)
+        {
+            Interlocked.CompareExchange(ref _haltReason, reason, null);
+            admission.Close(HaltReason!);
+        }
+
+        _halted.Cancel();
     }
 
     void Complete(RunRef run, string output)

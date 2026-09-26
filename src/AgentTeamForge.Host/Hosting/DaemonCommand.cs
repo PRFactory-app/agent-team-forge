@@ -4,7 +4,9 @@ using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Business.Features.Recovery;
+using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Host.Features.FakeBackend;
 using AgentTeamForge.Host.Features.Jobs;
@@ -72,6 +74,7 @@ public static class DaemonCommand
         }
 
         var store = new JobStore(database, checkpoints);
+        var wakeStore = new WakeStore(database);
         var quarantined = new RecoverOnStartup(store).Execute();
         Log($"recovery: quarantined {quarantined.Count} uncertain attempt(s)");
 
@@ -88,7 +91,7 @@ public static class DaemonCommand
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log);
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept),
-            new ListJobs(store, profile.Bound), checkpoints, dispatcher.Signal);
+            new ListJobs(store, profile.Bound), checkpoints, dispatcher.Signal, wakeStore);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
@@ -102,6 +105,7 @@ public static class DaemonCommand
         Log($"ready pid={Environment.ProcessId}");
         var serving = server.ServeAsync(listener, lifetime.Token);
         var dispatching = dispatcher.RunAsync(lifetime.Token);
+        var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path), Log).RunAsync(lifetime.Token);
         await Task.WhenAny(serving, dispatching);
 
         // The dispatcher only returns on its own when halted or faulted; it closed
@@ -116,6 +120,7 @@ public static class DaemonCommand
         }
 
         await serving;
+        await waking;
         try
         {
             await dispatching;

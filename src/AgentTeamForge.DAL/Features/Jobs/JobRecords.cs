@@ -24,6 +24,10 @@ public sealed record NewJob(
     public string? Cwd { get; init; }
 
     public string? ParentJobId { get; init; }
+
+    public string? WakeTargetKey { get; init; }
+
+    public long? WakeGeneration { get; init; }
 }
 
 public sealed record JobRecord(
