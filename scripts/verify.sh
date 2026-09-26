@@ -36,6 +36,18 @@ step "sdk $actual rid $RID dotnet $DOTNET"
 step restore;  "$DOTNET" restore AgentTeamForge.slnx
 step format;   "$DOTNET" format AgentTeamForge.slnx --verify-no-changes --no-restore
 step build;    "$DOTNET" build AgentTeamForge.slnx -c Release --no-restore -warnaserror
+ATF_TEST_TMP_ROOT="$(mktemp -d /tmp/atf-verify-XXXXXX)"
+export ATF_TEST_TMP_ROOT
+cleanup_tmp() {
+  local status="$1"
+  if [[ "$status" != 0 && "${ATF_KEEP_TMP:-}" == 1 ]]; then
+    echo "   kept temp state: $ATF_TEST_TMP_ROOT" >&2
+  else
+    rm -rf -- "$ATF_TEST_TMP_ROOT" || status=1
+  fi
+  exit "$status"
+}
+trap 'cleanup_tmp $?' EXIT
 step test;     "$DOTNET" test AgentTeamForge.slnx -c Release --no-build
 step publish-aot
 mkdir -p artifacts
