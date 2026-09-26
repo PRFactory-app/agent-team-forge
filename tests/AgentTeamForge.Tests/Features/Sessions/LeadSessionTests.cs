@@ -29,13 +29,61 @@ public sealed class LeadSessionTests
             Workspace = first.Workspace,
             AllWorkspace = true
         }).Page!.Jobs.Count);
-        Assert.Equal("not_found", endpoint.Handle(new IpcRequest
+        // A sibling's job listed with all_workspace can be read, but not stopped.
+        Assert.True(endpoint.Handle(new IpcRequest
         {
             Op = IpcProtocol.JobGet,
             LeadSessionId = second.SessionId,
             Workspace = second.Workspace,
             JobId = a
+        }).Ok);
+        Assert.Equal("not_found", endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobStop,
+            LeadSessionId = second.SessionId,
+            Workspace = second.Workspace,
+            JobId = a
         }).Error);
+        var other = sessions.Start("/workspace/other", "parent=3");
+        Assert.Equal("not_found", endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobGet,
+            LeadSessionId = other.SessionId,
+            Workspace = other.Workspace,
+            JobId = a
+        }).Error);
+    }
+
+    [Fact]
+    public void Bridge_restart_after_resume_readopts_the_resumed_session()
+    {
+        using var f = new JobFixture();
+        var sessions = new LeadSessionStore(f.Database);
+        var old = sessions.Start("/workspace/shared", "parent=old");
+        Submit(Endpoint(f, sessions), old, "task");
+        var fresh = sessions.Start("/workspace/shared", "parent=new");
+        Assert.NotNull(sessions.Resume(old.SessionId, "/workspace/shared", "parent=new"));
+
+        Assert.Equal(old.SessionId, sessions.Start("/workspace/shared", "parent=new").SessionId);
+        Assert.NotEqual(fresh.SessionId, old.SessionId);
+    }
+
+    [Fact]
+    public void Late_wake_binding_covers_jobs_still_running()
+    {
+        using var f = new JobFixture();
+        var sessions = new LeadSessionStore(f.Database);
+        var lead = sessions.Start("/workspace/shared", "parent=1");
+        var id = Submit(Endpoint(f, sessions), lead, "task");
+        var wake = new WakeStore(f.Database);
+        var target = wake.Register("codex:late", "codex", "late", "", "/tmp");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+
+        var claim = f.Store.BeginNextAttempt()!;
+        Assert.Equal(id, claim.Job.JobId);
+        Assert.True(f.Store.Complete(new AgentTeamForge.DAL.Features.Jobs.RunRef(claim.Job.JobId,
+            claim.RunId, claim.Generation, claim.Correlation), "done"));
+        Assert.Equal(target.Key, Assert.Single(wake.Pending()).Target.Key);
     }
 
     [Fact]

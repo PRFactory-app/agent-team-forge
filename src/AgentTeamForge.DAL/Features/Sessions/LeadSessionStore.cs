@@ -47,13 +47,28 @@ public sealed class LeadSessionStore(JobDatabase database)
             return null;
         }
         using var connection = database.OpenConnection();
+        using var tx = connection.BeginTransaction(deferred: false);
         using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE lead_sessions SET binding_key=$binding, updated_at=$now WHERE session_id=$id AND workspace=$workspace";
+        command.Transaction = tx;
+        // Like the reference's binding prune: this binding now names only the resumed
+        // session, so a bridge restart under the same parent re-adopts it, not the
+        // empty session it started with.
+        command.CommandText = """
+            UPDATE lead_sessions SET binding_key=$binding, updated_at=$now WHERE session_id=$id AND workspace=$workspace;
+            SELECT changes();
+            """;
         command.Parameters.AddWithValue("$binding", bindingKey);
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$workspace", workspace);
-        return command.ExecuteNonQuery() == 1 ? Info(id, workspace) : null;
+        if ((long)command.ExecuteScalar()! != 1)
+        {
+            return null;
+        }
+        command.CommandText = "UPDATE lead_sessions SET binding_key='' WHERE binding_key=$binding AND workspace=$workspace AND session_id<>$id";
+        command.ExecuteNonQuery();
+        tx.Commit();
+        return Info(id, workspace);
     }
 
     public LeadSessionInfo? Info(string id, string workspace)
@@ -90,7 +105,6 @@ public sealed class LeadSessionStore(JobDatabase database)
                 AND read_at IS NULL AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
             INSERT INTO wake_jobs(job_id,target_key)
                 SELECT j.job_id,$key FROM jobs j WHERE j.lead_session_id=$id
-                AND j.status IN ('completed','failed','needs_reconciliation','cancelled')
                 AND NOT EXISTS (SELECT 1 FROM wake_jobs w WHERE w.job_id=j.job_id)
                 AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
             """;

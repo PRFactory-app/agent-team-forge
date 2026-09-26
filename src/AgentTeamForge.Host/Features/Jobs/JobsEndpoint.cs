@@ -53,8 +53,10 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         {
             return new IpcResponse(false, JobErrors.InvalidRequest);
         }
+        // Reads reach any job in the lead's workspace; stop and follow-up only its own.
         if (request.LeadSessionId is not null && request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobStop or IpcProtocol.JobFollowUp
-            && (jobStore is null || request.JobId is null || !jobStore.BelongsToLead(request.JobId, request.LeadSessionId)))
+            && (jobStore is null || request.JobId is null
+                || !jobStore.LeadCanAccess(request.JobId, request.LeadSessionId, request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput ? request.Workspace : null)))
         {
             return new IpcResponse(false, JobErrors.NotFound);
         }
