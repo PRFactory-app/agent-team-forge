@@ -82,9 +82,12 @@ public sealed class AcceptanceTests
         await adapter.TickAsync(Machine, CancellationToken.None);
         Assert.Equal(calls, server.Gets);
         Assert.Contains(teams.ReconciliationNeeded(ServerUrl), t => t.WorkItemId == server.Item.Id);
+        teams.RecordExternal(ServerUrl, server.Item.Id, "reviewer", "reviewer", "team-1", "secret-ticket", DateTimeOffset.UtcNow.AddHours(1));
         var state = StateDirectory.Open(dir.Path);
         PRFactoryConnection.PublishJoinTickets(state, teams, ServerUrl);
-        Assert.Contains("reconciliation needed", File.ReadAllText(dir.File("prfactory-joins.json")), StringComparison.Ordinal);
+        var snapshot = File.ReadAllText(dir.File("prfactory-joins.json"));
+        Assert.Contains("reconciliation needed", snapshot, StringComparison.Ordinal);
+        Assert.DoesNotContain("external member reviewer", snapshot, StringComparison.Ordinal);
     }
 
     [Fact]
