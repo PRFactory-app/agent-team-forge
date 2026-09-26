@@ -34,7 +34,8 @@ public sealed partial class WebConsoleJson : JsonSerializerContext;
 /// </remarks>
 public sealed class WebConsoleServer : IAsyncDisposable
 {
-    public const int MaxBodyBytes = 16 * 1024;
+    // Room for MaxInstructionChars of any text: up to 3 UTF-8 bytes per UTF-16 char, 6 when JSON-escaped.
+    public const int MaxBodyBytes = 64 * 1024;
     public const int MaxInstructionChars = 8 * 1024;
     public const int MaxKeyChars = 128;
     public const int MaxConcurrentCalls = 4;

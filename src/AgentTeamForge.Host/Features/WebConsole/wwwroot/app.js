@@ -119,6 +119,7 @@
     logOffset = 0;
     logDecoder = new TextDecoder();
     $('d-logs').textContent = '';
+    $('stop-state').textContent = '';
     $('follow-interrupt').checked = false;
     $('detail').hidden = false;
     renderPending();
@@ -211,9 +212,10 @@
     } else if (r.ok) {
       pending = null;
       $('follow-text').value = '';
-      renderPending(r.outcome + ': job ' + r.job.job_id, '');
       await loadDetail();
       await loadJobs();
+      // After the refresh: loadDetail re-renders the follow-up state and would clear this.
+      if (attempt.jobId === selected) renderPending(r.outcome + ': job ' + r.job.job_id, '');
     } else if (r.error === 'daemon_unavailable' || r.error === 'web_busy') {
       // Provably not sent: the same attempt may be retried explicitly.
       renderPending();

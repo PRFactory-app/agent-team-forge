@@ -158,6 +158,17 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Max_length_non_ascii_instruction_is_forwarded()
+    {
+        var text = new string('\u00e5', WebConsoleServer.MaxInstructionChars);
+        var json = JsonSerializer.Serialize(new WebFollowUpBody(text, "k1"), WebConsoleJson.Default.WebFollowUpBody);
+        var (status, body) = await Send(FollowUp(json));
+
+        Assert.Equal((HttpStatusCode.OK, true), (status, body.Ok));
+        Assert.Equal(text, Assert.Single(_forwarded).Instruction);
+    }
+
+    [Fact]
     public async Task List_get_and_follow_up_forward_exactly_one_matching_ipc_call_each()
     {
         await Send(Api(HttpMethod.Get, "/api/jobs"));
