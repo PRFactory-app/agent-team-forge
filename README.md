@@ -29,6 +29,9 @@ session state, credentials and runtime databases out of commits.
 
 ## Run the bounded checkpoint
 
+See the [Linux quickstart](docs/quickstart.md) for build and publish commands,
+MCP registration, job commands, and the current setup command boundary.
+
 From the repository root, with the pinned .NET SDK and Linux native build
 prerequisites already available:
 

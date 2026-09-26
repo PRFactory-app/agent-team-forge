@@ -10,6 +10,10 @@
 
 ## 1. Start here
 
+For the owner-facing Linux build, setup, MCP, and job-command flow, see the
+[Linux quickstart](docs/quickstart.md). It records the commands present on
+`main` and the reviewed setup branch separately.
+
 Work from the root of your `agent-team-forge` checkout. All paths in this
 handoff are repository-relative unless explicitly marked otherwise.
 
