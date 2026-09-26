@@ -31,6 +31,7 @@ public sealed record IpcRequest
     public long? Offset { get; init; }
     public int? MaxBytes { get; init; }
     public string? Cursor { get; init; }
+    public bool OrderByActivity { get; init; }
     public int? OlderThanDays { get; init; }
     public bool DryRun { get; init; }
     public string? WakeKey { get; init; }

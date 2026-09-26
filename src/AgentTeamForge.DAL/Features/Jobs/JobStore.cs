@@ -436,29 +436,32 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     });
 
     /// <summary>
-    /// One output-bounded keyset page of a principal/team's jobs, newest job ID first.
+    /// One output-bounded keyset page of a principal/team's jobs, newest job ID first
+    /// by default, or newest activity first for the web overview.
     /// A single read-only statement: it takes no write lock and changes no row,
     /// intent, event or cursor. Each call is an independent committed read (live
     /// keyset, not a snapshot). No `(principal, team, job_id)` index exists, so DB
     /// work still grows with the caller's total jobs; only the returned rows are capped.
     /// </summary>
     public IReadOnlyList<JobSummaryRecord> ListJobs(string principal, string team, string? status, string? backend, string? since, string? beforeJobId, int take,
-        string? leadSessionId = null, string? workspace = null) => Read(connection =>
+        string? leadSessionId = null, string? workspace = null, bool orderByActivity = false) => Read(connection =>
     {
         using var command = Command(connection, null, """
             SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at, j.worktree_path, j.worktree_branch,
-                   j.backend, j.session_id, j.parent_job_id
+                   j.backend, j.session_id, j.parent_job_id, j.lead_session_id, j.target_agent
             FROM jobs j
             WHERE j.principal=$p AND j.team=$t
               AND ($lead IS NULL OR j.lead_session_id=$lead OR ($workspace IS NOT NULL AND j.lead_session_id IN (SELECT session_id FROM lead_sessions WHERE workspace=$workspace)))
               AND ($status IS NULL OR j.status=$status)
               AND ($backend IS NULL OR j.backend=$backend)
               AND ($since IS NULL OR j.accepted_at >= $since)
-              AND ($before IS NULL OR j.job_id < $before)
-            ORDER BY j.job_id DESC
+              AND ($before IS NULL OR ($activity=0 AND j.job_id < $before)
+                OR ($activity=1 AND (j.updated_at < (SELECT updated_at FROM jobs WHERE job_id=$before)
+                  OR (j.updated_at = (SELECT updated_at FROM jobs WHERE job_id=$before) AND j.job_id < $before))))
+            ORDER BY CASE WHEN $activity=1 THEN j.updated_at ELSE j.job_id END DESC, j.job_id DESC
             LIMIT $take
             """,
-            ("$p", principal), ("$t", team), ("$lead", leadSessionId), ("$workspace", workspace), ("$status", status), ("$backend", backend), ("$since", since), ("$before", beforeJobId), ("$take", take));
+            ("$p", principal), ("$t", team), ("$lead", leadSessionId), ("$workspace", workspace), ("$status", status), ("$backend", backend), ("$since", since), ("$before", beforeJobId), ("$activity", orderByActivity ? 1 : 0), ("$take", take));
         using var reader = command.ExecuteReader();
         var jobs = new List<JobSummaryRecord>();
         while (reader.Read())
@@ -471,6 +474,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 Backend = reader.GetString(8),
                 SessionId = NullableString(reader, 9),
                 ParentJobId = NullableString(reader, 10),
+                LeadSessionId = NullableString(reader, 11),
+                TargetAgent = reader.GetString(12),
             });
         }
 

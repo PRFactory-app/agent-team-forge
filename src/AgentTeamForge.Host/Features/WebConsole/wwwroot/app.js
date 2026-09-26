@@ -1,8 +1,9 @@
 'use strict';
 // Text-only operator console. All server text is rendered with textContent.
-// The bearer lives only in this closure: never in the URL, storage or cookies.
+// A fragment token is copied to per-tab storage and removed from the address bar.
 (() => {
   const $ = (id) => document.getElementById(id);
+  const tokenKey = 'atf.web.token';
   let token = null;
   let selected = null;
   let selectedJob = null;
@@ -55,6 +56,7 @@
 
   function logout(message) {
     token = null;
+    sessionStorage.removeItem(tokenKey);
     clearInterval(timer);
     clearInterval(logTimer);
     $('console').hidden = true;
@@ -68,6 +70,29 @@
     return td;
   }
 
+  function light(name, label) {
+    const span = document.createElement('span');
+    span.className = 'light ' + name;
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    dot.setAttribute('aria-hidden', 'true');
+    span.append(dot, document.createTextNode(label));
+    return span;
+  }
+
+  function connect(value) {
+    token = value.trim();
+    if (!token) return;
+    sessionStorage.setItem(tokenKey, token);
+    $('token').value = '';
+    $('login').hidden = true;
+    $('console').hidden = false;
+    setStatus('connecting');
+    clearInterval(timer);
+    timer = setInterval(loadJobs, 5000);
+    loadJobs();
+  }
+
   async function loadJobs() {
     const params = new URLSearchParams();
     if ($('status-filter').value) params.set('status', $('status-filter').value);
@@ -79,36 +104,78 @@
       return;
     }
     setStatus('updated ' + new Date().toLocaleTimeString());
-    const tbody = $('jobs');
-    tbody.replaceChildren();
+    const overview = $('jobs');
+    overview.replaceChildren();
     nextCursor = r.page && r.page.has_more ? r.page.next_cursor : null;
     $('page-prev').disabled = pageIndex === 0;
     $('page-next').disabled = !nextCursor;
     $('page-number').textContent = 'Page ' + (pageIndex + 1);
-    for (const j of (r.page && r.page.jobs) || []) {
-      const tr = document.createElement('tr');
-      if (j.job_id === selected) tr.className = 'selected';
-      const idCell = document.createElement('td');
-      const link = document.createElement('button');
-      link.type = 'button';
-      link.textContent = j.job_id;
-      link.addEventListener('click', () => select(j.job_id));
-      idCell.append(link);
-      tr.append(idCell, cell(j.status), cell(j.backend), cell(j.session_id), cell(j.parent_job_id), cell(j.attempts));
-      const action = document.createElement('td');
-      if (j.session_id) {
-        const follow = document.createElement('button');
-        follow.type = 'button';
-        follow.textContent = 'Follow up';
-        follow.addEventListener('click', async () => {
-          await select(j.job_id);
-          $('follow-text').focus();
-        });
-        action.append(follow);
-      }
-      tr.append(action);
-      tbody.append(tr);
+    const jobs = (r.page && r.page.jobs) || [];
+    const counts = { yellow: 0, green: 0, red: 0, grey: 0 };
+    const groups = new Map();
+    for (const j of jobs) {
+      const color = Object.hasOwn(counts, j.light) ? j.light : 'red';
+      counts[color]++;
+      const lead = j.lead_session_id || 'No lead session';
+      if (!groups.has(lead)) groups.set(lead, []);
+      groups.get(lead).push(j);
     }
+    const lights = $('lights');
+    lights.replaceChildren();
+    for (const [color, label] of [['yellow', 'Working'], ['green', 'Ready'], ['red', 'Attention'], ['grey', 'Stopped']]) {
+      lights.append(light(color, label + ' ' + counts[color]));
+    }
+    const recent = (a, b) => (b.updated_at || '').localeCompare(a.updated_at || '');
+    for (const groupJobs of groups.values()) groupJobs.sort(recent);
+    const sortedGroups = [...groups].sort((a, b) => recent(a[1][0], b[1][0]));
+    for (const [lead, groupJobs] of sortedGroups) {
+      const section = document.createElement('section');
+      section.className = 'lead-group';
+      const heading = document.createElement('h3');
+      heading.textContent = 'Lead session: ' + lead;
+      section.append(heading);
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      const headerRow = document.createElement('tr');
+      for (const title of ['Job', 'Status', 'Agent', 'Backend', 'Session', 'Updated', 'Parent', 'Attempts', 'Action']) {
+        const th = document.createElement('th');
+        th.textContent = title;
+        headerRow.append(th);
+      }
+      thead.append(headerRow);
+      const tbody = document.createElement('tbody');
+      for (const j of groupJobs) {
+        const tr = document.createElement('tr');
+        if (j.job_id === selected) tr.className = 'selected';
+        const idCell = document.createElement('td');
+        const link = document.createElement('button');
+        link.type = 'button';
+        link.textContent = j.job_id;
+        link.addEventListener('click', () => select(j.job_id));
+        idCell.append(link);
+        const statusCell = document.createElement('td');
+        statusCell.append(light(Object.hasOwn(counts, j.light) ? j.light : 'red', j.status));
+        tr.append(idCell, statusCell, cell(j.target_agent), cell(j.backend), cell(j.session_id),
+          cell(j.updated_at ? new Date(j.updated_at).toLocaleString() : ''), cell(j.parent_job_id), cell(j.attempts));
+        const action = document.createElement('td');
+        if (j.session_id) {
+          const follow = document.createElement('button');
+          follow.type = 'button';
+          follow.textContent = 'Follow up';
+          follow.addEventListener('click', async () => {
+            await select(j.job_id);
+            $('follow-text').focus();
+          });
+          action.append(follow);
+        }
+        tr.append(action);
+        tbody.append(tr);
+      }
+      table.append(thead, tbody);
+      section.append(table);
+      overview.append(section);
+    }
+    if (!jobs.length) overview.textContent = 'No jobs on this page.';
   }
 
   async function select(jobId) {
@@ -227,16 +294,17 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
+    const fragment = new URLSearchParams(location.hash.slice(1));
+    if (fragment.has('token')) {
+      const fragmentToken = fragment.get('token');
+      history.replaceState(null, '', location.pathname + location.search);
+      if (fragmentToken) sessionStorage.setItem(tokenKey, fragmentToken);
+    }
     $('login-form').addEventListener('submit', (e) => {
       e.preventDefault();
-      token = $('token').value.trim();
-      $('token').value = '';
-      $('login').hidden = true;
-      $('console').hidden = false;
-      setStatus('connecting');
-      loadJobs();
-      timer = setInterval(loadJobs, 5000);
+      connect($('token').value);
     });
+    if (sessionStorage.getItem(tokenKey)) connect(sessionStorage.getItem(tokenKey));
     $('refresh').addEventListener('click', loadJobs);
     $('status-filter').addEventListener('change', () => {
       pageCursors = [null];

@@ -1,7 +1,16 @@
 body { font: 14px/1.4 ui-monospace, monospace; margin: 0 16px 32px; color: #111; background: #fff; }
-header { display: flex; gap: 16px; align-items: baseline; }
+header { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
 h1 { font-size: 18px; }
 h2 { font-size: 16px; }
+.lead-group { margin: 16px 0 24px; overflow-x: auto; }
+.lead-group h3 { font-size: 14px; overflow-wrap: anywhere; }
+#lights { display: flex; gap: 12px; flex-wrap: wrap; }
+.light { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: currentColor; flex: none; }
+.yellow .dot { color: #aa7100; }
+.green .dot { color: #16833a; }
+.red .dot { color: #bb2432; }
+.grey .dot { color: #777; }
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 2px 8px; border-bottom: 1px solid #ccc; overflow-wrap: anywhere; }
 tr.selected { background: #eef; }
@@ -19,4 +28,8 @@ textarea { width: 100%; box-sizing: border-box; font: inherit; }
   tr.selected { background: #223; }
   td button { color: #8af; }
   .note { color: #999; }
+  .yellow .dot { color: #f1c555; }
+  .green .dot { color: #53c87b; }
+  .red .dot { color: #f0767f; }
+  .grey .dot { color: #aaa; }
 }

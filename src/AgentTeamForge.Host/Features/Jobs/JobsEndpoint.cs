@@ -110,6 +110,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     LeadSessionId = request.LeadSessionId,
                     AllWorkspace = request.AllWorkspace,
                     Workspace = request.Workspace,
+                    OrderByActivity = request.OrderByActivity,
                 });
                 return listed.Error is null ? new IpcResponse(true, Outcome: "listed", Page: listed.Page) : new IpcResponse(false, listed.Error);
             case IpcProtocol.JobPrune:

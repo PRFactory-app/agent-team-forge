@@ -9,7 +9,7 @@
 <script src="/app.js" defer></script>
 </head>
 <body>
-<header><h1>AgentTeamForge console</h1><span id="status"></span></header>
+<header><h1>AgentTeamForge console</h1><div id="lights" aria-label="Job status counts"></div><span id="status" role="status"></span></header>
 
 <section id="login">
   <form id="login-form" autocomplete="off">
@@ -17,12 +17,13 @@
     <input id="token" type="password" autocomplete="off" spellcheck="false" required>
     <button type="submit">Connect</button>
   </form>
-  <p class="note">The token is kept in page memory only. Reloading the page requires entering it again.</p>
+  <p class="note">The token stays in this tab until it closes.</p>
 </section>
 
 <main id="console" hidden>
   <section>
-    <h2>History <button id="refresh" type="button">Refresh</button></h2>
+    <h2>Overview <button id="refresh" type="button">Refresh</button></h2>
+    <p class="note">Live status, grouped by lead session. Counts show this page of history.</p>
     <label for="status-filter">Status</label>
     <select id="status-filter">
       <option value="">All</option>
@@ -33,10 +34,7 @@
       <option value="cancelled">Cancelled</option>
       <option value="needs_reconciliation">Needs reconciliation</option>
     </select>
-    <table>
-      <thead><tr><th>Job</th><th>Status</th><th>Backend</th><th>Session</th><th>Parent</th><th>Attempts</th><th>Action</th></tr></thead>
-      <tbody id="jobs"></tbody>
-    </table>
+    <div id="jobs"></div>
     <p><button id="page-prev" type="button" disabled>Previous</button> <span id="page-number">Page 1</span> <button id="page-next" type="button" disabled>Next</button></p>
   </section>
 

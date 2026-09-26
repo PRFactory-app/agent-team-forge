@@ -53,6 +53,32 @@ public sealed class ListJobsTests
         Assert.Equal(ListJobs.DefaultPageSize, defaulted.Limit);
     }
 
+    [Fact]
+    public void Activity_order_paging_shows_a_recently_updated_older_job_first()
+    {
+        using var f = new JobFixture();
+        var older = f.Submit("older");
+        var newer = f.Submit("newer");
+        using (var connection = f.Database.OpenConnection())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "UPDATE jobs SET updated_at='2100-01-01T00:00:00.0000000+00:00' WHERE job_id=$id";
+            command.Parameters.AddWithValue("$id", older.JobId);
+            command.ExecuteNonQuery();
+            command.CommandText = "UPDATE jobs SET updated_at='2000-01-01T00:00:00.0000000+00:00' WHERE job_id=$id";
+            command.Parameters["$id"].Value = newer.JobId;
+            command.ExecuteNonQuery();
+        }
+
+        var request = new ListJobsRequest(Limit: 1) { OrderByActivity = true };
+        var first = f.List().Execute(request).Page!;
+        var second = f.List().Execute(request with { Cursor = first.NextCursor }).Page!;
+
+        Assert.Equal(older.JobId, Assert.Single(first.Jobs).JobId);
+        Assert.Equal(newer.JobId, Assert.Single(second.Jobs).JobId);
+        Assert.False(second.HasMore);
+    }
+
     /// <summary>
     /// Paging is best-effort live keyset, not a snapshot: each page is its own committed read.
     /// Rows that stay matching are returned exactly once; concurrent changes may be included or missed.

@@ -34,6 +34,8 @@ public sealed class WebConsoleScenarios
         var url = await ReadField(web, "url");
         var token = await ReadField(web, "token");
         Assert.NotEqual(rig.Credential, token);
+        Assert.Equal("#token=" + token, new Uri(url).Fragment);
+        Assert.Equal(string.Empty, new Uri(url).Query);
 
         using var http = new HttpClient { BaseAddress = new Uri(url) };
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -48,12 +50,14 @@ public sealed class WebConsoleScenarios
 
         var listed = await Call(new HttpRequestMessage(HttpMethod.Get, "api/jobs"));
         Assert.Equal([parent.JobId], listed.Page!.Jobs.Select(j => j.JobId));
+        Assert.Equal("green", listed.Page.Jobs[0].Light);
+        Assert.Contains("\"light\":\"green\"", raw[^1], StringComparison.Ordinal);
 
         var post = new HttpRequestMessage(HttpMethod.Post, $"api/jobs/{parent.JobId}/follow-up")
         {
             Content = new StringContent("""{"instruction":"second","idempotency_key":"web-1"}""", Encoding.UTF8, "application/json"),
         };
-        post.Headers.Add("Origin", url.TrimEnd('/'));
+        post.Headers.Add("Origin", new Uri(url).GetLeftPart(UriPartial.Authority));
         var next = await Call(post);
         Assert.Equal("accepted", next.Outcome);
 

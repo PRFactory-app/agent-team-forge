@@ -154,6 +154,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
                 Op = IpcProtocol.JobList,
                 Status = request.Query["status"].Count == 0 ? null : request.Query["status"].ToString(),
                 Cursor = request.Query["cursor"].Count == 0 ? null : request.Query["cursor"].ToString(),
+                OrderByActivity = true,
             },
             ("GET", ["jobs", var id]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobGet, JobId = id },
             ("GET", ["jobs", var id, "output"]) when ValidId(id) => new IpcRequest

@@ -8,7 +8,7 @@ namespace AgentTeamForge.Host.Features.WebConsole;
 
 /// <summary>
 /// <c>atf web --state-dir DIR --port PORT</c>: a separate client process serving the
-/// operator console on 127.0.0.1. It prints the URL and a fresh per-run bearer to this
+/// operator console on 127.0.0.1. It prints a fragment-token URL and a fresh per-run bearer to this
 /// (authorized) startup console only; the daemon credential never leaves the process.
 /// </summary>
 public static class WebConsoleCommand
@@ -27,7 +27,7 @@ public static class WebConsoleCommand
         var client = new IpcClient(state, new SpikeLimits(), CallBudget);
         var token = WebConsoleServer.NewToken();
         await using var server = await WebConsoleServer.StartAsync(port, token, client.SendAsync);
-        Console.Out.WriteLine($"url {server.Url}");
+        Console.Out.WriteLine($"url {server.Url}#token={token}");
         Console.Out.WriteLine($"token {token}");
         Console.Out.Flush();
 

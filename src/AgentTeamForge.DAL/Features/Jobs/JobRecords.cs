@@ -99,4 +99,6 @@ public sealed record JobSummaryRecord(string JobId, string Status, string? Reaso
     public string? ParentJobId { get; init; }
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }
+    public string? LeadSessionId { get; init; }
+    public string? TargetAgent { get; init; }
 }
