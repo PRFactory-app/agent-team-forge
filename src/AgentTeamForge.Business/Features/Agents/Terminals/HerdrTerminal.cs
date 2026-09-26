@@ -156,7 +156,7 @@ public sealed class HerdrTerminal
     /// the recorded server carrying exactly this bootstrap path. The tab is never closed on failure.
     /// </summary>
     public async Task<HerdrTabBinding> OpenAgentTabAsync(OwnedHerdrSession session, string label, string cwd, string bootstrapFile, CancellationToken cancellationToken,
-        (string Name, string Value)? workspaceTrustEnvironment = null, Action<OwnedHerdrSession>? onCreated = null)
+        (string Name, string Value)? workspaceTrustEnvironment = null, Action<OwnedHerdrSession>? onCreated = null, bool exclusivePiMcp = false)
     {
         ArgumentException.ThrowIfNullOrEmpty(label);
         ArgumentException.ThrowIfNullOrEmpty(cwd);
@@ -173,6 +173,7 @@ public sealed class HerdrTerminal
             "--env", BootstrapVariable + "=" + bootstrapFile, "--no-focus" };
         // Shared Herdr sessions may have been started with another CODEX_HOME.
         args.AddRange(["--env", "CODEX_HOME=" + Env("CODEX_HOME")]);
+        if (exclusivePiMcp) { args.AddRange(["--env", "PI_MCP_CONFIG_MODE=exclusive"]); }
         if (workspaceTrustEnvironment is { } trust)
         {
             // Claude's per-process trust latch. Inject it only into this owned launch;

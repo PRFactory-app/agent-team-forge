@@ -3,6 +3,8 @@ using System.Net.Sockets;
 using System.Text;
 using AgentTeamForge.Business;
 using AgentTeamForge.Host.Hosting;
+using AgentTeamForge.Host.Features.Jobs;
+using AgentTeamForge.Host.Features.Setup;
 using AgentTeamForge.Host.Transport;
 using AgentTeamForge.Tests.Support;
 
@@ -167,8 +169,9 @@ public sealed class IpcClientDeadlineTests
         using var state = new TempStateDir();
         var credential = FakePeer.WriteCredential(state);
         var dir = StateDirectory.Open(state.Path);
+        var messages = new System.Collections.Concurrent.ConcurrentQueue<string>();
         using var server = new IpcServer(dir.Socket, Encoding.UTF8.GetBytes(credential), new BoundPrincipal("op", "team", "agent"),
-            new SpikeLimits(), _ => throw new IOException("Invalid job log header"), _ => { });
+            new SpikeLimits(), _ => throw new IOException("Invalid job log header"), messages.Enqueue);
         using var daemonLifetime = new CancellationTokenSource();
         using var listener = server.Bind();
         var serving = server.ServeAsync(listener, daemonLifetime.Token);
@@ -177,6 +180,31 @@ public sealed class IpcClientDeadlineTests
             .SendAsync(Submit, TestContext.Current.CancellationToken);
 
         Assert.Equal(IpcProtocol.InternalError, response.Error);
+        Assert.Contains(messages, message => message.Contains("Invalid job log header", StringComparison.Ordinal));
+        await daemonLifetime.CancelAsync();
+        listener.Dispose();
+        await serving.WaitAsync(Slack, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Request_hook_io_exception_returns_error_and_logs_cause()
+    {
+        using var state = new TempStateDir();
+        var credential = FakePeer.WriteCredential(state);
+        var dir = StateDirectory.Open(state.Path);
+        var messages = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        using var server = new IpcServer(dir.Socket, Encoding.UTF8.GetBytes(credential), new BoundPrincipal("op", "team", "agent"),
+            new SpikeLimits(), _ => new IpcResponse(true), messages.Enqueue,
+            beforeRequest: _ => throw new IOException("legacy row could not be read"));
+        using var daemonLifetime = new CancellationTokenSource();
+        using var listener = server.Bind();
+        var serving = server.ServeAsync(listener, daemonLifetime.Token);
+
+        var response = await new IpcClient(dir, new SpikeLimits(), TimeSpan.FromSeconds(5))
+            .SendAsync(Submit, TestContext.Current.CancellationToken);
+
+        Assert.Equal(IpcProtocol.InternalError, response.Error);
+        Assert.Contains(messages, message => message.Contains("legacy row could not be read", StringComparison.Ordinal));
         await daemonLifetime.CancelAsync();
         listener.Dispose();
         await serving.WaitAsync(Slack, TestContext.Current.CancellationToken);
@@ -193,6 +221,39 @@ public sealed class IpcClientDeadlineTests
 
         Assert.Equal(IpcProtocol.DaemonUnavailable, response.Error);
         Assert.True(elapsed < Budget, $"took {elapsed}");
+    }
+
+    [Fact]
+    public async Task Denied_unix_socket_reports_access_denied_without_lazy_start()
+    {
+        if (OperatingSystem.IsWindows()) { return; }
+        using var temp = new TempStateDir();
+        Assert.Equal(0, InitCommand.Run(temp.Path, true, null, null));
+        var state = StateDirectory.Open(temp.Path);
+        using var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        listener.Bind(new UnixDomainSocketEndPoint(state.Socket));
+        listener.Listen(1);
+        File.SetUnixFileMode(state.Socket, UnixFileMode.None);
+
+        var response = await new IpcClient(state, new SpikeLimits()).SendAsync(Submit, TestContext.Current.CancellationToken);
+        Assert.Equal(IpcProtocol.AccessDenied, response.Error);
+        Assert.False(string.IsNullOrWhiteSpace(response.ErrorDetail));
+        Assert.Equal(1, await ClientCommand.RunAsync(state, "list", new Dictionary<string, string>()));
+        Assert.False(File.Exists(Path.Combine(state.Path, "start.lock")));
+    }
+
+    [Fact]
+    public async Task Denied_start_gate_returns_error_instead_of_throwing()
+    {
+        if (OperatingSystem.IsWindows()) { return; }
+        using var temp = new TempStateDir();
+        Assert.Equal(0, InitCommand.Run(temp.Path, true, null, null));
+        var gate = Path.Combine(temp.Path, "start.lock");
+        File.WriteAllText(gate, "");
+        File.SetUnixFileMode(gate, UnixFileMode.None);
+
+        Assert.Equal(1, await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = temp.Path },
+            "/missing/atf", quiet: true));
     }
 
     [Theory]

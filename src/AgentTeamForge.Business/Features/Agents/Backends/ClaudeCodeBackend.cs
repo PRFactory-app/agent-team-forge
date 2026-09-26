@@ -37,6 +37,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
         {
             info.WorkingDirectory = cwd;
         }
+        ManagedChildContext.ClearInheritedIdentity(info);
         OrphanedBackendProcess.Mark(info, request.Correlation);
         WindowsCliLaunch.Configure(info, "claude", executable == "claude");
 
@@ -57,6 +58,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
     internal static List<string> Arguments(BackendRequest request, string sessionId)
     {
         List<string> arguments = ["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"];
+        arguments.AddRange(ManagedChildContext.Arguments("claude", request.ManagedMcpConfig));
         foreach (var part in request.Options.Split(';', StringSplitOptions.RemoveEmptyEntries))
         {
             if (part.Split('=', 2) is ["model", { Length: > 0 } model])

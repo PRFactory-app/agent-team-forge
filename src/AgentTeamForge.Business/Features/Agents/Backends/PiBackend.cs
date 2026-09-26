@@ -32,6 +32,8 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
         {
             info.WorkingDirectory = cwd;
         }
+        ManagedChildContext.ClearInheritedIdentity(info);
+        if (request.ManagedMcpConfig is not null) { info.Environment["PI_MCP_CONFIG_MODE"] = "exclusive"; }
         OrphanedBackendProcess.Mark(info, request.Correlation);
 
         foreach (var argument in BuildArguments(request))
@@ -56,6 +58,7 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
     internal static List<string> BuildArguments(BackendRequest request)
     {
         List<string> args = ["-p", "--mode", "json", "--approve", "--exclude-tools", ExcludedTools];
+        args.AddRange(ManagedChildContext.Arguments("pi", request.ManagedMcpConfig));
         if (request.ResumeSessionId is { } session)
         {
             args.AddRange(["--session", session]);

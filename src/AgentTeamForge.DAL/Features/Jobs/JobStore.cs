@@ -10,6 +10,16 @@ namespace AgentTeamForge.DAL.Features.Jobs;
 /// </summary>
 public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpoints)
 {
+    public (string SessionId, string Workspace)? LeadForJob(string jobId)
+    {
+        using var db = database.OpenConnection();
+        using var command = db.CreateCommand();
+        command.CommandText = "SELECT s.session_id,s.workspace FROM jobs j JOIN lead_sessions s ON s.session_id=j.lead_session_id WHERE j.job_id=$id AND s.closed_at IS NULL";
+        command.Parameters.AddWithValue("$id", jobId);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? (reader.GetString(0), reader.GetString(1)) : null;
+    }
+
     const string JobColumns = """
         j.job_id, j.principal, j.team, j.target_agent, j.idempotency_key, j.instruction, j.options,
         j.status, j.reason_code, j.result_text,
@@ -535,6 +545,11 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                    (SELECT s.workspace FROM lead_sessions s WHERE s.session_id=j.lead_session_id AND s.closed_at IS NULL), j.cwd
             FROM jobs j
             WHERE j.principal=$p AND j.team=$t
+              -- A malformed pre-release row must not break this page or its cursor.
+              AND typeof(j.job_id)='text' AND typeof(j.status)='text'
+              AND typeof(j.accepted_at)='text' AND typeof(j.updated_at)='text'
+              AND typeof(j.backend)='text' AND typeof(j.target_agent)='text'
+              AND typeof(j.options)='text'
               AND ($lead IS NULL OR j.lead_session_id=$lead OR ($workspace IS NOT NULL AND j.lead_session_id IN (SELECT session_id FROM lead_sessions WHERE workspace=$workspace)))
               AND ($status IS NULL OR j.status=$status)
               AND ($backend IS NULL OR j.backend=$backend)
@@ -550,19 +565,19 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         var jobs = new List<JobSummaryRecord>();
         while (reader.Read())
         {
-            jobs.Add(new JobSummaryRecord(reader.GetString(0), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetString(2),
+            jobs.Add(new JobSummaryRecord(reader.GetString(0), reader.GetString(1), NullableText(reader, 2),
                 reader.GetInt32(3), reader.GetString(4), reader.GetString(5))
             {
-                WorktreePath = NullableString(reader, 6),
-                WorktreeBranch = NullableString(reader, 7),
+                WorktreePath = NullableText(reader, 6),
+                WorktreeBranch = NullableText(reader, 7),
                 Backend = reader.GetString(8),
-                SessionId = NullableString(reader, 9),
-                ParentJobId = NullableString(reader, 10),
-                LeadSessionId = NullableString(reader, 11),
+                SessionId = NullableText(reader, 9),
+                ParentJobId = NullableText(reader, 10),
+                LeadSessionId = NullableText(reader, 11),
                 TargetAgent = reader.GetString(12),
-                Options = NullableString(reader, 13),
-                LeadWorkspace = NullableString(reader, 14),
-                Cwd = NullableString(reader, 15),
+                Options = NullableText(reader, 13),
+                LeadWorkspace = NullableText(reader, 14),
+                Cwd = NullableText(reader, 15),
             });
         }
 
@@ -610,6 +625,9 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     };
 
     static string? NullableString(SqliteDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
+
+    static string? NullableText(SqliteDataReader reader, int ordinal) => !reader.IsDBNull(ordinal) && reader.GetFieldType(ordinal) == typeof(string)
+        ? reader.GetString(ordinal) : null;
 
     static string? QueryString(SqliteConnection connection, SqliteTransaction? tx, string sql, params (string, object?)[] parameters)
     {

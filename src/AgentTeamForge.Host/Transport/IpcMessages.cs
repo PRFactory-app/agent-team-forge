@@ -119,6 +119,7 @@ public static class IpcProtocol
     public const string BadFrame = "bad_frame";
     public const string UnknownOp = "unknown_op";
     public const string DaemonUnavailable = "daemon_unavailable";
+    public const string AccessDenied = "access_denied";
     public const string OutcomeUnknown = "outcome_unknown";
     public const string InternalError = "internal_error";
 }

@@ -1,0 +1,82 @@
+using System.Diagnostics;
+using System.Text.Json.Nodes;
+using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Agents.Terminals;
+using AgentTeamForge.Business.Features.External;
+using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.DAL.Features.External;
+using AgentTeamForge.DAL.Features.Sessions;
+using AgentTeamForge.DAL.Features.Wake;
+using AgentTeamForge.DAL.Sqlite;
+using AgentTeamForge.Tests.Support;
+
+namespace AgentTeamForge.Tests.Features.Jobs;
+
+public sealed class ManagedChildContextTests
+{
+    [Fact]
+    public async Task Spawn_and_resume_receive_private_configuration_for_the_same_parent()
+    {
+        using var f = new JobFixture();
+        var root = Path.GetDirectoryName(f.DatabasePath)!;
+        var lead = new LeadSessionStore(f.Database).Start(root, "parent");
+        var team = new ExternalTeam(new ExternalMemberStore(f.Database), new WakeStore(f.Database));
+        var context = new ManagedChildContext(f.Store, team, root, "/private/atf");
+        var backend = new ScriptedBackend(r =>
+        [
+            new BackendEvidence.Session(r.Correlation, "native-child"),
+            new BackendEvidence.Result(r.Correlation, "done"),
+        ]);
+        var catalog = new BackendCatalog().Register("claude", () => backend);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
+        var first = accept.Execute(new SubmitJobRequest("first", "task", null, false) { Backend = "claude", LeadSessionId = lead.SessionId }).Job!;
+        using var dispatch = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { }, childContext: context);
+        await dispatch.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+        var next = new FollowUpJob(f.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(first.JobId, "again", "next") { LeadSessionId = lead.SessionId });
+        Assert.Null(next.Error);
+        await dispatch.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+        Assert.Equal(2, backend.Started.Count);
+        Assert.Equal("native-child", backend.Started[1].ResumeSessionId);
+        Assert.Equal(File.ReadAllText(backend.Started[0].ManagedMcpConfig!), File.ReadAllText(backend.Started[1].ManagedMcpConfig!));
+        var configPath = backend.Started[0].ManagedMcpConfig!;
+        var args = JsonNode.Parse(File.ReadAllText(configPath))!["mcpServers"]![ManagedChildContext.ServerName]!["args"]!.AsArray();
+        Assert.Equal(root, args[2]!.GetValue<string>());
+        var contextPath = args[4]!.GetValue<string>();
+        var saved = JsonNode.Parse(File.ReadAllText(contextPath))!;
+        Assert.Equal(lead.SessionId, saved["parent_session_id"]!.GetValue<string>());
+        Assert.True(team.Send(saved["member_token"]!.GetValue<string>(), "report").Ok);
+        Assert.Equal("report", Assert.Single(team.ReadLead(lead.SessionId, root, null, null).Inbox!.Messages).Text);
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(contextPath));
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(configPath));
+        }
+        foreach (var request in backend.Started)
+        {
+            Assert.Contains(request.ManagedMcpConfig!, ClaudeCodeBackend.Arguments(request, "session"));
+            Assert.Contains(request.ManagedMcpConfig!, PiBackend.BuildArguments(request));
+            Assert.Contains(CodexExecBackend.BuildArguments(request), arg => arg.StartsWith("mcp_servers.agentteamforge.args=", StringComparison.Ordinal)
+                && arg.Contains(contextPath, StringComparison.Ordinal));
+            var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atf-test", root, request.ResumeSessionId, null,
+                Path.Combine(root, "herdr", "atf-test.bootstrap"))
+            { JobId = request.JobId };
+            Assert.Contains(request.ManagedMcpConfig!, HerdrAgentControl.AgentArguments(launch));
+        }
+        Assert.True(team.CloseTeam(lead.SessionId));
+        Assert.Equal("membership_revoked", team.Send(saved["member_token"]!.GetValue<string>(), "late report").Error);
+    }
+
+    [Fact]
+    public void Child_process_does_not_inherit_parent_messaging_or_native_identity()
+    {
+        var info = new ProcessStartInfo();
+        info.Environment.Clear();
+        info.Environment["WIN_AGENT_TEAMS_PARENT_ID"] = "parent";
+        info.Environment["CLAUDE_CODE_MESSAGING_SOCKET"] = "/parent/socket";
+        info.Environment["CODEX_THREAD_ID"] = "parent-thread";
+        info.Environment["ATF_EXTERNAL_ONLY"] = "1";
+        info.Environment["CLAUDE_CODE_OAUTH_TOKEN"] = "test-credential";
+        ManagedChildContext.ClearInheritedIdentity(info);
+        Assert.Equal(["CLAUDE_CODE_OAUTH_TOKEN"], info.Environment.Keys);
+    }
+}

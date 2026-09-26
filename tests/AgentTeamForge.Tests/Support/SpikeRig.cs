@@ -87,9 +87,15 @@ public sealed class SpikeRig : IDisposable
         return process;
     }
 
-    public async Task<(Process Process, McpClient Client)> StartBridgeAsync(string? leadParentId = null, bool externalOnly = false)
+    public async Task<(Process Process, McpClient Client)> StartBridgeAsync(string? leadParentId = null, bool externalOnly = false, string? managedContext = null,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
-        var info = Info(["mcp", "--state-dir", StateDir], redirectInput: true);
+        var info = Info(managedContext is null ? ["mcp", "--state-dir", StateDir]
+            : ["mcp", "--state-dir", StateDir, "--managed-context", managedContext], redirectInput: true);
+        if (environment is not null)
+        {
+            foreach (var (key, value) in environment) { info.Environment[key] = value; }
+        }
         if (leadParentId is not null)
         {
             info.Environment["WIN_AGENT_TEAMS_PARENT_ID"] = leadParentId;
