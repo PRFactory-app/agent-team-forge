@@ -48,6 +48,14 @@ the daemon PID and is safe to repeat. `atf stop` prints the `kill -TERM` command
 for the running daemon. This checkpoint still dispatches the fake backend; the
 selected mode is persisted for subsequent real-agent implementation.
 
+Run `atf prune --dry-run` to count expired jobs, then `atf prune` to remove them.
+`--older-than 30d` is the default; both commands accept `--state-dir DIR` and
+require the daemon to be running. The daemon also prunes once at startup and
+every 24 hours. Set `auto_prune` to `false` or `prune_older_than_days` to a
+positive number in the private `profile.json` to change that schedule. Pruning
+removes completed and failed jobs, their stored output/events/runs, and matching
+files in `logs/<job-id>.log`. Active jobs and parents of active follow-ups remain.
+
 ## Run the bounded checkpoint
 
 From the repository root, with the pinned .NET SDK and Linux native build
