@@ -23,6 +23,12 @@ public static class DaemonCommand
     public static async Task<int> RunAsync(StateDirectory state, string? crashAt, string? failAt)
     {
         var profile = SpikeProfileFile.Load(state);
+        if (SetupCommand.ConfiguredMode(state) == "herdr")
+        {
+            // TODO: compose the Herdr interactive backend when it lands.
+            Log("error: herdr agent launch is not available yet");
+            return 78;
+        }
         if ((crashAt is not null || failAt is not null) && !profile.TestProfile)
         {
             Log("test controls require an explicit test profile");

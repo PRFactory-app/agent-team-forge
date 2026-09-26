@@ -30,7 +30,11 @@ public static class SetupCommand
         }
 
         var state = StateDirectory.Open(dir);
-        _ = SpikeProfileFile.Load(state);
+        if (!SpikeProfileFile.Load(state).RealAgents)
+        {
+            Console.Error.WriteLine("error: setup requires an agents profile");
+            return 78;
+        }
         WriteMode(state, mode);
 
         var binary = Path.GetFullPath(executablePath ?? Environment.ProcessPath
@@ -60,7 +64,14 @@ public static class SetupCommand
             }
         }
 
-        Console.Out.WriteLine($"Launch mode: {mode}. Run: {FormatCommand(binary, ["start", "--state-dir", state.Path])}");
+        if (mode == "headless")
+        {
+            Console.Out.WriteLine($"Launch mode: headless. Run: {FormatCommand(binary, ["start", "--state-dir", state.Path])}");
+        }
+        else
+        {
+            Console.Out.WriteLine("Launch mode: herdr saved. Herdr agent launch is not available yet; start will refuse this mode.");
+        }
         return 0;
     }
 
@@ -68,7 +79,12 @@ public static class SetupCommand
     {
         var state = StateDirectory.Open(ResolveStateDir(options));
         _ = SpikeProfileFile.Load(state);
-        _ = ReadMode(state);
+        if (ReadMode(state) == "herdr")
+        {
+            // TODO: route Herdr mode through its interactive backend when it lands.
+            Console.Error.WriteLine("error: herdr agent launch is not available yet");
+            return 78;
+        }
         using (var probe = DaemonLock.TryAcquire(state.LockFile))
         {
             if (probe is null)
@@ -199,6 +215,9 @@ public static class SetupCommand
 
         return settings.Mode;
     }
+
+    internal static string? ConfiguredMode(StateDirectory state) =>
+        File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadMode(state) : null;
 
     static int RunCommand(string tool, IReadOnlyList<string> args)
     {

@@ -64,4 +64,30 @@ public sealed class SetupCommandTests
 
         Assert.Equal(0, await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = dir }, "/missing/atf"));
     }
+
+    [Fact]
+    public async Task HerdrModeDoesNotStartHeadlessBackends()
+    {
+        using var temp = new TempStateDir();
+        var dir = temp.File("state");
+        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "herdr", ["state-dir"] = dir },
+            (_, _) => throw new InvalidOperationException(), "/tmp/atf"));
+
+        var state = StateDirectory.Open(dir);
+        Assert.Equal(78, await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = dir }, "/missing/atf"));
+        Assert.Equal(78, await DaemonCommand.RunAsync(state, null, null));
+        Assert.False(File.Exists(state.Socket));
+    }
+
+    [Fact]
+    public void SetupRejectsFakeOnlyProfile()
+    {
+        using var temp = new TempStateDir();
+        var dir = temp.File("state");
+        Assert.Equal(0, InitCommand.Run(dir, testProfile: true, queueLimit: null, maxRuntimeSeconds: null));
+
+        Assert.Equal(78, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = dir },
+            (_, _) => throw new InvalidOperationException(), "/tmp/atf"));
+        Assert.False(File.Exists(Path.Combine(dir, "launch-mode.json")));
+    }
 }
