@@ -8,7 +8,7 @@ namespace AgentTeamForge.Host.Features.WebConsole;
 /// <summary>Print the daemon-hosted console link; rotate its bearer only on request.</summary>
 public static class WebConsoleCommand
 {
-    public static int Run(StateDirectory state, IReadOnlyDictionary<string, string> options)
+    public static int Run(IReadOnlyDictionary<string, string> options)
     {
         if (options.ContainsKey("port"))
         {
@@ -16,6 +16,7 @@ public static class WebConsoleCommand
             return 64;
         }
 
+        var state = StateDirectory.Open(SetupCommand.ResolveStateDir(options));
         var port = SetupCommand.ConfiguredWebPort(state);
         var token = options.ContainsKey("rotate-token") ? WebConsoleToken.Rotate(state) : WebConsoleToken.Ensure(state);
         var url = $"http://127.0.0.1:{port}/#token={token}";
