@@ -473,7 +473,7 @@ public sealed class ExternalMemberStore(JobDatabase database)
                     maxChars is { } max ? text[..Math.Min(text.Length, max)] : text, reader.GetString(3),
                     maxChars is null ? null : text.Length > maxChars, maxChars is null ? null : text.Length);
                 var size = JsonSerializer.SerializeToUtf8Bytes(message, ExternalMessageJson.Default.ExternalMessage).Length + 1;
-                if (bytes + size > ReadPageBytes)
+                if (selected.Count > 0 && bytes + size > ReadPageBytes)
                 {
                     break;
                 }
