@@ -23,6 +23,7 @@
 **/captures/
 **/worktrees/
 .worktrees/
+.tools/
 *.db
 *.db-*
 *.sqlite

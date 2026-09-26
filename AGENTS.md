@@ -82,6 +82,19 @@ compatibility layer for other orchestration systems.
   phase; do not postpone testing or security until system qualification.
 - A narrow demonstration is an explicitly labelled checkpoint, not completion
   of a full phase. Change contracts/scope visibly and update dependent plans.
+- Keep implementation moving through fresh, bounded agents per slice rather than
+  repeatedly extending one session. Parallelize independent slices with explicit
+  file/worktree ownership while reviews run. Hand off well before roughly
+  200,000 context tokens; 400,000-token implementation sessions are unacceptable.
+  Preserve decisions/tests/blockers in concise reports, then retire finished
+  workers. Do not keep agents idle when the next safe, testable slice is ready.
+- Parallel implementation uses separate feature branches/worktrees and explicit
+  slice ownership. Maintain an integration branch per milestone; use an
+  independent **Codex GPT-6 Sol (tier high)** integrator to merge reviewed slices,
+  resolve conflicts and run combined gates. Integration is not review approval:
+  GPT-authored conflict-resolution code needs Claude review. Never resolve a
+  conflict by dropping safety tests or weakening a contract. Keep merge inputs
+  small, snapshot-bound and backed by a complete epic plan.
 
 This section is the authoritative contributor review policy. General references
 elsewhere to independent review must be interpreted using these rules.

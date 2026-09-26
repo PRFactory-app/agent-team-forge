@@ -144,8 +144,11 @@ escalation requires an explicit accepted policy; no new default is implied.
   neither daemon nor fake backend belongs to the bridge's kill scope.
 - Only the daemon opens SQLite. Bridge mode composes transport clients, not DAL
   services, even though both modes use the same executable.
-- Acquire an exclusive daemon lock before opening/migrating the DB or changing
-  the socket. A second daemon must fail without unlinking the live endpoint.
+- Hold an OS advisory lock on an open file descriptor in the private state
+  directory, automatically released on process death; a PID/existence file is
+  not a lock. Acquire it before opening/migrating the DB or unlinking/binding
+  the socket. A losing daemon exits without touching the endpoint, DB or lock
+  file. Verify immediate restart after SIGKILL in an existing crash scenario.
 - Use an owner-private runtime/state directory and socket, reject unsafe
   ownership/symlink cases, and cap inbound frame size and read time.
 - Provision one private operator credential for the test profile. Load it from
@@ -194,7 +197,12 @@ both `job_submit` and `job_get`.
 
 Use real on-disk SQLite, WAL, foreign keys, `synchronous=FULL`, short
 transactions, and bounded busy behavior. Schema and startup checks must not
-silently create empty replacement state after a database error.
+silently create empty replacement state after a database error. Accept-or-get,
+begin-attempt and completion use short `BEGIN IMMEDIATE` write transactions.
+Lookup, queue-capacity check and writes are inside the same acceptance transaction;
+the scoped-key unique constraint remains the final arbiter. Never opt into a
+deferred read-to-write upgrade or a separate capacity read. Busy/locked exhaustion
+returns a stable retryable error with no acceptance, never fabricated success.
 
 The feature-specific DAL API exposes these atomic operations directly to
 Business, with names finalized in code. Keep its records and storage outcomes
@@ -240,6 +248,18 @@ Generation and correlation checks fence late evidence. Correlated fake
 completion proves only the fake protocol contract; real interactive completion
 still depends on the first spike's evidence. EOF, malformed output, ack, or a
 missing child never counts as successful completion.
+
+While the daemon is alive, EOF before result, malformed/oversized output, child
+exit without correlated result and deadline expiry after attempt-start atomically
+transition the matching run to non-retryable `needs_reconciliation`, retaining
+its intent history and ownership uncertainty. No failure re-creates a dispatch
+intent. This spike conservatively avoids a separate retryable failed state.
+On deadline, it may terminate only its own direct fake child through the held
+process handle (explicit spike-only policy), then record the same uncertain
+outcome. Test EOF-before-result and deadline expiry, not just successful output.
+If a final-state write fails, stop claiming new intents until recovery; do not
+continue dispatch with unrecorded work. Unknown and other-principal job IDs both
+return the same not-found outcome.
 
 ## 5. Vertical implementation slices
 
