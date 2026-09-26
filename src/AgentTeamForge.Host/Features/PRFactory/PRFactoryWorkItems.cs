@@ -8,13 +8,13 @@ namespace AgentTeamForge.Host.Features.PRFactory;
 public sealed class PRFactoryWorkItems(
     string server, IReadOnlyList<RepositoryMapping> repositories, PRFactoryTeamStore teams,
     PRFactoryClient client, Func<SubmitJobRequest, JobResult> submit, Func<string, JobRecord?> getJob,
-    Action onAccepted, Func<string, string?>? leadSessionFor = null)
+    Action onAccepted, Func<string, string?>? leadSessionFor = null, Action<string>? log = null)
 {
     public async Task TickAsync(Guid? machineId, CancellationToken ct)
     {
         foreach (var pending in teams.Pending(server))
         {
-            await AdvanceAsync(pending, ct);
+            await IsolateAsync(pending.WorkItemId, () => AdvanceAsync(pending, ct), ct);
         }
 
         var offered = await client.PollAsync(repositories.Select(r => r.Id), machineId, ct);
@@ -33,7 +33,21 @@ public sealed class PRFactoryWorkItems(
 
             var json = JsonSerializer.Serialize(claimed, PRFactoryWorkItemJson.Default.PRFactoryWorkItem);
             teams.CreateIfAbsent(server, claimed.Id, json); // Commit before the first submit.
-            await AdvanceAsync(teams.Get(server, claimed.Id)!, ct);
+            await IsolateAsync(claimed.Id, () => AdvanceAsync(teams.Get(server, claimed.Id)!, ct), ct);
+        }
+    }
+
+    // One failing team must not block every other team and new claims; it retries next tick.
+    async Task IsolateAsync(Guid id, Func<Task> advance, CancellationToken ct)
+    {
+        try
+        {
+            await advance();
+        }
+        catch (Exception ex) when (ex is not (WorkerTokenRejectedException or OutOfMemoryException)
+            && !(ex is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            log?.Invoke($"PRFactory work item {id:D} deferred ({ex.GetType().Name})");
         }
     }
 
@@ -188,36 +202,20 @@ public sealed class PRFactoryWorkItems(
     async Task FinishAsync(PRFactoryTeamRecord team, PRFactoryWorkItem item, bool success, string error,
         string? cwd, CancellationToken ct, string? result = null)
     {
+        var file = cwd is not null && item.ExpectedOutput is { Length: > 0 } output
+            ? ArtefactPath(cwd, item.TicketArtefactFolder ?? string.Empty, output) ?? string.Empty
+            : null;
+        if (file == string.Empty)
+        {
+            // A server-supplied path that escapes the mapping fails the item instead of retrying forever.
+            (success, error, file) = (false, "artefact path is outside the mapped repository", null);
+        }
         if (!team.Uploaded)
         {
             var artefacts = new List<PRFactoryArtefactFile>();
-            if (cwd is not null && item.ExpectedOutput is { Length: > 0 } output)
+            if (file is not null && File.Exists(file))
             {
-                var folder = item.TicketArtefactFolder ?? string.Empty;
-                var root = Path.GetFullPath(cwd);
-                var file = Path.GetFullPath(Path.Combine(root, folder, output));
-                if (Path.GetFileName(output) != output || !file.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-                {
-                    throw new InvalidDataException("PRFactory artefact path escapes repository");
-                }
-
-                var current = root;
-                foreach (var part in Path.GetRelativePath(root, Path.GetDirectoryName(file)!).Split(Path.DirectorySeparatorChar))
-                {
-                    current = Path.Combine(current, part);
-                    if (new DirectoryInfo(current).LinkTarget is not null)
-                    {
-                        throw new InvalidDataException("PRFactory artefact folder is a symbolic link");
-                    }
-                }
-                if (new FileInfo(file).LinkTarget is not null)
-                {
-                    throw new InvalidDataException("PRFactory artefact is a symbolic link");
-                }
-                if (File.Exists(file))
-                {
-                    artefacts.Add(new PRFactoryArtefactFile(output, await File.ReadAllTextAsync(file, ct), null));
-                }
+                artefacts.Add(new PRFactoryArtefactFile(item.ExpectedOutput!, await File.ReadAllTextAsync(file, ct), null));
             }
             await client.UploadArtefactsAsync(item.Id, item.LeaseToken, artefacts, ct);
             teams.SetUploaded(server, item.Id);
@@ -232,6 +230,27 @@ public sealed class PRFactoryWorkItems(
             await client.FailAsync(item.Id, item.LeaseToken, error, ct);
             teams.Finish(server, item.Id, error.StartsWith("multi-repository", StringComparison.Ordinal) ? "refused" : "failed");
         }
+    }
+
+    static string? ArtefactPath(string cwd, string folder, string output)
+    {
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(cwd));
+        var file = Path.GetFullPath(Path.Combine(root, folder, output));
+        if (Path.GetFileName(output) != output || !file.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var current = root;
+        foreach (var part in Path.GetRelativePath(root, Path.GetDirectoryName(file)!).Split(Path.DirectorySeparatorChar))
+        {
+            current = Path.Combine(current, part);
+            if (new DirectoryInfo(current).LinkTarget is not null)
+            {
+                return null;
+            }
+        }
+        return new FileInfo(file).LinkTarget is null ? file : null;
     }
 
     static bool HasSecondaries(PRFactoryWorkItem item)

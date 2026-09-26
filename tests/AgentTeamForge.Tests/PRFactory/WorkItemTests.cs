@@ -44,7 +44,8 @@ public sealed class WorkItemTests
         PRFactoryWorkItems Adapter() => new("https://example.test", [new RepositoryMapping(item.RepositoryId, dir.Path)],
             teams, new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             Submit, jobs.GetJob, () => { });
-        await Assert.ThrowsAsync<IOException>(() => Adapter().TickAsync(null, CancellationToken.None));
+        await Adapter().TickAsync(null, CancellationToken.None); // The failure is deferred to the next tick.
+        Assert.False(loseReply);
         Assert.NotNull(teams.Get("https://example.test", item.Id));
         Assert.Single(jobs.ListJobs("prfactory", "connector", 10));
         await Adapter().TickAsync(null, CancellationToken.None);
@@ -147,6 +148,33 @@ public sealed class WorkItemTests
         Assert.Equal(0, spawns);
         Assert.Equal(["poll", "claim", "artefacts", "fail"], server.Calls);
         Assert.Equal("refused", teams.Get("https://example.test", server.Item.Id)!.State);
+    }
+
+    [Fact]
+    public async Task Escaping_artefact_path_fails_the_item_instead_of_retrying_forever()
+    {
+        using var dir = new TempStateDir();
+        var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var teams = new PRFactoryTeamStore(db);
+        var repo = Directory.CreateDirectory(dir.File("repo")).FullName;
+        File.WriteAllText(dir.File("secret.md"), "outside");
+        var server = new FakeServer(new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            RepositoryId = Guid.NewGuid(),
+            AgentType = PRFactoryAgentType.Codex,
+            Prompt = "Do work",
+            ExpectedOutput = "secret.md",
+            TicketArtefactFolder = ".."
+        });
+        var adapter = new PRFactoryWorkItems("https://example.test", [new RepositoryMapping(server.Item.RepositoryId, repo + "/")],
+            teams, new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
+            _ => JobResult.Ok(new JobView("job_1", JobStatus.Completed, null, null, 0), "accepted"),
+            id => NewJob(id, "codex") with { Status = JobStatus.Completed }, () => { });
+        await adapter.TickAsync(null, CancellationToken.None);
+        Assert.Equal(["poll", "claim", "artefacts", "fail"], server.Calls);
+        Assert.Null(server.UploadContent);
+        Assert.Equal("failed", teams.Get("https://example.test", server.Item.Id)!.State);
     }
 
     static JobRecord NewJob(string id, string backend) =>

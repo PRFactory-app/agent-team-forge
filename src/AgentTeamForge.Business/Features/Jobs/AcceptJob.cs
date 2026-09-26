@@ -68,7 +68,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
     const int MaxLimitSeconds = 86_400;
 
     static bool ValidOption(string? value) => value is null ||
-        (value.Length is > 0 and <= 128 && !value.Any(c => char.IsControl(c) || c is ';' or '='));
+        (value.Length is > 0 and <= 128 && value[0] != '-' && !value.Any(c => char.IsControl(c) || c is ';' or '=' or '"'));
 
     internal bool IsValid(string? key, string? instruction) =>
         !string.IsNullOrWhiteSpace(key) && key.Length <= limits.MaxIdempotencyKeyChars

@@ -147,7 +147,7 @@ public static class DaemonCommand
             onConnected: (client, settings, machineId, ct) =>
                 new PRFactoryWorkItems(settings.Url, settings.Repositories, connectorTeams, client,
                     connectorAccept.Execute, store.GetJob, dispatcher.Signal,
-                    cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId).TickAsync(machineId, ct));
+                    cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId, Log).TickAsync(machineId, ct));
         await Task.WhenAny(serving, dispatching);
 
         // The dispatcher only returns on its own when halted or faulted; it closed
