@@ -10,11 +10,12 @@ must be explicitly opt-in.
 
 ## Status
 
-The repository root now contains a **Linux fake-core checkpoint**, not a
-finished agent-team product. `AgentTeamForge.slnx` contains the three production
-projects **Host → Business → DAL**, plus tests. The checkpoint exercises a
-.NET 11 daemon, SQLite persistence, private IPC, a thin MCP bridge and a fake
-child process; it does not launch Claude Code, Codex or Pi.
+The repository root now contains a **Linux checkpoint**, not a finished
+agent-team product. `AgentTeamForge.slnx` contains the three production
+projects **Host → Business → DAL**, plus tests. The reviewed checkpoint evidence
+covers a .NET 11 daemon, SQLite persistence, private IPC, a thin MCP bridge and
+a fake child process. The source also includes real-agent headless and
+interactive Linux Herdr launch paths, but no real-agent E2E is claimed.
 
 The reviewed checkpoint promoted to `main` (`d7d24ae`) passed 76 tests, 22
 published Native AOT scenarios and one published-binary demo on Linux x64; one
@@ -40,15 +41,17 @@ ATF="$(pwd)/src/AgentTeamForge.Host/bin/Release/net11.0/atf"
 "$ATF" start
 ```
 
-Use `--mode herdr` to record an interactive Herdr choice. Omit `--apply` to print
-the Claude Code and Codex MCP registration commands for review. `--apply`
-also sets `crossSessionInbound` to `accept` in the user's Claude
-settings so idle Claude leads receive native wake notices. Existing settings
-are preserved. `setup` creates private state under `$XDG_STATE_HOME/agentteamforge`, or
-`~/.local/state/agentteamforge`; `--state-dir DIR` overrides it. `start` prints
-the daemon PID and is safe to repeat. `atf stop` prints the `kill -TERM` command
-for the running daemon. This checkpoint still dispatches the fake backend; the
-selected mode is persisted for subsequent real-agent implementation.
+Use `--mode herdr` for interactive Linux launch after installing Herdr. Omit
+`--apply` to print the Claude Code and Codex MCP registration commands for
+review. A fresh setup creates a real-agent profile and private state under
+`$XDG_STATE_HOME/agentteamforge`, or `~/.local/state/agentteamforge`;
+`--state-dir DIR` overrides it. Install both client CLIs before `--apply`, and
+log in to each backend CLI you plan to run. `--apply` registers both MCP
+servers and sets `crossSessionInbound` to `accept` in `~/.claude/settings.json`
+for native wake, preserving existing settings. `start` prints the daemon PID
+and is safe to repeat; the daemon dispatches up to eight jobs concurrently.
+`atf stop` sends SIGTERM to this state's daemon. See the
+[Linux quickstart](docs/quickstart.md) for job commands and wake setup.
 
 Run `atf prune --dry-run` to count expired jobs, then `atf prune` to remove them.
 `--older-than 30d` is the default; both commands accept `--state-dir DIR` and
@@ -59,6 +62,9 @@ removes completed and failed jobs, their stored output/events/runs, and matching
 files in `logs/<job-id>.log`. Active jobs and parents of active follow-ups remain.
 
 ## Run the bounded checkpoint
+
+See the [Linux quickstart](docs/quickstart.md) for build and publish commands,
+MCP registration, parallel job dispatch, and native wake behavior.
 
 From the repository root, with the pinned .NET SDK and Linux native build
 prerequisites already available:
@@ -101,9 +107,9 @@ its process tree; the job ends `cancelled` and its session can still be followed
 `timeout_s` on `submit_job`/`follow_up` (`--timeout S`) cancels a running job with
 reason `timeout`; `queue_ttl_s` (`--queue-ttl S`) cancels one that has not started
 in time (reason `queue_ttl`). Both are off by default.
-`scripts/demo-real.sh [claude|codex|pi]` is the
-opt-in end-to-end check (spends tokens); `fake` is a plumbing dry run. Jobs run one at
-a time and agents run headless with bypassed permissions.
+`scripts/demo-real.sh [claude|codex|pi]` is the opt-in end-to-end check (spends
+tokens); `fake` is a plumbing dry run. The daemon dispatches up to eight jobs
+concurrently by default; setup selects headless or interactive Herdr launch.
 
 For native notices in a Codex lead, read `CODEX_THREAD_ID` with a shell tool and
 call `register_codex_wake(thread_id)` before submitting jobs. For a Claude Code
