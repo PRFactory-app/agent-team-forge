@@ -148,6 +148,59 @@ public sealed class ExternalTeamTests
         Assert.Equal("notice", Assert.Single(team.Read(token, null, null).Inbox!.Messages).Text);
     }
 
+    [Fact]
+    public void Default_read_drains_once_and_explicit_cursor_rereads()
+    {
+        using var f = new JobFixture();
+        var lead = new LeadSessionStore(f.Database).Start("/workspace/a", "lead-a");
+        var team = Team(f);
+        var token = team.Join(lead.SessionId, team.CreateTicket(lead.SessionId, lead.Workspace, "member", null).Ticket!.Token).Member!.MemberToken;
+        Assert.True(team.SendFromLead(lead.SessionId, lead.Workspace, "member", "one").Ok);
+        Assert.True(team.SendFromLead(lead.SessionId, lead.Workspace, "member", "two").Ok);
+        var first = team.Read(token, null, 1).Inbox!;
+        Assert.Equal("one", Assert.Single(first.Messages).Text);
+        Assert.Equal("two", Assert.Single(team.Read(token, null, null).Inbox!.Messages).Text);
+        Assert.Empty(team.Read(token, null, null).Inbox!.Messages);
+        Assert.Equal("two", Assert.Single(team.Read(token, first.NextSeq, null).Inbox!.Messages).Text);
+
+        Assert.True(team.Send(token, "reply").Ok);
+        Assert.Single(team.ReadLead(lead.SessionId, lead.Workspace, null, null).Inbox!.Messages);
+        Assert.Empty(team.ReadLead(lead.SessionId, lead.Workspace, null, null).Inbox!.Messages);
+    }
+
+    [Fact]
+    public void Leave_and_close_stop_wake_and_prune_keeps_unread_open_team_mail()
+    {
+        using var f = new JobFixture();
+        using var home = new TempStateDir();
+        Directory.CreateDirectory(home.File("sessions"));
+        var thread = Guid.NewGuid().ToString("D");
+        File.WriteAllText(Path.Combine(home.File("sessions"), "rollout-test-" + thread + ".jsonl"), "");
+        var store = new ExternalMemberStore(f.Database);
+        var wake = new WakeStore(f.Database);
+        var team = new ExternalTeam(store, wake);
+        var teamId = team.CreateActorTeam("actor:leave")!;
+        var token = team.Join(teamId, team.CreateTicketForTeam(teamId, "gone", null).Ticket!.Token).Member!.MemberToken;
+        var stays = team.Join(teamId, team.CreateTicketForTeam(teamId, "stays", null).Ticket!.Token).Member!.MemberToken;
+        Assert.NotNull(team.SetWake(token, thread, home.Path).WakeGeneration);
+        Assert.True(team.SendToMember(teamId, "gone", "unread").Ok);
+        Assert.True(team.SendToMember(teamId, "stays", "keep me").Ok);
+        Assert.Single(wake.PendingExternal());
+        Assert.True(team.Leave(token).Ok);
+        Assert.Empty(wake.PendingExternal());
+
+        Assert.Equal(1, store.Prune(DateTimeOffset.UtcNow.AddDays(1), dryRun: false));
+        Assert.Equal("keep me", Assert.Single(team.Read(stays, null, null).Inbox!.Messages).Text);
+        Assert.Equal(1, store.Prune(DateTimeOffset.UtcNow.AddDays(1), dryRun: false));
+
+        var actorWake = wake.Register("codex:actor-leave", "codex", "actor", "", home.Path);
+        Assert.True(team.BindTeamWake(teamId, actorWake.Key, actorWake.Generation));
+        Assert.True(team.Send(stays, "reply").Ok);
+        Assert.Single(wake.PendingExternal());
+        Assert.True(team.CloseTeam(teamId));
+        Assert.Empty(wake.PendingExternal());
+    }
+
     static ExternalTeam Team(JobFixture f, Func<DateTimeOffset>? clock = null) =>
         new(new ExternalMemberStore(f.Database), new WakeStore(f.Database), clock);
 

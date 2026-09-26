@@ -101,7 +101,7 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
             return new("invalid_request");
         }
 
-        var inbox = members.ReadMember(token!, sinceSeq ?? 0, full ? int.MaxValue - 1 : limit ?? 50, now(),
+        var inbox = members.ReadMember(token!, sinceSeq, full ? int.MaxValue - 1 : limit ?? 50, now(),
             string.IsNullOrEmpty(fromAgent) ? null : fromAgent);
         if (inbox is null)
         {
@@ -131,12 +131,12 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
     /// <summary>Read replies for the team owner, including a connector actor, using a durable cursor.</summary>
     public ExternalResult ReadTeam(string? teamId, long? sinceSeq, int? limit)
     {
-        if (teamId is null || sinceSeq is < 0 || limit is < 1 or > 50)
+        if (teamId is null || sinceSeq is < 0 || limit is < 0 or > 10000)
         {
             return new("invalid_request");
         }
 
-        var inbox = members.ReadTeam(teamId, sinceSeq ?? 0, limit ?? 50, now());
+        var inbox = members.ReadTeam(teamId, sinceSeq, limit ?? 50, now());
         return inbox is null ? new("invalid_team") : new(Inbox: inbox);
     }
 

@@ -119,7 +119,8 @@ public sealed class LeadSessionStore(JobDatabase database)
         command.CommandText = """
             UPDATE external_teams SET closed_at=$now,wake_key=NULL WHERE lead_session_id=$id AND closed_at IS NULL;
             UPDATE external_members SET active=0,left_at=$now,token_hash=NULL,wake_key=NULL
-            WHERE team_id=$id AND left_at IS NULL
+            WHERE team_id=$id AND left_at IS NULL;
+            UPDATE external_messages SET wake_key=NULL WHERE team_id=$id;
             """;
         command.ExecuteNonQuery();
         tx.Commit();

@@ -157,14 +157,26 @@ public sealed class ExternalMemberStore(JobDatabase database)
     public bool Leave(string token, DateTimeOffset now)
     {
         using var db = database.OpenConnection();
+        using var tx = db.BeginTransaction(deferred: false);
         using var command = db.CreateCommand();
+        command.Transaction = tx;
+        // Revoked members get no more doorbells for mail they never read.
         command.CommandText = """
+            UPDATE external_messages SET wake_key=NULL WHERE read_at IS NULL
+            AND recipient=(SELECT member_id FROM external_members WHERE token_hash=$hash AND active=1);
             UPDATE external_members SET active=0,left_at=$now,token_hash=NULL,wake_key=NULL
-            WHERE token_hash=$hash AND active=1
+            WHERE token_hash=$hash AND active=1;
+            SELECT changes();
             """;
         command.Parameters.AddWithValue("$now", now.ToString("O"));
         command.Parameters.AddWithValue("$hash", Hash(token));
-        return command.ExecuteNonQuery() == 1;
+        if ((long)command.ExecuteScalar()! != 1)
+        {
+            return false;
+        }
+
+        tx.Commit();
+        return true;
     }
 
     public bool CloseTeam(string teamId, DateTimeOffset now)
@@ -182,7 +194,8 @@ public sealed class ExternalMemberStore(JobDatabase database)
         }
         command.CommandText = """
             UPDATE external_members SET active=0,left_at=$now,token_hash=NULL,wake_key=NULL
-            WHERE team_id=$team AND left_at IS NULL
+            WHERE team_id=$team AND left_at IS NULL;
+            UPDATE external_messages SET wake_key=NULL WHERE team_id=$team;
             """;
         command.ExecuteNonQuery();
         tx.Commit();
@@ -244,7 +257,7 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return true;
     }
 
-    public ExternalInbox? ReadMember(string token, long sinceSeq, int limit, DateTimeOffset now, string? fromAgent = null)
+    public ExternalInbox? ReadMember(string token, long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent = null)
     {
         using var db = database.OpenConnection();
         using var tx = db.BeginTransaction(deferred: false);
@@ -259,7 +272,7 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return inbox;
     }
 
-    public ExternalInbox? ReadTeam(string teamId, long sinceSeq, int limit, DateTimeOffset now)
+    public ExternalInbox? ReadTeam(string teamId, long? sinceSeq, int limit, DateTimeOffset now)
     {
         using var db = database.OpenConnection();
         using var tx = db.BeginTransaction(deferred: false);
@@ -345,18 +358,20 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return reader.Read() ? (reader.GetString(0), reader.GetString(1), reader.GetString(2)) : null;
     }
 
-    static ExternalInbox Read(SqliteConnection db, SqliteTransaction tx, string teamId, string recipient, long sinceSeq, int limit, DateTimeOffset now, string? fromAgent = null)
+    static ExternalInbox Read(SqliteConnection db, SqliteTransaction tx, string teamId, string recipient, long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent = null)
     {
         using var select = db.CreateCommand();
         select.Transaction = tx;
         select.CommandText = """
             SELECT seq,sender,text,created_at FROM external_messages
-            WHERE team_id=$team AND recipient=$recipient AND seq>$since
+            WHERE team_id=$team AND recipient=$recipient
+            AND ($since IS NULL AND read_at IS NULL OR seq>$since)
             AND ($sender IS NULL OR sender=$sender) ORDER BY seq LIMIT $limit
             """;
         select.Parameters.AddWithValue("$team", teamId);
         select.Parameters.AddWithValue("$recipient", recipient);
-        select.Parameters.AddWithValue("$since", sinceSeq);
+        // No cursor drains unread rows; an explicit cursor re-reads from that point.
+        select.Parameters.AddWithValue("$since", (object?)sinceSeq ?? DBNull.Value);
         select.Parameters.AddWithValue("$limit", limit + 1);
         select.Parameters.AddWithValue("$sender", (object?)fromAgent ?? DBNull.Value);
         var rows = new List<ExternalMessage>();
@@ -374,26 +389,32 @@ public sealed class ExternalMemberStore(JobDatabase database)
             rows.RemoveAt(rows.Count - 1);
         }
 
-        var next = rows.Count == 0 ? sinceSeq : rows[^1].Seq;
+        var next = rows.Count == 0 ? sinceSeq ?? 0 : rows[^1].Seq;
         if (rows.Count > 0)
         {
             using var update = db.CreateCommand();
             update.Transaction = tx;
             update.CommandText = """
                 UPDATE external_messages SET read_at=$now WHERE team_id=$team AND recipient=$recipient
-                AND seq>$since AND seq<=$next AND read_at IS NULL
+                AND seq>=$first AND seq<=$next AND read_at IS NULL
                 AND ($sender IS NULL OR sender=$sender)
                 """;
             update.Parameters.AddWithValue("$now", now.ToString("O"));
             update.Parameters.AddWithValue("$team", teamId);
             update.Parameters.AddWithValue("$recipient", recipient);
-            update.Parameters.AddWithValue("$since", sinceSeq);
+            update.Parameters.AddWithValue("$first", rows[0].Seq);
             update.Parameters.AddWithValue("$next", next);
             update.Parameters.AddWithValue("$sender", (object?)fromAgent ?? DBNull.Value);
             update.ExecuteNonQuery();
         }
         return new ExternalInbox(rows, next, more);
     }
+
+    // Unread mail to an open team's lead or active member is accepted work and survives prune.
+    const string Settled = """
+        (read_at IS NOT NULL OR team_id IN (SELECT team_id FROM external_teams WHERE closed_at IS NOT NULL)
+        OR recipient IN (SELECT member_id FROM external_members WHERE left_at IS NOT NULL))
+        """;
 
     public int Prune(DateTimeOffset cutoff, bool dryRun)
     {
@@ -402,8 +423,8 @@ public sealed class ExternalMemberStore(JobDatabase database)
         using var command = db.CreateCommand();
         command.Transaction = tx;
         command.CommandText = dryRun
-            ? "SELECT count(*) FROM external_messages WHERE created_at<$cutoff"
-            : "DELETE FROM external_messages WHERE created_at<$cutoff";
+            ? "SELECT count(*) FROM external_messages WHERE created_at<$cutoff AND " + Settled
+            : "DELETE FROM external_messages WHERE created_at<$cutoff AND " + Settled;
         command.Parameters.AddWithValue("$cutoff", cutoff.ToString("O"));
         var count = dryRun ? Convert.ToInt32(command.ExecuteScalar()) : command.ExecuteNonQuery();
         if (!dryRun)
