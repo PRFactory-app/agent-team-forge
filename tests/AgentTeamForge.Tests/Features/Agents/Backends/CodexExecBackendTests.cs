@@ -113,7 +113,21 @@ public sealed class CodexExecBackendTests : IDisposable
 
         run.TerminateOwnedChild();
 
-        await Bounded.Until(() => !Directory.Exists($"/proc/{grandchild}") || File.ReadAllText($"/proc/{grandchild}/stat").Contains(") Z ", StringComparison.Ordinal), "grandchild exit");
+        await Bounded.Until(() => GrandchildExited(grandchild), "grandchild exit");
+    }
+
+    static bool GrandchildExited(int pid)
+    {
+        var stat = $"/proc/{pid}/stat";
+        try
+        {
+            return !File.Exists(stat) || File.ReadAllText(stat).Contains(") Z ", StringComparison.Ordinal);
+        }
+        catch (IOException)
+        {
+            // /proc can disappear between the existence check and the read.
+            return !File.Exists(stat);
+        }
     }
 
     [Fact]
