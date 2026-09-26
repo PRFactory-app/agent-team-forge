@@ -3,6 +3,8 @@
 set -eu
 fail() { echo "atf installer: $*" >&2; exit 1; }
 usage() { echo 'usage: install.sh [--version VERSION] [--archive FILE] [--checksum FILE] [--release-url URL] [--state-dir DIR] | --uninstall [--purge] [--state-dir DIR]' >&2; exit 2; }
+# Everything runs inside main so a truncated `curl | sh` download executes nothing.
+main() {
 version= archive= checksum= release_url= uninstall= purge= state_dir=
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -93,6 +95,7 @@ if [ -n "$uninstall" ]; then
   exit 0
 fi
 [ -z "$purge" ] || usage
+version=${version#v}
 case "$version" in ''|*[!0-9A-Za-z.+-]*) [ -z "$version" ] || fail 'invalid version';; esac
 if [ -n "$archive" ]; then
   [ -f "$archive" ] || fail "archive not found: $archive"
@@ -181,3 +184,5 @@ if [ -n "$upgrade" ]; then
 else
   printf 'run "%s" setup to choose a launch mode and register installed clients\n' "$bin"
 fi
+}
+main "$@"

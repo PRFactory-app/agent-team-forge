@@ -114,7 +114,8 @@ jobs:
       - name: Attach macOS tester assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --clobber
+        # install.sh is already published (and listed in SHA256SUMS) by the Linux job.
+        run: gh release upload "$GITHUB_REF_NAME" release/atf-* release/SHA256SUMS-osx-arm64 --repo "$GITHUB_REPOSITORY" --clobber
   attach-win:
     needs: [publish-linux, win-x64]
     runs-on: ubuntu-24.04

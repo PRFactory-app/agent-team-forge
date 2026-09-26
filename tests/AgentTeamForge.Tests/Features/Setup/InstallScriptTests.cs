@@ -124,7 +124,7 @@ public sealed class InstallScriptTests
         };
 
         Assert.Equal(0, RunWith(home, [], env).Code);
-        Assert.Equal(0, RunWith(home, ["--version", "0.0.1"], env).Code);
+        Assert.Equal(0, RunWith(home, ["--version", "v0.0.1"], env).Code);
         var urls = File.ReadAllLines(Path.Combine(fixture, "urls"));
         Assert.Contains("https://fixture/releases/latest", urls);
         Assert.Equal(4, urls.Count(url => url.StartsWith("https://fixture/releases/download/v0.0.1/", StringComparison.Ordinal)));
