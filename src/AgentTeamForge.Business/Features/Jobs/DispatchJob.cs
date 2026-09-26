@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 
@@ -92,7 +93,43 @@ public sealed class DispatchJob : IDisposable
             active.TerminateOnce(TryInterrupt);
             try { active.Stop.Cancel(); }
             catch (ObjectDisposedException) { }
+            CloseInterruptedIfUnclaimed(jobId);
         }
+    }
+
+    internal void CloseInterruptedIfUnclaimed(string jobId)
+    {
+        // A stop can win after the child commit but before InterruptTurn remembers
+        // its tab. The committed child state is the final arbiter.
+        try
+        {
+            var parent = store.GetJob(jobId);
+            if (!store.HasQueuedFollowUp(jobId) && parent?.SessionId is { } sessionId &&
+                backends.Resolve(parent.Backend) is HerdrInteractiveBackend interactive)
+            {
+                interactive.CloseUnclaimedSession(sessionId);
+            }
+        }
+        catch (Exception ex)
+        { log($"Herdr interrupt cleanup failed for {jobId}: {ex.Message}"); }
+    }
+
+    /// <summary>Releases a retained Herdr tab when its follow-up was cancelled in the queue.</summary>
+    public void CloseUnclaimedFollowUp(string jobId)
+    {
+        try
+        {
+            var job = store.GetJob(jobId);
+            if (job?.ParentJobId is not { } parentId || store.GetJob(parentId)?.SessionId is not { } sessionId)
+            {
+                return;
+            }
+            if (backends.Resolve(job.Backend) is HerdrInteractiveBackend interactive)
+            {
+                interactive.CloseUnclaimedSession(sessionId);
+            }
+        }
+        catch (Exception ex) { log($"Herdr cleanup failed for {jobId}: {ex.Message}"); }
     }
 
     /// <summary>Commits a daemon-owned cancellation, then interrupts the running attempt.</summary>
@@ -171,10 +208,7 @@ public sealed class DispatchJob : IDisposable
         {
             try
             {
-                foreach (var jobId in store.ExpireQueued())
-                {
-                    log($"queue ttl expired for {jobId}");
-                }
+                SweepExpiredQueued();
             }
             catch (StorageException ex)
             {
@@ -189,6 +223,15 @@ public sealed class DispatchJob : IDisposable
             {
                 return;
             }
+        }
+    }
+
+    internal void SweepExpiredQueued()
+    {
+        foreach (var jobId in store.ExpireQueued())
+        {
+            log($"queue ttl expired for {jobId}");
+            CloseUnclaimedFollowUp(jobId);
         }
     }
 

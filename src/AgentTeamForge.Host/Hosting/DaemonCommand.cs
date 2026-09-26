@@ -79,7 +79,18 @@ public static class DaemonCommand
         var jobLogs = new JobLogs(state.Path, Log);
         var prune = new PruneJob(new PruneJobs(database), state.Path);
         var wakeStore = new WakeStore(database);
-        var quarantined = new RecoverOnStartup(store).Execute();
+        void RecoverHerdr()
+        {
+            if (!Directory.Exists(Path.Combine(state.Path, "herdr")))
+            {
+                return;
+            }
+            var recoveryEnvironment = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
+                .ToDictionary(e => (string)e.Key, e => (string?)e.Value, StringComparer.Ordinal);
+            var terminal = new HerdrTerminal(new HerdrTerminalOptions { Environment = recoveryEnvironment });
+            HerdrOwnedSessions.Recover(state.Path, session => terminal.RecoverOwnedSessionAsync(session, CancellationToken.None));
+        }
+        var quarantined = new RecoverOnStartup(store, RecoverHerdr).Execute();
         Log($"recovery: quarantined {quarantined.Count} uncertain attempt(s)");
 
         var backendEnv = new Dictionary<string, string>();
@@ -109,7 +120,7 @@ public static class DaemonCommand
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
             new ListJobs(store, profile.Bound),
-            new StopJob(store, profile.Bound, dispatcher.CancelRunning), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs);
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,

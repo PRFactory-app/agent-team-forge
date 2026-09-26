@@ -385,6 +385,10 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
     public JobRecord? GetJob(string jobId) => Read(connection => GetJob(connection, null, jobId));
 
+    /// <summary>Used after an interrupt to catch a queued child stopped before Esc finished.</summary>
+    public bool HasQueuedFollowUp(string parentJobId) => Read(connection =>
+        Scalar(connection, null, "SELECT count(*) FROM jobs WHERE parent_job_id=$id AND status='queued'", ("$id", parentJobId)) > 0);
+
     /// <summary>Newest first, scoped to one principal/team.</summary>
     public IReadOnlyList<JobRecord> ListJobs(string principal, string team, int limit) => Read(connection =>
     {

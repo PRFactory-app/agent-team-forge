@@ -61,6 +61,15 @@ public sealed class HerdrInteractiveBackend : IJobBackend
 
     void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions[sessionId] = launch;
 
+    /// <summary>Closes an interrupted tab when its queued follow-up ends before claim.</summary>
+    public void CloseUnclaimedSession(string sessionId)
+    {
+        if (_liveSessions.TryRemove(sessionId, out var launch))
+        {
+            _control.StopOwned(launch);
+        }
+    }
+
     string PiDirectory(BackendRequest request)
     {
         var root = Path.Combine(_stateRoot, "pi-sessions");
