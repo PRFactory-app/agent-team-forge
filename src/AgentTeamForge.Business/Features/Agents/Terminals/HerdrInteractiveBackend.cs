@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -15,7 +14,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     readonly IInteractiveTranscriptReader _transcripts;
     readonly InteractiveAgentKind _kind;
     readonly string _stateRoot;
-    readonly ConcurrentDictionary<string, InteractiveLaunch> _liveSessions = new(StringComparer.Ordinal);
+    readonly RetainedSessions _liveSessions;
 
     public HerdrInteractiveBackend(HerdrTerminal terminal, InteractiveAgentKind kind, string stateRoot)
         : this(new HerdrAgentControl(terminal), new InteractiveTranscriptReader(), kind, stateRoot) { }
@@ -26,6 +25,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         _transcripts = transcripts;
         _kind = kind;
         _stateRoot = stateRoot;
+        _liveSessions = new RetainedSessions(control.StopOwned);
     }
 
     public IBackendRun Start(BackendRequest request)
@@ -37,7 +37,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         }
 
         var started = DateTimeOffset.UtcNow;
-        if (request.ResumeSessionId is { } resumeId && _liveSessions.TryRemove(resumeId, out var live))
+        if (request.ResumeSessionId is { } resumeId && _liveSessions.TryTake(resumeId, out var live))
         {
             var (model, effort) = InteractiveLaunch.Selection(request.Options);
             if (live.Model == model && live.Effort == effort)
@@ -64,30 +64,11 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         return new Run(_control, _transcripts, request, launch, started, RememberSession);
     }
 
-    void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions[sessionId] = launch;
+    void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
 
-    public bool StopIdleSession(string sessionId)
-    {
-        if (!_liveSessions.TryRemove(sessionId, out var launch))
-        {
-            return false;
-        }
-        try { _control.StopOwned(launch); }
-        catch
-        {
-            _liveSessions.TryAdd(sessionId, launch);
-            throw;
-        }
-        return true;
-    }
+    public bool StopIdleSession(string sessionId) => _liveSessions.Stop(sessionId);
 
-    public void StopAllIdleSessions()
-    {
-        foreach (var sessionId in _liveSessions.Keys)
-        {
-            StopIdleSession(sessionId);
-        }
-    }
+    public void StopAllIdleSessions() => _liveSessions.StopAll();
 
     /// <summary>Closes an interrupted tab when its queued follow-up ends before claim.</summary>
     public void CloseUnclaimedSession(string sessionId) => StopIdleSession(sessionId);

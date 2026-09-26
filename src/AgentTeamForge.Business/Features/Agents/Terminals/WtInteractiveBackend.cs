@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -15,7 +14,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
     readonly InteractiveAgentKind _kind;
     readonly string _stateRoot;
     readonly string _tabDirectory;
-    readonly ConcurrentDictionary<string, InteractiveLaunch> _liveSessions = new(StringComparer.Ordinal);
+    readonly RetainedSessions _liveSessions;
 
     public WtInteractiveBackend(InteractiveAgentKind kind, string stateRoot)
         : this(new WtTabControl(), new InteractiveTranscriptReader(), kind, stateRoot, "wt") { }
@@ -30,6 +29,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
         _kind = kind;
         _stateRoot = stateRoot;
         _tabDirectory = tabDirectory;
+        _liveSessions = new RetainedSessions(tabs.StopOwned);
     }
 
     public IBackendRun Start(BackendRequest request)
@@ -41,12 +41,12 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
         }
 
         _tabs.Preflight(_kind);
-        if (request.ResumeSessionId is { } resumeId && _liveSessions.TryRemove(resumeId, out var previous))
+        if (request.ResumeSessionId is { } resumeId && _liveSessions.TryTake(resumeId, out var previous))
         {
             try { _tabs.StopOwned(previous); }
             catch
             {
-                _liveSessions.TryAdd(resumeId, previous);
+                _liveSessions.Remember(resumeId, previous);
                 throw;
             }
         }
@@ -62,30 +62,11 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
         return new Run(_tabs, _transcripts, request, launch, DateTimeOffset.UtcNow, RememberSession);
     }
 
-    void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions[sessionId] = launch;
+    void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
 
-    public bool StopIdleSession(string sessionId)
-    {
-        if (!_liveSessions.TryRemove(sessionId, out var launch))
-        {
-            return false;
-        }
-        try { _tabs.StopOwned(launch); }
-        catch
-        {
-            _liveSessions.TryAdd(sessionId, launch);
-            throw;
-        }
-        return true;
-    }
+    public bool StopIdleSession(string sessionId) => _liveSessions.Stop(sessionId);
 
-    public void StopAllIdleSessions()
-    {
-        foreach (var sessionId in _liveSessions.Keys)
-        {
-            StopIdleSession(sessionId);
-        }
-    }
+    public void StopAllIdleSessions() => _liveSessions.StopAll();
 
     string PiDirectory(BackendRequest request)
     {
