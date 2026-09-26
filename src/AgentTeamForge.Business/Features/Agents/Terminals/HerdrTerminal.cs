@@ -122,7 +122,7 @@ public sealed class HerdrTerminal
     /// the recorded server carrying exactly this bootstrap path. The tab is never closed on failure.
     /// </summary>
     public async Task<HerdrTabBinding> OpenAgentTabAsync(OwnedHerdrSession session, string label, string cwd, string bootstrapFile, CancellationToken cancellationToken,
-        bool bypassClaudeWorkspaceTrust = false)
+        (string Name, string Value)? workspaceTrustEnvironment = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(label);
         ArgumentException.ThrowIfNullOrEmpty(cwd);
@@ -137,14 +137,14 @@ public sealed class HerdrTerminal
 
         var args = new List<string> { "tab", "create", "--workspace", session.WorkspaceId, "--cwd", cwd, "--label", label,
             "--env", BootstrapVariable + "=" + bootstrapFile, "--no-focus" };
-        if (bypassClaudeWorkspaceTrust)
+        if (workspaceTrustEnvironment is { } trust)
         {
             // Claude's per-process trust latch. Inject it only into this owned launch;
             // inherited CLAUDE_CODE_* context remains excluded by LaunchEnvironment.
             // In Claude Code 2.1.x it only marks the workspace trusted without writing
             // ~/.claude.json (so project settings' permission rules apply); it does not
             // enable a sandbox or touch telemetry. The bypass warning is skipped via --settings.
-            args.AddRange(["--env", "CLAUDE_CODE_SANDBOXED=1"]);
+            args.AddRange(["--env", trust.Name + "=" + trust.Value]);
         }
         var created = await OwnedAsync(session.SocketPath, cancellationToken, [.. args]);
         var tab = Str(created, "result", "root_pane", "tab_id");

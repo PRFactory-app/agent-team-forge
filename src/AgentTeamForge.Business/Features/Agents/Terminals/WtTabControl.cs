@@ -268,6 +268,10 @@ internal sealed class WtTabControl : IWtTabControl
             "$agent.WaitForExit()",
             "exit 0"
         };
+        if (InteractiveAgentCommand.WorkspaceTrustEnvironment(launch.Kind) is { } trust)
+        {
+            lines.Insert(2, "$env:" + trust.Name + " = " + Quote(trust.Value));
+        }
         if (args[0].EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
         {
             lines.RemoveRange(lines.Count - 8, 7);
@@ -281,53 +285,19 @@ internal sealed class WtTabControl : IWtTabControl
 
     internal static IReadOnlyList<string> AgentArguments(InteractiveLaunch launch, string prompt)
     {
-        var args = new List<string>();
-        switch (launch.Kind)
+        var executable = launch.Kind switch
         {
-            case InteractiveAgentKind.Claude:
-                args.AddRange([WindowsAgentBinary("claude"), "--permission-mode", "bypassPermissions"]);
-                break;
-            case InteractiveAgentKind.Codex:
-                args.AddRange([WindowsAgentBinary("codex"), "--dangerously-bypass-approvals-and-sandbox", "-C", launch.WorkingDirectory]);
-                if (OperatingSystem.IsWindows())
-                {
-                    // Hooks only feed the Windows tab state marker; elsewhere they would just replace user hooks.
-                    args.AddRange(CodexHookArguments(HookLauncher(launch)));
-                }
-                break;
-            case InteractiveAgentKind.Pi:
-                args.AddRange(WindowsPiLauncher());
-                args.AddRange(["-a", "--session-dir", launch.PiSessionDirectory!,
-                    "--exclude-tools", "ask_user,ask_question,ask_human,request_input"]);
-                break;
-            default: throw new ArgumentOutOfRangeException(nameof(launch));
-        }
-        if (launch.Model is { Length: > 0 } model)
+            InteractiveAgentKind.Claude => [WindowsAgentBinary("claude")],
+            InteractiveAgentKind.Codex => [WindowsAgentBinary("codex")],
+            InteractiveAgentKind.Pi => WindowsPiLauncher(),
+            _ => throw new ArgumentOutOfRangeException(nameof(launch)),
+        };
+        var args = new List<string>(executable);
+        args.AddRange(InteractiveAgentCommand.Arguments(launch, piShortApprove: true));
+        if (launch.Kind == InteractiveAgentKind.Codex && OperatingSystem.IsWindows())
         {
-            args.AddRange(launch.Kind switch
-            {
-                InteractiveAgentKind.Codex => ["-m", model],
-                InteractiveAgentKind.Pi => ["--model", model.Contains('/') ? model : "openai-codex/" + model],
-                _ => ["--model", model],
-            });
-        }
-        if (launch.Effort is { Length: > 0 } effort)
-        {
-            switch (launch.Kind)
-            {
-                case InteractiveAgentKind.Claude: args.AddRange(["--effort", effort]); break;
-                case InteractiveAgentKind.Codex: args.AddRange(["-c", "model_reasoning_effort=\"" + effort + "\""]); break;
-                case InteractiveAgentKind.Pi when PiThinking.Valid(effort): args.AddRange(["--thinking", effort]); break;
-            }
-        }
-        if (launch.ResumeSessionId is { } resumeId)
-        {
-            switch (launch.Kind)
-            {
-                case InteractiveAgentKind.Claude: args.AddRange(["--resume", resumeId]); break;
-                case InteractiveAgentKind.Codex: args.AddRange(["resume", resumeId]); break;
-                case InteractiveAgentKind.Pi: args.Add("--continue"); break;
-            }
+            // Hooks only feed the Windows tab state marker; elsewhere they would replace user hooks.
+            args.AddRange(CodexHookArguments(HookLauncher(launch)));
         }
         if (launch.Kind == InteractiveAgentKind.Claude)
         {
