@@ -87,6 +87,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
         {
             if (_deliveryFailed)
             {
+                TerminateOwnedChild();
                 yield return new BackendEvidence.ProtocolError("backend_delivery_failed");
                 yield break;
             }
@@ -94,6 +95,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             var (output, overflow) = await ReadBoundedAsync(_process.StandardOutput.BaseStream, cancellationToken);
             if (overflow)
             {
+                TerminateOwnedChild();
                 yield return new BackendEvidence.ProtocolError("backend_output_too_large");
                 yield break;
             }
@@ -125,22 +127,35 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
         {
             try
             {
-                await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
-            }
-            catch (TimeoutException)
-            {
-                // A still-running child stays recorded as uncertain; it is not adopted or killed here.
-            }
+                try
+                {
+                    await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch (TimeoutException)
+                {
+                    // A closed stdout does not prove that the child has exited.
+                    TerminateOwnedChild();
+                    try
+                    {
+                        await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(1));
+                    }
+                    catch (TimeoutException)
+                    {
+                    }
+                }
 
-            try
-            {
-                await _stderrDrain.WaitAsync(TimeSpan.FromSeconds(1));
+                try
+                {
+                    await _stderrDrain.WaitAsync(TimeSpan.FromSeconds(1));
+                }
+                catch (TimeoutException)
+                {
+                }
             }
-            catch (TimeoutException)
+            finally
             {
+                _process.Dispose();
             }
-
-            _process.Dispose();
         }
 
         static async Task<(byte[] Output, bool Overflow)> ReadBoundedAsync(Stream stream, CancellationToken cancellationToken)
@@ -185,7 +200,21 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
         ClaudeResult? result;
         try
         {
-            result = JsonSerializer.Deserialize(output, ClaudeJson.Default.ClaudeResult);
+            // Some command shims print a status line on stdout before execing claude.
+            // Claude's JSON result is a single line, so only skip complete prefix lines.
+            var start = 0;
+            while (start < output.Length && output[start] != (byte)'{')
+            {
+                var newline = Array.IndexOf(output, (byte)'\n', start);
+                if (newline < 0)
+                {
+                    break;
+                }
+
+                start = newline + 1;
+            }
+
+            result = JsonSerializer.Deserialize(output.AsSpan(start), ClaudeJson.Default.ClaudeResult);
         }
         catch (JsonException)
         {
