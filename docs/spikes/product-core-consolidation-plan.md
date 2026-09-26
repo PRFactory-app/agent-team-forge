@@ -98,11 +98,12 @@ not hand-picked methods that omit safety checks.
 | Durable-core `README.md`, `REPORT.md`, `*-REPORT.md`, `CORE-FAULT-FIXES.md`, `JOB-INSPECTION-FIXES.md` when selected | Source-bound reviews and integration record | Curate concise public evidence under `docs/spikes/`; do not import raw logs or erase unique findings. |
 | Superseded durable-core runtime subtree | Full canonical gates and file manifest comparison | Remove duplicate tracked runtime/build/test/scripts only after canonical replacement passes review. Preserve historical evidence paths where linked. |
 
-The separate `spikes/m0-interactive/` tree is **not superseded by fake tests**.
-Its `.NET 10` evidence and safety-review qualifications remain separate. The
-integration tree has additional repaired tests absent from the local untracked
-copy. A later retirement manifest must pin each selected repaired source and
-review, rather than treating either tree as universally authoritative.
+The separate interactive experiment had unique .NET 10/Herdr behavior, but its
+tracked files are retired without promoting its Codex app-server or Claude
+hook/inbox paths. The root solution has its own CLI and Herdr interactive
+backends; native protocol and live safety qualification remain separate.
+Tracked safety reviews retain selected findings; the local source copy is
+outside the canonical tree and is not a build dependency.
 
 | Legacy source family | Unique tests/evidence that prevent immediate deletion | Later destination or decision |
 | --- | --- | --- |
@@ -111,7 +112,7 @@ review, rather than treating either tree as universally authoritative.
 | `Claude/*`, `ClaudeCommands` | `ClaudeHookTests`, `ClaudeHookRunnerTests`, `ClaudeInboxTests`, `ClaudeCapabilityGateTests` | Preserve isolation/capability limits; no assumption that prior feasibility establishes safe control. |
 | `Delivery/*`, `State/SpikeState`, launch/session intent | `DispatchClaimTests`, `JobReconcilerTests`, `JobTagTests`, `SessionIntentTests` | Map behavior to accepted durable contracts; do not promote a competing file-based scheduler/state authority. Retain tests until equivalent behavior is demonstrated. |
 | `Herdr/*`, `Os/*`, `Launch` | `HerdrOwnershipTests`, `HerdrCliBoundsTests`, `ProcessIdentityTests`, `ProbeProgram` | Keep ownership, environment and bounded-process evidence; later agent/terminal integration slice. |
-| `AtfSpike.slnx`, `AtfSpike` projects, `scripts/{atf-spike,bridge-kill,gates}.sh`, legacy reports | Remaining protocol suites, live-session dependencies and unique recovery evidence | Retain outside the canonical solution until every needed behavior has a reviewed replacement or an explicit approved non-promotion disposition. Then retire projects/scripts, not unique evidence. |
+| Interactive `AtfSpike` project/scripts and spike reports | Codex app-server JSON-RPC over UDS/WebSocket, native turn correlation/interruption, Claude inbox/hooks and lifecycle evidence, and full native binding checks. | Retired from the tracked tree without adapter promotion. Existing CLI and Herdr backends are independent; any future native protocol path is a new reviewed product slice with focused tests. |
 
 Retirement is file-by-file and snapshot-bound. Record source hash, destination
 or disposition, replacement test, review, and live dependency for each candidate.

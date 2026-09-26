@@ -29,12 +29,12 @@ distributed scheduler or custom model loop. Exactly three production projects
 remain: **Host → Business → DAL**. Documentation and release metadata require no
 new production assembly.
 
-Current evidence is exploratory. The [interactive spike README](../../../spikes/m0-interactive/README.md)
-explicitly excludes raw `evidence/`, `.run/`, terminal captures and transcripts
-from public clearance. Its ignore rules exclude runtime/build files but not all
-raw evidence. Earlier .NET 10/Linux observations do not establish .NET 11, Native
-AOT, Windows or macOS support, and unresolved spike safety findings require
-independent re-review before promotion.
+Current evidence is exploratory. Raw interactive-spike evidence, `.run/` state,
+terminal captures and transcripts are local artifacts and are not retained in
+the tracked tree. Earlier .NET 10/Linux observations do not establish .NET 11,
+Native AOT, Windows or macOS support; the tracked
+[safety review](../../spikes/m0-safety-lanes-review.md) records unresolved
+boundaries that need review before any future adapter work.
 
 This task writes this plan only. It does not initialize Git, create branches or
 worktrees, publish, select a license, provision signing identities, handle

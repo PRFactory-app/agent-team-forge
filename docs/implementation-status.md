@@ -83,8 +83,10 @@ owners, not incidental UI work.
 
 The pinned isolated SDK is `11.0.100-rc.1.26425.128`; root scripts discover it
 without changing global SDK/PATH. Legacy .NET 10 evidence remains version-bound.
-Retire superseded spikes only after reviewed behavior and regression tests move
-into the canonical solution; preserve live sessions and unique recovery evidence.
+The interactive `AtfSpike` experiment is retired from the tracked tree without
+promotion to a safe real-agent adapter. Useful unported behavior and limits are
+listed in the [consolidation plan](spikes/product-core-consolidation-plan.md).
+Preserve live sessions and unique local recovery evidence.
 
 GitHub organization/account, license and release decisions remain owner-dependent.
 Keep worktrees, SDKs, build outputs, raw state and credentials ignored. No release

@@ -124,8 +124,10 @@ are not progress evidence.
 5. [PoC specification](docs/poc.md) — scope, failure matrix, live tests and go/no-go.
 6. [Product scope](docs/product-scope.md), [waterfall roadmap](docs/roadmap.md),
    and [phase plans](docs/planning/full-product/README.md) — complete feature
-   inventory, P01–P08 dependencies and gates. The [next spike plan](docs/spikes/m0-durable-core-plan.md)
-   and [demo plan](docs/spikes/e2e-demo-plan.md) are bounded early checkpoints.
+   inventory, P01–P08 dependencies and gates. The [durable-core plan](docs/spikes/m0-durable-core-plan.md)
+   and [demo plan](docs/spikes/e2e-demo-plan.md) are historical planning checkpoints.
+   The interactive `AtfSpike` experiment is not part of the tracked root solution;
+   [implementation status](docs/implementation-status.md) maps current capabilities and gaps.
 7. [Independent plan review](docs/plan-review.md), then
    [review resolutions](docs/review-resolutions.md) — original findings and
    their in-place dispositions, not reviews of the later architecture/spike docs.
