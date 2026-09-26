@@ -1,19 +1,20 @@
 # Native AOT release bundles
 
-The first release version is `0.0.1` (tag `v0.0.1`). Both jobs derive the
+The first release version is `0.0.1` (tag `v0.0.1`). The platform jobs derive the
 package and `atf --version` value from the tag. The bundles include the native
 executable and its published native libraries, so the target machine does not
 need a .NET runtime.
 
 `scripts/release-build.sh VERSION [OUTPUT_DIR]` uses the pinned .NET 11 SDK to
-publish `linux-x64` Native AOT, creates `atf-VERSION-linux-x64.tar.gz` and
-`SHA256SUMS`, and runs the extracted binary through `--version` and the existing
-published scenario smoke. The tag workflow runs the repository gates first and
-uploads these files plus `install.sh` as a CI artifact. A separate `win-x64`
+publish `linux-x64` or `osx-arm64` Native AOT on the matching host, creates
+`atf-VERSION-<rid>.tar.gz` and `SHA256SUMS`, and runs the extracted binary
+through `--version`. Linux also runs the published scenario smoke. The tag
+workflow uploads these files plus `install.sh` as CI artifacts. A separate `win-x64`
 job on `windows-latest` publishes Native AOT on Windows and uploads
 `atf-VERSION-win-x64.zip` with `SHA256SUMS-win-x64` and separate debug symbols.
 The workflow does not publish a GitHub release. The owner can publish the
-artifacts after review and Windows VM validation.
+artifacts after review and platform validation. macOS arm64 is **prepared,
+untested** until a volunteer runs it on a Mac.
 
 The workflow builds on Ubuntu 24.04 (glibc 2.39). On the local Linux build,
 `ldd atf` reported `libc.so.6`, `libm.so.6`, and the x86-64 glibc loader;
@@ -26,7 +27,7 @@ not establish Windows product support. Native AOT needs a Windows build host
 for `win-x64` and cannot cross-compile from Linux.
 
 Install from downloaded files with `sh install.sh --archive
-atf-VERSION-linux-x64.tar.gz --checksum SHA256SUMS`, or from a release with
+atf-VERSION-<rid>.tar.gz --checksum SHA256SUMS`, or from a release with
 `sh install.sh --version VERSION`. Without `--version`, the installer resolves
 the latest GitHub release tag. It verifies the archive checksum before
 extracting. The stable executable is `$HOME/.local/bin/atf`; payloads live in

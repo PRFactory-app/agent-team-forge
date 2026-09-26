@@ -34,7 +34,7 @@ public static class DaemonCommand
             Log($"error: {launchMode} mode requires an agents profile");
             return 78;
         }
-        if (launchMode == "wt" && !OperatingSystem.IsWindows() || launchMode == "herdr" && !OperatingSystem.IsLinux())
+        if (launchMode == "wt" && !OperatingSystem.IsWindows() || launchMode == "herdr" && !(OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()))
         {
             Log($"error: {launchMode} mode is unavailable on this platform");
             return 64;

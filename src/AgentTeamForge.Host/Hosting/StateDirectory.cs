@@ -117,7 +117,8 @@ public sealed class StateDirectory
             throw new StateDirectoryException("private_file_unsafe");
         }
 
-        var fd = Native.Open(path, Native.OpenReadOnly | Native.OpenNonBlocking | Native.OpenNoCtty | Native.OpenCloseOnExec | noFollow);
+        var flags = OperatingSystem.IsMacOS() ? noFollow | 0x1000000 | 4 : Native.OpenReadOnly | Native.OpenNonBlocking | Native.OpenNoCtty | Native.OpenCloseOnExec | noFollow;
+        var fd = Native.Open(path, flags);
         if (fd < 0)
         {
             // ELOOP (final symlink), ENXIO (socket), EACCES, ... are all unsafe.
@@ -125,6 +126,22 @@ public sealed class StateDirectory
         }
 
         using var handle = new SafeFileHandle(fd, ownsHandle: true);
+        if (OperatingSystem.IsMacOS())
+        {
+            if (!Native.DarwinPrivateFile(handle, MaxPrivateFileBytes))
+            {
+                throw new StateDirectoryException("private_file_unsafe");
+            }
+
+            var content = new byte[MaxPrivateFileBytes + 1];
+            var count = RandomAccess.Read(handle, content, 0);
+            if (count > MaxPrivateFileBytes)
+            {
+                throw new StateDirectoryException("private_file_unsafe");
+            }
+
+            return content[..count];
+        }
         const uint required = Native.StatxType | Native.StatxMode | Native.StatxUid | Native.StatxSize;
         if (Native.Statx(fd, "", Native.StatxEmptyPath, required, out var stat) != 0
             || (stat.Mask & required) != required

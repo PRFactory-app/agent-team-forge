@@ -1,5 +1,5 @@
 #!/bin/sh
-# User-scope Linux installer for the versioned AOT bundle.
+# User-scope Unix installer for the versioned AOT bundle.
 set -eu
 fail() { echo "atf installer: $*" >&2; exit 1; }
 usage() { echo 'usage: install.sh [--version VERSION] [--archive FILE] [--checksum FILE] [--release-url URL] [--state-dir DIR] | --uninstall [--purge] [--state-dir DIR]' >&2; exit 2; }
@@ -18,8 +18,13 @@ while [ "$#" -gt 0 ]; do
     *) usage;;
   esac
 done
-[ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || fail 'only linux-x64 is supported'
-for tool in tar sha256sum mktemp readlink; do command -v "$tool" >/dev/null 2>&1 || fail "missing $tool"; done
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64) rid=linux-x64; hash_tool=sha256sum;;
+  Darwin-arm64) rid=osx-arm64; hash_tool=shasum;;
+  *) fail 'only linux-x64 and osx-arm64 bundles are prepared';;
+esac
+for tool in tar "$hash_tool" mktemp readlink; do command -v "$tool" >/dev/null 2>&1 || fail "missing $tool"; done
+sha_file() { if [ "$hash_tool" = shasum ]; then shasum -a 256 "$@"; else sha256sum "$@"; fi; }
 [ -n "${HOME:-}" ] || fail 'HOME is required'
 root=$HOME/.local/share/agentteamforge
 releases=$root/releases
@@ -64,7 +69,7 @@ if [ -n "$uninstall" ]; then
         case "$path" in ./*) ;; *) fail "invalid manifest path in $dir";; esac
         case "$path" in *'/../'*|*'/./'*|*/..|*/.) fail "invalid manifest path in $dir";; esac
         file=$dir/$path
-        if [ -f "$file" ] && [ ! -L "$file" ] && [ "$(sha256sum "$file" | cut -d ' ' -f 1)" = "$expected" ]; then
+        if [ -f "$file" ] && [ ! -L "$file" ] && [ "$(sha_file "$file" | cut -d ' ' -f 1)" = "$expected" ]; then
           rm -- "$file"
         else
           echo "atf installer: kept modified $file" >&2
@@ -90,7 +95,7 @@ if [ -n "$archive" ]; then
   [ -f "$archive" ] || fail "archive not found: $archive"
   if [ -z "$version" ]; then
     name=${archive##*/}
-    case "$name" in atf-*-linux-x64.tar.gz) version=${name#atf-}; version=${version%-linux-x64.tar.gz};; *) fail 'use --version with this archive name';; esac
+    case "$name" in atf-*-$rid.tar.gz) version=${name#atf-}; version=${version%-$rid.tar.gz};; *) fail 'use --version with this archive name';; esac
   fi
   checksum=${checksum:-$(dirname "$archive")/SHA256SUMS}
   [ -f "$checksum" ] || fail "checksum not found: $checksum"
@@ -106,7 +111,7 @@ else
 fi
 case "$version" in ''|*[!0-9A-Za-z.+-]*) fail 'invalid version';; esac
 case "$version" in [0-9]*) ;; *) fail 'version must start with a digit';; esac
-name=atf-$version-linux-x64.tar.gz
+name=atf-$version-$rid.tar.gz
 stage=
 scratch=$(mktemp -d)
 trap 'rm -rf -- "$scratch" ${stage:+"$stage"}' EXIT
@@ -119,7 +124,7 @@ if [ -z "$archive" ]; then
 fi
 expected=$(awk -v name="$name" '$2 == name && $1 ~ /^[0-9a-fA-F]+$/ {print $1}' "$checksum")
 [ "${#expected}" -eq 64 ] || fail "checksum entry missing for $name"
-actual=$(sha256sum "$archive" | cut -d ' ' -f 1)
+actual=$(sha_file "$archive" | cut -d ' ' -f 1)
 [ "$actual" = "$expected" ] || fail 'archive checksum mismatch'
 [ ! -L "$releases" ] && [ ! -L "$root" ] || fail 'install directory is a symlink'
 if [ -e "$bin" ] || [ -L "$bin" ]; then
@@ -130,15 +135,24 @@ mkdir -p "$releases" "$HOME/.local/bin"
 target=$releases/$version
 [ ! -e "$target" ] && [ ! -L "$target" ] || fail "version already installed: $version"
 stage=$(mktemp -d "$releases/.stage.XXXXXX")
-tar -xzf "$archive" -C "$stage" --no-same-owner --no-same-permissions
+if [ "$rid" = linux-x64 ]; then
+  tar -xzf "$archive" -C "$stage" --no-same-owner --no-same-permissions
+else
+  tar -xzf "$archive" -C "$stage"
+fi
 [ -x "$stage/atf" ] && [ -f "$stage/install.sh" ] || fail 'archive missing atf or install.sh'
 [ "$("$stage/atf" --version)" = "atf $version" ] || fail 'archive version mismatch'
-(cd "$stage" && find . -type f ! -name .atf-files | sort | while IFS= read -r path; do sha256sum "$path"; done) > "$stage/.atf-files"
+(cd "$stage" && find . -type f ! -name .atf-files | sort | while IFS= read -r path; do sha_file "$path"; done) > "$stage/.atf-files"
 stop_current
 mv "$stage" "$target"
 stage=
 ln -s "releases/$version" "$root/.current.$$"
-mv -Tf "$root/.current.$$" "$root/current"
+if [ "$rid" = linux-x64 ]; then
+  mv -Tf "$root/.current.$$" "$root/current"
+else
+  # BSD mv needs -h to replace a symlink to a directory itself.
+  mv -fh "$root/.current.$$" "$root/current"
+fi
 if [ ! -L "$bin" ]; then
   ln -s "$owned_bin" "$HOME/.local/bin/.atf.$$"
   mv -f "$HOME/.local/bin/.atf.$$" "$bin"

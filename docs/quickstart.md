@@ -2,6 +2,14 @@
 
 Windows Terminal (`wt`) mode: **ported, untested on Windows**. Windows validation remains on a Windows machine.
 
+macOS arm64: **prepared, untested**. Install the `osx-arm64` release bundle with
+`install.sh`, then install Herdr with `brew install herdr` for interactive agents
+inside Terminal.app, iTerm, or Ghostty. Run `atf setup --mode herdr --apply`
+and `atf start`. For background agents, use `atf setup --mode headless --apply`
+instead. Claude native wake is unavailable on macOS; poll `get_job`
+to check for results. Please report the daemon log and `atf doctor` output from
+the volunteer run.
+
 ## Build or publish
 
 From the repository root, resolve the shared pinned SDK in `.tools/dotnet11`:

@@ -116,12 +116,18 @@ public static class SetupCommand
         {
             return await StartWindowsAsync(state, binary);
         }
-        // setsid separates the daemon from the invoking shell; the shell only
-        // redirects its streams and then execs the real atf process.
-        var info = new ProcessStartInfo("setsid") { UseShellExecute = false };
-        info.ArgumentList.Add("sh");
+        // Linux uses setsid/exec; Darwin backgrounds the daemon through sh.
+        // In both cases the daemon owns the lock and records its own PID.
+        var info = new ProcessStartInfo(OperatingSystem.IsMacOS() ? "/bin/sh" : "setsid") { UseShellExecute = false };
+        if (!OperatingSystem.IsMacOS())
+        {
+            info.ArgumentList.Add("sh");
+        }
+
         info.ArgumentList.Add("-c");
-        info.ArgumentList.Add("umask 077; exec \"$@\" </dev/null >>\"$ATF_DAEMON_LOG\" 2>&1");
+        info.ArgumentList.Add(OperatingSystem.IsMacOS()
+            ? "umask 077; \"$@\" </dev/null >>\"$ATF_DAEMON_LOG\" 2>&1 &"
+            : "umask 077; exec \"$@\" </dev/null >>\"$ATF_DAEMON_LOG\" 2>&1");
         info.ArgumentList.Add("sh");
         info.ArgumentList.Add(binary);
         info.ArgumentList.Add("daemon");
@@ -132,7 +138,7 @@ public static class SetupCommand
         // The daemon holds the lock for its lifetime and writes its PID under that lock.
         for (var i = 0; i < 100; i++)
         {
-            if (process.HasExited)
+            if (process.HasExited && !OperatingSystem.IsMacOS())
             {
                 using var other = DaemonLock.TryAcquire(state.LockFile);
                 if (other is null)
@@ -145,8 +151,10 @@ public static class SetupCommand
             }
 
             // Do not probe the lock here: holding it even briefly can make the
-            // starting daemon lose the race and exit. setsid/sh exec keep the PID.
-            if (DaemonLock.ReadOwnerPid(state.LockFile) == process.Id && File.Exists(state.Socket))
+            // starting daemon lose the race and exit.
+            if (DaemonLock.ReadOwnerPid(state.LockFile) is { } owner &&
+                (OperatingSystem.IsMacOS() ? DarwinProcess.CreationToken(owner) is not null && IsOurDaemon(owner, state.Path) : owner == process.Id)
+                && File.Exists(state.Socket))
             {
                 return PrintRunningPid(state);
             }
@@ -176,6 +184,33 @@ public static class SetupCommand
         if (pid is null)
         {
             Console.Error.WriteLine("error: daemon lock is held but its PID is unavailable");
+            return 1;
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            var token = DarwinProcess.CreationToken(pid.Value);
+            if (token is null)
+            {
+                return StoppedDuringCheck(state);
+            }
+
+            if (!IsOurDaemon(pid.Value, state.Path))
+            {
+                Console.Error.WriteLine("error: lock PID is not this state's atf daemon; no signal sent");
+                return 1;
+            }
+            if (!DarwinProcess.SignalIfSame(pid.Value, token.Value, Native.SigTerm))
+            {
+                return StoppedDuringCheck(state);
+            }
+
+            for (var i = 0; i < 50; i++)
+            {
+                if (LockIsFree(state)) { Console.Out.WriteLine($"Stopped daemon {pid.Value}."); return 0; }
+                Thread.Sleep(100);
+            }
+            Console.Error.WriteLine($"error: daemon {pid.Value} did not stop within 5 seconds");
             return 1;
         }
 
@@ -325,6 +360,21 @@ public static class SetupCommand
 
     static bool IsOurDaemon(int pid, string statePath)
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            try
+            {
+                var args = DarwinProcess.Arguments(pid)?.Args;
+                return args is { Length: >= 4 } && Path.GetFileName(args[0]) == "atf"
+                    && args[1] == "daemon" && args[2] == "--state-dir"
+                    && Path.IsPathFullyQualified(args[3])
+                    && Path.TrimEndingDirectorySeparator(Path.GetFullPath(args[3])) == Path.TrimEndingDirectorySeparator(statePath);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                return false;
+            }
+        }
         try
         {
             var proc = $"/proc/{pid}";
@@ -492,7 +542,7 @@ public static class SetupCommand
     static bool ModeAvailable(string mode) => mode switch
     {
         "wt" => OperatingSystem.IsWindows(),
-        "herdr" => OperatingSystem.IsLinux(),
+        "herdr" => OperatingSystem.IsLinux() || OperatingSystem.IsMacOS(),
         _ => true,
     };
 

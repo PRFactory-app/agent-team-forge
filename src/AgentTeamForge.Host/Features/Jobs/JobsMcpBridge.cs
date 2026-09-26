@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AgentTeamForge.Business;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Hosting;
 using AgentTeamForge.Host.Features.Wake;
@@ -315,6 +316,11 @@ public static class JobsMcpBridge
 
     static int ParentPid()
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            return DarwinProcess.ParentPid(Environment.ProcessId) ?? Environment.ProcessId;
+        }
+
         try
         {
             var line = File.ReadLines("/proc/self/status").FirstOrDefault(line => line.StartsWith("PPid:", StringComparison.Ordinal));
