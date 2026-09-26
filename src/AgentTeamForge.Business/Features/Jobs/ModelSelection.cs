@@ -1,7 +1,3 @@
-using System.Collections.Concurrent;
-using System.Diagnostics;
-using System.Text.Json;
-
 namespace AgentTeamForge.Business.Features.Jobs;
 
 /// <summary>Resolve the caller's model choice once, before the job is accepted.</summary>
@@ -18,7 +14,7 @@ public static class ModelSelection
             ["max"] = ("gpt-6-astra", "medium"),
         };
 
-    static readonly ConcurrentDictionary<string, IReadOnlyCollection<string>> Discovered = new();
+    static readonly BackendModelDiscovery DefaultDiscovery = new();
 
     public static (string? Model, string? Effort) Resolve(string backend, string? model, string? effort,
         Func<string, IReadOnlyCollection<string>>? discover = null)
@@ -51,7 +47,7 @@ public static class ModelSelection
             : backend == "pi" && key.Equals("medium-fast", StringComparison.OrdinalIgnoreCase)
                 ? ("gpt-6-sol", "medium") : ((string Model, string Effort)?)null;
         var selected = tier?.Model ?? key;
-        var available = (discover ?? Discover)(backend);
+        var available = (discover ?? DefaultDiscovery.GetModels)(backend);
         var found = available.Count == 0 || (backend == "pi"
             ? available.Any(candidate => candidate.Split('/', 2)[^1] == selected.Split('/', 2)[^1])
             : available.Contains(selected));
@@ -70,47 +66,4 @@ public static class ModelSelection
         return tier is { } resolved ? (resolved.Model, resolved.Effort) : (key, effort);
     }
 
-    static IReadOnlyCollection<string> Discover(string backend) => Discovered.GetOrAdd(backend, DiscoverUncached);
-
-    static IReadOnlyCollection<string> DiscoverUncached(string backend)
-    {
-        try
-        {
-            using var process = new Process();
-            process.StartInfo = new ProcessStartInfo(backend) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-            foreach (var arg in backend == "codex" ? new[] { "debug", "models" } : ["--list-models"])
-            {
-                process.StartInfo.ArgumentList.Add(arg);
-            }
-            process.Start();
-            var outputTask = process.StandardOutput.ReadToEndAsync();
-            _ = process.StandardError.ReadToEndAsync(); // Drain so a chatty CLI cannot block on a full pipe.
-            if (!process.WaitForExit(20_000))
-            {
-                process.Kill(entireProcessTree: true);
-                return [];
-            }
-            var output = outputTask.GetAwaiter().GetResult();
-            if (process.ExitCode != 0)
-            {
-                return [];
-            }
-            if (backend == "pi")
-            {
-                return [.. output.Split('\n').Select(line => line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
-                    .Where(parts => parts.Length > 1 && parts[0] is not ("provider" or "No") && parts[1] != "model")
-                    .Select(parts => parts[1])];
-            }
-            using var document = JsonDocument.Parse(output);
-            return [.. document.RootElement.GetProperty("models").EnumerateArray()
-                .Where(item => item.TryGetProperty("supported_in_api", out var supported) && supported.ValueKind == JsonValueKind.True
-                    && item.TryGetProperty("visibility", out var visibility) && visibility.GetString() == "list"
-                    && item.TryGetProperty("slug", out var slug) && slug.ValueKind == JsonValueKind.String)
-                .Select(item => item.GetProperty("slug").GetString()!)];
-        }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or JsonException or InvalidOperationException or KeyNotFoundException)
-        {
-            return [];
-        }
-    }
 }
