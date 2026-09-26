@@ -123,6 +123,7 @@ public sealed class SchemaTests
             command.CommandText = """
                 DROP TABLE external_messages;
                 DROP TABLE external_members;
+                DROP TABLE external_teams;
                 ALTER TABLE wake_targets DROP COLUMN external_notified_seq;
                 ALTER TABLE wake_targets DROP COLUMN last_external_success;
                 ALTER TABLE lead_sessions DROP COLUMN closed_at;

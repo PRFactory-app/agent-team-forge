@@ -117,8 +117,9 @@ public sealed class LeadSessionStore(JobDatabase database)
         }
 
         command.CommandText = """
+            UPDATE external_teams SET closed_at=$now,wake_key=NULL WHERE lead_session_id=$id AND closed_at IS NULL;
             UPDATE external_members SET active=0,left_at=$now,token_hash=NULL,wake_key=NULL
-            WHERE session_id=$id AND left_at IS NULL
+            WHERE team_id=$id AND left_at IS NULL
             """;
         command.ExecuteNonQuery();
         tx.Commit();
@@ -135,6 +136,8 @@ public sealed class LeadSessionStore(JobDatabase database)
         command.CommandText = """
             UPDATE lead_sessions SET wake_key=$key WHERE session_id=$id AND closed_at IS NULL
             AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
+            UPDATE external_teams SET wake_key=$key WHERE lead_session_id=$id AND closed_at IS NULL
+            AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
             UPDATE wake_jobs SET target_key=$key, read_at=NULL WHERE job_id IN
                 (SELECT job_id FROM jobs WHERE lead_session_id=$id)
                 AND read_at IS NULL AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
@@ -142,7 +145,7 @@ public sealed class LeadSessionStore(JobDatabase database)
                 SELECT j.job_id,$key FROM jobs j WHERE j.lead_session_id=$id
                 AND NOT EXISTS (SELECT 1 FROM wake_jobs w WHERE w.job_id=j.job_id)
                 AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
-            UPDATE external_messages SET wake_key=$key WHERE session_id=$id AND recipient='lead'
+            UPDATE external_messages SET wake_key=$key WHERE team_id=$id AND recipient='lead'
                 AND read_at IS NULL AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
             """;
         command.Parameters.AddWithValue("$id", id);

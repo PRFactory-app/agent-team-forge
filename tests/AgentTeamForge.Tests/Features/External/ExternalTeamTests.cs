@@ -10,6 +10,39 @@ namespace AgentTeamForge.Tests.Features.External;
 public sealed class ExternalTeamTests
 {
     [Fact]
+    public void In_daemon_actor_can_own_team_without_mcp_lead_session()
+    {
+        using var f = new JobFixture();
+        using var home = new TempStateDir();
+        var sessionsDir = home.File("sessions");
+        Directory.CreateDirectory(sessionsDir);
+        var thread = Guid.NewGuid().ToString("D");
+        File.WriteAllText(Path.Combine(sessionsDir, "rollout-test-" + thread + ".jsonl"), "");
+        var wake = new WakeStore(f.Database);
+        var team = new ExternalTeam(new ExternalMemberStore(f.Database), wake);
+        var teamId = team.CreateActorTeam("prfactory:test:workitem-1")!;
+        Assert.Equal(teamId, team.CreateActorTeam("prfactory:test:workitem-1"));
+        var ticket = team.CreateTicketForTeam(teamId, "visitor", null).Ticket!;
+        var memberToken = team.Join(teamId, ticket.Token).Member!.MemberToken;
+        Assert.NotNull(team.SetWake(memberToken, thread, home.Path).WakeGeneration);
+        Assert.True(team.SendToMember(teamId, "visitor", "server prompt", "prfactory").Ok);
+        Assert.Single(wake.PendingExternal());
+        Assert.Equal("server prompt", Assert.Single(team.Read(memberToken, null, null).Inbox!.Messages).Text);
+        var actorWake = wake.Register("codex:actor-test", "codex", "actor", "", home.Path);
+        Assert.True(team.BindTeamWake(teamId, actorWake.Key, actorWake.Generation));
+        Assert.True(team.Send(memberToken, "agent reply").Ok);
+        Assert.Equal(actorWake.Key, Assert.Single(wake.PendingExternal()).Target.Key);
+        var reply = Assert.Single(team.ReadTeam(teamId, null, null).Inbox!.Messages);
+        Assert.Equal(("visitor", "agent reply"), (reply.From, reply.Text));
+        Assert.True(team.CloseTeam(teamId));
+        Assert.Equal("membership_revoked", team.Read(memberToken, null, null).Error);
+        using var db = f.Database.OpenConnection();
+        using var command = db.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM lead_sessions";
+        Assert.Equal(0L, command.ExecuteScalar());
+    }
+
+    [Fact]
     public void Ticket_is_single_use_and_expires()
     {
         using var f = new JobFixture();

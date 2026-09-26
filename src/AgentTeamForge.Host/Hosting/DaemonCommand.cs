@@ -133,9 +133,10 @@ public static class DaemonCommand
         var admission = new AdmissionGate();
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs);
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
+        var externalTeam = new ExternalTeam(externalMembers, wakeStore);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
             new ListJobs(store, profile.Bound),
-            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store, new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), new ExternalTeam(externalMembers, wakeStore));
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store, new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,

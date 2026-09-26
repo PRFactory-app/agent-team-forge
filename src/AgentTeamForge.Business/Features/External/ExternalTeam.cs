@@ -21,6 +21,22 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
     const int MaxText = 65536;
     static bool ValidToken(string? token) => token is not null && Token.IsMatch(token);
 
+    /// <summary>The connector calls this with a stable work-item key; retries recover the same team ID.</summary>
+    public string? CreateActorTeam(string ownerKey) => ownerKey is { Length: > 0 and <= 256 }
+        ? members.CreateActorTeam(ownerKey, now()) : null;
+
+    /// <summary>Shared ticket path for MCP leads and in-daemon actors.</summary>
+    public ExternalResult CreateTicketForTeam(string? teamId, string? name, string? note)
+    {
+        if (teamId is null || name is null || !SafeName.IsMatch(name) || note is { Length: > 4096 })
+        {
+            return new("invalid_request");
+        }
+
+        var ticket = members.CreateTicket(teamId, name, note ?? "", now(), TimeSpan.FromMinutes(10));
+        return ticket is null ? new("invalid_team_or_name") : new(Ticket: ticket);
+    }
+
     public ExternalResult CreateTicket(string? sessionId, string? workspace, string? name, string? note)
     {
         if (sessionId is null || workspace is null || name is null || !SafeName.IsMatch(name) || note is { Length: > 4096 })
@@ -28,8 +44,11 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
             return new("invalid_request");
         }
 
-        var ticket = members.CreateTicket(sessionId, workspace, name, note ?? "", now(), TimeSpan.FromMinutes(10));
-        return ticket is null ? new("invalid_session_or_name") : new(Ticket: ticket);
+        if (!members.EnsureMcpTeam(sessionId, workspace, now()))
+        {
+            return new("invalid_session");
+        }
+        return CreateTicketForTeam(sessionId, name, note);
     }
 
     public ExternalResult Join(string? sessionId, string? ticket)
@@ -55,12 +74,23 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
 
     public ExternalResult SendFromLead(string? sessionId, string? workspace, string? name, string? text)
     {
-        if (sessionId is null || workspace is null || name is null || !SafeName.IsMatch(name) || text is null || text.Length is < 1 or > MaxText)
+        if (sessionId is null || workspace is null || !members.EnsureMcpTeam(sessionId, workspace, now()))
+        {
+            return new("invalid_session");
+        }
+        return SendToMember(sessionId, name, text);
+    }
+
+    /// <summary>Send from a trusted daemon actor to a joined member; the wake scan sees only committed rows.</summary>
+    public ExternalResult SendToMember(string? teamId, string? name, string? text, string sender = "team-lead")
+    {
+        if (teamId is null || name is null || !SafeName.IsMatch(name) || text is null || text.Length is < 1 or > MaxText
+            || string.IsNullOrWhiteSpace(sender) || sender.Length > 64)
         {
             return new("invalid_request");
         }
 
-        return members.SendFromLead(sessionId, workspace, name, text, now()) ? new() : new("member_not_found");
+        return members.SendToMember(teamId, name, text, sender, now()) ? new() : new("member_not_found");
     }
 
     public ExternalResult Read(string? token, long? sinceSeq, int? limit)
@@ -76,14 +106,29 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
 
     public ExternalResult ReadLead(string? sessionId, string? workspace, long? sinceSeq, int? limit)
     {
-        if (sessionId is null || workspace is null || sinceSeq is < 0 || limit is < 1 or > 50)
+        if (sessionId is null || workspace is null || !members.EnsureMcpTeam(sessionId, workspace, now()))
+        {
+            return new("invalid_session");
+        }
+        return ReadTeam(sessionId, sinceSeq, limit);
+    }
+
+    /// <summary>Read replies for the team owner, including a connector actor, using a durable cursor.</summary>
+    public ExternalResult ReadTeam(string? teamId, long? sinceSeq, int? limit)
+    {
+        if (teamId is null || sinceSeq is < 0 || limit is < 1 or > 50)
         {
             return new("invalid_request");
         }
 
-        var inbox = members.ReadLead(sessionId, workspace, sinceSeq ?? 0, limit ?? 50, now());
-        return inbox is null ? new("invalid_session") : new(Inbox: inbox);
+        var inbox = members.ReadTeam(teamId, sinceSeq ?? 0, limit ?? 50, now());
+        return inbox is null ? new("invalid_team") : new(Inbox: inbox);
     }
+
+    public bool BindTeamWake(string teamId, string wakeKey, long generation) =>
+        members.BindTeamWake(teamId, wakeKey, generation);
+
+    public bool CloseTeam(string teamId) => members.CloseTeam(teamId, now());
 
     public ExternalResult Leave(string? token)
     {

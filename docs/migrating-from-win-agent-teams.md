@@ -36,6 +36,8 @@ surface. **Landing** means work is in flight, not an available tool.
 
 For a manually started member, configure a separate ATF MCP entry with `ATF_EXTERNAL_ONLY=1`. That entry exposes only `join_team`, `external_send`, `external_read`, `external_set_wake`, and `leave_team`, and does not create a lead session. Its bearer token grants access only to its joined lead's inbox. The regular lead entry exposes `send_message`, `read_messages`, `create_join_ticket`, and `close_team`.
 
+An in-daemon connector can own a team without an MCP lead session. `ExternalTeam.CreateActorTeam(ownerKey)` recovers a stable team ID, then `CreateTicketForTeam`, `SendToMember`, `ReadTeam`, `BindTeamWake`, and `CloseTeam` operate on that ID directly. The PRFactory adapter still needs to map a work item to an owner key, deliver server `SendMessage` commands to `SendToMember`, and upload member replies from `ReadTeam` to the agent stream with a persisted cursor. Those bindings are outside this slice.
+
 Standalone pause/interrupt without a follow-up and `revive` are **landing**.
 `stop_job` cancels a job without submitting a new prompt. Native wake is a
 notice, while `get_job` is the committed source of status and result.
