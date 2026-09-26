@@ -118,7 +118,8 @@ does not extend to later persistence/lifetime design changes.
   worktree for each major change; public repository creation/push remains an
   explicitly authorized action.
 - Follow [AGENTS.md](AGENTS.md) for project vision and contributor rules.
-- Plans normally come from Claude Opus or GPT-6 Astra. Independent plan review
+- Plans normally come from GPT-6 Astra (Pi tier max); Claude Opus writes code;
+  Codex (tier high) reviews and integrates. Independent plan review
   is required only for major changes; small changes need code review, not a
   separate plan review.
 - Implementation → red/green/refactor → opposite-family code review
