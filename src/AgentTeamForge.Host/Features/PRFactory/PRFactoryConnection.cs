@@ -199,6 +199,8 @@ public static class PRFactoryConnection
                 .Where(member => !member.Closed && member.TicketExpires > DateTimeOffset.UtcNow)
                 .Select(member => $"Work item {team.WorkItemId:D}, external member {member.Member}: "
                     + new JoinTicket(member.TeamId, member.ActualName, member.TicketToken, member.TicketExpires).JoinPrompt))
+            .Concat(teams.ReconciliationNeeded(server)
+                .Select(team => $"Work item {team.WorkItemId:D}: reconciliation needed; local results retained, remote publication fenced."))
             .ToArray();
         WritePrivate(Path.Combine(state.Path, JoinsName), JsonSerializer.SerializeToUtf8Bytes(prompts, PRFactorySettingsJson.Default.StringArray));
     }

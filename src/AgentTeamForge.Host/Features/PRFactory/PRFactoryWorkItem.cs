@@ -49,6 +49,9 @@ public sealed class PRFactoryTeamMember
 public sealed record PRFactoryPollResponse(List<PRFactoryWorkItem> WorkItems);
 public sealed record PRFactoryClaimResponse(PRFactoryWorkItem? WorkItem);
 public sealed record PRFactoryClaimRequest(string MachineName, string WorkerVersion, Guid? MachineId);
+public sealed record PRFactoryAtfAcceptRequest(Guid MachineId, Guid LeaseToken, string JobId);
+public sealed record PRFactoryAtfAcceptanceResponse(string? AtfJobId, System.Text.Json.JsonElement Status);
+public sealed record PRFactoryLeaseHeartbeatRequest(Guid LeaseToken);
 public sealed record PRFactoryArtefactFile(string FileName, string Content, string? Kind);
 public sealed record PRFactoryArtefactRequest(List<PRFactoryArtefactFile> Artefacts, Guid? LeaseToken);
 public sealed record PRFactoryCompletionRequest(bool Success, string? ResultMarkdown, string? ResultBranch, string? ResultCommitSha, string Metadata, Guid? LeaseToken);
@@ -70,6 +73,9 @@ public sealed record PRFactoryStreamResponse(bool Accepted, Dictionary<string, l
 [JsonSerializable(typeof(PRFactoryPollResponse))]
 [JsonSerializable(typeof(PRFactoryClaimResponse))]
 [JsonSerializable(typeof(PRFactoryClaimRequest))]
+[JsonSerializable(typeof(PRFactoryAtfAcceptRequest))]
+[JsonSerializable(typeof(PRFactoryAtfAcceptanceResponse))]
+[JsonSerializable(typeof(PRFactoryLeaseHeartbeatRequest))]
 [JsonSerializable(typeof(PRFactoryArtefactRequest))]
 [JsonSerializable(typeof(PRFactoryCompletionRequest))]
 [JsonSerializable(typeof(PRFactoryFailureRequest))]

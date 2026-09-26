@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace AgentTeamForge.Host.Features.PRFactory;
@@ -35,6 +36,18 @@ public sealed class WorkerTokenRejectedException : Exception
 public sealed class PRFactoryClient(HttpClient httpClient)
 {
     const string WorkerVersion = "0.1.0";
+    bool legacyLogged;
+    public enum AcceptanceResult { Confirmed, NotFound, Conflict }
+
+    public void LogLegacyOnce(Action<string>? log)
+    {
+        if (legacyLogged)
+        {
+            return;
+        }
+        legacyLogged = true;
+        log?.Invoke("PRFactory durable acceptance endpoint unavailable; using legacy lease behavior");
+    }
     public static HttpClient CreateHttpClient(string url, string token, HttpMessageHandler? handler = null)
     {
         var client = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: true);
@@ -102,6 +115,59 @@ public sealed class PRFactoryClient(HttpClient httpClient)
 
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryClaimResponse, ct))?.WorkItem;
+    }
+
+    public async Task<AcceptanceResult> GetAtfAcceptanceAsync(Guid id, Guid machineId, string jobId, CancellationToken ct)
+    {
+        using var response = await httpClient.GetAsync(
+            $"api/worker/work-items/{id:D}/atf-acceptance?machineId={machineId:D}&jobId={Uri.EscapeDataString(jobId)}", ct);
+        return await ReadAcceptanceAsync(response, jobId, ct);
+    }
+
+    public async Task<AcceptanceResult> AcceptAtfAsync(Guid id, Guid machineId, Guid leaseToken, string jobId, CancellationToken ct)
+    {
+        using var response = await httpClient.PostAsJsonAsync($"api/worker/work-items/{id:D}/atf-acceptance",
+            new PRFactoryAtfAcceptRequest(machineId, leaseToken, jobId), PRFactoryWorkItemJson.Default.PRFactoryAtfAcceptRequest, ct);
+        return await ReadAcceptanceAsync(response, jobId, ct);
+    }
+
+    public async Task<bool> ConfirmLegacyLeaseAsync(Guid id, Guid leaseToken, CancellationToken ct)
+    {
+        using var response = await httpClient.PostAsJsonAsync($"api/worker/work-items/{id:D}/heartbeat",
+            new PRFactoryLeaseHeartbeatRequest(leaseToken), PRFactoryWorkItemJson.Default.PRFactoryLeaseHeartbeatRequest, ct);
+        RejectToken(response.StatusCode);
+        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Conflict)
+        {
+            return false;
+        }
+        response.EnsureSuccessStatusCode();
+        return true;
+    }
+
+    static async Task<AcceptanceResult> ReadAcceptanceAsync(HttpResponseMessage response, string jobId, CancellationToken ct)
+    {
+        RejectToken(response.StatusCode);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return AcceptanceResult.NotFound;
+        }
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            return AcceptanceResult.Conflict;
+        }
+        response.EnsureSuccessStatusCode();
+        var item = await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryAtfAcceptanceResponse, ct);
+        if (item is null || !string.Equals(item.AtfJobId, jobId, StringComparison.Ordinal))
+        {
+            throw new HttpRequestException("PRFactory returned a mismatched ATF acceptance");
+        }
+        if (item.Status.ValueKind == JsonValueKind.String
+            && string.Equals(item.Status.GetString(), "ReconciliationNeeded", StringComparison.OrdinalIgnoreCase)
+            || item.Status.ValueKind == JsonValueKind.Number && item.Status.TryGetInt32(out var status) && status == 6)
+        {
+            return AcceptanceResult.Conflict;
+        }
+        return AcceptanceResult.Confirmed;
     }
 
     public async Task<IReadOnlyList<PRFactoryCommand>> DrainCommandsAsync(Guid id, Guid lease, CancellationToken ct)
