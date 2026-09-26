@@ -31,6 +31,7 @@
   const newAgent = { pending: null, sending: false };
   let timer = null;
   let ticketTimer = null;
+  let listSeq = 0;
 
   function setStatus(text, cls) {
     const s = $('status');
@@ -206,7 +207,7 @@
       result.className = 'warn';
     } else {
       result.textContent = r.error === 'invalid_request' || r.error === 'web_bad_request'
-        ? 'Rejected: use an existing absolute directory and safe model/effort values (letters, digits, . _ / : + - @).'
+        ? 'Rejected: use an existing absolute directory and model/effort values without shell characters.'
         : 'Rejected: ' + r.error;
       result.className = 'error';
       newAgent.pending = null;
@@ -689,8 +690,10 @@
     const params = new URLSearchParams();
     if ($('status-filter').value) params.set('status', $('status-filter').value);
     if (pageCursors[pageIndex]) params.set('cursor', pageCursors[pageIndex]);
+    const seq = ++listSeq;
     const r = await api('GET', '/api/jobs' + (params.size ? '?' + params : ''));
-    if (!r) return;
+    // Overlapping polls and actions: only the newest list request may render.
+    if (!r || seq !== listSeq) return;
     if (!r.ok) {
       setStatus('list failed: ' + r.error, 'error');
       return;
