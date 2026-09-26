@@ -65,12 +65,14 @@ for follow-up. Use **Stop agent** in the console to close that tab; **Stop job**
 cancels a queued or running job. The console labels an absent result separately
 from an empty result.
 
-Click a lead or agent card to expand its inline composer, result, and logs.
+Click a lead or agent card to expand its inline composer, result, and live
+activity transcript. The card's one-line preview shows the latest activity.
+Expand **Raw logs** inside the card when you need the full output stream.
 Click it again or press Escape to collapse it. Press Enter to send, or
 Shift+Enter for a newline. Check **Interrupt** to interrupt a running turn.
 The lead-session card lets you choose which of its member agents to message;
 the lead session itself is an MCP binding, not a managed agent. Message delivery
-and job output appear in the cards.
+and job activity appear in the cards.
 
 To change the port, run `atf setup --mode headless --web-port 8766` (or use your
 configured launch mode), then restart the daemon. If the port is occupied, the

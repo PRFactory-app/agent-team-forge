@@ -98,6 +98,7 @@ main { padding-top: 23px; }
 .chip.backend-pi { border-color: #539bf555; color: var(--info); }
 .chip.subtle { color: var(--muted); }
 .card-meta .reason { color: var(--secondary); overflow-wrap: anywhere; }
+.card-last-activity { min-width: 0; overflow: hidden; color: var(--muted); font: 11px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .card-side { display: grid; justify-items: end; gap: 6px; align-self: stretch; }
 .elapsed { color: var(--secondary); font: 12px ui-monospace, monospace; }
 .badge.green, .badge.done { border-color: #3fb95040; color: var(--success); background: var(--success-soft); }
@@ -117,9 +118,20 @@ main { padding-top: 23px; }
 .send-button { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 700; }
 .send-button:hover { color: var(--bg); background: var(--accent); }
 .composer-result { min-height: 1em; margin: 0; color: var(--secondary); font: 11px ui-monospace, monospace; overflow-wrap: anywhere; }
-.card-result, .card-logs { min-width: 0; color: var(--secondary); }
-.card-result h4, .card-logs h4 { display: inline-block; margin: 0 10px 6px 0; color: var(--text); font-size: 12px; }
+.card-result, .card-activity, .card-logs { min-width: 0; color: var(--secondary); }
+.card-result h4, .card-activity h4 { display: inline-block; margin: 0 10px 6px 0; color: var(--text); font-size: 12px; }
 .result-meta { margin: 0 0 6px; color: var(--muted); font: 11px ui-monospace, monospace; overflow-wrap: anywhere; }
+.activity-entries { display: grid; gap: 4px; max-height: 340px; overflow: auto; margin: 0; padding: 8px 10px; list-style: none; border: 1px solid var(--border); border-radius: 6px; background: var(--sunken); }
+.activity-entry { display: grid; grid-template-columns: auto 92px minmax(0, 1fr); gap: 8px; min-width: 0; font: 11px/1.5 ui-monospace, monospace; }
+.activity-time { color: var(--faint); white-space: nowrap; }
+.activity-kind { color: var(--info); }
+.activity-text { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.kind-tool_call .activity-kind { color: var(--warning); }
+.kind-tool_result .activity-kind, .kind-status .activity-kind { color: var(--muted); }
+.kind-error .activity-kind, .kind-error .activity-text, .activity-error { color: var(--danger); }
+.kind-result .activity-kind { color: var(--success); }
+.activity-empty, .activity-omitted { color: var(--muted); font: 11px ui-monospace, monospace; }
+.card-logs summary { cursor: pointer; color: var(--secondary); font-size: 12px; }
 .card-logs button { padding: 3px 7px; font-size: 11px; }
 .card-result pre { max-height: 220px; }
 .card-logs pre { max-height: 220px; }
