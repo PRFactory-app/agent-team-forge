@@ -4,7 +4,8 @@
 > [the Claude orchestrator handoff](docs/claude-orchestrator-handoff.md) first.
 > It supersedes the historical branch, agent and implementation status below.
 > The user requested a new orchestrator; do not restart the old coordinator's
-> dispatch loop. Keep source-bound review and integration gates intact.
+> dispatch loop. The simplicity principles at the top of `AGENTS.md` override
+> any heavier review/planning ceremony described below.
 
 ## 1. Start here
 
@@ -74,17 +75,14 @@ translation of the initial Swedish planning documents.
     Business references DAL directly; do not impose Clean Architecture or
     Business-owned repository ports. Host includes setup presentation, CLI,
     MCP/IPC, and daemon composition, so it is not named UI.
-12. Use pragmatic TDD for business-critical behavior, not a large suite asserting
-    prose or implementation details. Code reviews use the opposite model family.
-    Plans normally come from GPT-6 Astra (Pi tier max); Claude Opus writes code;
-    Codex (tier high) reviews and integrates. Independent plan reviews are for
-    major changes. See `AGENTS.md` for binding rules.
-13. Use the P01–P08 waterfall roadmap for the complete product. Planning/reviews
-    may be parallel; phase implementation consumes accepted predecessor
-    contracts. Scope and options are explicit in `docs/product-scope.md`.
+12. Keep it simple: a few focused tests on critical behavior, one
+    opposite-family code review per slice, plan review only for genuinely risky
+    changes. See the working principles in `AGENTS.md`.
+13. The P01–P08 roadmap is background ordering, not a gate. Build the Linux tool
+    in small slices; don't wait on accepted contracts for normal features.
 14. Spawn all workers (Pi planning, Claude implementation, Codex review/
     integration) through win-agent-teams `spawn_agent`; see `AGENTS.md`.
-15. Managed/spawned Pi is first-class alongside Claude Code/Codex in P03, not
+15. Managed/spawned Pi is first-class alongside Claude Code/Codex (Linux first), not
     deferred to P06 or satisfied by attached/lead-only Pi. Native Windows Pi
     spawn/follow-up/results/interrupt/stop/reconnect must pass in selected
     interactive and explicit headless modes; Linux/cross-builds are not proof.
