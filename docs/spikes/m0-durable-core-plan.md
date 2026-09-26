@@ -92,7 +92,7 @@ Proposed isolated implementation location:
 
 ```text
 spikes/m0-durable-core/
-  AgentTeamForge.Spike.slnx
+  AgentTeamForge.slnx
   global.json
   Directory.Build.props
   src/
@@ -357,10 +357,10 @@ From `spikes/m0-durable-core/` after scaffolding:
 
 ```bash
 dotnet --info
-dotnet restore AgentTeamForge.Spike.slnx
-dotnet format AgentTeamForge.Spike.slnx --verify-no-changes
-dotnet build AgentTeamForge.Spike.slnx -c Release --no-restore -warnaserror
-dotnet test AgentTeamForge.Spike.slnx -c Release --no-build
+dotnet restore AgentTeamForge.slnx
+dotnet format AgentTeamForge.slnx --verify-no-changes
+dotnet build AgentTeamForge.slnx -c Release --no-restore -warnaserror
+dotnet test AgentTeamForge.slnx -c Release --no-build
 dotnet publish src/AgentTeamForge.Host/AgentTeamForge.Host.csproj \
   -c Release -r linux-x64 --self-contained true \
   -p:PublishAot=true -p:TreatWarningsAsErrors=true \

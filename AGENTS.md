@@ -72,6 +72,13 @@ compatibility layer for other orchestration systems.
   all Business work followed by Host. Tests are not additional production layers.
 - Human-facing UI is currently setup/installation and diagnostics; do not build
   a dashboard. `Host` is the project name, not `UI`.
+- Use the real solution name **`AgentTeamForge.slnx`** and production project
+  names from the outset of the new core; do not carry `AtfSpike` or `.Spike`
+  naming into the product. Retire superseded spike projects and temporary
+  scripts after reviewed code and meaningful regression tests have moved into
+  the real solution. Preserve concise decisions/results, not duplicate runtimes
+  or raw evidence in Git. Cleanup must not kill live sessions or erase unique
+  recovery evidence; process cleanup requires verified ownership and authorization.
 
 ## Planning and review workflow
 

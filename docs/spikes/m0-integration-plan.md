@@ -47,7 +47,13 @@ Do not publish feature branches or raw evidence automatically.
 6. A fresh adapter-integration slice connects the reviewed real Codex path to the
    reviewed durable core. Keep fake-core and live-agent claims separate. A new
    contract change receives focused plan review, not another full roadmap cycle.
-7. Parent promotes only tested reviewed integration commits. No automatic merge
+7. Use `AgentTeamForge.slnx` and `AgentTeamForge.Host`, `.Business`, `.DAL`
+   from the outset. Once replacements pass review and equivalent meaningful
+   regression tests, consolidate into the product solution and remove superseded
+   spike projects/helpers/scripts. Preserve concise architectural decisions and
+   result summaries; do not leave duplicate runtime implementations indefinitely.
+   Never remove unique recovery evidence or terminate live sessions as file cleanup.
+8. Parent promotes only tested reviewed integration commits. No automatic merge
    to `main`, GitHub push, platform/service change or teardown of existing agents.
 
 Prefer bounded work packets and early handoffs, well before approximately 200,000
