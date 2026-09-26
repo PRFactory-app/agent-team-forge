@@ -121,6 +121,10 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE prfactory_command_receipts;
+                DROP TABLE external_delivery_keys;
+                DROP TABLE prfactory_external;
+                DELETE FROM schema_migrations WHERE version=10;
                 DROP TABLE external_messages;
                 DROP TABLE external_members;
                 DROP TABLE external_teams;

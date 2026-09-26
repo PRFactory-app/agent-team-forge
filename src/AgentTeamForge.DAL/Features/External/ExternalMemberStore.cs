@@ -231,19 +231,29 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return true;
     }
 
-    public bool SendToMember(string teamId, string name, string text, string sender, DateTimeOffset now)
+    public bool SendToMember(string teamId, string name, string text, string sender, DateTimeOffset now, string? commandId = null)
     {
         using var db = database.OpenConnection();
         using var tx = db.BeginTransaction(deferred: false);
         using var command = db.CreateCommand();
         command.Transaction = tx;
+        command.Parameters.AddWithValue("$team", teamId);
+        if (commandId is not null)
+        {
+            command.CommandText = "INSERT OR IGNORE INTO external_delivery_keys(team_id,command_id) VALUES ($team,$command)";
+            command.Parameters.AddWithValue("$command", commandId);
+            if (command.ExecuteNonQuery() == 0)
+            {
+                tx.Commit();
+                return true;
+            }
+        }
         command.CommandText = """
             INSERT INTO external_messages(team_id,sender,recipient,text,created_at,wake_key)
             SELECT m.team_id,$sender,m.member_id,$text,$now,m.wake_key
             FROM external_members m JOIN external_teams t ON t.team_id=m.team_id
             WHERE m.team_id=$team AND t.closed_at IS NULL AND m.name=$name AND m.active=1
             """;
-        command.Parameters.AddWithValue("$team", teamId);
         command.Parameters.AddWithValue("$sender", sender);
         command.Parameters.AddWithValue("$name", name);
         command.Parameters.AddWithValue("$text", text);

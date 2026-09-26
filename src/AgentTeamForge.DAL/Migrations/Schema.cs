@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 9;
+    public const int CurrentVersion = 10;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -187,7 +187,25 @@ static class Schema
         CREATE INDEX external_messages_wake ON external_messages(wake_key,read_at,seq);
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9];
+    const string V10 = """
+        CREATE TABLE prfactory_external(
+            server TEXT NOT NULL, work_item_id TEXT NOT NULL, member TEXT NOT NULL,
+            actual_name TEXT NOT NULL, team_id TEXT NOT NULL, ticket_token TEXT NOT NULL,
+            ticket_expires TEXT NOT NULL, ticket_uploaded INTEGER NOT NULL DEFAULT 0,
+            reply_seq INTEGER NOT NULL DEFAULT 0, closed INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(server, work_item_id, member),
+            FOREIGN KEY(server, work_item_id) REFERENCES prfactory_teams(server, work_item_id));
+        CREATE TABLE external_delivery_keys(
+            team_id TEXT NOT NULL, command_id TEXT NOT NULL,
+            PRIMARY KEY(team_id, command_id));
+        CREATE TABLE prfactory_command_receipts(
+            server TEXT NOT NULL, work_item_id TEXT NOT NULL, command_id TEXT NOT NULL,
+            accepted INTEGER NOT NULL, reason TEXT,
+            PRIMARY KEY(server, work_item_id, command_id),
+            FOREIGN KEY(server, work_item_id) REFERENCES prfactory_teams(server, work_item_id));
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused
