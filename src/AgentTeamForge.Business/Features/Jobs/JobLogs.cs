@@ -56,16 +56,16 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
         using var line = new MemoryStream();
         var cursor = afterCursor;
         var position = afterCursor;
-        var first = true;
         while (entries.Count < limit)
         {
             var page = Read(jobId, position);
-            if (first && page.Truncated)
+            if (page.Truncated)
             {
+                // The tail was trimmed past our position (possibly between pages): restart at the new start.
+                line.SetLength(0);
                 cursor = page.StartOffset;
                 position = page.StartOffset;
             }
-            first = false;
             var bytes = Convert.FromBase64String(page.DataBase64);
             if (bytes.Length == 0)
             {
