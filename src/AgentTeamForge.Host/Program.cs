@@ -57,8 +57,8 @@ try
         case "mcp" when options.TryGetValue("state-dir", out var mcpDir):
             var mcpState = StateDirectory.Open(mcpDir);
             return await JobsMcpBridge.RunAsync(mcpState, SpikeProfileFile.Load(mcpState).TestProfile);
-        case "web" when options.TryGetValue("state-dir", out var webDir):
-            return WebConsoleCommand.Run(StateDirectory.Open(webDir), options);
+        case "web":
+            return WebConsoleCommand.Run(options);
         case "client" when args.Length > 1 && options.TryGetValue("state-dir", out var clientDir):
             return await ClientCommand.RunAsync(StateDirectory.Open(clientDir), args[1], options,
                 args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordinal) ? args[2] : null);

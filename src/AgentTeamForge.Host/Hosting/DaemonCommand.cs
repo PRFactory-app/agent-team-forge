@@ -181,11 +181,12 @@ public static class DaemonCommand
         Log($"backends: {string.Join(',', backends.Names)}");
         var admission = new AdmissionGate();
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs);
-        var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
+        var modelDiscovery = new BackendModelDiscovery();
+        var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels);
         var externalTeam = new ExternalTeam(externalMembers, wakeStore);
         // Remote claims have their own lead identity and cannot borrow the local MCP lead.
         var connectorAccept = new AcceptJob(store, new BoundPrincipal("prfactory", "connector", "connector-lead"),
-            limits, profile.TestProfile, admission, backends.Names);
+            limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels);
         var connectorTeams = new PRFactoryTeamStore(database);
         var connectorSessions = new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),

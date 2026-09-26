@@ -69,10 +69,84 @@ public sealed class ModelSelectionTests
     public void Retired_tier_and_unavailable_model_fail_with_guidance()
     {
         Assert.Contains("use 'high'", Assert.Throws<ArgumentException>(() => ModelSelection.Resolve("pi", "high-fast", null, AllModels)).Message);
+        Assert.Contains("not available", Assert.Throws<ArgumentException>(() =>
+            ModelSelection.Resolve("codex", "medium-fast", null, AllModels)).Message);
         Assert.Contains("npm install -g @openai/codex@latest", Assert.Throws<ArgumentException>(() =>
             ModelSelection.Resolve("codex", "max", null, _ => ["gpt-6-luna"])).Message);
         Assert.Contains("npm install -g @earendil-works/pi-coding-agent@latest", Assert.Throws<ArgumentException>(() =>
             ModelSelection.Resolve("pi", "high", null, _ => ["gpt-6-luna"])).Message);
+    }
+
+    [Theory]
+    [InlineData("codex", "max", "gpt-6-luna")]
+    [InlineData("pi", "medium-fast", "gpt-6-luna")]
+    public void Known_missing_tier_is_rejected_before_a_job_exists(string backend, string tier, string available)
+    {
+        using var fixture = new JobFixture();
+        var accept = new AcceptJob(fixture.Store, JobFixture.Operator, fixture.Limits, fixture.TestProfile,
+            fixture.Admission, [backend], _ => [available]);
+
+        var refused = accept.Execute(new SubmitJobRequest("missing", "task", null, false)
+        {
+            Backend = backend,
+            Model = tier,
+        });
+
+        Assert.Contains("npm install -g", refused.Error);
+        Assert.Empty(fixture.List().Execute(new ListJobsRequest()).Page!.Jobs);
+    }
+
+    [Fact]
+    public void Unknown_catalog_allows_tier_and_keeps_its_effort()
+    {
+        using var fixture = new JobFixture();
+        var accept = new AcceptJob(fixture.Store, JobFixture.Operator, fixture.Limits, fixture.TestProfile,
+            fixture.Admission, ["codex"], _ => []);
+
+        var accepted = accept.Execute(new SubmitJobRequest("unknown", "task", null, false)
+        {
+            Backend = "codex",
+            Model = "max",
+            Effort = "low",
+        });
+
+        Assert.Equal("accepted", accepted.Outcome);
+        Assert.Equal(("gpt-6-astra", "medium"), (accepted.Job!.Model, accepted.Job.Effort));
+    }
+
+    [Fact]
+    public void Discovery_parses_live_shapes_caches_results_and_times_out()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        using var dir = new TempStateDir();
+        var script = dir.File("models");
+        var calls = dir.File("calls");
+        File.WriteAllText(script, $"#!/bin/sh\nprintf x >> '{calls}'\nif [ \"$1\" = debug ]; then\n  echo '{{\"models\":[{{\"slug\":\"gpt-6-sol\",\"supported_in_api\":true,\"visibility\":\"list\"}},{{\"slug\":\"hidden\",\"supported_in_api\":true,\"visibility\":\"hide\"}}]}}'\nelse\n  printf 'provider model context\\nopenai-codex gpt-6-luna 1M\\n'\nfi\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        var discovery = new BackendModelDiscovery(TimeSpan.FromSeconds(2), _ => script);
+
+        Assert.Equal(["gpt-6-sol"], discovery.GetModels("codex"));
+        Assert.Equal(["gpt-6-luna"], discovery.GetModels("pi"));
+        Assert.Equal(["gpt-6-sol"], discovery.GetModels("codex"));
+        Assert.Equal("xx", File.ReadAllText(calls));
+
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        File.WriteAllText(script, $"#!/bin/sh\nprintf x >> '{calls}'\nsleep 5\n");
+        var hung = new BackendModelDiscovery(TimeSpan.FromMilliseconds(100), _ => script);
+        var start = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Empty(hung.GetModels("codex"));
+        Assert.True(start.Elapsed < TimeSpan.FromSeconds(2));
+        Assert.Empty(hung.GetModels("codex"));
+        Assert.Equal("xxx", File.ReadAllText(calls));
+
+        // An unknown catalog is not cached for the daemon lifetime.
+        var retried = new BackendModelDiscovery(TimeSpan.FromMilliseconds(100), _ => script, unknownTtl: TimeSpan.Zero);
+        Assert.Empty(retried.GetModels("codex"));
+        Assert.Empty(retried.GetModels("codex"));
+        Assert.Equal("xxxxx", File.ReadAllText(calls));
     }
 
     [Theory]

@@ -1,3 +1,4 @@
+using AgentTeamForge.Business.Features.Agents.Backends;
 using System.Diagnostics;
 using System.Text.Json.Nodes;
 using AgentTeamForge.Business.Features.Agents.Terminals;
@@ -173,6 +174,43 @@ public class HerdrTerminalTests
         Assert.Empty(fake.Detached);
     }
 
+    [Theory]
+    [InlineData("agent_prompt_stalled", false)]
+    [InlineData("timeout", false)]
+    [InlineData(null, true)] // The CLI call itself exceeds the command deadline.
+    public async Task UnsettledPrompt_IsSubmittedOnceAndEndsUncertain(string? code, bool processTimeout)
+    {
+        var state = Path.Combine("/tmp", "atf-herdr-turn-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(state);
+        try
+        {
+            var fake = new FakeHerdr
+            {
+                BootstrapFromTab = true,
+                PromptResponse = processTimeout ? new CapturedProcess(true, -1, "", false, "", false)
+                    : new CapturedProcess(false, 1, $$$"""{"error":{"code":"{{{code}}}"}}""", false, "", false),
+            };
+            var backend = new HerdrInteractiveBackend(new HerdrAgentControl(Terminal(fake)), new InteractiveTranscriptReader(name => name == "CODEX_HOME" ? state : null),
+                InteractiveAgentKind.Codex, state, TimeSpan.FromMilliseconds(500));
+            await using var run = backend.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = state });
+            await run.DeliverAsync(CancellationToken.None);
+
+            var evidence = new List<BackendEvidence>();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await foreach (var item in run.ReadEvidenceAsync(deadline.Token))
+            {
+                evidence.Add(item);
+            }
+
+            Assert.Single(fake.Calls, c => c.Args is ["--session", _, "agent", "prompt", ..]);
+            Assert.DoesNotContain(evidence, e => e is BackendEvidence.Result);
+            // Herdr's own wait timeout/stall may hide a delivered prompt: keep observing, then uncertain.
+            // A CLI deadline is not proof either way: delivery is unconfirmed, never resent.
+            Assert.Equal(new BackendEvidence.ProtocolError(processTimeout ? "interactive_delivery_not_confirmed" : "interactive_completion_unobserved"), evidence[^1]);
+        }
+        finally { Directory.Delete(state, recursive: true); }
+    }
+
     /// <summary>Opt-in (ATF_HERDR_INTEGRATION=1): a dedicated atf-test-* server this test starts and stops.</summary>
     [Fact]
     public async Task RealHerdr_OwnedLaunchAndReplacement()
@@ -246,6 +284,11 @@ public class HerdrTerminalTests
 
         public string ShellBootstrap { get; init; } = Bootstrap;
 
+        /// <summary>The shell carries whatever bootstrap its tab was created with.</summary>
+        public bool BootstrapFromTab { get; init; }
+
+        public CapturedProcess? PromptResponse { get; init; }
+
         public List<Call> Calls { get; } = [];
 
         public List<ProcessStartInfo> Detached { get; } = [];
@@ -298,6 +341,9 @@ public class HerdrTerminalTests
                 ["pane", "get", "w1:p2"] => _paneGone ? Err("pane_not_found") : Ok(new JsonObject { ["result"] = new JsonObject { ["pane"] = new JsonObject { ["pane_id"] = "w1:p2", ["tab_id"] = "w1:t2", ["terminal_id"] = _terminal } } }.ToJsonString()),
                 ["pane", "process-info", "--pane", "w1:p2"] => Ok("""{"result":{"process_info":{"pane_id":"w1:p2","shell_pid":""" + ShellPid + "}}}"),
                 ["session", "stop" or "delete", ..] => Ok("{}"),
+                ["agent", "start", ..] => Ok("{}"),
+                ["agent", "get", ..] => Ok("""{"result":{"agent":{"status":"idle"}}}"""),
+                ["--session", _, "agent", "prompt", ..] => PromptResponse ?? Ok("""{"result":{"type":"agent_prompted"}}"""),
                 _ => Err("unexpected " + string.Join(' ', args)),
             });
         }
@@ -341,7 +387,12 @@ public class HerdrTerminalTests
         public int? ParentOf(int pid) => pid == ShellPid ? (ShellParentIsServer ? ServerPid : 1) : null;
 
         public string? EnvironmentValue(int pid, string name) =>
-            pid == ShellPid && name == HerdrTerminal.BootstrapVariable ? ShellBootstrap : null;
+            pid == ShellPid && name == HerdrTerminal.BootstrapVariable
+                ? BootstrapFromTab ? TabBootstrap() : ShellBootstrap
+                : null;
+
+        string? TabBootstrap() => Calls.Where(c => c.Args is ["tab", "create", ..]).SelectMany(c => c.Args)
+            .LastOrDefault(a => a.StartsWith(HerdrTerminal.BootstrapVariable + "=", StringComparison.Ordinal))?[(HerdrTerminal.BootstrapVariable.Length + 1)..];
 
         static CapturedProcess Ok(string stdout) => new(false, 0, stdout, false, "", false);
 

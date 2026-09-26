@@ -15,17 +15,21 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     readonly InteractiveAgentKind _kind;
     readonly string _stateRoot;
     readonly RetainedSessions _liveSessions;
+    readonly TimeSpan _settleTimeout;
 
     public HerdrInteractiveBackend(HerdrTerminal terminal, InteractiveAgentKind kind, string stateRoot)
-        : this(new HerdrAgentControl(terminal), new InteractiveTranscriptReader(), kind, stateRoot) { }
+        : this(new HerdrAgentControl(terminal), new InteractiveTranscriptReader(terminal.Env), kind, stateRoot) { }
 
-    internal HerdrInteractiveBackend(IHerdrAgentControl control, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot)
+    // settleTimeout: how long an idle agent may go without native completion before the turn is uncertain.
+    internal HerdrInteractiveBackend(IHerdrAgentControl control, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot,
+        TimeSpan? settleTimeout = null)
     {
         _control = control;
         _transcripts = transcripts;
         _kind = kind;
         _stateRoot = stateRoot;
         _liveSessions = new RetainedSessions(control.StopOwned);
+        _settleTimeout = settleTimeout ?? TimeSpan.FromSeconds(60);
     }
 
     public IBackendRun Start(BackendRequest request)
@@ -42,7 +46,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             var (model, effort) = InteractiveLaunch.Selection(request.Options);
             if (live.Model == model && live.Effort == effort)
             {
-                return new Run(_control, _transcripts, request, live, started, RememberSession);
+                return new Run(_control, _transcripts, request, live, started, _settleTimeout, RememberSession);
             }
             _control.StopOwned(live);
         }
@@ -61,7 +65,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         {
             throw new InvalidOperationException("interactive agent launch is uncertain: " + e.Message, e);
         }
-        return new Run(_control, _transcripts, request, launch, started, RememberSession);
+        return new Run(_control, _transcripts, request, launch, started, _settleTimeout, RememberSession);
     }
 
     void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
@@ -86,7 +90,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     }
 
     sealed class Run(IHerdrAgentControl control, IInteractiveTranscriptReader transcripts, BackendRequest request,
-        InteractiveLaunch launch, DateTimeOffset started, Action<string, InteractiveLaunch> rememberSession) : IBackendRun
+        InteractiveLaunch launch, DateTimeOffset started, TimeSpan settleTimeout, Action<string, InteractiveLaunch> rememberSession) : IBackendRun
     {
         bool _delivered;
         bool _agentExited;
@@ -94,9 +98,6 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         bool _interrupted;
         bool _stopped;
         string? _sessionId = request.ResumeSessionId;
-        string? _prompt;
-        DateTimeOffset _lastPromptAt;
-        int _promptAttempts;
         int _loggedMessages;
         public int? ProcessId => null; // The Herdr server owns the TUI process, not this daemon.
 
@@ -114,9 +115,8 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 // letting a Herdr control fault halt the whole dispatcher.
                 return;
             }
-            _prompt = prompt;
-            _lastPromptAt = DateTimeOffset.UtcNow;
-            _promptAttempts = 1;
+            // Submitted exactly once. A missing transcript never proves non-delivery, so the
+            // prompt is never resent; an unproven turn ends as needs_reconciliation instead.
             _delivered = true;
         }
 
@@ -133,7 +133,10 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             {
                 yield return new BackendEvidence.Session(request.Correlation, session);
             }
-            var sawWorking = false;
+            // Only the native completion record of this correlated turn completes the job;
+            // Herdr's idle/done classification alone can follow interim commentary.
+            var quietSince = DateTimeOffset.UtcNow;
+            var seenMessages = 0;
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -158,19 +161,11 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                     _sessionId = nativeId;
                     yield return new BackendEvidence.Session(request.Correlation, nativeId);
                 }
-                if (status == InteractiveAgentStatus.Working)
+                if (output is { Completed: true, Message: { Length: > 0 } message } && session is not null)
                 {
-                    sawWorking = true;
-                }
-                if (status is InteractiveAgentStatus.Done || (status == InteractiveAgentStatus.Idle && (sawWorking || output?.Message is not null)))
-                {
-                    if (output?.Message is { Length: > 0 } message && session is not null)
-                    {
-                        yield return new BackendEvidence.Result(request.Correlation, message);
-                        yield return new BackendEvidence.EndOfOutput();
-                        yield break;
-                    }
-                    // Herdr can classify completion before the native transcript flushes.
+                    yield return new BackendEvidence.Result(request.Correlation, message);
+                    yield return new BackendEvidence.EndOfOutput();
+                    yield break;
                 }
                 if (status == InteractiveAgentStatus.Blocked)
                 {
@@ -184,21 +179,18 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                     yield return new BackendEvidence.ProtocolError("interactive_agent_exited");
                     yield break;
                 }
-                if ((status is InteractiveAgentStatus.Done or InteractiveAgentStatus.Idle) && output is null &&
-                    DateTimeOffset.UtcNow - _lastPromptAt >= TimeSpan.FromSeconds(5))
+                var progressed = output is not null && output.Progress.Count != seenMessages;
+                seenMessages = output?.Progress.Count ?? 0;
+                if (status is not (InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done) || progressed)
                 {
-                    if (_promptAttempts == 2)
-                    {
-                        yield return new BackendEvidence.ProtocolError("interactive_prompt_unobserved");
-                        yield break;
-                    }
-                    if (!await RetryPromptAsync(cancellationToken))
-                    {
-                        yield return new BackendEvidence.ProtocolError("interactive_control_failed");
-                        yield break;
-                    }
-                    _lastPromptAt = DateTimeOffset.UtcNow;
-                    _promptAttempts++;
+                    quietSince = DateTimeOffset.UtcNow;
+                }
+                else if (DateTimeOffset.UtcNow - quietSince >= settleTimeout)
+                {
+                    // Idle without this turn's completion record (delayed, missing or unreadable
+                    // transcript, or interim text): keep the tab, never claim success or resend.
+                    yield return new BackendEvidence.ProtocolError("interactive_completion_unobserved");
+                    yield break;
                 }
                 await Task.Delay(250, cancellationToken);
             }
@@ -208,16 +200,6 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         {
             try { return await control.StatusAsync(launch, cancellationToken); }
             catch (HerdrLaunchException) { return null; }
-        }
-
-        async Task<bool> RetryPromptAsync(CancellationToken cancellationToken)
-        {
-            try
-            {
-                await control.PromptAsync(launch, _prompt!, cancellationToken);
-                return true;
-            }
-            catch (HerdrLaunchException) { return false; }
         }
 
         public void TerminateOwnedChild()

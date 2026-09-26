@@ -104,6 +104,22 @@ public static class JobsMcpBridge
             return 1;
         }
         var client = new IpcClient(state, new SpikeLimits());
+        async Task<IpcResponse> SendAsync(IpcRequest request, CancellationToken cancellationToken)
+        {
+            var response = await client.SendAsync(request, cancellationToken);
+            if (response.Error != IpcProtocol.DaemonUnavailable || cancellationToken.IsCancellationRequested)
+            {
+                return response;
+            }
+
+            // Only a pre-request failure is safe to replay. The starter's start.lock
+            // serializes concurrent bridges; the retry keeps the original key and identity.
+            if (await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = state.Path }, quiet: true) != 0)
+            {
+                return response;
+            }
+            return await client.SendAsync(request, cancellationToken);
+        }
         var workspace = Path.GetFullPath(Environment.CurrentDirectory);
         var parentId = Environment.GetEnvironmentVariable("WIN_AGENT_TEAMS_PARENT_ID") ?? ParentPid().ToString(System.Globalization.CultureInfo.InvariantCulture);
         var bindingKey = $"identity=team-lead\nparent={parentId}\ncwd={workspace}";
@@ -114,7 +130,7 @@ public static class JobsMcpBridge
             {
                 return new IpcResponse(true);
             }
-            var started = await client.SendAsync(new IpcRequest { Op = IpcProtocol.SessionStart, Workspace = workspace, BindingKey = bindingKey }, cancellationToken);
+            var started = await SendAsync(new IpcRequest { Op = IpcProtocol.SessionStart, Workspace = workspace, BindingKey = bindingKey }, cancellationToken);
             if (started.Ok)
             {
                 sessionId = started.Session?.SessionId;
@@ -134,7 +150,7 @@ public static class JobsMcpBridge
             // Wake is best effort: a missing daemon or credential must not stop the bridge or fail job calls.
             try
             {
-                var registration = await client.SendAsync(wakeTarget, cancellationToken);
+                var registration = await SendAsync(wakeTarget, cancellationToken);
                 if (registration.Ok)
                 {
                     wakeGeneration = registration.WakeGeneration;
@@ -193,7 +209,7 @@ public static class JobsMcpBridge
                         var (memberRequest, rejection) = Map(call.Name, args, testProfile);
                         var memberResponse = memberRequest is null || tools.All(tool => tool.Name != call.Name)
                             ? new IpcResponse(false, rejection ?? IpcProtocol.UnknownOp)
-                            : await client.SendAsync(memberRequest, cancellationToken);
+                            : await SendAsync(memberRequest, cancellationToken);
                         return new CallToolResult
                         {
                             IsError = !memberResponse.Ok,
@@ -209,13 +225,13 @@ public static class JobsMcpBridge
                     }
                     else if (call.Name == "session_info")
                     {
-                        response = await client.SendAsync(new IpcRequest { Op = IpcProtocol.SessionInfo, LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
+                        response = await SendAsync(new IpcRequest { Op = IpcProtocol.SessionInfo, LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
                     }
                     else if (call.Name == "resume_session")
                     {
                         var requested = String(args, "session_id");
                         response = requested is null ? new IpcResponse(false, JobErrors.InvalidRequest)
-                            : await client.SendAsync(new IpcRequest { Op = IpcProtocol.SessionResume, LeadSessionId = requested, Workspace = workspace, BindingKey = bindingKey }, cancellationToken);
+                            : await SendAsync(new IpcRequest { Op = IpcProtocol.SessionResume, LeadSessionId = requested, Workspace = workspace, BindingKey = bindingKey }, cancellationToken);
                         if (response.Ok)
                         {
                             sessionId = response.Session!.SessionId;
@@ -228,7 +244,7 @@ public static class JobsMcpBridge
                         var home = host?.Kind == "codex" ? HostSessionWake.CodexHome(host.Value.Pid) : null;
                         var target = home is null ? null : HostSessionWake.ForCodexThread(String(args, "thread_id"), home);
                         response = target is null ? new IpcResponse(false, JobErrors.InvalidRequest)
-                            : await client.SendAsync(target, cancellationToken);
+                            : await SendAsync(target, cancellationToken);
                         if (response.Ok && response.WakeGeneration is long generation)
                         {
                             wakeTarget = target;
@@ -238,7 +254,7 @@ public static class JobsMcpBridge
                     }
                     else if (call.Name == "close_team")
                     {
-                        response = await client.SendAsync(new IpcRequest { Op = IpcProtocol.SessionClose, LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
+                        response = await SendAsync(new IpcRequest { Op = IpcProtocol.SessionClose, LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
                         if (response.Ok)
                         {
                             sessionId = null;
@@ -254,7 +270,7 @@ public static class JobsMcpBridge
                         }
                         response = ipc is null
                             ? new IpcResponse(false, rejection)
-                            : await client.SendAsync(ipc.Op is IpcProtocol.ExternalJoin or IpcProtocol.ExternalSend or IpcProtocol.ExternalRead
+                            : await SendAsync(ipc.Op is IpcProtocol.ExternalJoin or IpcProtocol.ExternalSend or IpcProtocol.ExternalRead
                                 or IpcProtocol.ExternalSetWake or IpcProtocol.ExternalLeave ? ipc
                                 : ipc with { LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
                     }
@@ -271,7 +287,7 @@ public static class JobsMcpBridge
         {
             if (sessionId is not null && wakeTarget?.WakeKey is not null && wakeGeneration is long generation)
             {
-                await client.SendAsync(new IpcRequest
+                await SendAsync(new IpcRequest
                 {
                     Op = IpcProtocol.SessionBindWake,
                     LeadSessionId = sessionId,

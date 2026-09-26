@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.Host.Hosting;
 using AgentTeamForge.Host.Transport;
 using AgentTeamForge.Tests.Support;
 
@@ -98,6 +100,56 @@ public sealed class WebConsoleScenarios
             Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(tokenFile));
         }
         Assert.False(File.Exists(rig.SocketPath));
+    }
+
+    [Fact]
+    public async Task Web_command_uses_default_state_directory_for_all_forms()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = new TempStateDir();
+        var statePath = temp.File("agentteamforge");
+        StateDirectory.CreatePrivateDirectory(statePath);
+        var openerDir = temp.File("bin");
+        Directory.CreateDirectory(openerDir);
+        var opener = Path.Combine(openerDir, OperatingSystem.IsMacOS() ? "open" : "xdg-open");
+        File.WriteAllText(opener, "#!/bin/sh\nexit 0\n");
+        File.SetUnixFileMode(opener, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        async Task<string> Run(params string[] args)
+        {
+            var info = new ProcessStartInfo(SpikeRig.Binary)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            info.ArgumentList.Add("web");
+            foreach (var arg in args)
+            {
+                info.ArgumentList.Add(arg);
+            }
+            info.Environment["XDG_STATE_HOME"] = temp.Path;
+            info.Environment["PATH"] = openerDir + Path.PathSeparator + info.Environment["PATH"];
+            using var process = Process.Start(info)!;
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(0, process.ExitCode);
+            Assert.Empty(await error);
+            return (await output).Trim();
+        }
+
+        var link = await Run();
+        Assert.StartsWith("url http://127.0.0.1:8765/#token=", link, StringComparison.Ordinal);
+        Assert.Equal(link, await Run("--open"));
+        var rotated = await Run("--rotate-token");
+        Assert.StartsWith("url http://127.0.0.1:8765/#token=", rotated, StringComparison.Ordinal);
+        Assert.NotEqual(link, rotated);
+        Assert.Equal(rotated["url http://127.0.0.1:8765/#token=".Length..], File.ReadAllText(Path.Combine(statePath, "web-console.key")));
     }
 
     [Fact]
