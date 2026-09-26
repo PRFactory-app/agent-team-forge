@@ -36,4 +36,46 @@ public sealed class RetainedSessionsTests
         Assert.Equal(["atf1"], stopped);
         Assert.Equal(1, sessions.Count);
     }
+    [Fact]
+    public void Failed_stop_retries_same_launch()
+    {
+        var attempts = new List<InteractiveLaunch>();
+        var sessions = new RetainedSessions(l =>
+        {
+            attempts.Add(l);
+            if (attempts.Count == 1) { throw new IOException("temporary"); }
+        });
+        var launch = Launch(1);
+        sessions.Remember("s", launch);
+        Assert.Throws<IOException>(() => sessions.Stop("s"));
+        Assert.True(sessions.Stop("s"));
+        Assert.Equal([launch, launch], attempts);
+    }
+
+    [Fact]
+    public void Failed_eviction_remains_retryable()
+    {
+        var fail = true;
+        var sessions = new RetainedSessions(_ => { if (fail) { throw new IOException("temporary"); } });
+        for (var i = 0; i <= RetainedSessions.MaxRetained; i++) { sessions.Remember("s" + i, Launch(i)); }
+        Assert.Equal(RetainedSessions.MaxRetained + 1, sessions.Count);
+        fail = false;
+        Assert.True(sessions.Stop("s0"));
+    }
+
+    [Fact]
+    public void Failed_stop_does_not_replace_concurrently_reused_session()
+    {
+        RetainedSessions sessions = null!;
+        var newer = Launch(2);
+        sessions = new RetainedSessions(_ =>
+        {
+            sessions.Remember("s", newer);
+            throw new IOException("temporary");
+        });
+        sessions.Remember("s", Launch(1));
+        Assert.Throws<IOException>(() => sessions.Stop("s"));
+        Assert.True(sessions.TryTake("s", out var retained));
+        Assert.Same(newer, retained);
+    }
 }

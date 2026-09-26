@@ -104,6 +104,10 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         };
     }
 
+    public bool StopJobs(string stateRoot, IReadOnlyList<string> jobIds) =>
+        HerdrOwnedSessions.Stop(stateRoot, jobIds, session =>
+            terminal.RecoverOwnedSessionAsync(session, CancellationToken.None).GetAwaiter().GetResult());
+
     public void StopOwned(InteractiveLaunch launch)
     {
         if (_runs.TryGetValue(launch.AgentName, out var run))

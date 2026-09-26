@@ -35,7 +35,10 @@ public sealed record HerdrTerminalOptions
 }
 
 /// <summary>Retained handle of a daemon-created Herdr session: the facts teardown and rebinding must prove.</summary>
-public sealed record OwnedHerdrSession(string SessionName, string SocketPath, int ServerPid, ulong ServerStartTicks, string OwnerLabel, string WorkspaceId);
+public sealed record OwnedHerdrSession(string SessionName, string SocketPath, int ServerPid, ulong ServerStartTicks, string OwnerLabel, string WorkspaceId)
+{
+    public string? JobId { get; init; }
+}
 
 /// <summary>One agent tab; valid only while the same server, pane terminal and shell process still host it.</summary>
 public sealed record HerdrTabBinding(OwnedHerdrSession Session, string TabId, string PaneId, string TerminalId, int ShellPid, ulong ShellStartTicks);
@@ -203,7 +206,7 @@ public sealed class HerdrTerminal
         }
     }
 
-    /// <summary>On restart, a session already absent or stopped needs no teardown.</summary>
+    /// <summary>Explicit cleanup: a recorded session already absent or stopped needs no teardown.</summary>
     public async Task RecoverOwnedSessionAsync(OwnedHerdrSession session, CancellationToken cancellationToken)
     {
         var listed = HerdrOwnership.Find(await GlobalAsync(cancellationToken, "session", "list", "--json"), session.SessionName);

@@ -55,6 +55,23 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
         try
         {
             var runs = interruptRunning ? [] : store.GetRuns(parent.JobId);
+            // A headless sibling may have ended before recording its own session.
+            // Reconcile only terminal runs with owned process evidence, never TUIs.
+            foreach (var peerId in store.GetSessionJobs(parent.JobId))
+            {
+                if (store.GetJob(peerId) is not { } peer) { continue; } // Concurrent prune.
+                var peerRuns = store.GetRuns(peerId);
+                if (peer.Status is JobStatus.NeedsReconciliation or JobStatus.Cancelled && peerRuns.Count > 0
+                    && peerRuns[^1].BackendPid is not null && peerRuns.All(r => r.State != "started")
+                    && !OrphanedBackendProcess.HasMarkedProcess([.. peerRuns.Select(r => r.Correlation)]))
+                {
+                    store.ReconcileStoppedJob(peerId);
+                }
+            }
+            if (store.IsSessionFenced(parent.JobId))
+            {
+                return JobResult.Fail(JobErrors.ParentNotReady);
+            }
             // A needs_reconciliation row can be committed before its child exits. Only
             // a terminal run with no live marked process proves this session is idle.
             // A run without a daemon-owned pid (a Herdr TUI, or a start that never
@@ -62,7 +79,6 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             if (runs.Any(r => r.State == "started")
                 || (parent.Status is JobStatus.Failed or JobStatus.NeedsReconciliation
                     && (runs.Count == 0
-                        || (parent.Status == JobStatus.NeedsReconciliation && runs[^1].BackendPid is null)
                         || OrphanedBackendProcess.HasMarkedProcess([.. runs.Select(r => r.Correlation)]))))
             {
                 return JobResult.Fail(JobErrors.ParentNotReady);

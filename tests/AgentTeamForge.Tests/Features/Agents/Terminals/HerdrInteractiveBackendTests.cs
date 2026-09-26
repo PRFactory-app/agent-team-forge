@@ -11,6 +11,22 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 public sealed class HerdrInteractiveBackendTests
 {
     [Fact]
+    public async Task Verified_exited_session_releases_fence_after_cleanup()
+    {
+        using var f = new JobFixture();
+        using var state = new TempStateDir();
+        var control = new FakeControl { Status = InteractiveAgentStatus.Gone };
+        var backend = new HerdrInteractiveBackend(control, new FakeReader(null), InteractiveAgentKind.Codex, state.Path);
+        var job = f.Submit("exited");
+        var claim = f.Store.BeginNextAttempt()!;
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        await dispatcher.RunAttemptAsync(claim, TestContext.Current.CancellationToken);
+        Assert.True(control.Stopped);
+        Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(job.JobId)!.Status);
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+    }
+
+    [Fact]
     public async Task StartsRealTuiSurfaceAndEmitsNativeSessionAndResult()
     {
         var control = new FakeControl();
@@ -171,6 +187,7 @@ public sealed class HerdrInteractiveBackendTests
             new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp).Execute(child.JobId);
         }
         first.InterruptTurn();
+        f.Store.ReconcileStoppedJob(parent.JobId); // This test drives the verified interrupt without DispatchJob.
         await first.DisposeAsync();
         if (stopBeforeInterrupt)
         {
@@ -216,6 +233,7 @@ public sealed class HerdrInteractiveBackendTests
         var followUp = new FollowUpJob(f.Store, JobFixture.Operator, accept, _ => { });
         var child = followUp.Execute(new FollowUpRequest(parent.JobId, "second", "child") { Interrupt = true }).Job!;
         first.InterruptTurn();
+        f.Store.ReconcileStoppedJob(parent.JobId); // This test drives the verified interrupt without DispatchJob.
         await first.DisposeAsync();
         var sibling = followUp.Execute(new FollowUpRequest(parent.JobId, "third", "sibling")).Job!;
         Assert.Equal(JobStatus.Queued, f.Store.GetJob(sibling.JobId)!.Status);
@@ -241,15 +259,15 @@ public sealed class HerdrInteractiveBackendTests
         var logs = new List<string>();
 
         var recovered = new RecoverOnStartup(f.Store, () => HerdrOwnedSessions.Recover(state.Path,
-            _ => throw new HerdrLaunchException("teardown refused: running server is not the recorded process"), logs.Add)).Execute();
+            _ => throw new InvalidOperationException("recovery must not invoke stop"), logs.Add)).Execute();
 
         Assert.Empty(recovered);
-        Assert.Contains(logs, l => l.Contains("teardown refused"));
+        Assert.Contains(logs, l => l.Contains("preserved owned Herdr"));
         Assert.True(File.Exists(HerdrOwnedSessions.PathFor(launch))); // Retried on the next start.
     }
 
     [Fact]
-    public void Restart_closes_recorded_Herdr_session_before_claiming_interrupted_follow_up()
+    public void Restart_preserves_recorded_Herdr_session_and_fences_interrupted_follow_up()
     {
         using var f = new JobFixture();
         using var state = new TempStateDir();
@@ -262,21 +280,20 @@ public sealed class HerdrInteractiveBackendTests
         var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null,
             Path.Combine(state.Path, "herdr", "atftest.bootstrap"));
         Directory.CreateDirectory(Path.GetDirectoryName(launch.BootstrapPath)!);
+        launch = launch with { JobId = parent.JobId };
         var owned = new OwnedHerdrSession("atf-test", "/tmp/atf-test.sock", 123, 456, "owner", "workspace");
         HerdrOwnedSessions.Save(launch, owned);
-        var stopped = false;
 
-        var recovered = new RecoverOnStartup(f.Store, () => HerdrOwnedSessions.Recover(state.Path, session =>
-        {
-            Assert.Equal(owned, session);
-            Assert.Equal(JobStatus.Queued, f.Store.GetJob(child.JobId)!.Status);
-            stopped = true;
-            return Task.CompletedTask;
-        }, _ => { })).Execute();
+        var recovered = new RecoverOnStartup(f.Store, () =>
+            HerdrOwnedSessions.Recover(state.Path, f.Store.FenceSession, _ => { })).Execute();
 
-        Assert.True(stopped);
         Assert.Empty(recovered);
-        Assert.False(File.Exists(HerdrOwnedSessions.PathFor(launch)));
+        Assert.True(File.Exists(HerdrOwnedSessions.PathFor(launch)));
+        Assert.True(f.Store.IsSessionFenced(child.JobId));
+        Assert.Null(f.Store.BeginNextAttempt());
+        var unrelated = f.Submit("unrelated");
+        Assert.Equal(unrelated.JobId, f.Store.BeginNextAttempt()!.Job.JobId);
+        f.Store.ReconcileStoppedSession(parent.JobId);
         Assert.Equal(child.JobId, f.Store.BeginNextAttempt()!.Job.JobId);
     }
 

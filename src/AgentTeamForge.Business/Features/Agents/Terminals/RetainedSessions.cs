@@ -2,7 +2,7 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
 /// <summary>
 /// Idle interactive sessions this daemon keeps open for a follow-up or Stop agent.
-/// Bounded: past <see cref="MaxRetained"/> the least recently retained tab is closed.
+/// Past <see cref="MaxRetained"/> the oldest tab is closed; failed cleanup remains retryable.
 /// </summary>
 internal sealed class RetainedSessions(Action<InteractiveLaunch> stop)
 {
@@ -29,26 +29,29 @@ internal sealed class RetainedSessions(Action<InteractiveLaunch> stop)
 
     public void Remember(string sessionId, InteractiveLaunch launch)
     {
-        var evicted = new List<InteractiveLaunch>();
+        var evicted = new List<(string Id, InteractiveLaunch Launch)>();
         lock (_gate)
         {
             if (_sessions.TryGetValue(sessionId, out var replaced) && !ReferenceEquals(replaced.Launch, launch))
             {
-                evicted.Add(replaced.Launch);
+                evicted.Add((sessionId, replaced.Launch));
             }
             _sessions[sessionId] = (launch, _next++);
             while (_sessions.Count > MaxRetained)
             {
                 var oldest = _sessions.MinBy(pair => pair.Value.Order);
                 _sessions.Remove(oldest.Key);
-                evicted.Add(oldest.Value.Launch);
+                evicted.Add((oldest.Key, oldest.Value.Launch));
             }
         }
-        foreach (var old in evicted)
+        foreach (var (id, old) in evicted)
         {
             // Best effort: this runs from a settling turn, which must not fail on cleanup.
             try { stop(old); }
-            catch (Exception ex) when (ex is not OutOfMemoryException) { }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                lock (_gate) { _sessions.TryAdd(id, (old, _next++)); }
+            }
         }
     }
 
@@ -65,6 +68,17 @@ internal sealed class RetainedSessions(Action<InteractiveLaunch> stop)
             throw;
         }
         return true;
+    }
+
+    public void ForgetJobs(IReadOnlyList<string> jobIds)
+    {
+        lock (_gate)
+        {
+            foreach (var id in _sessions.Where(p => p.Value.Launch.JobId is { } jobId && jobIds.Contains(jobId)).Select(p => p.Key).ToArray())
+            {
+                _sessions.Remove(id);
+            }
+        }
     }
 
     public void StopAll()

@@ -15,6 +15,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     readonly InteractiveAgentKind _kind;
     readonly string _stateRoot;
     readonly RetainedSessions _liveSessions;
+    internal Lock SessionStopGate { get; } = new();
 
     public HerdrInteractiveBackend(HerdrTerminal terminal, InteractiveAgentKind kind, string stateRoot)
         : this(new HerdrAgentControl(terminal), new InteractiveTranscriptReader(), kind, stateRoot) { }
@@ -50,7 +51,8 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         var agentName = "atf" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(10));
         var piDirectory = _kind == InteractiveAgentKind.Pi ? PiDirectory(request) : null;
         var launch = new InteractiveLaunch(_kind, agentName, cwd, request.ResumeSessionId, piDirectory,
-            Path.Combine(_stateRoot, "herdr", agentName + ".bootstrap")).WithSelection(request.Options);
+            Path.Combine(_stateRoot, "herdr", agentName + ".bootstrap"))
+        { JobId = request.JobId }.WithSelection(request.Options);
         try
         {
             // Dispatch calls Start on a worker. A failure after session creation is uncertain;
@@ -68,7 +70,20 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
 
     public bool StopIdleSession(string sessionId) => _liveSessions.Stop(sessionId);
 
-    public void StopAllIdleSessions() => _liveSessions.StopAll();
+    public bool HasOwnedJobs(IReadOnlyList<string> jobIds) => HerdrOwnedSessions.Read(_stateRoot,
+        message => throw new HerdrLaunchException(message)).Any(entry => entry.Session.JobId is { } id && jobIds.Contains(id));
+
+    public bool StopOwnedJobs(IReadOnlyList<string> jobIds)
+    {
+        var stopped = _control is HerdrAgentControl control && control.StopJobs(_stateRoot, jobIds);
+        if (stopped) { _liveSessions.ForgetJobs(jobIds); }
+        return stopped;
+    }
+
+    public void ForgetStoppedJobs(IReadOnlyList<string> jobIds) => HerdrOwnedSessions.Forget(_stateRoot, jobIds);
+
+    // Daemon shutdown is not an explicit request to close human-visible TUIs.
+    public void StopAllIdleSessions() { }
 
     /// <summary>Closes an interrupted tab when its queued follow-up ends before claim.</summary>
     public void CloseUnclaimedSession(string sessionId) => StopIdleSession(sessionId);
@@ -98,6 +113,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         DateTimeOffset _lastPromptAt;
         int _promptAttempts;
         int _loggedMessages;
+        public bool OwnedSessionStopped { get; private set; }
         public int? ProcessId => null; // The Herdr server owns the TUI process, not this daemon.
 
         public async Task DeliverAsync(CancellationToken cancellationToken)
@@ -224,8 +240,9 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         {
             lock (_lifetime)
             {
-                _stopped = true;
                 control.StopOwned(launch);
+                OwnedSessionStopped = true;
+                _stopped = true;
             }
         }
 
@@ -264,10 +281,12 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 {
                     rememberSession(sessionId, launch);
                 }
-                else
+                else if (_agentExited)
                 {
                     control.StopOwned(launch);
+                    OwnedSessionStopped = true;
                 }
+                // Unknown native identity still has durable ownership for explicit stop.
             }
             return ValueTask.CompletedTask;
         }
@@ -277,6 +296,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
 internal sealed record InteractiveLaunch(InteractiveAgentKind Kind, string AgentName, string WorkingDirectory,
     string? ResumeSessionId, string? PiSessionDirectory, string BootstrapPath)
 {
+    public string? JobId { get; init; }
     public string? Model { get; init; }
     public string? Effort { get; init; }
 
