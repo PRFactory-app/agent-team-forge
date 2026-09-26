@@ -37,6 +37,8 @@ try
                 options.GetValueOrDefault("backends"));
         case "setup":
             return SetupCommand.Run(options);
+        case "terminal-token":
+            return TerminalTokenCommand.Run(options);
         case "doctor":
             options["check"] = "true";
             return SetupCommand.Run(options);
@@ -72,7 +74,7 @@ catch (StateDirectoryException ex)
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: atf --version | setup --mode headless|herdr|wt [--state-dir DIR] [--apply|--check] | doctor [--state-dir DIR] | start|stop [--state-dir DIR] | uninstall [--purge] [--state-dir DIR] | prfactory connect|disconnect|status [--state-dir DIR] [--url HTTPS_URL --repo ID=DIR, token on stdin] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|web|fake-backend> --state-dir DIR [options]");
+    Console.Error.WriteLine("usage: atf --version | setup --mode headless|herdr|terminal|wt [--state-dir DIR] [--apply|--check] | doctor [--state-dir DIR] | start|stop [--state-dir DIR] | uninstall [--purge] [--state-dir DIR] | prfactory connect|disconnect|status [--state-dir DIR] [--url HTTPS_URL --repo ID=DIR, token on stdin] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|web|fake-backend> --state-dir DIR [options]");
     return 64;
 }
 

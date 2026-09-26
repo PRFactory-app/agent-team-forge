@@ -158,4 +158,4 @@ if [ ! -L "$bin" ]; then
   mv -f "$HOME/.local/bin/.atf.$$" "$bin"
 fi
 echo "installed atf $version: $bin"
-echo 'previous versions kept; rerun atf setup --mode headless|herdr --apply, then atf start and restart clients'
+echo 'previous versions kept; rerun atf setup --mode headless|herdr|terminal --apply, then atf start and restart clients'

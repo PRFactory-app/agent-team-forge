@@ -24,11 +24,11 @@ public static class SetupCommand
             Console.Error.WriteLine("error: --check and --apply are mutually exclusive");
             return 64;
         }
-        if (!options.TryGetValue("mode", out var mode) || mode is not ("headless" or "herdr" or "wt"))
+        if (!options.TryGetValue("mode", out var mode) || mode is not ("headless" or "herdr" or "terminal" or "wt"))
         {
             if (!check)
             {
-                Console.Error.WriteLine("usage: atf setup --mode headless|herdr|wt [--state-dir DIR] [--apply|--check]");
+                Console.Error.WriteLine("usage: atf setup --mode headless|herdr|terminal|wt [--state-dir DIR] [--apply|--check]");
                 return 64;
             }
         }
@@ -64,7 +64,9 @@ public static class SetupCommand
             Console.Error.WriteLine("error: setup requires an agents profile");
             return 78;
         }
-        WriteMode(state, mode!);
+        var settings = mode == "terminal" ? SelectMacTerminal(Environment.GetEnvironmentVariable("KITTY_LISTEN_ON"), commandRunner)
+            : new LaunchModeSettings(mode!);
+        WriteMode(state, settings);
 
         if (apply)
         {
@@ -87,7 +89,7 @@ public static class SetupCommand
         }
         else
         {
-            Console.Out.WriteLine($"Launch mode: {mode}. Run: {FormatCommand(binary, ["start", "--state-dir", state.Path])}");
+            Console.Out.WriteLine($"Launch mode: {mode}{(mode == "terminal" ? " (" + settings.TerminalProvider + ")" : "")}. Run: {FormatCommand(binary, ["start", "--state-dir", state.Path])}");
         }
         return 0;
     }
@@ -443,7 +445,7 @@ public static class SetupCommand
         return 0;
     }
 
-    static void WriteMode(StateDirectory state, string mode)
+    static void WriteMode(StateDirectory state, LaunchModeSettings settings)
     {
         var path = Path.Combine(state.Path, SettingsFile);
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -456,7 +458,7 @@ public static class SetupCommand
                 UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
             }))
             {
-                JsonSerializer.Serialize(file, new LaunchModeSettings(mode), SetupCommandJson.Default.LaunchModeSettings);
+                JsonSerializer.Serialize(file, settings, SetupCommandJson.Default.LaunchModeSettings);
                 file.Flush(flushToDisk: true);
             }
 
@@ -527,27 +529,65 @@ public static class SetupCommand
         }
     }
 
-    static string ReadMode(StateDirectory state)
+    static LaunchModeSettings ReadSettings(StateDirectory state)
     {
         var path = Path.Combine(state.Path, SettingsFile);
         var settings = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(path), SetupCommandJson.Default.LaunchModeSettings);
-        if (settings?.Mode is not ("headless" or "herdr" or "wt"))
+        if (settings?.Mode is not ("headless" or "herdr" or "terminal" or "wt")
+            || settings.Mode == "terminal" && (settings.TerminalProvider is not ("terminal" or "kitty")
+                || settings.TerminalProvider == "kitty" && (settings.KittyAddress is null || settings.KittyBinary is null)))
         {
             throw new StateDirectoryException("launch_mode_invalid");
         }
 
-        return settings.Mode;
+        return settings;
+    }
+
+    static string ReadMode(StateDirectory state) => ReadSettings(state).Mode;
+
+    internal static LaunchModeSettings SelectMacTerminal(string? address,
+        Func<string, IReadOnlyList<string>, (int ExitCode, string Output)> runner, string? kittyBinary = null)
+    {
+        if (address is { Length: > 0 } && address.StartsWith("unix:", StringComparison.Ordinal)
+            && (kittyBinary ?? FindExecutable("kitty")) is { } binary)
+        {
+            try
+            {
+                if (runner(binary, ["@", "--to", address, "ls"]).ExitCode == 0)
+                {
+                    return new("terminal", "kitty", address, binary);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception) { }
+        }
+        return new("terminal", "terminal");
+    }
+
+    static string? FindExecutable(string name)
+    {
+        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+        {
+            if (directory.Length > 0 && File.Exists(Path.Combine(directory, name)))
+            {
+                return Path.Combine(directory, name);
+            }
+        }
+        return null;
     }
 
     static bool ModeAvailable(string mode) => mode switch
     {
         "wt" => OperatingSystem.IsWindows(),
+        "terminal" => OperatingSystem.IsMacOS(),
         "herdr" => OperatingSystem.IsLinux() || OperatingSystem.IsMacOS(),
         _ => true,
     };
 
     internal static string? ConfiguredMode(StateDirectory state) =>
         File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadMode(state) : null;
+
+    internal static LaunchModeSettings? ConfiguredTerminal(StateDirectory state) =>
+        File.Exists(Path.Combine(state.Path, SettingsFile)) && ReadSettings(state) is { Mode: "terminal" } settings ? settings : null;
 
     internal static (int ExitCode, string Output) RunCommand(string tool, IReadOnlyList<string> args)
     {
@@ -599,7 +639,7 @@ public static class SetupCommand
         ? value : "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
 }
 
-public sealed record LaunchModeSettings(string Mode);
+public sealed record LaunchModeSettings(string Mode, string? TerminalProvider = null, string? KittyAddress = null, string? KittyBinary = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower, WriteIndented = true)]
 [JsonSerializable(typeof(LaunchModeSettings))]

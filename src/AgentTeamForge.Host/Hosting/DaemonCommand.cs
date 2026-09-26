@@ -29,12 +29,13 @@ public static class DaemonCommand
     {
         var profile = SpikeProfileFile.Load(state);
         var launchMode = SetupCommand.ConfiguredMode(state);
-        if (launchMode is "herdr" or "wt" && !profile.RealAgents)
+        if (launchMode is "herdr" or "terminal" or "wt" && !profile.RealAgents)
         {
             Log($"error: {launchMode} mode requires an agents profile");
             return 78;
         }
-        if (launchMode == "wt" && !OperatingSystem.IsWindows() || launchMode == "herdr" && !(OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()))
+        if (launchMode == "wt" && !OperatingSystem.IsWindows() || launchMode == "terminal" && !OperatingSystem.IsMacOS()
+            || launchMode == "herdr" && !(OperatingSystem.IsLinux() || OperatingSystem.IsMacOS()))
         {
             Log($"error: {launchMode} mode is unavailable on this platform");
             return 64;
@@ -97,7 +98,14 @@ public static class DaemonCommand
             var terminal = new HerdrTerminal(new HerdrTerminalOptions { Environment = recoveryEnvironment });
             HerdrOwnedSessions.Recover(state.Path, session => terminal.RecoverOwnedSessionAsync(session, CancellationToken.None), Log);
         }
-        var quarantined = new RecoverOnStartup(store, RecoverHerdr).Execute();
+        var quarantined = new RecoverOnStartup(store, () =>
+        {
+            RecoverHerdr();
+            if (OperatingSystem.IsMacOS())
+            {
+                MacInteractiveBackend.Recover(state.Path, Log);
+            }
+        }).Execute();
         Log($"recovery: quarantined {quarantined.Count} uncertain attempt(s)");
 
         var backendEnv = new Dictionary<string, string>();
@@ -107,7 +115,7 @@ public static class DaemonCommand
         }
 
         var backends = BackendCatalog.Create(
-            new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits), profile.RealAgents && launchMode is not ("herdr" or "wt"));
+            new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits), profile.RealAgents && launchMode is not ("herdr" or "terminal" or "wt"));
         if (launchMode == "herdr")
         {
             var seed = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
@@ -126,6 +134,18 @@ public static class DaemonCommand
             backends.Register(BackendCatalog.Claude, () => new WtInteractiveBackend(InteractiveAgentKind.Claude, state.Path));
             backends.Register(BackendCatalog.Codex, () => new WtInteractiveBackend(InteractiveAgentKind.Codex, state.Path));
             backends.Register(BackendCatalog.Pi, () => new WtInteractiveBackend(InteractiveAgentKind.Pi, state.Path));
+        }
+        if (launchMode == "terminal")
+        {
+            var settings = SetupCommand.ConfiguredTerminal(state)!;
+            MacInteractiveBackend Interactive(InteractiveAgentKind kind) => new(kind, state.Path,
+                settings.TerminalProvider!, settings.KittyAddress, settings.KittyBinary);
+            var claude = Interactive(InteractiveAgentKind.Claude);
+            var codex = Interactive(InteractiveAgentKind.Codex);
+            var pi = Interactive(InteractiveAgentKind.Pi);
+            backends.Register(BackendCatalog.Claude, () => claude);
+            backends.Register(BackendCatalog.Codex, () => codex);
+            backends.Register(BackendCatalog.Pi, () => pi);
         }
         Log($"backends: {string.Join(',', backends.Names)}");
         var admission = new AdmissionGate();
