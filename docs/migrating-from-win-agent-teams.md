@@ -27,12 +27,13 @@ surface. **Landing** means work is in flight, not an available tool.
 | `session_info` | `list_jobs` after reconnect | Daemon state survives the lead; multi-lead session info is **landing**. |
 | `resume_session` | None yet | Multi-lead/resume-session control is **landing**; existing jobs remain readable after reconnect. |
 | `create_join_ticket` | `create_join_ticket` | Issues a one-time ticket for this lead session, valid for ten minutes. Give the returned `join_prompt` to the manually started member. |
-| `join_team` | `join_team` | Exchanges that ticket for a member bearer token. Save `member_token`; tickets cannot be replayed. |
+| `join_team` | `join_team` | Exchanges the ticket for a member bearer token. A retry with the same ticket within its ten-minute TTL recovers the same membership and token; after expiry or leave it cannot reopen membership. Bad or expired tickets return `invalid_or_expired_token`. |
 | `external_send` | `external_send` | Persists a member message in the lead inbox. The lead uses `read_messages` to read it. |
-| `external_read` | `external_read` | Reads only that member's inbox with `member_token`; `since_seq` and `limit` page messages. |
+| `external_read` | `external_read` | Reads only that member's inbox with `member_token` (bare hex or `wam1:<session-id>:<hex>`). Supports `from_agent`, sender-scoped `since_seq`, `full`, `limit`, and `max_chars` like the reference. |
 | `external_set_wake` (opt-in) | `external_set_wake` | Registers or clears a Codex queue notice target for the member; pass `codex_thread_id` and `codex_home`. Polling remains available. |
-| `leave_team` | `leave_team` | Revokes the token without stopping the member's process. `close_team` closes the lead session and revokes all its members. |
-| `send_message` to external member | `send_message` | Lead sends to a joined member by its ticket name; delivery is durable and member wake is best effort. |
+| `leave_team` | `leave_team` | Revokes the token without stopping the member's process. A repeated leave succeeds with `already_left=true`. `close_team` closes the lead session and revokes all its members. |
+| `send_message` to external member | `send_message` | Lead sends to a joined member by its ticket name; `to` defaults to `team-lead` as in the reference. Delivery is durable and member wake is best effort. |
+| `read_messages` for external replies | `read_messages` | Returns `{messages, cursors, seq, unread_count, has_more}`. `seq` is the 1-based sender sequence per message. An unfiltered read returns a per-sender `cursors` map; `from_agent` returns a scalar `seq`. `since_seq` requires `from_agent`; `limit=0` is a non-consuming watermark. `full=true` ignores `limit`; `max_chars` adds `truncated` and `full_len` per message. |
 
 For a manually started member, configure a separate ATF MCP entry with `ATF_EXTERNAL_ONLY=1`. That entry exposes only `join_team`, `external_send`, `external_read`, `external_set_wake`, and `leave_team`, and does not create a lead session. Its bearer token grants access only to its joined lead's inbox. The regular lead entry exposes `send_message`, `read_messages`, `create_join_ticket`, and `close_team`.
 

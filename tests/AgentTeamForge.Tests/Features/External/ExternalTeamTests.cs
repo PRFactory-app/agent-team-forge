@@ -43,7 +43,7 @@ public sealed class ExternalTeamTests
     }
 
     [Fact]
-    public void Ticket_is_single_use_and_expires()
+    public void Ticket_retry_recovers_membership_until_expiry_and_expired_ticket_fails()
     {
         using var f = new JobFixture();
         var lead = new LeadSessionStore(f.Database).Start("/workspace/a", "lead-a");
@@ -51,12 +51,15 @@ public sealed class ExternalTeamTests
         var team = Team(f, () => time);
         var ticket = team.CreateTicket(lead.SessionId, lead.Workspace, "member", null).Ticket!;
         Assert.Equal("member-2", team.CreateTicket(lead.SessionId, lead.Workspace, "member", null).Ticket!.Name);
-        Assert.NotNull(team.Join(lead.SessionId, ticket.Token).Member);
-        Assert.Equal("invalid_or_expired_ticket", team.Join(lead.SessionId, ticket.Token).Error);
+        var joined = team.Join(lead.SessionId, ticket.Token).Member!;
+        Assert.Equal(joined, team.Join(lead.SessionId, ticket.Token).Member);
+        Assert.Equal("invalid_or_expired_token", team.Join(lead.SessionId, "bad").Error);
+        Assert.Equal("invalid_or_expired_token", team.Join(lead.SessionId, "x" + ticket.Token[1..]).Error);
 
         var expiring = team.CreateTicket(lead.SessionId, lead.Workspace, "later", null).Ticket!;
         time = time.AddMinutes(11);
-        Assert.Equal("invalid_or_expired_ticket", team.Join(lead.SessionId, expiring.Token).Error);
+        Assert.Equal("invalid_or_expired_token", team.Join(lead.SessionId, expiring.Token).Error);
+        Assert.Equal("invalid_or_expired_token", team.Join(lead.SessionId, ticket.Token).Error);
     }
 
     [Fact]
@@ -67,14 +70,17 @@ public sealed class ExternalTeamTests
         var a = sessions.Start("/workspace/shared", "lead-a");
         var b = sessions.Start("/workspace/shared", "lead-b");
         var team = Team(f);
-        var aToken = team.Join(a.SessionId, team.CreateTicket(a.SessionId, a.Workspace, "member", null).Ticket!.Token).Member!.MemberToken;
+        var aTicket = team.CreateTicket(a.SessionId, a.Workspace, "member", null).Ticket!;
+        var aToken = team.Join(a.SessionId, aTicket.Token).Member!.MemberToken;
         var bToken = team.Join(b.SessionId, team.CreateTicket(b.SessionId, b.Workspace, "member", null).Ticket!.Token).Member!.MemberToken;
         Assert.True(team.SendFromLead(b.SessionId, b.Workspace, "member", "private for b").Ok);
         Assert.Empty(team.Read(aToken, null, null).Inbox!.Messages);
         Assert.Equal("private for b", Assert.Single(team.Read(bToken, null, null).Inbox!.Messages).Text);
         Assert.True(team.Leave(aToken).Ok);
+        Assert.True(team.Leave(aToken).AlreadyLeft);
         Assert.Equal("membership_revoked", team.Read(aToken, null, null).Error);
         Assert.Equal("membership_revoked", team.Send(aToken, "late").Error);
+        Assert.Equal("invalid_or_expired_token", team.Join(a.SessionId, aTicket.Token).Error);
     }
 
     [Fact]
@@ -100,7 +106,7 @@ public sealed class ExternalTeamTests
         var first = team.ReadLead(lead.SessionId, lead.Workspace, null, 1).Inbox!;
         Assert.Equal("one", Assert.Single(first.Messages).Text);
         Assert.True(first.HasMore);
-        var second = team.ReadLead(lead.SessionId, lead.Workspace, first.NextSeq, 1).Inbox!;
+        var second = team.ReadLead(lead.SessionId, lead.Workspace, null, 1).Inbox!;
         Assert.Equal("two", Assert.Single(second.Messages).Text);
         Assert.False(second.HasMore);
         Assert.Empty(wake.PendingExternal());
@@ -123,7 +129,7 @@ public sealed class ExternalTeamTests
         var unused = team.CreateTicket(lead.SessionId, lead.Workspace, "unused", null).Ticket!;
         Assert.True(sessions.Close(lead.SessionId, lead.Workspace));
         Assert.Equal("membership_revoked", team.Read(token, null, null).Error);
-        Assert.Equal("invalid_or_expired_ticket", team.Join(lead.SessionId, unused.Token).Error);
+        Assert.Equal("invalid_or_expired_token", team.Join(lead.SessionId, unused.Token).Error);
     }
 
     [Fact]
@@ -149,7 +155,7 @@ public sealed class ExternalTeamTests
     }
 
     [Fact]
-    public void Default_read_drains_once_and_explicit_cursor_rereads()
+    public void Default_read_drains_once_and_sender_cursor_does_not_rewind()
     {
         using var f = new JobFixture();
         var lead = new LeadSessionStore(f.Database).Start("/workspace/a", "lead-a");
@@ -161,11 +167,60 @@ public sealed class ExternalTeamTests
         Assert.Equal("one", Assert.Single(first.Messages).Text);
         Assert.Equal("two", Assert.Single(team.Read(token, null, null).Inbox!.Messages).Text);
         Assert.Empty(team.Read(token, null, null).Inbox!.Messages);
-        Assert.Equal("two", Assert.Single(team.Read(token, first.NextSeq, null).Inbox!.Messages).Text);
+        Assert.Empty(team.Read(token, first.NextSeq, null, fromAgent: "team-lead").Inbox!.Messages);
 
         Assert.True(team.Send(token, "reply").Ok);
         Assert.Single(team.ReadLead(lead.SessionId, lead.Workspace, null, null).Inbox!.Messages);
         Assert.Empty(team.ReadLead(lead.SessionId, lead.Workspace, null, null).Inbox!.Messages);
+    }
+
+    [Fact]
+    public void Inbox_reads_use_per_sender_cursors_and_support_full_watermark_and_truncation()
+    {
+        using var f = new JobFixture();
+        var lead = new LeadSessionStore(f.Database).Start("/workspace/a", "lead-a");
+        var team = Team(f);
+        var a = team.Join(lead.SessionId, team.CreateTicket(lead.SessionId, lead.Workspace, "a", null).Ticket!.Token).Member!.MemberToken;
+        var b = team.Join(lead.SessionId, team.CreateTicket(lead.SessionId, lead.Workspace, "b", null).Ticket!.Token).Member!.MemberToken;
+        Assert.True(team.Send(a, "aaa").Ok);
+        Assert.True(team.Send(b, "bbbb").Ok);
+        Assert.True(team.Send(a, "ccc").Ok);
+
+        var watermark = team.ReadLead(lead.SessionId, lead.Workspace, null, 0).Inbox!;
+        Assert.Empty(watermark.Messages);
+        Assert.Equal(3, watermark.UnreadCount);
+        Assert.True(watermark.HasMore);
+        Assert.Equal(0, watermark.Cursors!["a"]);
+
+        var first = team.ReadLead(lead.SessionId, lead.Workspace, null, 1, maxChars: 2).Inbox!;
+        Assert.Equal(("a", 1L, "aa", true, 3),
+            (first.Messages[0].From, first.Messages[0].Seq, first.Messages[0].Text,
+                first.Messages[0].Truncated, first.Messages[0].FullLen));
+        Assert.Equal(3, first.UnreadCount);
+        Assert.Equal(1, first.Cursors!["a"]);
+        Assert.Equal(0, first.Cursors["b"]);
+
+        var onlyA = team.ReadLead(lead.SessionId, lead.Workspace, 0, 1, fromAgent: "a").Inbox!;
+        Assert.Null(onlyA.Cursors);
+        Assert.Equal(2, onlyA.SenderSeq);
+        Assert.Equal("ccc", Assert.Single(onlyA.Messages).Text);
+        Assert.Equal("invalid_request", team.ReadLead(lead.SessionId, lead.Workspace, 0, 1).Error);
+
+        var rest = team.ReadLead(lead.SessionId, lead.Workspace, null, 1, full: true).Inbox!;
+        Assert.Single(rest.Messages);
+        Assert.Equal("bbbb", rest.Messages[0].Text);
+        Assert.Equal(1, rest.Messages[0].Seq);
+        Assert.False(rest.HasMore);
+        Assert.Equal(1, rest.Cursors!["b"]);
+
+        Assert.True(team.SendFromLead(lead.SessionId, lead.Workspace, "a", "hello").Ok);
+        var memberWatermark = team.Read(a, null, 0).Inbox!;
+        Assert.Equal(1, memberWatermark.UnreadCount);
+        var memberRead = team.Read(a, 0, 1, fromAgent: "team-lead", maxChars: 2).Inbox!;
+        Assert.Equal(1, memberRead.SenderSeq);
+        Assert.Equal(("he", true, 5), (memberRead.Messages[0].Text,
+            memberRead.Messages[0].Truncated, memberRead.Messages[0].FullLen));
+        Assert.Empty(team.Read(a, null, null).Inbox!.Messages);
     }
 
     [Fact]
@@ -190,8 +245,9 @@ public sealed class ExternalTeamTests
         Assert.Empty(wake.PendingExternal());
 
         Assert.Equal(1, store.Prune(DateTimeOffset.UtcNow.AddDays(1), dryRun: false));
+        Assert.True(team.Leave(token).AlreadyLeft);
         Assert.Equal("keep me", Assert.Single(team.Read(stays, null, null).Inbox!.Messages).Text);
-        Assert.Equal(1, store.Prune(DateTimeOffset.UtcNow.AddDays(1), dryRun: false));
+        Assert.Equal(0, store.Prune(DateTimeOffset.UtcNow.AddDays(1), dryRun: false));
 
         var actorWake = wake.Register("codex:actor-leave", "codex", "actor", "", home.Path);
         Assert.True(team.BindTeamWake(teamId, actorWake.Key, actorWake.Generation));

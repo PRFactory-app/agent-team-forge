@@ -14,7 +14,8 @@ public sealed record ExternalMessage(long Seq, string From, string Text, string 
 {
     public string Ts => CreatedAt;
 }
-public sealed record ExternalInbox(IReadOnlyList<ExternalMessage> Messages, long NextSeq, bool HasMore);
+public sealed record ExternalInbox(IReadOnlyList<ExternalMessage> Messages, long NextSeq, bool HasMore,
+    IReadOnlyDictionary<string, long>? Cursors = null, long? SenderSeq = null, int? UnreadCount = null);
 
 /// <summary>Ticket, membership and inbox transactions. A token only selects its own active membership.</summary>
 public sealed class ExternalMemberStore(JobDatabase database)
@@ -122,19 +123,35 @@ public sealed class ExternalMemberStore(JobDatabase database)
         using var select = db.CreateCommand();
         select.Transaction = tx;
         select.CommandText = """
-            SELECT m.name FROM external_members m JOIN external_teams t ON t.team_id=m.team_id
+            SELECT m.name,m.ticket_used_at,m.token_hash FROM external_members m JOIN external_teams t ON t.team_id=m.team_id
             WHERE m.team_id=$team AND m.ticket_hash=$hash
-            AND m.ticket_used_at IS NULL AND m.ticket_expires>$now AND m.left_at IS NULL AND t.closed_at IS NULL
+            AND m.ticket_expires>$now AND m.left_at IS NULL AND t.closed_at IS NULL
             """;
         select.Parameters.AddWithValue("$team", teamId);
         select.Parameters.AddWithValue("$hash", Hash(ticket));
         select.Parameters.AddWithValue("$now", now.ToString("O"));
-        if (select.ExecuteScalar() is not string name)
+        string name;
+        bool used;
+        string? storedHash;
+        using (var reader = select.ExecuteReader())
         {
-            return null;
+            if (!reader.Read())
+            {
+                return null;
+            }
+
+            name = reader.GetString(0);
+            used = !reader.IsDBNull(1);
+            storedHash = reader.IsDBNull(2) ? null : reader.GetString(2);
         }
 
-        var token = Secret();
+        // The ticket remains the recovery credential until expiry. Derivation makes a lost
+        // join reply recoverable without storing a bearer token in plaintext.
+        var token = Hash("atf-member:" + ticket);
+        if (used)
+        {
+            return storedHash == Hash(token) ? new JoinedMember(teamId, name, token) : null;
+        }
         using var update = db.CreateCommand();
         update.Transaction = tx;
         update.CommandText = """
@@ -154,7 +171,8 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return new JoinedMember(teamId, name, token);
     }
 
-    public bool Leave(string token, DateTimeOffset now)
+    // 0 = unknown/revoked, 1 = left now, 2 = already left.
+    public int Leave(string token, DateTimeOffset now)
     {
         using var db = database.OpenConnection();
         using var tx = db.BeginTransaction(deferred: false);
@@ -164,7 +182,7 @@ public sealed class ExternalMemberStore(JobDatabase database)
         command.CommandText = """
             UPDATE external_messages SET wake_key=NULL WHERE read_at IS NULL
             AND recipient=(SELECT member_id FROM external_members WHERE token_hash=$hash AND active=1);
-            UPDATE external_members SET active=0,left_at=$now,token_hash=NULL,wake_key=NULL
+            UPDATE external_members SET active=0,left_at=$now,wake_key=NULL
             WHERE token_hash=$hash AND active=1;
             SELECT changes();
             """;
@@ -172,11 +190,12 @@ public sealed class ExternalMemberStore(JobDatabase database)
         command.Parameters.AddWithValue("$hash", Hash(token));
         if ((long)command.ExecuteScalar()! != 1)
         {
-            return false;
+            command.CommandText = "SELECT count(*) FROM external_members WHERE token_hash=$hash AND active=0 AND left_at IS NOT NULL";
+            return (long)command.ExecuteScalar()! == 1 ? 2 : 0;
         }
 
         tx.Commit();
-        return true;
+        return 1;
     }
 
     public bool CloseTeam(string teamId, DateTimeOffset now)
@@ -272,6 +291,120 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return inbox;
     }
 
+    public ExternalInbox? ReadMemberCompat(string token, long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent)
+    {
+        using var db = database.OpenConnection();
+        using var tx = db.BeginTransaction(deferred: false);
+        var member = FindMember(db, tx, token);
+        if (member is null)
+        {
+            return null;
+        }
+
+        var inbox = ReadCompat(db, tx, member.Value.Team, member.Value.Id, sinceSeq, limit, now, fromAgent);
+        tx.Commit();
+        return inbox;
+    }
+
+    public ExternalInbox? ReadLeadCompat(string teamId, long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent)
+    {
+        using var db = database.OpenConnection();
+        using var tx = db.BeginTransaction(deferred: false);
+        using var check = db.CreateCommand();
+        check.Transaction = tx;
+        check.CommandText = "SELECT count(*) FROM external_teams WHERE team_id=$team AND closed_at IS NULL";
+        check.Parameters.AddWithValue("$team", teamId);
+        if ((long)check.ExecuteScalar()! != 1)
+        {
+            return null;
+        }
+
+        var inbox = ReadCompat(db, tx, teamId, "lead", sinceSeq, limit, now, fromAgent);
+        tx.Commit();
+        return inbox;
+    }
+
+    static ExternalInbox ReadCompat(SqliteConnection db, SqliteTransaction tx, string teamId, string recipient,
+        long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent)
+    {
+        using var select = db.CreateCommand();
+        select.Transaction = tx;
+        select.CommandText = "SELECT seq,sender,text,created_at,read_at FROM external_messages WHERE team_id=$team AND recipient=$recipient ORDER BY seq";
+        select.Parameters.AddWithValue("$team", teamId);
+        select.Parameters.AddWithValue("$recipient", recipient);
+        var positions = new Dictionary<string, long>(StringComparer.Ordinal);
+        var cursors = new Dictionary<string, long>(StringComparer.Ordinal);
+        var available = new List<ExternalMessage>();
+        using (var reader = select.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                var sender = reader.GetString(1);
+                var position = positions.GetValueOrDefault(sender) + 1;
+                positions[sender] = position;
+                if (!reader.IsDBNull(4))
+                {
+                    cursors[sender] = position;
+                }
+                else
+                {
+                    cursors.TryAdd(sender, 0);
+                }
+
+                available.Add(new ExternalMessage(position, sender, reader.GetString(2), reader.GetString(3)));
+            }
+        }
+        var floor = fromAgent is null ? 0 : Math.Max(cursors.GetValueOrDefault(fromAgent), sinceSeq ?? 0);
+        var pending = available.Where(message => (fromAgent is null || message.From == fromAgent)
+            && message.Seq > (fromAgent is null ? cursors.GetValueOrDefault(message.From) : floor)).ToList();
+        var unread = pending.Count;
+        var selected = pending.Take(limit).ToList();
+        if (limit != 0)
+        {
+            var updated = new Dictionary<string, long>(cursors, StringComparer.Ordinal);
+            if (fromAgent is not null)
+            {
+                updated[fromAgent] = Math.Min(positions.GetValueOrDefault(fromAgent), floor);
+            }
+
+            foreach (var message in selected)
+            {
+                updated[message.From] = message.Seq;
+            }
+
+            using var update = db.CreateCommand();
+            update.Transaction = tx;
+            update.CommandText = """
+                WITH numbered AS (
+                    SELECT seq,sender,ROW_NUMBER() OVER (PARTITION BY sender ORDER BY seq) AS sender_seq
+                    FROM external_messages WHERE team_id=$team AND recipient=$recipient)
+                UPDATE external_messages SET read_at=$now WHERE seq IN
+                    (SELECT seq FROM numbered WHERE sender=$sender AND sender_seq<=$cursor)
+                AND read_at IS NULL
+                """;
+            update.Parameters.AddWithValue("$team", teamId);
+            update.Parameters.AddWithValue("$recipient", recipient);
+            update.Parameters.AddWithValue("$now", now.ToString("O"));
+            update.Parameters.Add("$sender", SqliteType.Text);
+            update.Parameters.Add("$cursor", SqliteType.Integer);
+            foreach (var (sender, cursor) in updated)
+            {
+                if (cursor <= cursors.GetValueOrDefault(sender))
+                {
+                    continue;
+                }
+
+                update.Parameters["$sender"].Value = sender;
+                update.Parameters["$cursor"].Value = cursor;
+                update.ExecuteNonQuery();
+            }
+            cursors = updated;
+        }
+        return new ExternalInbox(selected, selected.Count == 0 ? 0 : selected[^1].Seq,
+            unread > selected.Count, fromAgent is null ? cursors : null,
+            fromAgent is null ? null : cursors.GetValueOrDefault(fromAgent), unread);
+    }
+
     public ExternalInbox? ReadTeam(string teamId, long? sinceSeq, int limit, DateTimeOffset now)
     {
         using var db = database.OpenConnection();
@@ -345,6 +478,16 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return (long)command.ExecuteScalar()! == 1;
     }
 
+    public bool TokenBelongsToTeam(string token, string teamId)
+    {
+        using var db = database.OpenConnection();
+        using var command = db.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM external_members WHERE token_hash=$hash AND team_id=$team";
+        command.Parameters.AddWithValue("$hash", Hash(token));
+        command.Parameters.AddWithValue("$team", teamId);
+        return (long)command.ExecuteScalar()! == 1;
+    }
+
     static (string Id, string Team, string Name)? FindMember(SqliteConnection db, SqliteTransaction tx, string token)
     {
         using var command = db.CreateCommand();
@@ -410,9 +553,9 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return new ExternalInbox(rows, next, more);
     }
 
-    // Unread mail to an open team's lead or active member is accepted work and survives prune.
+    // Keep open-team history so per-sender sequence numbers never reset after prune.
     const string Settled = """
-        (read_at IS NOT NULL OR team_id IN (SELECT team_id FROM external_teams WHERE closed_at IS NOT NULL)
+        (team_id IN (SELECT team_id FROM external_teams WHERE closed_at IS NOT NULL)
         OR recipient IN (SELECT member_id FROM external_members WHERE left_at IS NOT NULL))
         """;
 
@@ -429,7 +572,12 @@ public sealed class ExternalMemberStore(JobDatabase database)
         var count = dryRun ? Convert.ToInt32(command.ExecuteScalar()) : command.ExecuteNonQuery();
         if (!dryRun)
         {
-            command.CommandText = "DELETE FROM external_members WHERE (left_at IS NOT NULL OR ticket_used_at IS NULL AND ticket_expires<$cutoff) AND created_at<$cutoff";
+            command.CommandText = """
+                DELETE FROM external_members WHERE created_at<$cutoff AND
+                (ticket_used_at IS NULL AND ticket_expires<$cutoff OR
+                 left_at IS NOT NULL AND team_id IN
+                    (SELECT team_id FROM external_teams WHERE closed_at IS NOT NULL))
+                """;
             command.ExecuteNonQuery();
             tx.Commit();
         }

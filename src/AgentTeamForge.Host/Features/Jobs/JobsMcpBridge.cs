@@ -85,9 +85,9 @@ public static class JobsMcpBridge
     const string TicketSchema = """{"type":"object","properties":{"name":{"type":"string"},"note":{"type":"string"}},"required":["name"]}""";
     const string JoinSchema = """{"type":"object","properties":{"session_id":{"type":"string"},"token":{"type":"string"}},"required":["session_id","token"]}""";
     const string MemberSendSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"text":{"type":"string"}},"required":["member_token","text"]}""";
-    const string LeadSendSchema = """{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}""";
+    const string LeadSendSchema = """{"type":"object","properties":{"to":{"type":"string","default":"team-lead"},"text":{"type":"string"}},"required":["text"]}""";
     const string MemberReadSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"from_agent":{"type":"string"},"since_seq":{"type":"integer","minimum":0},"full":{"type":"boolean"},"limit":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0}},"required":["member_token"]}""";
-    const string LeadReadSchema = """{"type":"object","properties":{"since_seq":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":0,"maximum":10000}}}""";
+    const string LeadReadSchema = """{"type":"object","properties":{"from_agent":{"type":"string"},"since_seq":{"type":"integer","minimum":0},"full":{"type":"boolean"},"limit":{"type":"integer","minimum":0,"maximum":10000},"max_chars":{"type":"integer","minimum":0}}}""";
     const string LeaveSchema = """{"type":"object","properties":{"member_token":{"type":"string"}},"required":["member_token"]}""";
     const string MemberWakeSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"codex_thread_id":{"type":"string"},"codex_home":{"type":"string"}},"required":["member_token","codex_thread_id"]}""";
 
@@ -324,8 +324,8 @@ public static class JobsMcpBridge
             "external_read" => (new IpcRequest { Op = IpcProtocol.ExternalRead, MemberToken = String(args, "member_token"), FromAgent = String(args, "from_agent"), SinceSeq = Long(args, "since_seq"), Full = args.TryGetValue("full", out var full) && full.ValueKind == JsonValueKind.True, Limit = Integer(args, "limit"), MaxChars = Integer(args, "max_chars") }, null),
             "external_set_wake" => (new IpcRequest { Op = IpcProtocol.ExternalSetWake, MemberToken = String(args, "member_token"), CodexThreadId = String(args, "codex_thread_id"), WakeHome = NonEmpty(String(args, "codex_home")) ?? NonEmpty(Environment.GetEnvironmentVariable("CODEX_HOME")) ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex") }, null),
             "leave_team" => (new IpcRequest { Op = IpcProtocol.ExternalLeave, MemberToken = String(args, "member_token") }, null),
-            "send_message" => (new IpcRequest { Op = IpcProtocol.ExternalLeadSend, MemberName = String(args, "to"), Text = String(args, "text") }, null),
-            "read_messages" => (new IpcRequest { Op = IpcProtocol.ExternalLeadRead, SinceSeq = Long(args, "since_seq"), Limit = Integer(args, "limit") }, null),
+            "send_message" => (new IpcRequest { Op = IpcProtocol.ExternalLeadSend, MemberName = String(args, "to") ?? "team-lead", Text = String(args, "text") }, null),
+            "read_messages" => (new IpcRequest { Op = IpcProtocol.ExternalLeadRead, FromAgent = String(args, "from_agent"), SinceSeq = Long(args, "since_seq"), Full = args.TryGetValue("full", out var leadFull) && leadFull.ValueKind == JsonValueKind.True, Limit = Integer(args, "limit"), MaxChars = Integer(args, "max_chars") }, null),
             _ => (null, IpcProtocol.UnknownOp),
         };
 

@@ -52,7 +52,7 @@ public sealed record IpcRequest
     public string? CodexThreadId { get; init; }
 }
 
-public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, AgentTeamForge.DAL.Features.External.JoinTicket? Ticket = null, AgentTeamForge.DAL.Features.External.JoinedMember? Member = null, AgentTeamForge.DAL.Features.External.ExternalInbox? Inbox = null, JobActivityPage? Activity = null)
+public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, AgentTeamForge.DAL.Features.External.JoinTicket? Ticket = null, AgentTeamForge.DAL.Features.External.JoinedMember? Member = null, AgentTeamForge.DAL.Features.External.ExternalInbox? Inbox = null, JobActivityPage? Activity = null, bool? AlreadyLeft = null)
 {
     // Flat aliases keep the external MCP replies usable by win-agent-teams skills.
     public bool Success => Ok;
@@ -64,7 +64,11 @@ public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome 
     public DateTimeOffset? ExpiresAt => Ticket?.ExpiresAt;
     public string? MemberToken => Member?.MemberToken;
     public IReadOnlyList<AgentTeamForge.DAL.Features.External.ExternalMessage>? Messages => Inbox?.Messages;
-    public long? Seq => Inbox?.NextSeq;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public long? Seq => Inbox?.SenderSeq;
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public IReadOnlyDictionary<string, long>? Cursors => Inbox?.Cursors;
+    public int? UnreadCount => Inbox?.UnreadCount;
     public bool? HasMore => Inbox?.HasMore;
 }
 
