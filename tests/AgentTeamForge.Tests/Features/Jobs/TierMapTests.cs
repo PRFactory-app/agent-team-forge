@@ -46,4 +46,20 @@ public sealed class TierMapTests
         map.Change(null, null, null, null, resetAll: true);
         Assert.DoesNotContain(map.Settings(), row => row.Custom);
     }
+
+    [Theory]
+    [InlineData("{not json")]
+    [InlineData("""[{"backend":"codex","tier":"high","model":"bad;slug","effort":"low"}]""")]
+    [InlineData("""[{}]""")]
+    public void Corrupt_file_falls_back_to_defaults_and_is_replaced_on_save(string content)
+    {
+        using var state = new TempStateDir();
+        File.WriteAllText(state.File("tier-map.json"), content);
+        var logged = new List<string>();
+        var map = new TierMap(state.Path, _ => [], logged.Add);
+        Assert.Single(logged);
+        Assert.DoesNotContain(map.Settings(), row => row.Custom);
+        map.Change("codex", "high", "gpt-6-sol", "low");
+        Assert.Single(new TierMap(state.Path, _ => []).Settings(), row => row.Custom);
+    }
 }

@@ -17,17 +17,37 @@ public sealed class TierMap
     readonly Lock _gate = new();
     readonly List<TierOverride> _overrides;
 
-    public TierMap(string statePath, Func<string, IReadOnlyCollection<string>> catalog)
+    public TierMap(string statePath, Func<string, IReadOnlyCollection<string>> catalog, Action<string>? log = null)
     {
         _path = Path.Combine(statePath, "tier-map.json");
         _catalog = catalog;
-        _overrides = File.Exists(_path)
-            ? JsonSerializer.Deserialize(File.ReadAllText(_path), TierMapJson.Default.ListTierOverride) ?? [] : [];
-        if (_overrides.Any(row => !ValidNames(row.Backend, row.Tier) || !ValidEffort(row.Backend, row.Effort)
-            || !AcceptJob.ValidOption(row.Model)))
+        _overrides = Load(_path, log);
+    }
+
+    // A missing, unreadable or corrupt file must not stop the daemon: fall back to the built-in defaults.
+    static List<TierOverride> Load(string path, Action<string>? log)
+    {
+        if (!File.Exists(path))
         {
-            throw new InvalidDataException("Invalid tier-map.json");
+            return [];
         }
+
+        try
+        {
+            var rows = JsonSerializer.Deserialize(File.ReadAllText(path), TierMapJson.Default.ListTierOverride) ?? [];
+            if (rows.All(row => row is not null && row.Backend is not null && row.Tier is not null && row.Model is not null
+                && row.Effort is not null && ValidNames(row.Backend, row.Tier) && ValidEffort(row.Backend, row.Effort)
+                && AcceptJob.ValidOption(row.Model)))
+            {
+                return rows;
+            }
+            log?.Invoke($"warning: ignoring invalid {path}; using default capability tiers");
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            log?.Invoke($"warning: ignoring unreadable {path} ({ex.GetType().Name}); using default capability tiers");
+        }
+        return [];
     }
 
     public (string Model, string Effort) Effective(string backend, string tier)

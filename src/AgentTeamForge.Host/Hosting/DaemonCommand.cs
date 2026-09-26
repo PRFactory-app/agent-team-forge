@@ -179,7 +179,7 @@ public static class DaemonCommand
         var admission = new AdmissionGate();
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs);
         var modelDiscovery = new BackendModelDiscovery();
-        var tierMap = new TierMap(state.Path, modelDiscovery.CachedModels);
+        var tierMap = new TierMap(state.Path, modelDiscovery.CachedModels, Log);
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap);
         var externalTeam = new ExternalTeam(externalMembers, wakeStore);
         // Remote claims have their own lead identity and cannot borrow the local MCP lead.
