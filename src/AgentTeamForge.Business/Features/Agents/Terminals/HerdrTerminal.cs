@@ -73,7 +73,11 @@ public sealed class HerdrTerminal
         {
             throw new ArgumentException("session prefix must be lowercase letters, digits or '-'", nameof(options));
         }
-        _options = options;
+        var environment = new Dictionary<string, string?>(options.Environment, StringComparer.Ordinal)
+        {
+            ["CODEX_HOME"] = CodexPaths.Home(name => options.Environment.GetValueOrDefault(name), Environment.CurrentDirectory)
+        };
+        _options = options with { Environment = environment };
         _runner = runner;
     }
 
@@ -167,6 +171,8 @@ public sealed class HerdrTerminal
 
         var args = new List<string> { "tab", "create", "--workspace", session.WorkspaceId, "--cwd", cwd, "--label", label,
             "--env", BootstrapVariable + "=" + bootstrapFile, "--no-focus" };
+        // Shared Herdr sessions may have been started with another CODEX_HOME.
+        args.AddRange(["--env", "CODEX_HOME=" + Env("CODEX_HOME")]);
         if (workspaceTrustEnvironment is { } trust)
         {
             // Claude's per-process trust latch. Inject it only into this owned launch;

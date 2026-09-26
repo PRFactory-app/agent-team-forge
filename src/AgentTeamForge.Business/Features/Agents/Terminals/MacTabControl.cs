@@ -10,6 +10,7 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 internal sealed class MacTabControl(string provider, string? kittyAddress, string? kittyBinary) : IWtTabControl
 {
     readonly ConcurrentDictionary<string, OwnedTab> _tabs = [];
+    readonly string _codexHome = CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
 
     public void Preflight(InteractiveAgentKind kind)
     {
@@ -49,7 +50,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
         }
 
         await File.WriteAllTextAsync(wrapper, WrapperText(launch, prompt, sidecar,
-            Environment.ProcessPath ?? throw new IOException("atf executable path unavailable")), Encoding.UTF8, cancellationToken);
+            Environment.ProcessPath ?? throw new IOException("atf executable path unavailable"), _codexHome), Encoding.UTF8, cancellationToken);
         File.SetUnixFileMode(wrapper, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         var start = LaunchInfo(provider, kittyAddress, kittyBinary, wrapper, launch.AgentName);
         using var launcher = Process.Start(start) ?? throw new IOException("terminal launcher did not start");
@@ -144,7 +145,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
         }
     }
 
-    internal static string WrapperText(InteractiveLaunch launch, string prompt, string sidecar, string atfBinary)
+    internal static string WrapperText(InteractiveLaunch launch, string prompt, string sidecar, string atfBinary, string? codexHome = null)
     {
         var args = WtTabControl.AgentArguments(launch, prompt);
         var command = string.Join(' ', new[] { FindExecutable(args[0]) ?? args[0] }.Concat(args.Skip(1)).Select(ShellQuote));
@@ -152,6 +153,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
         return "#!/bin/sh\nset -eu\n" +
             "unset CLAUDECODE CLAUDE_PID CODEX_THREAD_ID CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN\n" +
             (trust is { } env ? "export " + env.Name + "=" + ShellQuote(env.Value) + "\n" : "") +
+            (launch.Kind == InteractiveAgentKind.Codex ? "export CODEX_HOME=" + ShellQuote(codexHome ?? CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory)) + "\n" : "") +
             "cd " + ShellQuote(launch.WorkingDirectory) + "\n" +
             "export ATF_RUN_CORRELATION=" + ShellQuote(launch.AgentName) + "\n" +
             ShellQuote(atfBinary) + " terminal-token --pid \"$$\" --sidecar " + ShellQuote(sidecar) + "\n" +

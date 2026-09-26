@@ -29,9 +29,12 @@ public sealed class MacTabControlTests
     public void WrapperKeepsSpecialCharactersAsData()
     {
         const string value = "a\\b\"c ‘quote’ \u201Dquote\u201D";
-        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", "/tmp/a'b\\c", null, null, "/tmp/atf.launch.sh");
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var cwd = Path.Combine(state.Path, "a'b\\c");
+        Directory.CreateDirectory(cwd);
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", cwd, null, null, "/tmp/atf.launch.sh");
         var wrapper = MacTabControl.WrapperText(launch, value + "'; echo unsafe", "/tmp/atf.pid", "/tmp/atf'binary");
-        Assert.Contains("cd '/tmp/a'\"'\"'b\\c'", wrapper);
+        Assert.Contains("cd " + MacTabControl.ShellQuote(cwd), wrapper);
         Assert.Contains("'/tmp/atf'\"'\"'binary' terminal-token --pid \"$$\"", wrapper);
         Assert.Contains(MacTabControl.ShellQuote(value + "'; echo unsafe"), wrapper);
         Assert.Contains("exec ", wrapper);
@@ -40,10 +43,11 @@ public sealed class MacTabControlTests
     [Fact]
     public void WrapperQuotesResolvedArgumentsAndResume()
     {
-        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", "/tmp/repo", "native-1", null, "/tmp/atf.launch.sh")
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", Path.GetTempPath(), "native-1", null, "/tmp/atf.launch.sh")
             .WithSelection("model=gpt-6-sol;effort=xhigh");
-        var wrapper = MacTabControl.WrapperText(launch, "task", "/tmp/atf.pid", "/tmp/atf");
+        var wrapper = MacTabControl.WrapperText(launch, "task", "/tmp/atf.pid", "/tmp/atf", "/tmp/daemon-codex");
         Assert.Contains("'-m' 'gpt-6-sol' '-c' 'model_reasoning_effort=\"xhigh\"' 'resume' 'native-1'", wrapper);
+        Assert.Contains("export CODEX_HOME='/tmp/daemon-codex'", wrapper);
     }
 
     [Fact]
@@ -63,7 +67,7 @@ public sealed class MacTabControlTests
         {
             return;
         }
-        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", "/tmp/repo", null, null, "/tmp/atf.launch.sh");
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", Path.GetTempPath(), null, null, "/tmp/atf.launch.sh");
         var args = WtTabControl.AgentArguments(launch, "task");
         Assert.DoesNotContain("--dangerously-bypass-hook-trust", args);
         Assert.DoesNotContain(args, arg => arg.StartsWith("hooks.", StringComparison.Ordinal));
