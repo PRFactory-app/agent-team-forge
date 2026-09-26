@@ -312,6 +312,8 @@ public sealed class HerdrInteractiveBackendTests
         var first = backend.Start(new BackendRequest("parent", "corr-parent", "first", "") { WorkingDirectory = Path.GetTempPath() });
         await first.DeliverAsync(CancellationToken.None);
         await Collect(first);
+        var binding = new NativeTranscriptBinding("native-1", "/private/native.jsonl");
+        control.Launch!.NativeTranscript = binding;
         await first.DisposeAsync();
         Assert.False(control.Stopped);
 
@@ -322,10 +324,28 @@ public sealed class HerdrInteractiveBackendTests
         { WorkingDirectory = Path.GetTempPath(), ResumeSessionId = "native-1" });
         Assert.Equal(1, control.Starts);
         Assert.Null(control.Launch!.ResumeSessionId);
+        Assert.Same(binding, control.Launch.NativeTranscript);
+        await second.DeliverAsync(CancellationToken.None);
+        Assert.Contains(new BackendEvidence.Result("corr-child", "finished"), await Collect(second));
         await second.DisposeAsync();
         Assert.True(backend.StopIdleSession("native-1"));
         Assert.True(control.Stopped);
         Assert.False(backend.StopIdleSession("native-1"));
+    }
+
+    [Fact]
+    public async Task Binding_error_is_uncertain_without_acknowledgement_or_result()
+    {
+        var control = new FakeControl();
+        var backend = new HerdrInteractiveBackend(control,
+            new FakeReader(new InteractiveTranscript("", null, BindingError: "interactive_binding_ambiguous")),
+            InteractiveAgentKind.Codex, Path.GetTempPath());
+        await using var run = backend.Start(new BackendRequest("job", "corr", "first", "") { WorkingDirectory = Path.GetTempPath() });
+        await run.DeliverAsync(CancellationToken.None);
+        var evidence = await Collect(run);
+        Assert.Contains(new BackendEvidence.ProtocolError("interactive_binding_ambiguous"), evidence);
+        Assert.DoesNotContain(evidence, item => item is BackendEvidence.Ack or BackendEvidence.Session or BackendEvidence.Result);
+        Assert.Equal(1, control.Prompts);
     }
 
     [Fact]

@@ -9,15 +9,15 @@ public sealed class InteractiveTranscriptReaderTests
     const string Marker = "atf-corr:turn-1";
 
     static string ClaudeUser(string text) =>
-        $$$"""{"type":"user","sessionId":"claude-native","message":{"role":"user","content":"{{{text}}}"}}""";
+        $$$"""{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"{{{text}}}"}}""";
     static string ClaudeAssistant(string text, string? stop) =>
-        $$$"""{"type":"assistant","sessionId":"claude-native","message":{"role":"assistant","stop_reason":{{{(stop is null ? "null" : "\"" + stop + "\"")}}},"content":[{"type":"text","text":"{{{text}}}"}]}}""";
-    const string ClaudeThinkingEnd = """{"type":"assistant","sessionId":"claude-native","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"x"}]}}""";
-    const string ClaudeToolResult = """{"type":"user","sessionId":"claude-native","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}""";
-    const string ClaudeBackground = """{"type":"user","sessionId":"claude-native","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"Running in background"}]},"toolUseResult":{"backgroundTaskId":"task-1"}}""";
+        $$$"""{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":{{{(stop is null ? "null" : "\"" + stop + "\"")}}},"content":[{"type":"text","text":"{{{text}}}"}]}}""";
+    const string ClaudeThinkingEnd = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"x"}]}}""";
+    const string ClaudeToolResult = """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}""";
+    const string ClaudeBackground = """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"Running in background"}]},"toolUseResult":{"backgroundTaskId":"task-1"}}""";
     static string ClaudeNotification(string id = "task-1") => ClaudeUser($"<task-notification><task-id>{id}</task-id><status>completed</status></task-notification>");
 
-    const string CodexMeta = """{"type":"session_meta","payload":{"id":"codex-native"}}""";
+    const string CodexMeta = """{"type":"session_meta","payload":{"id":"codex-native","source":"cli"}}""";
     const string CodexStarted = """{"type":"event_msg","payload":{"type":"task_started"}}""";
     const string CodexComplete = """{"type":"event_msg","payload":{"type":"task_complete"}}""";
     static string CodexUser(string text) =>
@@ -69,7 +69,7 @@ public sealed class InteractiveTranscriptReaderTests
             ClaudeUser("human takes over"), ClaudeAssistant("human reply", "end_turn")], "interim", false },
         // Image-only human input is a boundary too.
         { InteractiveAgentKind.Claude, [ClaudeUser(Marker), ClaudeAssistant("interim", "tool_use"), ClaudeToolResult,
-            """{"type":"user","sessionId":"claude-native","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"AA=="}}]}}""",
+            """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","data":"AA=="}}]}}""",
             ClaudeAssistant("human reply", "end_turn")], "interim", false },
         { InteractiveAgentKind.Pi, [PiHeader, PiUser(Marker), PiAssistant("interim", "toolUse"),
             """{"type":"message","message":{"role":"user","content":[{"type":"image","data":"AA==","mimeType":"image/png"}]}}""",
@@ -113,7 +113,7 @@ public sealed class InteractiveTranscriptReaderTests
     public static TheoryData<InteractiveAgentKind, string[]> Unbound => new()
     {
         // Only a native user record binds the marker; echoes/metadata/partial lines never do.
-        { InteractiveAgentKind.Claude, ["""{"type":"last-prompt","sessionId":"claude-native","lastPrompt":"atf-corr:turn-1"}""", ClaudeAssistant("stale", "end_turn")] },
+        { InteractiveAgentKind.Claude, ["""{"type":"last-prompt","isSidechain":false,"sessionId":"claude-native","lastPrompt":"atf-corr:turn-1"}""", ClaudeAssistant("stale", "end_turn")] },
         { InteractiveAgentKind.Claude, [ClaudeUser("old"), ClaudeAssistant("quoting atf-corr:turn-1", "tool_use"), ClaudeAssistant("stale", "end_turn")] },
         { InteractiveAgentKind.Codex, [CodexMeta, CodexStarted, """{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"atf-corr:tu""",
             CodexAssistant("stale"), CodexComplete] },
@@ -195,6 +195,108 @@ public sealed class InteractiveTranscriptReaderTests
 
         Assert.Equal("relative root", reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.Message);
         Assert.Equal(Path.Combine(cwd, "rel-claude"), ClaudeConfigRoot.Resolve(name => env.GetValueOrDefault(name), cwd));
+    }
+
+    [Theory]
+    [InlineData(InteractiveAgentKind.Codex)]
+    [InlineData(InteractiveAgentKind.Claude)]
+    [InlineData(InteractiveAgentKind.Pi)]
+    public void Native_child_cannot_bind_inherited_marker_and_late_children_do_not_change_binding(InteractiveAgentKind kind)
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, kind);
+        var parent = kind switch
+        {
+            InteractiveAgentKind.Codex => new[] { CodexMeta, CodexUser(Marker), CodexAssistant("parent"), CodexComplete },
+            InteractiveAgentKind.Claude => [ClaudeUser(Marker), ClaudeAssistant("parent", "end_turn")],
+            _ => [PiHeader, PiUser(Marker), PiAssistant("parent", "stop")],
+        };
+        var child = string.Join('\n', parent).Replace("parent", "child")
+            .Replace("codex-native", "child-native").Replace("claude-native", "child-native").Replace("pi-native", "child-native")
+            .Replace("\"source\":\"cli\"", "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"codex-native\",\"depth\":1}}}")
+            .Replace("\"isSidechain\":false", "\"isSidechain\":true")
+            .Replace("\"type\":\"session\"", "\"type\":\"session\",\"parentSession\":\"parent.jsonl\"");
+        var childFile = Path.Combine(Path.GetDirectoryName(file)!, "rollout-child.jsonl");
+        File.WriteAllText(childFile, child + "\n");
+        Assert.Null(reader.Read(launch, Marker, DateTimeOffset.UtcNow));
+        File.WriteAllLines(file, parent);
+        Assert.Equal("parent", reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.Message);
+        Assert.Equal(file, launch.NativeTranscript?.Path);
+
+        // A later child, even one with unavailable ancestry, must not trigger rediscovery.
+        File.WriteAllLines(Path.Combine(Path.GetDirectoryName(file)!, "rollout-late.jsonl"), parent);
+        File.AppendAllLines(file, parent.Skip(kind == InteractiveAgentKind.Claude ? 0 : 1)
+            .Select(line => line.Replace(Marker, "atf-corr:turn-2").Replace("parent", "follow-up")));
+        Assert.Equal("follow-up", reader.Read(launch, "atf-corr:turn-2", DateTimeOffset.UtcNow)?.Message);
+        Assert.Equal(file, launch.NativeTranscript?.Path);
+    }
+
+    [Fact]
+    public async Task Fresh_launch_retains_real_reader_binding_for_follow_up_in_same_pane()
+    {
+        using var state = new TempStateDir();
+        var (reader, fixture, file) = Setup(state.Path, InteractiveAgentKind.Codex);
+        var control = new RetainedControl();
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Codex, state.Path);
+        File.WriteAllLines(file, [CodexMeta, CodexUser(Marker), CodexAssistant("first"), CodexComplete]);
+        var first = backend.Start(new BackendRequest("one", "turn-1", "first", "") { WorkingDirectory = fixture.WorkingDirectory });
+        await first.DeliverAsync(CancellationToken.None);
+        await foreach (var _ in first.ReadEvidenceAsync(CancellationToken.None)) { }
+        await first.DisposeAsync();
+        File.WriteAllLines(Path.Combine(Path.GetDirectoryName(file)!, "rollout-decoy.jsonl"),
+            [CodexMeta.Replace("codex-native", "decoy"), CodexUser("atf-corr:turn-2"), CodexAssistant("wrong"), CodexComplete]);
+        File.AppendAllLines(file, [CodexUser("atf-corr:turn-2"), CodexAssistant("bound follow-up"), CodexComplete]);
+        await using var next = backend.Start(new BackendRequest("two", "turn-2", "follow-up", "")
+        { WorkingDirectory = fixture.WorkingDirectory, ResumeSessionId = "codex-native" });
+        await next.DeliverAsync(CancellationToken.None);
+        var evidence = new List<BackendEvidence>();
+        await foreach (var item in next.ReadEvidenceAsync(CancellationToken.None)) { evidence.Add(item); }
+        Assert.Contains(new BackendEvidence.Result("turn-2", "bound follow-up"), evidence);
+        Assert.Equal(1, control.Starts);
+    }
+
+    sealed class RetainedControl : IHerdrAgentControl
+    {
+        public int Starts { get; private set; }
+        public Task StartAsync(InteractiveLaunch launch, CancellationToken token) { Starts++; return Task.CompletedTask; }
+        public Task PromptAsync(InteractiveLaunch launch, string prompt, CancellationToken token) => Task.CompletedTask;
+        public Task InterruptAsync(InteractiveLaunch launch, CancellationToken token) => Task.CompletedTask;
+        public Task<InteractiveAgentStatus> StatusAsync(InteractiveLaunch launch, CancellationToken token) => Task.FromResult(InteractiveAgentStatus.Done);
+        public void StopOwned(InteractiveLaunch launch) { }
+    }
+
+    [Fact]
+    public void Missing_ancestry_is_explicit_uncertainty_even_with_one_matching_file()
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Codex);
+        File.WriteAllLines(file, [CodexMeta.Replace(",\"source\":\"cli\"", ""), CodexUser(Marker), CodexAssistant("unverified"), CodexComplete]);
+        Assert.Equal("interactive_binding_unverified", reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.BindingError);
+        Assert.Null(launch.NativeTranscript);
+    }
+
+    [Fact]
+    public void Discovery_checks_beyond_200_decoys_and_reports_true_ambiguity()
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Codex);
+        File.WriteAllLines(file, [CodexMeta, CodexUser(Marker), CodexAssistant("parent"), CodexComplete]);
+        for (var i = 0; i < 205; i++)
+        {
+            File.WriteAllLines(Path.Combine(Path.GetDirectoryName(file)!, $"rollout-decoy-{i}.jsonl"),
+                [CodexMeta.Replace("codex-native", $"decoy-{i}"), CodexUser("unrelated")]);
+        }
+        Assert.Equal("parent", reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.Message);
+        var unbound = launch with { NativeTranscript = null };
+        File.WriteAllLines(Path.Combine(Path.GetDirectoryName(file)!, "rollout-second.jsonl"),
+            [CodexMeta.Replace("codex-native", "another-parent"), CodexUser(Marker), CodexAssistant("wrong"), CodexComplete]);
+        Assert.Equal("interactive_binding_ambiguous", reader.Read(unbound, Marker, DateTimeOffset.UtcNow)?.BindingError);
+        Assert.Null(unbound.NativeTranscript);
+        Assert.Equal("parent", reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.Message);
+        var resumed = unbound with { ResumeSessionId = "codex-native" };
+        Assert.Equal("parent", reader.Read(resumed, Marker, DateTimeOffset.UtcNow)?.Message);
+        File.WriteAllLines(file, [CodexMeta.Replace("codex-native", "replacement"), CodexUser(Marker)]);
+        Assert.Equal("interactive_binding_lost", reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.BindingError);
     }
 
     static (InteractiveTranscriptReader Reader, InteractiveLaunch Launch, string File) Setup(string root, InteractiveAgentKind kind)

@@ -161,6 +161,11 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                     yield break;
                 }
                 var output = transcripts.Read(launch, "atf-corr:" + request.Correlation, started);
+                if (output?.BindingError is { } bindingError)
+                {
+                    yield return new BackendEvidence.ProtocolError(bindingError);
+                    yield break;
+                }
                 if (output is not null && !acknowledged)
                 {
                     // A native user record proves that the one submitted prompt landed.
@@ -298,6 +303,8 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
 internal sealed record InteractiveLaunch(InteractiveAgentKind Kind, string AgentName, string WorkingDirectory,
     string? ResumeSessionId, string? PiSessionDirectory, string BootstrapPath)
 {
+    // Kept with the owned pane by RetainedSessions, including fresh-launch follow-ups.
+    public NativeTranscriptBinding? NativeTranscript { get; set; }
     public string? JobId { get; init; }
     public string? Model { get; init; }
     public string? Effort { get; init; }
@@ -336,7 +343,9 @@ internal interface IInteractiveTranscriptReader
 }
 
 internal sealed record InteractiveTranscript(string SessionId, string? Message, IReadOnlyList<string>? Messages = null, bool Completed = false,
-    bool PendingBackgroundTasks = false)
+    bool PendingBackgroundTasks = false, string? BindingError = null)
 {
     public IReadOnlyList<string> Progress => Messages ?? [];
 }
+
+internal sealed record NativeTranscriptBinding(string SessionId, string Path);

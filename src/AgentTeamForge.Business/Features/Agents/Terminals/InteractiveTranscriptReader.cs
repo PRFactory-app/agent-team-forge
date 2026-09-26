@@ -20,11 +20,18 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
 
     public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started)
     {
-        var candidates = Files(launch)
-            .Where(p => Modified(p) >= started.UtcDateTime.AddSeconds(-2))
-            .OrderByDescending(Modified)
-            .Take(200);
+        if (launch.NativeTranscript is { } retained)
+        {
+            if (HeaderId(retained.Path, launch.Kind) != retained.SessionId)
+            {
+                return new(retained.SessionId, null, BindingError: "interactive_binding_lost");
+            }
+            return Parse(retained.Path, launch.Kind, correlationMarker);
+        }
+        var candidates = Files(launch).Where(p => Modified(p) >= started.UtcDateTime.AddSeconds(-2));
         InteractiveTranscript? bound = null;
+        string? boundPath = null;
+        var unverified = false;
         foreach (var path in candidates)
         {
             var parsed = Parse(path, launch.Kind, correlationMarker);
@@ -36,13 +43,53 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             {
                 continue;
             }
+            var parent = IsParent(path, launch.Kind);
+            if (parent is null) { unverified = true; }
+            if (parent != true) { continue; }
             if (bound is not null)
             {
-                return null; // Ambiguous: never attribute another agent's output.
+                return new("", null, BindingError: "interactive_binding_ambiguous");
             }
             bound = parsed;
+            boundPath = path;
         }
+        if (unverified) { return new("", null, BindingError: "interactive_binding_unverified"); }
+        if (bound is not null) { launch.NativeTranscript = new(bound.SessionId, boundPath!); }
         return bound;
+    }
+
+    // Native ancestry, not file recency, distinguishes a TUI from inherited child history.
+    static bool? IsParent(string path, InteractiveAgentKind kind)
+    {
+        try
+        {
+            foreach (var line in LiveFiles.ReadLines(path).Take(10))
+            {
+                using var json = JsonDocument.Parse(line);
+                var root = json.RootElement;
+                if (kind == InteractiveAgentKind.Codex && Str(root, "type") == "session_meta"
+                    && root.TryGetProperty("payload", out var meta))
+                {
+                    if (Str(meta, "source") == "cli") { return true; }
+                    if (meta.TryGetProperty("source", out var source) && source.ValueKind == JsonValueKind.Object
+                        && source.TryGetProperty("subagent", out _)) { return false; }
+                    return null;
+                }
+                if (kind == InteractiveAgentKind.Claude && Str(root, "type") is "user" or "assistant"
+                    && Str(root, "sessionId") is not null)
+                {
+                    return root.TryGetProperty("isSidechain", out var sidechain)
+                        && sidechain.ValueKind is JsonValueKind.True or JsonValueKind.False ? !sidechain.GetBoolean() : null;
+                }
+                if (kind == InteractiveAgentKind.Pi && Str(root, "type") == "session")
+                {
+                    return Str(root, "parentSession") is null;
+                }
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { WarnUnreadable(path, e); }
+        catch (JsonException) { }
+        return null;
     }
 
     public string? FindPiSessionDirectory(string root, string sessionId)
