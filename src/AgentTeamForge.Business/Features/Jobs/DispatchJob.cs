@@ -120,7 +120,9 @@ public sealed class DispatchJob : IDisposable
         try
         {
             var job = store.GetJob(jobId);
-            if (job?.ParentJobId is not { } parentId || store.GetJob(parentId)?.SessionId is not { } sessionId)
+            // A sibling follow-up still queued on the same parent resumes in that tab.
+            if (job?.ParentJobId is not { } parentId || store.HasQueuedFollowUp(parentId)
+                || store.GetJob(parentId)?.SessionId is not { } sessionId)
             {
                 return;
             }
