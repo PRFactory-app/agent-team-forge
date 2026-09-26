@@ -118,6 +118,42 @@ public sealed class WakeTests
     }
 
     [Fact]
+    public async Task Run_stops_quietly_when_cancelled_during_a_post()
+    {
+        using var fixture = new JobFixture();
+        var store = new WakeStore(fixture.Database);
+        var target = store.Register("codex:test", "codex", "thread", "", "/tmp");
+        Finish(fixture, target, "one");
+        using var cts = new CancellationTokenSource();
+        var poster = new FakePoster((_, _) =>
+        {
+            cts.Cancel();
+            throw new OperationCanceledException(cts.Token);
+        });
+        var coordinator = new WakeCoordinator(store, poster, _ => { }, coalesce: TimeSpan.Zero);
+        await coordinator.RunAsync(cts.Token);
+        Assert.Single(poster.Attempts);
+    }
+
+    [Fact]
+    public void Unread_counts_jobs_not_terminal_events()
+    {
+        using var fixture = new JobFixture();
+        var store = new WakeStore(fixture.Database);
+        var target = store.Register("codex:test", "codex", "thread", "", "/tmp");
+        var jobId = Finish(fixture, target, "one");
+        using (var connection = fixture.Database.OpenConnection())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'needs_reconciliation', 'now')";
+            command.Parameters.AddWithValue("$id", jobId);
+            command.ExecuteNonQuery();
+        }
+
+        Assert.Equal(1, store.Pending().Single().Unread);
+    }
+
+    [Fact]
     public async Task Codex_adapter_checks_thread_before_queuing()
     {
         var verified = false;

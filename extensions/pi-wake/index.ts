@@ -3,6 +3,7 @@
  * notice-only JSONL doorbell; this Pi session injects it through sendMessage.
  * The lifecycle and injection API follow the reference extension.
  */
+import { statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -20,6 +21,9 @@ export default function activate(pi: ExtensionAPI): void {
   const lifecycle = createLifecycle({
     createController: () => new AbortController(),
     startLoop: async (signal) => {
+      // Skip doorbells left by an earlier process with this PID; bridge
+      // re-registration makes the daemon post a fresh catch-up notice.
+      offset = statSync(spool, { throwIfNoEntry: false })?.size ?? 0;
       while (!signal.aborted) {
         try {
           const bytes = await readFile(spool);

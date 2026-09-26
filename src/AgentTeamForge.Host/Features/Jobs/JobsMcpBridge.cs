@@ -56,11 +56,16 @@ public static class JobsMcpBridge
                 return;
             }
 
-            var registration = await client.SendAsync(wakeTarget, cancellationToken);
-            if (registration.Ok)
+            // Wake is best effort: a missing daemon or credential must not stop the bridge or fail job calls.
+            try
             {
-                wakeGeneration = registration.WakeGeneration;
+                var registration = await client.SendAsync(wakeTarget, cancellationToken);
+                if (registration.Ok)
+                {
+                    wakeGeneration = registration.WakeGeneration;
+                }
             }
+            catch (Exception ex) when (ex is not OperationCanceledException) { }
         }
         await RegisterWakeAsync(CancellationToken.None);
         var tools = new List<Tool>

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -22,11 +22,14 @@ describe("AgentTeamForge Pi adapter", () => {
     expect(handlers.session_start).toBeUndefined();
   });
 
-  it("injects a committed notice into its own Pi session", async () => {
+  it("injects new notices into its own Pi session and skips earlier ones", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "atf-pi-"));
     process.env.ATF_STATE_DIR = dir;
     const spool = path.join(dir, `pi-wake-${process.pid}.jsonl`);
-    await writeFile(spool, JSON.stringify({ generation: 1, notice: "call job_get" }) + "\n");
+    await writeFile(
+      spool,
+      JSON.stringify({ generation: 1, notice: "stale from an earlier pid owner" }) + "\n",
+    );
     const handlers: Record<string, () => Promise<void> | void> = {};
     const sends: string[] = [];
     activate({
@@ -39,7 +42,8 @@ describe("AgentTeamForge Pi adapter", () => {
     } as never);
     try {
       await handlers.session_start();
-      await vi.waitFor(() => expect(sends).toEqual(["call job_get"]));
+      await appendFile(spool, JSON.stringify({ generation: 2, notice: "call job_get" }) + "\n");
+      await vi.waitFor(() => expect(sends).toEqual(["call job_get"]), { timeout: 3000 });
     } finally {
       await handlers.session_shutdown();
       await rm(dir, { recursive: true, force: true });

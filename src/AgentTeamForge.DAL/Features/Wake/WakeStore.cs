@@ -56,7 +56,7 @@ public sealed class WakeStore(JobDatabase database)
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT t.target_key, t.generation, t.kind, t.address, t.secret, t.home,
-                   count(w.job_id), coalesce(max(e.seq),0), t.notified_seq, t.last_success,
+                   count(DISTINCT w.job_id), coalesce(max(e.seq),0), t.notified_seq, t.last_success,
                    sum(CASE WHEN e.seq <= t.notified_seq THEN 1 ELSE 0 END)
             FROM wake_targets t
             JOIN wake_jobs w ON w.target_key=t.target_key AND w.read_at IS NULL

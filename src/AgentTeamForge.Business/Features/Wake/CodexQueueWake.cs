@@ -118,7 +118,7 @@ public sealed class CodexQueueWake(Func<WakeRegistration, bool>? verify = null,
             {
                 if (!process.HasExited)
                 {
-                    process.Kill();
+                    process.Kill(entireProcessTree: true);
                 }
 
                 return false;

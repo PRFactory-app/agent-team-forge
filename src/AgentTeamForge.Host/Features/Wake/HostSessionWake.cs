@@ -86,9 +86,10 @@ public static class HostSessionWake
                 var parent = status.FirstOrDefault(line => line.StartsWith("PPid:", StringComparison.Ordinal));
                 var cmdline = Encoding.UTF8.GetString(File.ReadAllBytes(Path.Combine(root, "cmdline")))
                     .Split('\0', StringSplitOptions.RemoveEmptyEntries);
-                var name = cmdline.Length > 0 ? Path.GetFileName(cmdline[0]).ToLowerInvariant() :
-                    File.ReadAllText(Path.Combine(root, "comm")).Trim().ToLowerInvariant();
-                var kind = name is "claude" or "codex" or "pi" ? name : null;
+                // As procinfo.host_kind: the image name (comm) first, then argv[0].
+                var comm = File.ReadAllText(Path.Combine(root, "comm")).Trim().ToLowerInvariant();
+                var name = cmdline.Length > 0 ? Path.GetFileName(cmdline[0]).ToLowerInvariant() : comm;
+                var kind = comm is "claude" or "codex" or "pi" ? comm : name is "claude" or "codex" or "pi" ? name : null;
                 if (kind is null && name is "node" or "nodejs")
                 {
                     var args = string.Join(' ', cmdline).Replace('\\', '/').ToLowerInvariant();

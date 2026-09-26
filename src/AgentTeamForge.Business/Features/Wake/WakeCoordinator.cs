@@ -39,6 +39,7 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
         while (!cancellationToken.IsCancellationRequested)
         {
             try { await TickAsync(cancellationToken); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 log($"wake scan failed: {ex.GetType().Name}");
