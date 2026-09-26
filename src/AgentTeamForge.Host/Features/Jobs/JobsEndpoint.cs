@@ -5,7 +5,7 @@ using AgentTeamForge.Host.Transport;
 namespace AgentTeamForge.Host.Features.Jobs;
 
 /// <summary>Thin IPC mapping for the job operations; all rules live in Business.</summary>
-public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, DurabilityCheckpoints checkpoints)
+public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, DurabilityCheckpoints checkpoints)
 {
     public IpcResponse Handle(IpcRequest request)
     {
@@ -22,7 +22,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             case IpcProtocol.JobGet:
                 return Map(get.Execute(request.JobId ?? string.Empty));
             case IpcProtocol.JobList:
-                return Map(get.List());
+                var listed = list.Execute(new ListJobsRequest(request.Status, request.Limit, request.Cursor));
+                return listed.Error is null ? new IpcResponse(true, Outcome: "listed", Page: listed.Page) : new IpcResponse(false, listed.Error);
             default:
                 return new IpcResponse(false, IpcProtocol.UnknownOp);
         }
@@ -32,12 +33,19 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     {
         if (result.Outcome == "accepted")
         {
-            checkpoints.Hit(DurabilityCheckpoints.AcceptAfterCommit);
+            try
+            {
+                checkpoints.Hit(DurabilityCheckpoints.AcceptAfterCommit);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                return new IpcResponse(false, IpcProtocol.OutcomeUnknown);
+            }
         }
 
         return Map(result);
     }
 
     static IpcResponse Map(JobResult result) =>
-        result.Error is null ? new IpcResponse(true, Outcome: result.Outcome, Job: result.Job, Jobs: result.Jobs) : new IpcResponse(false, result.Error);
+        result.Error is null ? new IpcResponse(true, Outcome: result.Outcome, Job: result.Job) : new IpcResponse(false, result.Error);
 }
