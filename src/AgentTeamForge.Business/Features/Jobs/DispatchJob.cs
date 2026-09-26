@@ -398,7 +398,8 @@ public sealed class DispatchJob : IDisposable
         {
             // Spike-only policy: kill our own direct child through its held handle.
             // A possible surviving child or failed kill stays uncertain, never retried.
-            TryTerminate(backendRun);
+            // Once-only, so a concurrent interrupt keeps its live interactive tab.
+            active.TerminateOnce(TryTerminate);
             End(run, JobStatus.NeedsReconciliation, "backend_timeout");
         }
         catch (Exception) when (stopRequested.IsCancellationRequested)
@@ -411,14 +412,15 @@ public sealed class DispatchJob : IDisposable
             // Unanticipated fault after the attempt commit: the effect is unknown, so
             // quarantine (never failed, never requeued) and stop claiming work.
             log($"dispatcher fault for {run.RunId}: {ex.GetType().Name}");
-            TryTerminate(backendRun);
+            active.TerminateOnce(TryTerminate);
             End(run, JobStatus.NeedsReconciliation, "dispatcher_fault");
             Halt("dispatcher_fault");
         }
         finally
         {
             _running.TryRemove(run.JobId, out _);
-            if (stopRequested.IsCancellationRequested)
+            // An interrupt kills before it cancels, so the turn can end first.
+            if (stopRequested.IsCancellationRequested || active.Terminated)
             {
                 // Descendants reparented away from the owned child escape a tree kill;
                 // this run's unique marker still identifies them.
@@ -494,6 +496,8 @@ public sealed class DispatchJob : IDisposable
         public CancellationTokenSource Stop { get; } = stop;
 
         public IBackendRun? BackendRun;
+
+        public bool Terminated => Volatile.Read(ref _terminated) != 0;
 
         public void TerminateOnce(Action<IBackendRun?> terminate)
         {

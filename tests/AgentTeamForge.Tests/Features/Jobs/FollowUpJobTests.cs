@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
@@ -174,5 +176,91 @@ public sealed class FollowUpJobTests
 
         var stored = f.Store.GetJob(job.JobId)!;
         Assert.Equal((JobStatus.Failed, "backend_unavailable"), (stored.Status, stored.ReasonCode));
+    }
+
+    [Fact]
+    public async Task Interrupt_kills_escaped_descendants_even_when_the_turn_ends_before_cancel()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        using var f = new JobFixture();
+        var backend = new EscapingChildBackend();
+        var parent = f.Submit("parent");
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+        var attempt = Task.Run(() => dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None), TestContext.Current.CancellationToken);
+        await Bounded.Until(() => f.Store.GetJob(parent.JobId)!.SessionId == "escape-session", "session evidence");
+        try
+        {
+            var followUp = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept(), dispatcher.InterruptRunning);
+            Assert.Equal("accepted", followUp.Execute(new FollowUpRequest(parent.JobId, "next", "child") { Interrupt = true }).Outcome);
+            await attempt.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+
+            Assert.True(SpinWait.SpinUntil(() => !IsAlive(backend.Escaped), TimeSpan.FromSeconds(10)));
+        }
+        finally
+        {
+            try { Process.GetProcessById(backend.Escaped).Kill(); } catch (ArgumentException) { } catch (InvalidOperationException) { }
+        }
+    }
+
+    static bool IsAlive(int pid)
+    {
+        try
+        {
+            var stat = File.ReadAllText($"/proc/{pid}/stat");
+            return stat[(stat.LastIndexOf(')') + 2)..][0] != 'Z';
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>A marked child whose descendant left its process group; the turn ends on kill.</summary>
+    sealed class EscapingChildBackend : IJobBackend
+    {
+        public int Escaped { get; private set; }
+
+        public IBackendRun Start(BackendRequest request)
+        {
+            var info = new ProcessStartInfo("/bin/sh", ["-c", "(setsid sleep 300 & echo $!); exec sleep 300"]) { RedirectStandardOutput = true };
+            OrphanedBackendProcess.Mark(info, request.Correlation);
+            var process = Process.Start(info)!;
+            Escaped = int.Parse(process.StandardOutput.ReadLine()!, System.Globalization.CultureInfo.InvariantCulture);
+            return new Run(process, request.Correlation);
+        }
+
+        sealed class Run(Process process, string correlation) : IBackendRun
+        {
+            readonly ManualResetEventSlim _disposed = new();
+
+            public int? ProcessId => process.Id;
+
+            public Task DeliverAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+            public async IAsyncEnumerable<BackendEvidence> ReadEvidenceAsync([EnumeratorCancellation] CancellationToken cancellationToken)
+            {
+                yield return new BackendEvidence.Session(correlation, "escape-session");
+                await process.WaitForExitAsync(CancellationToken.None);
+                yield return new BackendEvidence.EndOfOutput();
+            }
+
+            public void TerminateOwnedChild()
+            {
+                process.Kill(entireProcessTree: true);
+                // Hold the interrupter until the attempt has fully ended, as a slow kill would.
+                _disposed.Wait(TimeSpan.FromSeconds(5));
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                _disposed.Set();
+                process.Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
     }
 }

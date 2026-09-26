@@ -78,7 +78,9 @@ public sealed class HerdrInteractiveBackend : IJobBackend
     {
         bool _delivered;
         bool _completed;
+        readonly Lock _lifetime = new();
         bool _interrupted;
+        bool _stopped;
         string? _sessionId = request.ResumeSessionId;
         string? _prompt;
         DateTimeOffset _lastPromptAt;
@@ -212,11 +214,20 @@ public sealed class HerdrInteractiveBackend : IJobBackend
         {
             // Preserve the same verified pane for the follow-up. Escape interrupts
             // the TUI turn without terminating its agent process.
-            _interrupted = true;
-            control.InterruptAsync(launch, CancellationToken.None).GetAwaiter().GetResult();
-            if (_sessionId is { } sessionId)
+            // Serialized with dispose: a tab closed by a settled turn is never
+            // handed to the follow-up, which then resumes in a fresh tab.
+            lock (_lifetime)
             {
-                rememberSession(sessionId, launch);
+                if (_stopped)
+                {
+                    return;
+                }
+                _interrupted = true;
+                control.InterruptAsync(launch, CancellationToken.None).GetAwaiter().GetResult();
+                if (_sessionId is { } sessionId)
+                {
+                    rememberSession(sessionId, launch);
+                }
             }
         }
 
@@ -224,9 +235,13 @@ public sealed class HerdrInteractiveBackend : IJobBackend
         {
             // A settled turn is finished; close only our proven session before a
             // follow-up resumes its native session in a fresh owned tab.
-            if (_completed && !_interrupted)
+            lock (_lifetime)
             {
-                control.StopOwned(launch);
+                if (_completed && !_interrupted)
+                {
+                    _stopped = true;
+                    control.StopOwned(launch);
+                }
             }
             return ValueTask.CompletedTask;
         }

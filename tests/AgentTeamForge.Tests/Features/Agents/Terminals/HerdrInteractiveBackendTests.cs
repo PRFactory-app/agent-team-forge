@@ -111,6 +111,27 @@ public sealed class HerdrInteractiveBackendTests
     }
 
     [Fact]
+    public async Task Interrupt_after_a_settled_turn_closed_its_tab_does_not_hand_that_tab_to_the_follow_up()
+    {
+        var control = new FakeControl { Status = InteractiveAgentStatus.Done };
+        var backend = new HerdrInteractiveBackend(control,
+            new FakeReader(new InteractiveTranscript("native-1", "finished")), InteractiveAgentKind.Claude, Path.GetTempPath());
+        var first = backend.Start(new BackendRequest("parent", "corr-parent", "first", "") { WorkingDirectory = Path.GetTempPath() });
+        await first.DeliverAsync(CancellationToken.None);
+        await Collect(first);
+        await first.DisposeAsync();
+        Assert.True(control.Stopped);
+
+        first.InterruptTurn();
+        Assert.Equal(0, control.Interrupts);
+
+        await using var second = backend.Start(new BackendRequest("child", "corr-child", "second", "")
+        { WorkingDirectory = Path.GetTempPath(), ResumeSessionId = "native-1" });
+        Assert.Equal(2, control.Starts);
+        Assert.Equal("native-1", control.Launch!.ResumeSessionId);
+    }
+
+    [Fact]
     public void PiResumeUsesContinueInTheLocatedSessionDirectory()
     {
         var launch = new InteractiveLaunch(InteractiveAgentKind.Pi, "atftest", "/tmp", "native-pi", "/tmp/pi-one", "/tmp/bootstrap");
