@@ -1,5 +1,6 @@
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
+using AgentTeamForge.Business.Features.Agents.Backends;
 
 namespace AgentTeamForge.Business.Features.Jobs;
 
@@ -35,11 +36,26 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             return JobResult.Fail(JobErrors.NotFound);
         }
 
-        // Resuming a session that is still in a turn would race the running agent.
-        // A stopped parent's process tree was killed when its cancellation committed.
-        if (parent.SessionId is null || parent.Status is not (JobStatus.Completed or JobStatus.Cancelled))
+        if (parent.SessionId is null || parent.Status is not (JobStatus.Completed or JobStatus.Cancelled or JobStatus.Failed or JobStatus.NeedsReconciliation))
         {
             return JobResult.Fail(JobErrors.ParentNotReady);
+        }
+
+        try
+        {
+            var runs = store.GetRuns(parent.JobId);
+            // A needs_reconciliation row can be committed before its child exits. Only
+            // a terminal run with no live marked process proves this session is idle.
+            if (runs.Any(r => r.State == "started")
+                || (parent.Status is JobStatus.Failed or JobStatus.NeedsReconciliation
+                    && (runs.Count == 0 || OrphanedBackendProcess.HasMarkedProcess([.. runs.Select(r => r.Correlation)]))))
+            {
+                return JobResult.Fail(JobErrors.ParentNotReady);
+            }
+        }
+        catch (StorageException ex)
+        {
+            return JobResult.Fail(JobErrors.FromStorage(ex));
         }
 
         return accept.Admit(Operation, request.IdempotencyKey, request.Instruction, "behavior=complete;hold=0",

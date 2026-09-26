@@ -59,6 +59,7 @@ public static class JobErrors
     public const string DaemonUnhealthy = "daemon_unhealthy";
     public const string BackendUnavailable = "backend_unavailable";
     public const string ParentNotReady = "parent_not_ready";
+    public const string SessionExpired = "session_expired";
     public const string CwdNotGitRepo = "cwd_not_git_repo";
 
     public static string FromStorage(StorageException ex) => ex.Failure == StorageFailure.Busy ? StorageBusy : StorageUnavailable;

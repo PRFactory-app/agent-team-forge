@@ -49,7 +49,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             throw new BackendNotStartedException("claude could not be started", ex);
         }
 
-        return new ClaudeRun(process, request.Correlation, sessionId, Encoding.UTF8.GetBytes(request.Instruction), request.Output);
+        return new ClaudeRun(process, request.Correlation, sessionId, Encoding.UTF8.GetBytes(request.Instruction), request.Output, request.ResumeSessionId is not null);
     }
 
     internal static List<string> Arguments(BackendRequest request, string sessionId)
@@ -59,11 +59,11 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
         return arguments;
     }
 
-    sealed class ClaudeRun(Process process, string correlation, string sessionId, byte[] instruction, Action<string, ReadOnlyMemory<byte>>? output) : IBackendRun
+    sealed class ClaudeRun(Process process, string correlation, string sessionId, byte[] instruction, Action<string, ReadOnlyMemory<byte>>? output, bool resuming) : IBackendRun
     {
         readonly Process _process = process;
         readonly Stream _stdout = new CapturingReadStream(process.StandardOutput.BaseStream, "stdout", output);
-        readonly Task _stderrDrain = DrainAsync(new CapturingReadStream(process.StandardError.BaseStream, "stderr", output));
+        readonly Task<string> _stderrDrain = BackendSessionErrors.ReadStderrAsync(new CapturingReadStream(process.StandardError.BaseStream, "stderr", output));
         bool _deliveryFailed;
 
         public int? ProcessId => _process.Id;
@@ -89,7 +89,8 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             if (_deliveryFailed)
             {
                 TerminateOwnedChild();
-                yield return new BackendEvidence.ProtocolError("backend_delivery_failed");
+                yield return new BackendEvidence.ProtocolError(resuming && await BackendSessionErrors.HasExpiredDiagnosticAsync(_stderrDrain, cancellationToken)
+                    ? "session_expired" : "backend_delivery_failed");
                 yield break;
             }
 
@@ -100,6 +101,13 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             {
                 TerminateOwnedChild();
                 yield return new BackendEvidence.ProtocolError("backend_output_too_large");
+                yield break;
+            }
+
+            if (resuming && (BackendSessionErrors.IsExpired(Encoding.UTF8.GetString(output))
+                || await BackendSessionErrors.HasExpiredDiagnosticAsync(_stderrDrain, cancellationToken)))
+            {
+                yield return new BackendEvidence.ProtocolError("session_expired");
                 yield break;
             }
 

@@ -89,6 +89,7 @@ public sealed record RunRecord(string RunId, long Generation, string Correlation
 /// <summary>Read-only inspection row: committed state only, no instruction or result payload.</summary>
 public sealed record JobSummaryRecord(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)
 {
+    public string? Backend { get; init; }
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }
 }
