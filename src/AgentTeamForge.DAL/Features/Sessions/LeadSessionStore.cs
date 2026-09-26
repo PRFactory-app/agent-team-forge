@@ -1,3 +1,4 @@
+using AgentTeamForge.DAL.Files;
 using AgentTeamForge.DAL.Sqlite;
 
 namespace AgentTeamForge.DAL.Features.Sessions;
@@ -36,14 +37,7 @@ public sealed class LeadSessionStore(JobDatabase database)
         command.ExecuteNonQuery();
         tx.Commit();
         var sessionDir = Path.Combine(Path.GetDirectoryName(database.Path)!, "lead-sessions", id);
-        if (OperatingSystem.IsWindows())
-        {
-            Directory.CreateDirectory(sessionDir);
-        }
-        else
-        {
-            Directory.CreateDirectory(sessionDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
+        PrivateFiles.CreateDirectory(sessionDir);
         return Info(id, workspace)!;
     }
 

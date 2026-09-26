@@ -1,3 +1,4 @@
+using AgentTeamForge.DAL.Files;
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Text;
@@ -547,12 +548,7 @@ public static class SetupCommand
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            using (var file = new FileStream(temporary, new FileStreamOptions
-            {
-                Mode = FileMode.CreateNew,
-                Access = FileAccess.Write,
-                UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
-            }))
+            using (var file = new FileStream(temporary, PrivateFiles.Options(FileMode.CreateNew, FileAccess.Write)))
             {
                 JsonSerializer.Serialize(file, settings, SetupCommandJson.Default.LaunchModeSettings);
                 file.Flush(flushToDisk: true);
@@ -589,12 +585,7 @@ public static class SetupCommand
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            using (var file = new FileStream(temporary, new FileStreamOptions
-            {
-                Mode = FileMode.CreateNew,
-                Access = FileAccess.Write,
-                UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
-            }))
+            using (var file = new FileStream(temporary, PrivateFiles.Options(FileMode.CreateNew, FileAccess.Write)))
             {
                 using var writer = new Utf8JsonWriter(file, new JsonWriterOptions { Indented = true });
                 writer.WriteStartObject();

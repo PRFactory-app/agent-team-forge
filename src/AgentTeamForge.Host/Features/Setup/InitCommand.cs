@@ -1,3 +1,4 @@
+using AgentTeamForge.DAL.Files;
 using System.Security.Cryptography;
 using System.Text.Json;
 using AgentTeamForge.DAL.Sqlite;
@@ -81,12 +82,7 @@ public static class InitCommand
 
     static void WritePrivate(string path, byte[] content)
     {
-        using var stream = new FileStream(path, new FileStreamOptions
-        {
-            Mode = FileMode.CreateNew,
-            Access = FileAccess.Write,
-            UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
-        });
+        using var stream = new FileStream(path, PrivateFiles.Options(FileMode.CreateNew, FileAccess.Write));
         stream.Write(content);
         stream.Flush(flushToDisk: true);
     }
