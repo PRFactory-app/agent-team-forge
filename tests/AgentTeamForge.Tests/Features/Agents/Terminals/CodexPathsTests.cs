@@ -33,6 +33,20 @@ public sealed class CodexPathsTests
     }
 
     [Fact]
+    public void TrustKeyResolvesLinksInsideALinkTarget()
+    {
+        if (OperatingSystem.IsWindows()) { return; }
+        using var state = new TempStateDir();
+        var root = CodexPaths.TrustKey(state.Path);
+        Directory.CreateDirectory(Path.Combine(root, "real", "work"));
+        Directory.CreateSymbolicLink(Path.Combine(root, "mid"), Path.Combine(root, "real"));
+        // outer -> mid/work, where mid is itself a link.
+        Directory.CreateSymbolicLink(Path.Combine(root, "outer"), Path.Combine(root, "mid", "work"));
+
+        Assert.Equal(Path.Combine(root, "real", "work"), CodexPaths.TrustKey(Path.Combine(root, "outer")));
+    }
+
+    [Fact]
     public void RelativeHomeIsAnchoredAndInteractiveCodexCmdIsRefused()
     {
         using var state = new TempStateDir();
