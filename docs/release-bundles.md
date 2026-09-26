@@ -37,8 +37,8 @@ extracting. The stable executable is `$HOME/.local/bin/atf`; payloads live in
 For an upgrade, finish active work, then run the installer for the new version
 (`--state-dir DIR` if setup used a custom state path).
 It stops the current daemon before switching `current` and keeps older payloads.
-Rerun `atf setup --mode headless|herdr|terminal --apply` with the previously selected
-mode, run `atf start`, and restart clients. Back up the state directory before
+The saved mode and client registrations are kept; restart clients (the daemon
+starts on first use). Back up the state directory before
 an upgrade that changes the database schema; switching binaries back does not
 roll back the database.
 

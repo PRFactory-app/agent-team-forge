@@ -155,6 +155,79 @@ internal static class ClientSetup
         return useful.Length == 0 ? "command exited without details" : useful.Length <= 400 ? useful : useful[..400] + "…";
     }
 
+    internal static bool Teardown(string binary, string stateDir, string home,
+        Func<string, IReadOnlyList<string>, (int ExitCode, string Output)> run)
+    {
+        foreach (var client in new[] { "claude", "codex" })
+        {
+            var (code, output) = run(client, ["mcp", "get", Name]);
+            if (code != 0 || !HasLine(output, "Command:", binary)
+                || !HasLine(output, "Args:", $"mcp --state-dir {stateDir}")
+                || client == "claude" && !output.Contains("Scope: User config", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            var args = client == "claude"
+                ? (IReadOnlyList<string>)["mcp", "remove", Name, "--scope", "user"]
+                : ["mcp", "remove", Name];
+            if (run(client, args).ExitCode != 0)
+            {
+                Console.Error.WriteLine($"error: {client} MCP removal failed");
+                return false;
+            }
+            Console.Out.WriteLine($"{client}: removed ATF MCP registration");
+        }
+
+        try
+        {
+            var directory = Path.Combine(home, ".pi", "agent");
+            var settingsPath = Path.Combine(directory, "settings.json");
+            var mcpPath = Path.Combine(directory, "mcp.json");
+            var statePath = Path.Combine(directory, "agentteamforge.json");
+            var extension = Path.Combine(home, ".local", "share", "agentteamforge", "current", "extensions", "pi-wake");
+            var settings = ReadObject(settingsPath);
+            if (settings["packages"] is JsonArray packages)
+            {
+                var owned = packages.Where(node => PackageSource(node) is string source && IsLocalPackageSource(source)
+                    && Path.GetFullPath(source, directory).Equals(extension, StringComparison.Ordinal)).ToArray();
+                foreach (var entry in owned)
+                {
+                    packages.Remove(entry);
+                }
+                if (owned.Length > 0)
+                {
+                    WriteObject(settingsPath, settings);
+                    Console.Out.WriteLine("pi: removed ATF wake extension");
+                }
+            }
+            var mcp = ReadObject(mcpPath);
+            if (mcp["mcpServers"] is JsonObject servers
+                && JsonNode.DeepEquals(servers[Name], new JsonObject
+                {
+                    ["command"] = binary,
+                    ["args"] = new JsonArray("mcp", "--state-dir", stateDir),
+                }))
+            {
+                servers.Remove(Name);
+                WriteObject(mcpPath, mcp);
+                Console.Out.WriteLine("pi: removed ATF MCP registration");
+            }
+            var state = ReadObject(statePath);
+            if (state["stateDir"]?.GetValueKind() == JsonValueKind.String
+                && state["stateDir"]!.GetValue<string>() == stateDir)
+            {
+                state.Remove("stateDir");
+                WriteObject(statePath, state);
+            }
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException)
+        {
+            Console.Error.WriteLine($"error: Pi teardown failed ({ex.GetType().Name})");
+            return false;
+        }
+    }
+
     static bool ReconcilePi(string binary, string stateDir, string home, string? extensionOverride,
         Func<string, IReadOnlyList<string>, (int ExitCode, string Output)> run, bool apply)
     {

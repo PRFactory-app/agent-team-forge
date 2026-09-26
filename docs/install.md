@@ -1,11 +1,23 @@
 # Install and startup
 
-Linux x64 on tested glibc distributions:
+After a release is published, install the latest Linux x64 release (tested glibc
+distributions) with:
 
 ```sh
 curl -fsSL https://github.com/PRFactory-app/agent-team-forge/releases/latest/download/install.sh | sh
 "$HOME/.local/bin/atf" setup
 ```
+
+To pin a release:
+
+```sh
+curl -fsSLO https://github.com/PRFactory-app/agent-team-forge/releases/download/v0.0.1/install.sh
+sh install.sh --version 0.0.1
+```
+
+The installer downloads the archive and its checksum from the same tag. This
+detects transfer corruption; it is not an independent publisher signature, and
+the downloaded installer is trusted before archive verification.
 
 Install and log in to whichever backend CLIs you use: Claude Code, Codex, or Pi.
 On the first interactive run, setup asks you to choose Herdr for visible agent
@@ -28,9 +40,8 @@ use `atf start --state-dir DIR` or `atf mcp --state-dir DIR` instead.
 
 Linux arm64 and musl are not supported. macOS arm64 and Windows x64 remain
 tester-only until validated on those machines. See [quickstart](quickstart.md)
-for use, and `"$HOME/.local/bin/atf" uninstall` for removal. To upgrade, rerun
-the installer and reload clients; see [the install plan](plans/easy-install.md)
-for current upgrade limitations.
+for use, and `"$HOME/.local/bin/atf" uninstall` for removal. See
+[Upgrade and uninstall](#upgrade-and-uninstall).
 
 Login autostart is optional and off by default. Run `atf setup --autostart`
 to enable it, `atf setup --autostart=off` to remove it, and
@@ -43,3 +54,16 @@ not your shell's; put provider keys or config variables agents need in
 without inheriting the bridge's handles and writes to `daemon.log`. macOS and
 Windows startup still need validation on those machines. `atf start` and `atf stop`
 are available for manual control.
+
+## Upgrade and uninstall
+
+Rerun the installer to upgrade. Rerunning the active version verifies its installed
+files and makes no changes. An upgrade stops the running daemon, so wait for jobs
+to finish first. It preserves the profile, launch mode, state, and stable MCP
+executable path; reload agent clients after an upgrade. If setup used a custom
+`--state-dir`, pass the same directory to the installer.
+
+Run `"$HOME/.local/bin/atf" uninstall` to remove the binaries, ATF-owned client
+registrations, Pi wake entry, and login autostart. Shared Pi adapter packages,
+unrelated client settings, and state remain. To remove the selected state as well,
+use `uninstall --purge`; use `--state-dir DIR` for a custom state directory.

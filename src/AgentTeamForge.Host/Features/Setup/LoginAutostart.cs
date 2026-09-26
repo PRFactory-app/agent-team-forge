@@ -97,6 +97,27 @@ public static class LoginAutostart
         return 0;
     }
 
+    internal static bool RemoveOwned(string home, string binary, string stateDir,
+        Func<string, IReadOnlyList<string>, (int ExitCode, string Output)> commandRunner)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return true;
+        }
+        var platform = OperatingSystem.IsMacOS() ? "macos" : "linux";
+        var path = FilePath(home, platform);
+        if (!File.Exists(path))
+        {
+            return true;
+        }
+        var content = File.ReadAllText(path);
+        var owned = platform == "linux"
+            ? content.Split('\n').Any(line => line.Trim() == $"ExecStart={SystemdQuote(binary)} daemon --state-dir {SystemdQuote(stateDir)}")
+            : content.Contains($"<string>{SecurityElement.Escape(binary)}</string><string>daemon</string>", StringComparison.Ordinal)
+                && content.Contains($"<string>--state-dir</string><string>{SecurityElement.Escape(stateDir)}</string>", StringComparison.Ordinal);
+        return !owned || Apply(home, binary, stateDir, enable: false, commandRunner, platform) == 0;
+    }
+
     internal static string FilePath(string home, string platform) => platform switch
     {
         "linux" => Path.Combine(home, ".config", "systemd", "user", Name + ".service"),
