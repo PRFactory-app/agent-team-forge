@@ -19,7 +19,7 @@ public sealed class PruneJob(PruneJobs jobs, string stateDirectory)
         var ids = jobs.Execute(DateTimeOffset.UtcNow.AddDays(-olderThanDays), dryRun);
         if (!dryRun && Directory.Exists(logs))
         {
-            foreach (var id in ids)
+            foreach (var id in ids.Where(id => Path.GetFileName(id) == id))
             {
                 File.Delete(Path.Combine(logs, id + ".log"));
             }

@@ -16,12 +16,17 @@ public sealed class PruneJobs(JobDatabase database)
             using (var select = connection.CreateCommand())
             {
                 select.Transaction = tx;
-                select.CommandText = "SELECT job_id, parent_job_id, status, updated_at FROM jobs";
+                // A result the lead has not read yet (unread wake notice) is never pruned.
+                select.CommandText = """
+                    SELECT j.job_id, j.parent_job_id, j.status, j.updated_at,
+                           EXISTS (SELECT 1 FROM wake_jobs w WHERE w.job_id=j.job_id AND w.read_at IS NULL)
+                    FROM jobs j
+                    """;
                 using var reader = select.ExecuteReader();
                 while (reader.Read())
                 {
                     var status = reader.GetString(2);
-                    var expired = status is "completed" or "failed" or "cancelled"
+                    var expired = reader.GetInt64(4) == 0 && status is "completed" or "failed" or "cancelled"
                         && DateTimeOffset.TryParse(reader.GetString(3), System.Globalization.CultureInfo.InvariantCulture,
                             System.Globalization.DateTimeStyles.None, out var updated) && updated < cutoff;
                     rows.Add((reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1), expired));

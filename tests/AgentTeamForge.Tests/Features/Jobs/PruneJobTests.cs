@@ -1,5 +1,6 @@
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.Tests.Support;
 using Microsoft.Data.Sqlite;
 
@@ -66,6 +67,26 @@ public sealed class PruneJobTests
         Assert.Equal([expired.JobId], prune.Execute(DateTimeOffset.UtcNow.AddDays(-30), false));
         Assert.NotNull(f.Store.GetJob(parent.JobId));
         Assert.NotNull(f.Store.GetJob(child.JobId));
+    }
+
+    [Fact]
+    public void Unread_wake_result_is_kept_until_read()
+    {
+        using var f = new JobFixture();
+        var wake = new WakeStore(f.Database);
+        var target = wake.Register("codex:test", "codex", "thread", "", "/tmp");
+        var job = f.Accept().Execute(new SubmitJobRequest("unread", "hello", null, false) { WakeKey = target.Key, WakeGeneration = target.Generation }).Job!;
+        var claim = f.Store.BeginNextAttempt()!;
+        f.Store.Complete(new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "result");
+        Set(f, job.JobId, "completed", 40);
+        var prune = new PruneJobs(f.Database);
+
+        Assert.Empty(prune.Execute(DateTimeOffset.UtcNow.AddDays(-30), false));
+        Assert.NotNull(f.Store.GetJob(job.JobId));
+
+        wake.MarkRead(job.JobId, target.Key, target.Generation);
+        Assert.Equal([job.JobId], prune.Execute(DateTimeOffset.UtcNow.AddDays(-30), false));
+        Assert.Null(f.Store.GetJob(job.JobId));
     }
 
     static void Set(JobFixture f, string id, string status, int daysOld, string? session = null)
