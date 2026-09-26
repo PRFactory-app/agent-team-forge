@@ -26,6 +26,12 @@ public sealed record SubmitJobRequest(string IdempotencyKey, string Instruction,
 
     public bool Worktree { get; init; }
 
+    /// <summary>Cancel the job with reason <c>timeout</c> this long after its attempt starts.</summary>
+    public int? TimeoutSeconds { get; init; }
+
+    /// <summary>Cancel the job with reason <c>queue_ttl</c> if it has not started this long after acceptance.</summary>
+    public int? QueueTtlSeconds { get; init; }
+
     /// <summary>Registered wake target of the submitting bridge; bound in the accept transaction.</summary>
     public string? WakeKey { get; init; }
     public long? WakeGeneration { get; init; }
@@ -34,6 +40,9 @@ public sealed record SubmitJobRequest(string IdempotencyKey, string Instruction,
 /// <summary>A new turn in the parent job's native session, on the same backend and cwd.</summary>
 public sealed record FollowUpRequest(string ParentJobId, string Instruction, string IdempotencyKey)
 {
+    public int? TimeoutSeconds { get; init; }
+    public int? QueueTtlSeconds { get; init; }
+
     public string? WakeKey { get; init; }
     public long? WakeGeneration { get; init; }
 }

@@ -40,15 +40,17 @@ ATF="$(pwd)/src/AgentTeamForge.Host/bin/Release/net11.0/atf"
 "$ATF" start
 ```
 
-Omit `--apply` to print the Claude Code and Codex MCP registration commands for
+Use `--mode herdr` for interactive Linux launch after installing Herdr. Omit
+`--apply` to print the Claude Code and Codex MCP registration commands for
 review. A fresh setup creates a real-agent profile and private state under
 `$XDG_STATE_HOME/agentteamforge`, or `~/.local/state/agentteamforge`;
-`--state-dir DIR` overrides it. Install the Claude Code and Codex CLIs before
-using `--apply`, and log in to each backend CLI you plan to run. `start` prints
-the daemon PID and is safe to repeat. The daemon dispatches up to eight jobs
-concurrently by default. `--mode herdr` is saved but `start` refuses it until
-Herdr launch support lands; native wake behavior is covered in the
-[Linux quickstart](docs/quickstart.md).
+`--state-dir DIR` overrides it. Install both client CLIs before `--apply`, and
+log in to each backend CLI you plan to run. `--apply` registers both MCP
+servers and sets `crossSessionInbound` to `accept` in `~/.claude/settings.json`
+for native wake, preserving existing settings. `start` prints the daemon PID
+and is safe to repeat; the daemon dispatches up to eight jobs concurrently.
+`atf stop` sends SIGTERM to this state's daemon. See the
+[Linux quickstart](docs/quickstart.md) for job commands and wake setup.
 
 Run `atf prune --dry-run` to count expired jobs, then `atf prune` to remove them.
 `--older-than 30d` is the default; both commands accept `--state-dir DIR` and
@@ -96,12 +98,24 @@ and use `submit_job(backend, instruction, cwd?, idempotency_key)`, `get_job`,
 `follow_up(job_id, instruction, idempotency_key)` (resumes the finished job's native
 session on the same backend/cwd) and `list_jobs`. CLI equivalents:
 `atf client submit|get|follow-up|list`. Add `worktree: true` to `submit_job` or
-`--worktree` to `atf client submit` with a git `cwd` to create an isolated
-checkout under the daemon state directory; the job view and list show its path
-and branch, and follow-ups reuse it. Worktrees remain for manual inspection and
-cleanup. `scripts/demo-real.sh [claude|codex|pi]` is the opt-in end-to-end
-check (spends tokens); `fake` is a plumbing dry run. The daemon runs up to
-eight jobs concurrently by default; agents run headless with bypassed permissions.
+`--worktree` to `atf client submit` with a git `cwd` to run in a separate checkout
+under the daemon state directory. The job view and list show its path and branch;
+follow-ups reuse it. Worktrees remain for manual inspection and cleanup.
+`stop_job(job_id)` (`atf client stop ID`) cancels a queued or running job and kills
+its process tree; the job ends `cancelled` and its session can still be followed up.
+`timeout_s` on `submit_job`/`follow_up` (`--timeout S`) cancels a running job with
+reason `timeout`; `queue_ttl_s` (`--queue-ttl S`) cancels one that has not started
+in time (reason `queue_ttl`). Both are off by default.
+`scripts/demo-real.sh [claude|codex|pi]` is the opt-in end-to-end check (spends
+tokens); `fake` is a plumbing dry run. The daemon dispatches up to eight jobs
+concurrently by default; setup selects headless or interactive Herdr launch.
+
+For native notices in a Codex lead, read `CODEX_THREAD_ID` with a shell tool and
+call `register_codex_wake(thread_id)` before submitting jobs. For a Claude Code
+lead in bypass mode, run `atf setup --apply` with the chosen `--mode` before launching
+Claude so its inbox delivers the notice. For Pi,
+load `extensions/pi-wake` with `ATF_STATE_DIR` set to the daemon's state
+directory; see [Pi wake setup](extensions/pi-wake/README.md).
 
 ## Reading order
 

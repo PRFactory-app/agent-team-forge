@@ -1,6 +1,7 @@
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.DAL.Features.Wake;
+using AgentTeamForge.Host.Features.Wake;
 using AgentTeamForge.Tests.Support;
 using System.Net.Sockets;
 using System.Text;
@@ -181,6 +182,45 @@ public sealed class WakeTests
         verified = true;
         Assert.True(await adapter.PostAsync(target, "notice", CancellationToken.None));
         Assert.True(queued);
+    }
+
+    [Fact]
+    public void Explicit_codex_registration_requires_a_verified_thread()
+    {
+        using var dir = new TempStateDir();
+        var thread = Guid.NewGuid().ToString("D");
+        var sessions = dir.File("sessions");
+        Directory.CreateDirectory(sessions);
+        File.WriteAllText(Path.Combine(sessions, $"rollout-2026-09-26-{thread}.jsonl"), "");
+
+        var request = HostSessionWake.ForCodexThread(thread, dir.Path);
+        Assert.NotNull(request);
+        Assert.Equal("codex:" + thread, request.WakeKey);
+        Assert.Equal(thread, request.WakeAddress);
+        Assert.Null(HostSessionWake.ForCodexThread(Guid.NewGuid().ToString("D"), dir.Path));
+        Assert.Null(HostSessionWake.ForCodexThread(thread.ToUpperInvariant(), dir.Path));
+        Assert.Null(HostSessionWake.ForCodexThread(thread, "relative-home"));
+    }
+
+    [Fact]
+    public void Codex_home_comes_from_the_host_process_environment()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        using var dir = new TempStateDir();
+        var proc = dir.File("proc");
+        var host = Path.Combine(proc, "123");
+        Directory.CreateDirectory(host);
+        var environ = Path.Combine(host, "environ");
+        File.WriteAllBytes(environ, Encoding.UTF8.GetBytes("HOME=/trusted\0CODEX_HOME=/trusted/custom\0"));
+        Assert.Equal("/trusted/custom", HostSessionWake.CodexHome(123, proc));
+        File.WriteAllBytes(environ, Encoding.UTF8.GetBytes("HOME=/trusted\0"));
+        Assert.Equal("/trusted/.codex", HostSessionWake.CodexHome(123, proc));
+        File.Delete(environ);
+        Assert.Null(HostSessionWake.CodexHome(123, proc));
     }
 
     [Fact]

@@ -34,3 +34,32 @@ SQLite database and expects the state directory's existing owner-only file
 permissions. There is no real-session qualification in unit tests; adapter
 seams use fakes and the published Linux binary gate covers the integrated
 runtime path.
+
+## Live Linux host requirements
+
+Codex 0.157.1 gives `CODEX_THREAD_ID` to shell tools but did not pass it to
+the MCP server in a live interactive session. Before submitting jobs, read
+`CODEX_THREAD_ID` from a shell tool and call `register_codex_wake(thread_id)`.
+The bridge reads `CODEX_HOME` (or `HOME`) from the Codex host process, verifies
+the thread there, and binds later submissions to it. This follows the
+reference's explicit Codex member
+registration. The old environment-based registration still works where Codex
+does pass the variable through.
+
+Claude Code 2.1.283 accepted the socket post but held it behind a cross-session
+approval prompt when the host ran in bypass mode with default inbound settings.
+The live probe launched that lead with a settings file containing
+`{"crossSessionInbound":"accept"}`. `atf setup --apply` now sets the same
+value in the user's Claude settings for future lead sessions. With
+that setting the notice arrived in the idle conversation and the lead read
+the completed job. Pi 0.87.1 woke through `extensions/pi-wake` after its held
+fake job completed and read the result.
+
+Live held-job evidence (2026-09-26, Linux): Codex
+`job_01a0de69a72b7dc9b96c349b4a52b09b`, Pi
+`job_01a0de605adf7340906c38564a1c97f9`, and Claude
+`job_01a0de625bd47299a9ff3c22ffb60b50` each showed the notice in the
+idle host conversation, then fetched `fake-result` through MCP. The final
+Codex run used the AOT binary after the trusted-home fix. `scripts/verify.sh`
+passed with 160 tests (3 opt-in live backend tests skipped) and 26 published
+scenarios.

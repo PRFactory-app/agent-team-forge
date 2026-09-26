@@ -18,12 +18,15 @@ public sealed class PruneJobTests
         var oldFailed = f.Submit("old-failed");
         var failedRun = f.Store.BeginNextAttempt()!;
         f.Store.EndUnsuccessfully(new RunRef(failedRun.Job.JobId, failedRun.RunId, failedRun.Generation, failedRun.Correlation), JobStatus.Failed, "test_failure");
+        var oldCancelled = f.Submit("old-cancelled");
+        new StopJob(f.Store, JobFixture.Operator, _ => { }).Execute(oldCancelled.JobId);
         var recentCompleted = f.Submit("recent-completed");
         var oldQueued = f.Submit("old-queued");
         var oldRunning = f.Submit("old-running");
         var uncertain = f.Submit("uncertain");
         Set(f, oldCompleted.JobId, "completed", 40);
         Set(f, oldFailed.JobId, "failed", 40);
+        Set(f, oldCancelled.JobId, "cancelled", 40);
         Set(f, recentCompleted.JobId, "completed", 2);
         Set(f, oldQueued.JobId, "queued", 40);
         Set(f, oldRunning.JobId, "running", 40);
@@ -37,9 +40,11 @@ public sealed class PruneJobTests
 
         var count = new PruneJob(new PruneJobs(f.Database), state).Execute(30, false);
 
-        Assert.Equal(2, count);
+        Assert.Equal(3, count);
         Assert.Null(f.Store.GetJob(oldCompleted.JobId));
         Assert.Null(f.Store.GetJob(oldFailed.JobId));
+        Assert.Null(f.Store.GetJob(oldCancelled.JobId));
+        Assert.Empty(f.Store.GetEvents(oldCancelled.JobId));
         Assert.Empty(f.Store.GetEvents(oldCompleted.JobId));
         Assert.Empty(f.Store.GetRuns(oldCompleted.JobId));
         Assert.False(File.Exists(Path.Combine(logs, oldCompleted.JobId + ".log")));
