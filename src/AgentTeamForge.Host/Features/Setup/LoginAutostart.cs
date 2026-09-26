@@ -43,7 +43,9 @@ public static class LoginAutostart
         if (enable)
         {
             StateDirectory.CreatePrivateDirectory(Path.GetDirectoryName(path)!);
-            var content = platform == "linux" ? LinuxUnit(binary, stateDir) : MacPlist(binary, stateDir);
+            // Login managers start with a minimal PATH; keep the setup shell's so agents and herdr resolve.
+            var searchPath = Environment.GetEnvironmentVariable("PATH") ?? "";
+            var content = platform == "linux" ? LinuxUnit(binary, stateDir, searchPath) : MacPlist(binary, stateDir, searchPath);
             var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
             {
@@ -89,19 +91,21 @@ public static class LoginAutostart
         _ => throw new PlatformNotSupportedException(platform),
     };
 
-    internal static string LinuxUnit(string binary, string stateDir) => $"""
+    internal static string LinuxUnit(string binary, string stateDir, string searchPath) => $"""
         [Unit]
         Description=AgentTeamForge daemon
 
         [Service]
         Type=simple
+        UMask=0077
+        Environment={SystemdQuote("PATH=" + searchPath, command: false)}
         ExecStart={SystemdQuote(binary)} daemon --state-dir {SystemdQuote(stateDir)}
 
         [Install]
         WantedBy=default.target
         """ + "\n";
 
-    internal static string MacPlist(string binary, string stateDir) => $"""
+    internal static string MacPlist(string binary, string stateDir, string searchPath) => $"""
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         <plist version="1.0"><dict>
@@ -110,18 +114,19 @@ public static class LoginAutostart
             <string>{SecurityElement.Escape(binary)}</string><string>daemon</string>
             <string>--state-dir</string><string>{SecurityElement.Escape(stateDir)}</string>
           </array>
+          <key>EnvironmentVariables</key><dict><key>PATH</key><string>{SecurityElement.Escape(searchPath)}</string></dict>
           <key>RunAtLoad</key><true/>
         </dict></plist>
         """ + "\n";
 
-    static string SystemdQuote(string value)
+    static string SystemdQuote(string value, bool command = true)
     {
         if (value.Contains('\n') || value.Contains('\r'))
         {
             throw new ArgumentException("newline in autostart path");
         }
         return "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal)
-            .Replace("%", "%%", StringComparison.Ordinal).Replace("$", "$$", StringComparison.Ordinal) + "\"";
+            .Replace("%", "%%", StringComparison.Ordinal).Replace("$", command ? "$$" : "$", StringComparison.Ordinal) + "\"";
     }
 
     static string WindowsQuote(string value)

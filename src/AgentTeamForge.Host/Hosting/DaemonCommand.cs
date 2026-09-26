@@ -45,7 +45,14 @@ public static class DaemonCommand
             return 64;
         }
 
-        using var daemonLock = DaemonLock.TryAcquire(state.LockFile);
+        // Retry briefly: a client's momentary liveness probe must not make a starting daemon give up.
+        var daemonLock = DaemonLock.TryAcquire(state.LockFile);
+        for (var attempt = 0; daemonLock is null && attempt < 20; attempt++)
+        {
+            await Task.Delay(25);
+            daemonLock = DaemonLock.TryAcquire(state.LockFile);
+        }
+        using var ownedLock = daemonLock;
         if (daemonLock is null)
         {
             // Another live daemon owns the endpoint; touch nothing.

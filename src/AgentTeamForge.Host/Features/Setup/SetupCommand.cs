@@ -20,6 +20,10 @@ public static class SetupCommand
         var check = options.ContainsKey("check");
         var apply = options.ContainsKey("apply");
         var autostart = options.GetValueOrDefault("autostart");
+        if (autostart == "on")
+        {
+            autostart = "true";
+        }
         if (autostart is not null and not ("true" or "off"))
         {
             Console.Error.WriteLine("error: --autostart must be on or off");
@@ -122,6 +126,14 @@ public static class SetupCommand
         {
             Console.Error.WriteLine($"error: launch mode {mode} is unavailable on this platform");
             return 64;
+        }
+        // Concurrent starters (several MCP bridges) queue here so only one probes and
+        // launches; a probe must never overlap a starting daemon's own lock attempt.
+        using var gate = await AcquireStartGateAsync(state);
+        if (gate is null)
+        {
+            Console.Error.WriteLine($"error: another daemon start did not finish; see {state.Path}/daemon.log");
+            return 1;
         }
         using (var probe = DaemonLock.TryAcquire(state.LockFile))
         {
@@ -268,6 +280,19 @@ public static class SetupCommand
         }
         Console.Error.WriteLine($"error: daemon did not become ready; see {state.Path}/daemon.log");
         return 1;
+    }
+
+    static async Task<DaemonLock?> AcquireStartGateAsync(StateDirectory state)
+    {
+        for (var i = 0; i < 300; i++)
+        {
+            if (DaemonLock.TryAcquire(Path.Combine(state.Path, "start.lock")) is { } gate)
+            {
+                return gate;
+            }
+            await Task.Delay(50);
+        }
+        return null;
     }
 
     static bool ReadyLogged(StateDirectory state, int pid)

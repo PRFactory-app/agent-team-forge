@@ -251,6 +251,7 @@ public sealed class SetupCommandTests
         var unit = File.ReadAllText(LoginAutostart.FilePath(home, "linux"));
         Assert.Contains("ExecStart=\"/tmp/atf binary\" daemon --state-dir \"/tmp/atf state\"", unit);
         Assert.Contains("WantedBy=default.target", unit);
+        Assert.Contains("Environment=\"PATH=" + Environment.GetEnvironmentVariable("PATH"), unit);
         Assert.Contains("systemctl --user enable agentteamforge.service", calls);
         Assert.Equal(0, LoginAutostart.Apply(home, binary, state, false, Runner, "linux"));
         Assert.False(LoginAutostart.IsInstalled(home, "linux"));
@@ -259,7 +260,26 @@ public sealed class SetupCommandTests
         var plist = File.ReadAllText(LoginAutostart.FilePath(home, "macos"));
         Assert.Contains("<string>/tmp/atf binary</string>", plist);
         Assert.Contains("<key>RunAtLoad</key><true/>", plist);
+        Assert.Contains("<key>PATH</key>", plist);
         Assert.Equal(0, LoginAutostart.Apply(home, binary, state, false, Runner, "macos"));
         Assert.False(LoginAutostart.IsInstalled(home, "macos"));
+    }
+
+    [Fact]
+    public void AutostartOnSpellingEnablesForConfiguredStateInTempHome()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        using var temp = new TempStateDir();
+        var dir = temp.File("state");
+        var home = temp.File("home");
+        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = dir },
+            (_, _) => throw new InvalidOperationException(), "/tmp/atf", homePath: home));
+
+        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["autostart"] = "on", ["apply"] = "true", ["state-dir"] = dir },
+            (_, _) => (0, ""), "/tmp/atf", homePath: home));
+        Assert.True(LoginAutostart.IsInstalled(home, "linux"));
     }
 }
