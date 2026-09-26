@@ -206,6 +206,11 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
     /// <summary>SO_PEERCRED: struct ucred { pid_t pid; uid_t uid; gid_t gid; }.</summary>
     static uint PeerUid(Socket socket)
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            return Native.GetPeerEid(socket.SafeHandle.DangerousGetHandle(), out var uid, out _) == 0 ? uid : uint.MaxValue;
+        }
+
         Span<byte> ucred = stackalloc byte[12];
         var length = socket.GetRawSocketOption(1, 17, ucred);
         return length == 12 ? BitConverter.ToUInt32(ucred[4..8]) : uint.MaxValue;

@@ -56,6 +56,20 @@ public sealed class SetupCommandTests
     }
 
     [Fact]
+    public void MacTerminalModeIsRejectedOffMacBeforeCreatingState()
+    {
+        if (OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        using var temp = new TempStateDir();
+        var dir = temp.File("state");
+        Assert.Equal(64, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "terminal", ["state-dir"] = dir }));
+        Assert.False(Directory.Exists(dir));
+    }
+
+    [Fact]
     public void ApplyReconcilesAndPreservesOtherEntries()
     {
         using var temp = new TempStateDir();

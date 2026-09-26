@@ -258,7 +258,11 @@ internal sealed class WtTabControl : IWtTabControl
                 break;
             case InteractiveAgentKind.Codex:
                 args.AddRange([WindowsAgentBinary("codex"), "--dangerously-bypass-approvals-and-sandbox", "-C", launch.WorkingDirectory]);
-                args.AddRange(CodexHookArguments(HookLauncher(launch)));
+                if (OperatingSystem.IsWindows())
+                {
+                    // Hooks only feed the Windows tab state marker; elsewhere they would just replace user hooks.
+                    args.AddRange(CodexHookArguments(HookLauncher(launch)));
+                }
                 if (launch.ResumeSessionId is { } codexId)
                 {
                     args.AddRange(["resume", codexId]);
