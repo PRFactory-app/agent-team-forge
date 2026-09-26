@@ -80,8 +80,8 @@ translation of the initial Swedish planning documents.
 13. Use the P01–P08 waterfall roadmap for the complete product. Planning/reviews
     may be parallel; phase implementation consumes accepted predecessor
     contracts. Scope and options are explicit in `docs/product-scope.md`.
-14. Spawn Pi planning/review agents through `subagent_spawn`; Claude Code
-    coordination may continue through its configured agent-team tools.
+14. Spawn all workers (Pi planning, Claude implementation, Codex review/
+    integration) through win-agent-teams `spawn_agent`; see `AGENTS.md`.
 15. Managed/spawned Pi is first-class alongside Claude Code/Codex in P03, not
     deferred to P06 or satisfied by attached/lead-only Pi. Native Windows Pi
     spawn/follow-up/results/interrupt/stop/reconnect must pass in selected
