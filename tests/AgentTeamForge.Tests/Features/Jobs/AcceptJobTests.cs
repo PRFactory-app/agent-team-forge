@@ -57,7 +57,6 @@ public sealed class AcceptJobTests
 
         Assert.Throws<InjectedFailureException>(() => f.Accept().Execute(new SubmitJobRequest("k1", "x", null, false)));
         Assert.Equal(0, f.Store.CountUnattemptedIntents());
-        Assert.Equal(0, f.AcceptedSignals);
 
         f.FailAt = null;
         Assert.Equal("accepted", f.Accept().Execute(new SubmitJobRequest("k1", "x", null, false)).Outcome);

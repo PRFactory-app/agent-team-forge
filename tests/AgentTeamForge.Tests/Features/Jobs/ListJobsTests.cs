@@ -156,7 +156,6 @@ public sealed class ListJobsTests
         using var f = new JobFixture();
         var ids = Enumerable.Range(0, 3).Select(i => f.Submit($"k{i}").JobId).ToList();
         f.Store.Complete(Run(f.Store.BeginNextAttempt()!), "ok");
-        var signals = f.AcceptedSignals;
         var before = Snapshot(f, ids);
 
         for (var i = 0; i < 3; i++)
@@ -166,7 +165,6 @@ public sealed class ListJobsTests
         }
 
         Assert.Equal(before, Snapshot(f, ids));
-        Assert.Equal(signals, f.AcceptedSignals);
     }
 
     static void InsertQueued(JobFixture f, string jobId)

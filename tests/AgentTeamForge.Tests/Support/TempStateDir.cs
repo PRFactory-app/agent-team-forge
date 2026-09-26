@@ -8,7 +8,13 @@ public sealed class TempStateDir : IDisposable
 {
     public TempStateDir()
     {
-        var root = Directory.Exists("/tmp") ? "/tmp" : System.IO.Path.GetTempPath();
+        var root = Environment.GetEnvironmentVariable("ATF_TEST_TMP_ROOT")
+            ?? (Directory.Exists("/tmp") ? "/tmp" : System.IO.Path.GetTempPath());
+        if (!Directory.Exists(root))
+        {
+            throw new DirectoryNotFoundException($"Test temp root does not exist: {root}");
+        }
+
         Path = System.IO.Path.Combine(root, "atf-" + Guid.NewGuid().ToString("N")[..10]);
         Directory.CreateDirectory(Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
@@ -19,15 +25,16 @@ public sealed class TempStateDir : IDisposable
 
     public void Dispose()
     {
-        try
+        // The runner owns this parent and decides whether a failed run is kept.
+        if (Environment.GetEnvironmentVariable("ATF_KEEP_TMP") == "1" &&
+            Environment.GetEnvironmentVariable("ATF_TEST_TMP_ROOT") is { Length: > 0 })
+        {
+            return;
+        }
+
+        if (Directory.Exists(Path))
         {
             Directory.Delete(Path, recursive: true);
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
         }
     }
 }

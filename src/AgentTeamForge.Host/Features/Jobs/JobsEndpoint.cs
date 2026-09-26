@@ -5,7 +5,7 @@ using AgentTeamForge.Host.Transport;
 namespace AgentTeamForge.Host.Features.Jobs;
 
 /// <summary>Thin IPC mapping for the job operations; all rules live in Business.</summary>
-public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, DurabilityCheckpoints checkpoints)
+public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, DurabilityCheckpoints checkpoints, Action onAccepted)
 {
     public IpcResponse Handle(IpcRequest request)
     {
@@ -44,6 +44,15 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         }
 
         return Map(result);
+    }
+
+    /// <summary>Wake dispatch after the accepted reply is written or its write fails.</summary>
+    public void AfterReply(IpcResponse response)
+    {
+        if (response.Outcome == "accepted" || response.Error == IpcProtocol.OutcomeUnknown)
+        {
+            onAccepted();
+        }
     }
 
     static IpcResponse Map(JobResult result) =>

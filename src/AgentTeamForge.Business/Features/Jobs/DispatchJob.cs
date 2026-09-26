@@ -20,7 +20,8 @@ public sealed class DispatchJob : IDisposable
 
     readonly SemaphoreSlim _signal = new(0);
     readonly CancellationTokenSource _halted = new();
-    readonly Lock _claimGate = new();
+    readonly SemaphoreSlim _claimGate = new(1, 1);
+    readonly Lock _haltClaimGate = new();
     readonly JobStore store;
     readonly BackendCatalog backends;
     readonly SpikeLimits limits;
@@ -66,10 +67,23 @@ public sealed class DispatchJob : IDisposable
 
     public void Signal() => _signal.Release();
 
+    /// <summary>Keep a new submission out of the claim loop until its reply is sent.</summary>
+    public IDisposable PauseClaims()
+    {
+        _claimGate.Wait();
+        return new ClaimPause(_claimGate);
+    }
+
     public void Dispose()
     {
         _signal.Dispose();
         _halted.Dispose();
+        _claimGate.Dispose();
+    }
+
+    sealed class ClaimPause(SemaphoreSlim gate) : IDisposable
+    {
+        public void Dispose() => gate.Release();
     }
 
     /// <summary>Admission is closed whenever this returns or throws, halted or shut down.</summary>
@@ -118,23 +132,36 @@ public sealed class DispatchJob : IDisposable
             AttemptClaim? claim;
             try
             {
-                lock (_claimGate)
+                await _claimGate.WaitAsync(stopping);
+                try
                 {
-                    // WaitAsync may grant a released slot even as halt cancels it.
-                    // Serialize this check and the durable claim with Halt.
-                    if (stopping.IsCancellationRequested || Halted)
+                    lock (_haltClaimGate)
                     {
-                        slots.Release();
-                        return;
-                    }
+                        // WaitAsync can grant a slot as halt cancels it. The
+                        // claim and halt decision must share one fence.
+                        if (stopping.IsCancellationRequested || Halted)
+                        {
+                            slots.Release();
+                            return;
+                        }
 
-                    claim = store.BeginNextAttempt();
+                        claim = store.BeginNextAttempt();
+                    }
+                }
+                finally
+                {
+                    _claimGate.Release();
                 }
             }
             catch (StorageException ex)
             {
                 log($"dispatch claim failed: {ex.Failure}");
                 claim = null;
+            }
+            catch (OperationCanceledException) when (stopping.IsCancellationRequested)
+            {
+                slots.Release();
+                return;
             }
             catch (Exception ex)
             {
@@ -350,7 +377,7 @@ public sealed class DispatchJob : IDisposable
 
     void Halt(string reason)
     {
-        lock (_claimGate)
+        lock (_haltClaimGate)
         {
             Interlocked.CompareExchange(ref _haltReason, reason, null);
             admission.Close(HaltReason!);
