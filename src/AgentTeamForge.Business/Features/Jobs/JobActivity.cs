@@ -8,12 +8,16 @@ public static class JobActivity
     public const int MaxTextChars = 500;
     public const int MaxPageSize = 50;
 
-    public static IReadOnlyList<ActivityEntry> Normalize(string backend, string line)
+    public static IReadOnlyList<ActivityEntry> Normalize(string backend, string line, string stream = "stdout")
     {
         if (string.IsNullOrWhiteSpace(line) || line.StartsWith("=== run ", StringComparison.Ordinal)
             || line is "[stdout]" or "[stderr]")
         {
             return [];
+        }
+        if (stream == "stderr")
+        {
+            return [Entry("error", line)];
         }
 
         JsonDocument document;

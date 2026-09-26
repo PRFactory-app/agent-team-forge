@@ -15,6 +15,10 @@ internal sealed class CapturingReadStream(Stream inner, string name, Action<stri
         {
             output?.Invoke(name, buffer.AsMemory(offset, read));
         }
+        else
+        {
+            output?.Invoke(name, ReadOnlyMemory<byte>.Empty);
+        }
         return read;
     }
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
@@ -23,6 +27,10 @@ internal sealed class CapturingReadStream(Stream inner, string name, Action<stri
         if (read > 0)
         {
             output?.Invoke(name, buffer[..read]);
+        }
+        else
+        {
+            output?.Invoke(name, ReadOnlyMemory<byte>.Empty);
         }
         return read;
     }
