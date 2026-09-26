@@ -52,10 +52,13 @@ public sealed class ExternalTeamTests
         var ticket = team.CreateTicket(lead.SessionId, lead.Workspace, "member", null).Ticket!;
         Assert.Equal("member-2", team.CreateTicket(lead.SessionId, lead.Workspace, "member", null).Ticket!.Name);
         var joined = team.Join(lead.SessionId, ticket.Token).Member!;
+        Assert.StartsWith($"wam1:{lead.SessionId}:", joined.MemberToken);
+        var bare = joined.MemberToken.Split(':')[2];
+        Assert.True(team.Read(bare, null, 0).Ok);
         Assert.Equal(joined, team.Join(lead.SessionId, ticket.Token).Member);
         // The ticket alone must not derive the member token offline once it expires.
         Assert.NotEqual(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes("atf-member:" + ticket.Token))).ToLowerInvariant(), joined.MemberToken);
+            System.Text.Encoding.UTF8.GetBytes("atf-member:" + ticket.Token))).ToLowerInvariant(), bare);
         Assert.Equal("invalid_or_expired_token", team.Join(lead.SessionId, "bad").Error);
         Assert.Equal("invalid_or_expired_token", team.Join(lead.SessionId, "x" + ticket.Token[1..]).Error);
 
@@ -79,13 +82,13 @@ public sealed class ExternalTeamTests
         Assert.True(team.SendFromLead(b.SessionId, b.Workspace, "member", "private for b").Ok);
         Assert.Empty(team.Read(aToken, null, null).Inbox!.Messages);
         Assert.Equal("private for b", Assert.Single(team.Read(bToken, null, null).Inbox!.Messages).Text);
-        Assert.Equal("invalid_request", team.Read($"wam1:{b.SessionId}:{aToken}", null, null).Error);
-        Assert.True(team.Read($"wam1:{a.SessionId}:{aToken}", null, null).Ok);
-        Assert.True(team.Leave(aToken).Ok);
+        Assert.Equal("invalid_request", team.Read($"wam1:{b.SessionId}:{aToken.Split(':')[2]}", null, null).Error);
+        Assert.True(team.Read($"wam1:{a.SessionId}:{aToken.Split(':')[2]}", null, null).Ok);
+        Assert.Equal("member", team.Leave(aToken).Name);
         Assert.True(team.Leave(aToken).AlreadyLeft);
         Assert.Equal("membership_revoked", team.Read(aToken, null, null).Error);
         Assert.Equal("membership_revoked", team.Send(aToken, "late").Error);
-        Assert.Equal("invalid_or_expired_token", team.Join(a.SessionId, aTicket.Token).Error);
+        Assert.Equal("membership_revoked", team.Join(a.SessionId, aTicket.Token).Error);
     }
 
     [Fact]
@@ -252,7 +255,7 @@ public sealed class ExternalTeamTests
         Assert.Equal(1, store.Prune(DateTimeOffset.UtcNow.AddDays(1), dryRun: false));
         Assert.True(team.Leave(token).AlreadyLeft);
         Assert.Equal("keep me", Assert.Single(team.Read(stays, null, null).Inbox!.Messages).Text);
-        Assert.Equal(0, store.Prune(DateTimeOffset.UtcNow.AddDays(1), dryRun: false));
+        Assert.Equal(1, store.Prune(DateTimeOffset.UtcNow.AddDays(1), dryRun: false));
 
         var actorWake = wake.Register("codex:actor-leave", "codex", "actor", "", home.Path);
         Assert.True(team.BindTeamWake(teamId, actorWake.Key, actorWake.Generation));
@@ -260,6 +263,39 @@ public sealed class ExternalTeamTests
         Assert.Single(wake.PendingExternal());
         Assert.True(team.CloseTeam(teamId));
         Assert.Empty(wake.PendingExternal());
+    }
+
+    [Fact]
+    public void Prune_read_open_team_messages_preserves_sender_sequence_and_cursor()
+    {
+        using var f = new JobFixture();
+        var time = DateTimeOffset.UtcNow.AddDays(-31);
+        var store = new ExternalMemberStore(f.Database);
+        var team = new ExternalTeam(store, new WakeStore(f.Database), () => time);
+        var teamId = team.CreateActorTeam("actor:prune")!;
+        var token = team.Join(teamId, team.CreateTicketForTeam(teamId, "reader", null).Ticket!.Token).Member!.MemberToken;
+        Assert.True(team.SendToMember(teamId, "reader", "old read").Ok);
+        Assert.True(team.SendToMember(teamId, "reader", "old unread").Ok);
+        var first = Assert.Single(team.Read(token, null, 1).Inbox!.Messages);
+        Assert.Equal(1, first.Seq);
+
+        var cutoff = DateTimeOffset.UtcNow.AddDays(-30);
+        Assert.Equal(1, store.Prune(cutoff, dryRun: true));
+        Assert.Equal(1, store.Prune(cutoff, dryRun: false));
+        var pending = team.Read(token, null, 0).Inbox!;
+        Assert.Equal(1, pending.Cursors!["team-lead"]);
+        Assert.Equal(1, pending.UnreadCount);
+        var second = Assert.Single(team.Read(token, 1, 1, fromAgent: "team-lead").Inbox!.Messages);
+        Assert.Equal((2L, "old unread"), (second.Seq, second.Text));
+        Assert.Equal(1, store.Prune(cutoff, dryRun: false));
+
+        time = DateTimeOffset.UtcNow;
+        Assert.True(team.SendToMember(teamId, "reader", "new").Ok);
+        Assert.Equal(2, team.Read(token, null, 0).Inbox!.Cursors!["team-lead"]);
+        var third = Assert.Single(team.Read(token, null, 1).Inbox!.Messages);
+        Assert.Equal((3L, "new"), (third.Seq, third.Text));
+        Assert.Empty(team.Read(token, null, null).Inbox!.Messages);
+        Assert.Empty(team.Read(token, 3, null, fromAgent: "team-lead").Inbox!.Messages);
     }
 
     static ExternalTeam Team(JobFixture f, Func<DateTimeOffset>? clock = null) =>

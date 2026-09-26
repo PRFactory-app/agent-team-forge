@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 9;
+    public const int CurrentVersion = 10;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -187,7 +187,27 @@ static class Schema
         CREATE INDEX external_messages_wake ON external_messages(wake_key,read_at,seq);
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9];
+    /// <summary>v10: durable sender positions and read cursors survive message retention.</summary>
+    const string V10 = """
+        ALTER TABLE external_messages ADD COLUMN sender_seq INTEGER NOT NULL DEFAULT 0;
+        WITH numbered AS (
+            SELECT seq, ROW_NUMBER() OVER (PARTITION BY team_id,recipient,sender ORDER BY seq) AS position
+            FROM external_messages)
+        UPDATE external_messages SET sender_seq=(SELECT position FROM numbered WHERE numbered.seq=external_messages.seq);
+        CREATE TABLE external_sender_cursors(
+            team_id TEXT NOT NULL REFERENCES external_teams(team_id) ON DELETE CASCADE,
+            recipient TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            high_water INTEGER NOT NULL DEFAULT 0,
+            cursor INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(team_id,recipient,sender));
+        INSERT INTO external_sender_cursors(team_id,recipient,sender,high_water,cursor)
+        SELECT team_id,recipient,sender,MAX(sender_seq),COALESCE(MAX(CASE WHEN read_at IS NOT NULL THEN sender_seq END),0)
+        FROM external_messages GROUP BY team_id,recipient,sender;
+        CREATE INDEX external_messages_sender_position ON external_messages(team_id,recipient,sender,sender_seq);
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused
