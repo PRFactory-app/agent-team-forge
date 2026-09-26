@@ -245,22 +245,24 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return (IReadOnlyList<string>)jobs;
     });
 
-    /// <summary>Recorded direct children whose run was interrupted by daemon death.</summary>
-    public IReadOnlyList<(int Pid, string Correlation)> GetOrphanedBackendProcesses() => Read(connection =>
+    /// <summary>
+    /// Run markers whose backend processes may have outlived daemon death,
+    /// including runs that died before their PID was recorded.
+    /// </summary>
+    public IReadOnlyList<string> GetInterruptedRunCorrelations() => Read(connection =>
     {
         using var command = Command(connection, null, """
-            SELECT backend_pid, correlation FROM runs
-            WHERE backend_pid IS NOT NULL AND
-              (state='started' OR (state='needs_reconciliation' AND reason_code='daemon_restart_uncertain'))
+            SELECT correlation FROM runs
+            WHERE state='started' OR (state='needs_reconciliation' AND reason_code='daemon_restart_uncertain')
             """);
         using var reader = command.ExecuteReader();
-        var processes = new List<(int Pid, string Correlation)>();
+        var correlations = new List<string>();
         while (reader.Read())
         {
-            processes.Add((reader.GetInt32(0), reader.GetString(1)));
+            correlations.Add(reader.GetString(0));
         }
 
-        return processes;
+        return (IReadOnlyList<string>)correlations;
     });
 
     public JobRecord? GetJob(string jobId) => Read(connection => GetJob(connection, null, jobId));

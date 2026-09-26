@@ -6,18 +6,15 @@ namespace AgentTeamForge.Business.Features.Recovery;
 /// <summary>
 /// Runs before the daemon serves requests or dispatches. Unattempted intents
 /// stay eligible for one dispatch; started attempts without committed
-/// completion are quarantined. A Linux child is terminated only when its
-/// recorded run marker still matches the process at that PID.
+/// completion are quarantined. On Linux, leftover backend processes are killed
+/// only when they carry an interrupted run's random marker in their environment.
 /// </summary>
 public sealed class RecoverOnStartup(JobStore store)
 {
     public IReadOnlyList<string> Execute()
     {
         // Retry cleanup if an earlier restart died during recovery.
-        foreach (var (pid, correlation) in store.GetOrphanedBackendProcesses())
-        {
-            OrphanedBackendProcess.TryTerminate(pid, correlation);
-        }
+        OrphanedBackendProcess.TerminateMarked(store.GetInterruptedRunCorrelations());
 
         return store.QuarantineUncertainAttempts();
     }

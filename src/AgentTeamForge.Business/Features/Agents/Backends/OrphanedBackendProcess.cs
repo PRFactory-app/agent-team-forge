@@ -1,45 +1,126 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
 
 namespace AgentTeamForge.Business.Features.Agents.Backends;
 
-/// <summary>Linux restart cleanup for a direct child recorded by the old daemon.</summary>
-public static class OrphanedBackendProcess
+/// <summary>Linux restart cleanup for backend processes started by an earlier daemon.</summary>
+public static partial class OrphanedBackendProcess
 {
     const string Marker = "ATF_RUN_CORRELATION";
+    const int SigKill = 9;
+    // Same numbers on x64 and arm64 (unified syscall table since Linux 5.3).
+    const long SysPidfdSendSignal = 424;
+    const long SysPidfdOpen = 434;
 
     public static void Mark(ProcessStartInfo info, string correlation) => info.Environment[Marker] = correlation;
 
-    public static bool TryTerminate(int pid, string correlation)
+    /// <summary>
+    /// Kills every process whose environment carries one of the given run
+    /// markers: the backend child and descendants that inherited it. A PID
+    /// alone may have been recycled, so each process is pinned with a pidfd
+    /// before its environment is checked and is signalled through that pidfd.
+    /// </summary>
+    public static int TerminateMarked(IReadOnlyCollection<string> correlations)
     {
-        if (!OperatingSystem.IsLinux() || pid <= 0)
+        if (!OperatingSystem.IsLinux() || correlations.Count == 0)
+        {
+            return 0;
+        }
+
+        var markers = correlations.Select(c => Encoding.UTF8.GetBytes($"{Marker}={c}\0")).ToList();
+        var self = Environment.ProcessId;
+        var killed = 0;
+        foreach (var directory in Directory.EnumerateDirectories("/proc"))
+        {
+            if (int.TryParse(Path.GetFileName(directory), out var pid) && pid > 0 && pid != self
+                && TryKill(pid, markers))
+            {
+                killed++;
+            }
+        }
+
+        return killed;
+    }
+
+    static bool TryKill(int pid, List<byte[]> markers)
+    {
+        using var pidfd = PidfdOpen(pid);
+        if (pidfd is null)
         {
             return false;
         }
 
+        byte[] environment;
         try
         {
-            // A PID alone may have been recycled. The random correlation was
-            // placed in this child's environment before it started.
-            var environment = File.ReadAllBytes($"/proc/{pid}/environ");
-            var marker = Encoding.UTF8.GetBytes($"{Marker}={correlation}\0");
-            var markerAt = environment.AsSpan().IndexOf(marker);
-            if (markerAt < 0 || (markerAt > 0 && environment[markerAt - 1] != 0))
+            // If the pinned process died and the PID was reused before this
+            // read, the signal below goes to the dead pidfd and is a no-op.
+            environment = File.ReadAllBytes($"/proc/{pid}/environ");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        if (!markers.Any(marker => HasEntry(environment, marker)))
+        {
+            return false;
+        }
+
+        return PidfdSendSignal(pidfd, SigKill, 0, 0) == 0;
+    }
+
+    static bool HasEntry(ReadOnlySpan<byte> environment, ReadOnlySpan<byte> entry)
+    {
+        var offset = 0;
+        while (offset < environment.Length)
+        {
+            var at = environment[offset..].IndexOf(entry);
+            if (at < 0)
             {
                 return false;
             }
 
-            using var process = Process.GetProcessById(pid);
-            if (!process.HasExited)
+            at += offset;
+            if (at == 0 || environment[at - 1] == 0)
             {
-                process.Kill(entireProcessTree: true);
+                return true;
             }
 
-            return true;
+            offset = at + 1;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+
+        return false;
+    }
+
+    static SafeFileHandle? PidfdOpen(int pid)
+    {
+        var fd = SyscallPidfdOpen(SysPidfdOpen, pid, 0);
+        return fd < 0 ? null : new SafeFileHandle(fd, ownsHandle: true);
+    }
+
+    static long PidfdSendSignal(SafeFileHandle pidfd, int signal, nint info, uint flags)
+    {
+        var added = false;
+        try
         {
-            return false;
+            pidfd.DangerousAddRef(ref added);
+            return SyscallPidfdSendSignal(SysPidfdSendSignal, (int)pidfd.DangerousGetHandle(), signal, info, flags);
+        }
+        finally
+        {
+            if (added)
+            {
+                pidfd.DangerousRelease();
+            }
         }
     }
+
+    [LibraryImport("libc", EntryPoint = "syscall")]
+    private static partial nint SyscallPidfdOpen(long number, int pid, uint flags);
+
+    [LibraryImport("libc", EntryPoint = "syscall")]
+    private static partial long SyscallPidfdSendSignal(long number, int pidfd, int signal, nint info, uint flags);
 }
