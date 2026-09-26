@@ -282,4 +282,53 @@ public sealed class SetupCommandTests
             (_, _) => (0, ""), "/tmp/atf", homePath: home));
         Assert.True(LoginAutostart.IsInstalled(home, "linux"));
     }
+
+    [Fact]
+    public void DaemonEnvironmentDropsLeadIdentityAndKeepsSessionBasics()
+    {
+        var environment = new Dictionary<string, string?>
+        {
+            ["PATH"] = "/usr/bin",
+            ["HOME"] = "/tmp/home",
+            ["LANG"] = "en_US.UTF-8",
+            ["HTTPS_PROXY"] = "http://proxy",
+            ["XDG_RUNTIME_DIR"] = "/run/user/1",
+            ["DISPLAY"] = ":0",
+            ["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/tmp/bus",
+            ["CLAUDECODE"] = "1",
+            ["CLAUDE_CODE_MESSAGING_TOKEN"] = "secret",
+            ["HERDR_SESSION"] = "lead",
+            ["CODEX_THREAD_ID"] = "lead",
+            ["AGENT_NAME"] = "lead",
+            ["WIN_AGENT_TEAMS_SESSION_DIR"] = "lead",
+            ["OPENAI_API_KEY"] = "secret",
+        };
+
+        DaemonEnvironment.Scrub(environment);
+
+        Assert.Equal(7, environment.Count);
+        Assert.Equal("/usr/bin", environment["PATH"]);
+        Assert.Equal("/run/user/1", environment["XDG_RUNTIME_DIR"]);
+        Assert.DoesNotContain("AGENT_NAME", environment.Keys);
+    }
+
+    [Fact]
+    public void FailedSystemdEnableRestoresUnitAndChoiceTracksInstalledFile()
+    {
+        using var temp = new TempStateDir();
+        var home = temp.File("home");
+        var path = LoginAutostart.FilePath(home, "linux");
+        Assert.False(LoginAutostart.UseSystemdUserUnit(home));
+        static (int, string) FailEnable(string _, IReadOnlyList<string> args) => args.Contains("enable") ? (1, "failed") : (0, "");
+
+        Assert.Equal(1, LoginAutostart.Apply(home, "/tmp/atf", "/tmp/state", true, FailEnable, "linux"));
+        Assert.False(File.Exists(path));
+        Assert.False(LoginAutostart.UseSystemdUserUnit(home));
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "old unit");
+        Assert.Equal(1, LoginAutostart.Apply(home, "/tmp/atf", "/tmp/state", true, FailEnable, "linux"));
+        Assert.Equal("old unit", File.ReadAllText(path));
+        Assert.True(LoginAutostart.UseSystemdUserUnit(home));
+    }
 }

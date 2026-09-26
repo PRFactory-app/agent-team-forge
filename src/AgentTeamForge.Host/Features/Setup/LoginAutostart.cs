@@ -31,6 +31,7 @@ public static class LoginAutostart
         }
 
         var path = FilePath(home, platform);
+        var previous = File.Exists(path) ? File.ReadAllText(path) : null;
         if (!enable && platform == "linux" && File.Exists(path))
         {
             var (code, output) = commandRunner("systemctl", ["--user", "disable", Name + ".service"]);
@@ -76,6 +77,18 @@ public static class LoginAutostart
             var (enableCode, enableOutput) = enable ? commandRunner("systemctl", ["--user", "enable", Name + ".service"]) : (0, "");
             if (reloadCode != 0 || enableCode != 0)
             {
+                if (enable)
+                {
+                    if (previous is null)
+                    {
+                        File.Delete(path);
+                    }
+                    else
+                    {
+                        File.WriteAllText(path, previous);
+                    }
+                    commandRunner("systemctl", ["--user", "daemon-reload"]);
+                }
                 Console.Error.WriteLine($"error: systemd user autostart {(enable ? "enable" : "disable")} failed: {reloadOutput} {enableOutput}".Trim());
                 return 1;
             }
@@ -90,6 +103,8 @@ public static class LoginAutostart
         "macos" => Path.Combine(home, "Library", "LaunchAgents", "com.agentteamforge.daemon.plist"),
         _ => throw new PlatformNotSupportedException(platform),
     };
+
+    internal static bool UseSystemdUserUnit(string home) => IsInstalled(home, "linux");
 
     internal static string LinuxUnit(string binary, string stateDir, string searchPath) => $"""
         [Unit]
@@ -159,11 +174,38 @@ public static class LoginAutostart
         using var key = Registry.CurrentUser.CreateSubKey(RunKey, writable: true);
         if (enable)
         {
-            key.SetValue("AgentTeamForge", $"{WindowsQuote(binary)} daemon --state-dir {WindowsQuote(stateDir)}");
+            var launcher = Path.Combine(stateDir, "autostart.vbs");
+            var command = $"{WindowsQuote(binary)} daemon --state-dir {WindowsQuote(stateDir)}";
+            var script = $"Set shell = CreateObject(\"WScript.Shell\")\r\n" +
+                $"shell.Environment(\"PROCESS\")(\"ATF_DAEMON_LOG\") = \"{Path.Combine(stateDir, "daemon.log").Replace("\"", "\"\"", StringComparison.Ordinal)}\"\r\n" +
+                $"shell.Run \"{command.Replace("\"", "\"\"", StringComparison.Ordinal)}\", 0, False\r\n";
+            var previous = File.Exists(launcher) ? File.ReadAllText(launcher) : null;
+            try
+            {
+                File.WriteAllText(launcher, script);
+                key.SetValue("AgentTeamForge", $"wscript.exe //B //Nologo {WindowsQuote(launcher)}");
+            }
+            catch
+            {
+                if (previous is null)
+                {
+                    File.Delete(launcher);
+                }
+                else
+                {
+                    File.WriteAllText(launcher, previous);
+                }
+                throw;
+            }
         }
         else
         {
             key.DeleteValue("AgentTeamForge", throwOnMissingValue: false);
+            var launcher = Path.Combine(stateDir, "autostart.vbs");
+            if (File.Exists(launcher))
+            {
+                File.Delete(launcher);
+            }
         }
         Console.Out.WriteLine($"Login autostart: {(enable ? "on" : "off")}");
         return 0;
