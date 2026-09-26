@@ -82,6 +82,56 @@ public sealed class HerdrInteractiveBackendTests
     }
 
     [Fact]
+    public async Task Interrupt_keeps_the_live_tab_and_prompts_it_again()
+    {
+        var control = new FakeControl { Status = InteractiveAgentStatus.Working };
+        var backend = new HerdrInteractiveBackend(control,
+            new FakeReader(new InteractiveTranscript("native-1", null)), InteractiveAgentKind.Codex, Path.GetTempPath());
+        var first = backend.Start(new BackendRequest("parent", "corr-parent", "first", "") { WorkingDirectory = Path.GetTempPath() });
+        await first.DeliverAsync(CancellationToken.None);
+        await using (var evidence = first.ReadEvidenceAsync(TestContext.Current.CancellationToken).GetAsyncEnumerator(TestContext.Current.CancellationToken))
+        {
+            Assert.True(await evidence.MoveNextAsync()); // ack
+            Assert.True(await evidence.MoveNextAsync()); // native session
+            Assert.Equal(new BackendEvidence.Session("corr-parent", "native-1"), evidence.Current);
+        }
+
+        first.InterruptTurn();
+        await first.DisposeAsync();
+        Assert.Equal(1, control.Interrupts);
+        Assert.False(control.Stopped);
+
+        var original = control.Launch;
+        await using var second = backend.Start(new BackendRequest("child", "corr-child", "second", "")
+        { WorkingDirectory = Path.GetTempPath(), ResumeSessionId = "native-1" });
+        await second.DeliverAsync(CancellationToken.None);
+        Assert.Equal(1, control.Starts);
+        Assert.Same(original, control.Launch);
+        Assert.Contains("second", control.Prompt);
+    }
+
+    [Fact]
+    public async Task Interrupt_after_a_settled_turn_closed_its_tab_does_not_hand_that_tab_to_the_follow_up()
+    {
+        var control = new FakeControl { Status = InteractiveAgentStatus.Done };
+        var backend = new HerdrInteractiveBackend(control,
+            new FakeReader(new InteractiveTranscript("native-1", "finished")), InteractiveAgentKind.Claude, Path.GetTempPath());
+        var first = backend.Start(new BackendRequest("parent", "corr-parent", "first", "") { WorkingDirectory = Path.GetTempPath() });
+        await first.DeliverAsync(CancellationToken.None);
+        await Collect(first);
+        await first.DisposeAsync();
+        Assert.True(control.Stopped);
+
+        first.InterruptTurn();
+        Assert.Equal(0, control.Interrupts);
+
+        await using var second = backend.Start(new BackendRequest("child", "corr-child", "second", "")
+        { WorkingDirectory = Path.GetTempPath(), ResumeSessionId = "native-1" });
+        Assert.Equal(2, control.Starts);
+        Assert.Equal("native-1", control.Launch!.ResumeSessionId);
+    }
+
+    [Fact]
     public void PiResumeUsesContinueInTheLocatedSessionDirectory()
     {
         var launch = new InteractiveLaunch(InteractiveAgentKind.Pi, "atftest", "/tmp", "native-pi", "/tmp/pi-one", "/tmp/bootstrap");
@@ -223,6 +273,8 @@ public sealed class HerdrInteractiveBackendTests
     sealed class FakeControl : IHerdrAgentControl
     {
         public InteractiveLaunch? Launch { get; private set; }
+        public int Starts { get; private set; }
+        public int Interrupts { get; private set; }
         public string Prompt { get; private set; } = "";
         public bool Prompted => Prompt.Length != 0;
         public bool Unavailable { get; init; }
@@ -234,6 +286,7 @@ public sealed class HerdrInteractiveBackendTests
                 throw new InteractiveTerminalUnavailableException("no desktop");
             }
             Launch = launch;
+            Starts++;
             return Task.CompletedTask;
         }
 
@@ -257,6 +310,11 @@ public sealed class HerdrInteractiveBackendTests
             FailStatus ? throw new HerdrLaunchException("herdr agent get exited 1: io") : Task.FromResult(Statuses?.Count > 0 ? Statuses.Dequeue() : Status);
 
         public void StopOwned(InteractiveLaunch launch) => Stopped = true;
+        public Task InterruptAsync(InteractiveLaunch launch, CancellationToken cancellationToken)
+        {
+            Interrupts++;
+            return Task.CompletedTask;
+        }
     }
 
     sealed class FakeReader(InteractiveTranscript? output) : IInteractiveTranscriptReader
@@ -304,5 +362,6 @@ public sealed class HerdrInteractiveBackendTests
         }
 
         public void StopOwned(InteractiveLaunch launch) => inner.StopOwned(launch);
+        public Task InterruptAsync(InteractiveLaunch launch, CancellationToken cancellationToken) => inner.InterruptAsync(launch, cancellationToken);
     }
 }

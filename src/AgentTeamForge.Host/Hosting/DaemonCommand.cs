@@ -95,15 +95,18 @@ public static class DaemonCommand
                 .ToDictionary(e => (string)e.Key, e => (string?)e.Value, StringComparer.Ordinal);
             HerdrInteractiveBackend Interactive(InteractiveAgentKind kind) =>
                 new(new HerdrTerminal(new HerdrTerminalOptions { Environment = seed }), kind, state.Path);
-            backends.Register(BackendCatalog.Claude, () => Interactive(InteractiveAgentKind.Claude));
-            backends.Register(BackendCatalog.Codex, () => Interactive(InteractiveAgentKind.Codex));
-            backends.Register(BackendCatalog.Pi, () => Interactive(InteractiveAgentKind.Pi));
+            var claude = Interactive(InteractiveAgentKind.Claude);
+            var codex = Interactive(InteractiveAgentKind.Codex);
+            var pi = Interactive(InteractiveAgentKind.Pi);
+            backends.Register(BackendCatalog.Claude, () => claude);
+            backends.Register(BackendCatalog.Codex, () => codex);
+            backends.Register(BackendCatalog.Pi, () => pi);
         }
         Log($"backends: {string.Join(',', backends.Names)}");
         var admission = new AdmissionGate();
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs);
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
-        var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept),
+        var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
             new ListJobs(store, profile.Bound),
             new StopJob(store, profile.Bound, dispatcher.CancelRunning), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs);
 

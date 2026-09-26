@@ -60,9 +60,10 @@ public static class JobsMcpBridge
 
     const string FollowUpSchema = """
         {"type":"object","properties":{
-          "job_id":{"type":"string","description":"Finished job whose native agent session is resumed."},
+          "job_id":{"type":"string","description":"Job whose native agent session is resumed."},
           "instruction":{"type":"string"},
           "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."},
+          "interrupt":{"type":"boolean","description":"If the parent is running, cancel its turn (reason interrupted) and run this prompt in the same session."},
         """ + LimitProperties + """
         },"required":["job_id","instruction","idempotency_key"]}
         """;
@@ -106,7 +107,7 @@ public static class JobsMcpBridge
             new() { Name = "get_job", Description = "Read a job's status, result output and native session_id.", InputSchema = Parse(GetSchema) },
             new() { Name = "get_job_output", Description = "Read live stdout/stderr log bytes from a job, starting at an absolute offset. Use next_offset to continue.", InputSchema = Parse(OutputSchema) },
             new() { Name = "stop_job", Description = "Cancel a queued or running job. A finished job is returned unchanged.", InputSchema = Parse(GetSchema) },
-            new() { Name = "follow_up", Description = "Send a follow-up instruction into a finished job's native agent session (same backend and cwd). Returns the new job.", InputSchema = Parse(FollowUpSchema) },
+            new() { Name = "follow_up", Description = "Resume a job's native agent session. A running job needs interrupt=true; otherwise follow_up returns parent_not_ready.", InputSchema = Parse(FollowUpSchema) },
             new() { Name = "list_jobs", Description = "List jobs, newest first, one bounded page at a time.", InputSchema = Parse(ListSchema) },
             new() { Name = "register_codex_wake", Description = "Register this Codex conversation for native job notices before submitting jobs. Read CODEX_THREAD_ID with a shell tool and pass it here; Codex does not always pass it to MCP servers.", InputSchema = Parse(CodexWakeSchema) },
             new() { Name = "job_submit", Description = "Durably submit a job to the AgentTeamForge daemon (spike).", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
@@ -192,6 +193,7 @@ public static class JobsMcpBridge
                 JobId = String(args, "job_id"),
                 Instruction = String(args, "instruction"),
                 IdempotencyKey = String(args, "idempotency_key"),
+                Interrupt = args.TryGetValue("interrupt", out var interrupt) && interrupt.ValueKind == JsonValueKind.True,
                 TimeoutSeconds = Integer(args, "timeout_s"),
                 QueueTtlSeconds = Integer(args, "queue_ttl_s"),
             }, null),

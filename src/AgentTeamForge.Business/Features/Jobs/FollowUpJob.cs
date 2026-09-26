@@ -6,9 +6,10 @@ namespace AgentTeamForge.Business.Features.Jobs;
 
 /// <summary>
 /// Accepts a new job that resumes the parent's recorded native session on the
-/// parent's backend and cwd. The parent must be finished and have a session.
+/// parent's backend and cwd. An interrupt cancels a running parent in the same
+/// transaction that accepts the new turn.
 /// </summary>
-public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, AcceptJob accept)
+public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, AcceptJob accept, Action<string>? cancelRunning = null)
 {
     public const string Operation = "job_follow_up";
 
@@ -36,14 +37,23 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             return JobResult.Fail(JobErrors.NotFound);
         }
 
-        if (parent.SessionId is null || parent.Status is not (JobStatus.Completed or JobStatus.Cancelled or JobStatus.Failed or JobStatus.NeedsReconciliation))
+        // Resuming a session that is still in a turn would race the running agent;
+        // only an interrupt may target a running parent (it is cancelled atomically).
+        var interruptRunning = request.Interrupt && parent.Status == JobStatus.Running;
+        if (parent.SessionId is null || parent.Status is not (JobStatus.Completed or JobStatus.Cancelled or JobStatus.Failed or JobStatus.NeedsReconciliation)
+            && !interruptRunning)
         {
             return JobResult.Fail(JobErrors.ParentNotReady);
         }
 
+        if (interruptRunning && cancelRunning is null)
+        {
+            return JobResult.Fail(JobErrors.DaemonUnhealthy);
+        }
+
         try
         {
-            var runs = store.GetRuns(parent.JobId);
+            var runs = interruptRunning ? [] : store.GetRuns(parent.JobId);
             // A needs_reconciliation row can be committed before its child exits. Only
             // a terminal run with no live marked process proves this session is idle.
             // A run without a daemon-owned pid (a Herdr TUI, or a start that never
@@ -62,9 +72,11 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             return JobResult.Fail(JobErrors.FromStorage(ex));
         }
 
-        return accept.Admit(Operation, request.IdempotencyKey, request.Instruction, "behavior=complete;hold=0",
+        return accept.Admit(Operation, request.IdempotencyKey, request.Instruction,
+            "behavior=complete;hold=0" + (request.Interrupt ? ";interrupt=1" : ""),
             parent.Backend, parent.Cwd, parent.JobId, request.WakeKey, request.WakeGeneration, worktreeBase: parent.WorktreeBase,
             worktreePath: parent.WorktreePath, worktreeBranch: parent.WorktreeBranch,
-            timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds);
+            timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds,
+            interruptParent: interruptRunning, cancelRunning: cancelRunning);
     }
 }
