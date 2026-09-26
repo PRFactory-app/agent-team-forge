@@ -82,7 +82,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
             var job = new NewJob(principal.Principal, principal.Team, principal.Agent, operation, key, Fingerprint(fields), instruction, options)
             {
                 TimeoutSeconds = timeoutSeconds,
-                QueueDeadline = queueTtlSeconds is int ttl ? DateTimeOffset.UtcNow.AddSeconds(ttl) : null,
+                QueueTtlSeconds = queueTtlSeconds,
                 Backend = backend,
                 Cwd = cwd,
                 ParentJobId = parentJobId,

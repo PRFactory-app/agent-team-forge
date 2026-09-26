@@ -66,12 +66,77 @@ public sealed class JobTimeoutTests
     }
 
     [Fact]
+    public async Task Queue_ttl_starts_when_the_job_is_accepted()
+    {
+        using var f = new JobFixture();
+        var job = new NewJob(JobFixture.Operator.Principal, JobFixture.Operator.Team, JobFixture.Operator.Agent,
+            AcceptJob.Operation, "delayed", "fingerprint", "work", "behavior=complete;hold=0")
+        {
+            QueueTtlSeconds = 1,
+        };
+        await Task.Delay(TimeSpan.FromMilliseconds(1100), TestContext.Current.CancellationToken);
+
+        var accepted = f.Store.AcceptOrGet(job, f.Limits.QueueLimit);
+        Assert.Equal(AcceptKind.Accepted, accepted.Kind);
+        Assert.Equal(accepted.Job!.JobId, f.Store.BeginNextAttempt()!.Job.JobId);
+    }
+
+    [Fact]
+    public async Task Sweep_cannot_cancel_a_job_that_was_claimed()
+    {
+        using var f = new JobFixture();
+        var job = Submit(f, "claimed", queueTtl: 1);
+        var claim = f.Store.BeginNextAttempt()!;
+        await Task.Delay(TimeSpan.FromMilliseconds(1100), TestContext.Current.CancellationToken);
+
+        Assert.Empty(f.Store.ExpireQueued());
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(job.JobId)!.Status);
+        Assert.True(f.Store.Complete(new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation), "done"));
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(job.JobId)!.Status);
+    }
+
+    [Fact]
+    public void Completion_and_stop_keep_the_first_terminal_result_when_timeout_fires()
+    {
+        using var f = new JobFixture();
+        var completed = Submit(f, "completed", timeout: 1);
+        var completionClaim = f.Store.BeginNextAttempt()!;
+        Assert.True(f.Store.Complete(new RunRef(completed.JobId, completionClaim.RunId, completionClaim.Generation, completionClaim.Correlation), "done"));
+        Assert.False(f.Store.CancelOwned(completed.JobId, "timeout").Changed);
+        Assert.Equal((JobStatus.Completed, "done"), (f.Store.GetJob(completed.JobId)!.Status, f.Store.GetJob(completed.JobId)!.ResultText));
+
+        var stopped = Submit(f, "stopped", timeout: 1);
+        var stopClaim = f.Store.BeginNextAttempt()!;
+        Assert.Equal(stopped.JobId, stopClaim.Job.JobId);
+        Assert.True(f.Store.Cancel(stopped.JobId, JobFixture.Operator.Principal, JobFixture.Operator.Team).Changed);
+        Assert.False(f.Store.CancelOwned(stopped.JobId, "timeout").Changed);
+        Assert.Equal((JobStatus.Cancelled, "stopped"), (f.Store.GetJob(stopped.JobId)!.Status, f.Store.GetJob(stopped.JobId)!.ReasonCode));
+        Assert.Single(f.Store.GetEvents(stopped.JobId), e => e.Kind == JobStatus.Cancelled);
+    }
+
+    [Fact]
     public void Limits_are_part_of_the_idempotent_request()
     {
         using var f = new JobFixture();
         Submit(f, "same", timeout: 30);
         Assert.Equal("existing", f.Accept().Execute(new SubmitJobRequest("same", "work", null, false) { TimeoutSeconds = 30 }).Outcome);
         Assert.Equal(JobErrors.IdempotencyConflict, f.Accept().Execute(new SubmitJobRequest("same", "work", null, false) { TimeoutSeconds = 60 }).Error);
+
+        Submit(f, "ttl", queueTtl: 30);
+        Assert.Equal("existing", f.Accept().Execute(new SubmitJobRequest("ttl", "work", null, false) { QueueTtlSeconds = 30 }).Outcome);
+        Assert.Equal(JobErrors.IdempotencyConflict, f.Accept().Execute(new SubmitJobRequest("ttl", "work", null, false) { QueueTtlSeconds = 60 }).Error);
+
+        using var followFixture = new JobFixture();
+        var parent = Submit(followFixture, "parent");
+        var claim = followFixture.Store.BeginNextAttempt()!;
+        Assert.Equal(parent.JobId, claim.Job.JobId);
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(followFixture.Store.RecordSession(run, "session-1"));
+        Assert.True(followFixture.Store.Complete(run, "done"));
+        var followUp = new FollowUpJob(followFixture.Store, JobFixture.Operator, followFixture.Accept());
+        Assert.Equal("accepted", followUp.Execute(new FollowUpRequest(parent.JobId, "continue", "follow") { TimeoutSeconds = 30, QueueTtlSeconds = 30 }).Outcome);
+        Assert.Equal("existing", followUp.Execute(new FollowUpRequest(parent.JobId, "continue", "follow") { TimeoutSeconds = 30, QueueTtlSeconds = 30 }).Outcome);
+        Assert.Equal(JobErrors.IdempotencyConflict, followUp.Execute(new FollowUpRequest(parent.JobId, "continue", "follow") { TimeoutSeconds = 30, QueueTtlSeconds = 60 }).Error);
     }
 
     [Fact]

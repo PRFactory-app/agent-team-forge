@@ -46,7 +46,9 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         var jobId = "job_" + Guid.CreateVersion7().ToString("N");
         var worktreePath = job.CreateWorktree ? Path.Combine(WorktreeRoot, jobId) : job.WorktreePath;
         var worktreeBranch = job.CreateWorktree ? $"atf/job-{jobId}" : job.WorktreeBranch;
-        var now = Now();
+        var acceptedAt = DateTimeOffset.UtcNow;
+        var now = acceptedAt.ToString("O");
+        var queueDeadline = job.QueueTtlSeconds is int ttl ? acceptedAt.AddSeconds(ttl).ToString("O") : null;
         Execute(connection, tx, """
             INSERT INTO jobs(job_id, principal, team, target_agent, operation, idempotency_key, fingerprint,
                              instruction, options, backend, cwd, parent_job_id, worktree_path, worktree_branch, worktree_base, timeout_s, queue_deadline, status, accepted_at, updated_at)
@@ -59,7 +61,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             ("$i", job.Instruction), ("$opt", job.Options), ("$b", job.Backend), ("$cwd", job.Cwd),
             ("$parent", job.ParentJobId), ("$wtpath", worktreePath), ("$wtbranch", worktreeBranch),
             ("$wtbase", job.WorktreeBase), ("$timeout", job.TimeoutSeconds),
-            ("$deadline", job.QueueDeadline?.ToUniversalTime().ToString("O")), ("$now", now));
+            ("$deadline", queueDeadline), ("$now", now));
         if (job.WakeTargetKey is not null && job.WakeGeneration is not null)
         {
             Execute(connection, tx, """
