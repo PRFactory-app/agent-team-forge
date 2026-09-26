@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
 
     const string V1 = """
         CREATE TABLE schema_migrations(
@@ -55,6 +55,25 @@ static class Schema
             created_at TEXT NOT NULL);
         """;
 
+    // Independent wake migration: no changes to the jobs table or V1.
+    const string V2Wake = """
+        CREATE TABLE wake_targets(
+            target_key TEXT PRIMARY KEY,
+            generation INTEGER NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('claude','codex','pi')),
+            address TEXT NOT NULL,
+            secret TEXT NOT NULL,
+            home TEXT NOT NULL,
+            notified_seq INTEGER NOT NULL DEFAULT 0,
+            last_success TEXT,
+            registered_at TEXT NOT NULL);
+        CREATE TABLE wake_jobs(
+            job_id TEXT PRIMARY KEY REFERENCES jobs(job_id),
+            target_key TEXT NOT NULL REFERENCES wake_targets(target_key),
+            read_at TEXT);
+        CREATE INDEX wake_jobs_target ON wake_jobs(target_key, read_at);
+        """;
+
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused
     /// with the file untouched; an older known version is migrated in one transaction.
@@ -86,10 +105,23 @@ static class Schema
         using var tx = connection.BeginTransaction(deferred: false);
         using var command = connection.CreateCommand();
         command.Transaction = tx;
-        command.CommandText = V1 + "\nINSERT INTO schema_migrations(version, applied_at) VALUES ($v, $at);";
-        command.Parameters.AddWithValue("$v", CurrentVersion);
-        command.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.ToString("O"));
-        command.ExecuteNonQuery();
+        if (stored == 0)
+        {
+            command.CommandText = V1 + "\nINSERT INTO schema_migrations(version, applied_at) VALUES (1, $at);";
+            command.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.ToString("O"));
+            command.ExecuteNonQuery();
+        }
+
+        if (stored < 2)
+        {
+            command.CommandText = V2Wake + "\nINSERT INTO schema_migrations(version, applied_at) VALUES (2, $at);";
+            if (!command.Parameters.Contains("$at"))
+            {
+                command.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.ToString("O"));
+            }
+            command.ExecuteNonQuery();
+        }
+
         tx.Commit();
     }
 

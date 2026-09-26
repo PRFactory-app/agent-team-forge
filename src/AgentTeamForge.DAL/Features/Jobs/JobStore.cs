@@ -52,6 +52,14 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             ("$id", jobId), ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent),
             ("$o", job.Operation), ("$k", job.IdempotencyKey), ("$f", job.Fingerprint),
             ("$i", job.Instruction), ("$opt", job.Options), ("$now", now));
+        if (job.WakeTargetKey is not null && job.WakeGeneration is not null)
+        {
+            Execute(connection, tx, """
+                INSERT INTO wake_jobs(job_id, target_key)
+                SELECT $id, target_key FROM wake_targets
+                WHERE target_key=$key AND generation=$generation
+                """, ("$id", jobId), ("$key", job.WakeTargetKey), ("$generation", job.WakeGeneration.Value));
+        }
         checkpoints.Hit(DurabilityCheckpoints.AcceptBeforeCommit);
         tx.Commit();
 

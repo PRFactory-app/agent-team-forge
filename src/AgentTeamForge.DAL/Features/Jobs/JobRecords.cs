@@ -17,7 +17,9 @@ public sealed record NewJob(
     string IdempotencyKey,
     string Fingerprint,
     string Instruction,
-    string Options);
+    string Options,
+    string? WakeTargetKey = null,
+    long? WakeGeneration = null);
 
 public sealed record JobRecord(
     string JobId,
