@@ -5,7 +5,32 @@ work remains on local feature/integration branches, not promoted to `main`.
 No full phase is complete. Public GitHub creation still awaits the owner's
 organization confirmation; no remote or push exists.
 
-## Delivered snapshots and current gates
+## Latest integration and active wave — 14:10 UTC
+
+**Reviewed fake-core checkpoint integrated at `81a11b2`.** Core admission fix,
+IPC deadline and demo wrapper merged with original ancestry, no conflicts.
+Combined gates: 61/61 tests, 19/19 published Native AOT scenarios, 1/1 AOT demo.
+[Checkpoint and commands](spikes/m0-fake-core-integration.md). Still Linux fake
+backend only, not real-agent E2E or runtime promotion to `main`.
+
+Inspection `9fb08b6` and fake probe `5dc3631` passed bounded independent
+re-reviews. Inspection integration is assigned; neither holds the approved demo.
+
+Current six assignments (dispatch snapshot, not live telemetry):
+
+- Claude: `m0-private-file-bounds`, `m0-acceptance-recovery` — independent core hardening.
+- Codex: `inspection-integration-and-promotion-check`, `teardown-status-rereview`.
+- Pi: `codex-queue-admission-research`, `product-core-consolidation-plan`.
+
+The preceding Claude teardown writer committed `85f3fdd` and was stopped with
+`kill_agent`. Public [downstream-delivery research](research/native-downstream-delivery.md)
+is complete; native queue admission needs further source qualification. The
+approved checkpoint does not wait for this research or consolidation planning.
+
+The earlier source-by-source records below retain their historical review state;
+this latest update and newer pinned reviews supersede their pending labels.
+
+## Earlier delivered snapshots and gates
 
 | Snapshot | Observable output | Qualification / next gate |
 | --- | --- | --- |
@@ -24,7 +49,7 @@ The legacy `AtfSpike` is an isolated experimental baseline. Consolidate reviewed
 reusable behavior/tests into the real solution and retire superseded runtime
 projects; do not delete live sessions or unique recovery evidence as file cleanup.
 
-## Current dispatch wave
+## Previous dispatch wave (superseded above)
 
 This table records assignments, **not a live activity indicator**. Finished
 workers must be retired after their handoff; waiting does not count as active.
@@ -50,13 +75,12 @@ Semantic runtime fixes remain Claude work followed by independent Codex review.
 
 ## Next testable checkpoint
 
-1. Repair and independently approve F1 against an immutable core snapshot.
-2. Integrate approved core, IPC and demo wrapper; inspection/probe/web increments
-   are independent and must not hold this minimum checkpoint. Route semantic
-   conflicts back to a fresh Claude writer.
-3. Run combined format/build/tests/AOT and the one-command fake-core demo.
-4. Offer that explicitly labelled checkpoint for testing. Continue real native
-   adapter feasibility in parallel, without promoting unsafe dispatch.
+The initial four steps — repair/re-review F1, merge core/IPC/demo, run combined
+published gates, and expose the labelled checkpoint — are now satisfied on the
+integration branch. Use the commands in the checkpoint ledger linked above.
+Next: integrate reviewed inspection, check safe source promotion, and resolve
+real native admission/binding contracts in parallel. Semantic conflict fixes
+remain Claude work followed by Codex verification.
 
 The real-agent E2E goal still requires a proven-owned visible native TUI, durable
 MCP submission, bridge death, fresh-client result and same-conversation follow-up.
