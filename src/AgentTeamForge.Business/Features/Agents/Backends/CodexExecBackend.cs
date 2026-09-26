@@ -115,9 +115,8 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
             {
                 if (line is null)
                 {
-                    TerminateOwnedChild();
-                    yield return new BackendEvidence.ProtocolError("backend_line_too_long");
-                    yield break;
+                    output?.Invoke("status", "[stdout line omitted: too large]\n"u8.ToArray());
+                    continue;
                 }
 
                 foreach (var evidence in parser.Parse(line))
@@ -152,12 +151,17 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
         {
             var buffer = new MemoryStream();
             var chunk = new byte[16 * 1024];
+            var skipping = false;
             while (true)
             {
                 var read = await stream.ReadAsync(chunk, cancellationToken);
                 if (read == 0)
                 {
-                    if (buffer.Length > 0)
+                    if (skipping)
+                    {
+                        yield return null;
+                    }
+                    else if (buffer.Length > 0)
                     {
                         yield return buffer.ToArray();
                     }
@@ -173,25 +177,32 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
                         continue;
                     }
 
-                    if (buffer.Length + i - start > MaxLineBytes)
+                    if (!skipping)
                     {
-                        yield return null;
-                        yield break;
+                        if (buffer.Length + i - start > MaxLineBytes)
+                        {
+                            skipping = true;
+                        }
+                        else
+                        {
+                            buffer.Write(chunk, start, i - start);
+                        }
                     }
-
-                    buffer.Write(chunk, start, i - start);
-                    yield return buffer.ToArray();
+                    yield return skipping ? null : buffer.ToArray();
                     buffer.SetLength(0);
+                    skipping = false;
                     start = i + 1;
                 }
 
-                if (buffer.Length + read - start > MaxLineBytes)
+                if (!skipping && buffer.Length + read - start > MaxLineBytes)
                 {
-                    yield return null;
-                    yield break;
+                    skipping = true;
+                    buffer.SetLength(0);
                 }
-
-                buffer.Write(chunk, start, read - start);
+                if (!skipping)
+                {
+                    buffer.Write(chunk, start, read - start);
+                }
             }
         }
 
@@ -304,7 +315,11 @@ internal sealed class CodexEventParser(string correlation)
                     return [];
                 case "turn.completed":
                     _completed = true;
-                    var output = _lastMessage ?? "";
+                    if (_lastMessage is null)
+                    {
+                        return [new BackendEvidence.ProtocolError("backend_malformed_output")];
+                    }
+                    var output = _lastMessage;
                     return [new BackendEvidence.Result(correlation, output.Length > CodexExecBackend.MaxResultChars ? output[..CodexExecBackend.MaxResultChars] : output)];
                 case "turn.failed":
                     return [new BackendEvidence.ProtocolError("codex_turn_failed")];

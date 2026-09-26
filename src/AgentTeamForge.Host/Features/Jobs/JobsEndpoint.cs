@@ -55,9 +55,9 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             return new IpcResponse(false, JobErrors.InvalidRequest);
         }
         // Reads reach any job in the lead's workspace; stop and follow-up only its own.
-        if (request.LeadSessionId is not null && request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobStop or IpcProtocol.JobStopAgent or IpcProtocol.JobFollowUp
+        if (request.LeadSessionId is not null && request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobActivity or IpcProtocol.JobStop or IpcProtocol.JobStopAgent or IpcProtocol.JobFollowUp
             && (jobStore is null || request.JobId is null
-                || !jobStore.LeadCanAccess(request.JobId, request.LeadSessionId, request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput ? request.Workspace : null)))
+                || !jobStore.LeadCanAccess(request.JobId, request.LeadSessionId, request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobActivity ? request.Workspace : null)))
         {
             return new IpcResponse(false, JobErrors.NotFound);
         }
@@ -107,6 +107,17 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     return new IpcResponse(false, JobErrors.InvalidRequest);
                 }
                 return new IpcResponse(true, Outcome: "output", Output: logs.Read(request.JobId!, request.Offset ?? 0, request.MaxBytes ?? JobLogs.MaxReadBytes));
+            case IpcProtocol.JobActivity:
+                var activityJob = get.Execute(request.JobId ?? string.Empty);
+                if (activityJob.Error is not null)
+                {
+                    return new IpcResponse(false, activityJob.Error);
+                }
+                if (logs is null || request.AfterCursor is < 0 || request.Limit is < 1 or > JobActivity.MaxPageSize)
+                {
+                    return new IpcResponse(false, JobErrors.InvalidRequest);
+                }
+                return new IpcResponse(true, Outcome: "activity", Activity: logs.ReadActivity(request.JobId!, activityJob.Job!.Backend ?? "", request.AfterCursor ?? 0, request.Limit ?? 20));
             case IpcProtocol.JobList:
                 var listed = list.Execute(new ListJobsRequest(request.Status, request.Limit, request.Cursor, request.Backend, request.Since)
                 {
