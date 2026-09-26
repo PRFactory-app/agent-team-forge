@@ -47,6 +47,8 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
             WorktreePath = r.WorktreePath,
             WorktreeBranch = r.WorktreeBranch,
             Backend = r.Backend,
+            Model = JobOptions.Read(r.Options ?? "", "model"),
+            Effort = JobOptions.Read(r.Options ?? "", "effort"),
             SessionId = r.SessionId,
             ParentJobId = r.ParentJobId,
             LastActivity = logs?.LastActivity(r.JobId, r.Backend ?? ""),
@@ -67,6 +69,8 @@ public sealed record ListJobsRequest(string? Status = null, int? Limit = null, s
 public sealed record JobSummary(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)
 {
     public string? Backend { get; init; }
+    public string? Model { get; init; }
+    public string? Effort { get; init; }
     public string? SessionId { get; init; }
     public string? ParentJobId { get; init; }
     public string? WorktreePath { get; init; }

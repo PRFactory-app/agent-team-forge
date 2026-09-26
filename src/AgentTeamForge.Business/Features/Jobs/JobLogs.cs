@@ -1,3 +1,4 @@
+using AgentTeamForge.DAL.Files;
 using System.Globalization;
 using System.Text;
 
@@ -206,13 +207,7 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
             }
 
             var path = Path.Combine(directory, jobId + ".log");
-            using var file = new FileStream(path, new FileStreamOptions
-            {
-                Mode = FileMode.OpenOrCreate,
-                Access = FileAccess.ReadWrite,
-                Share = FileShare.Read,
-                UnixCreateMode = OperatingSystem.IsWindows() ? null : UnixFileMode.UserRead | UnixFileMode.UserWrite,
-            });
+            using var file = new FileStream(path, PrivateFiles.Options(FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read));
             if (file.Length == 0)
             {
                 file.Write(Prefix(0));

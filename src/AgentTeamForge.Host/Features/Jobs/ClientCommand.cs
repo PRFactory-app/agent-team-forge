@@ -38,6 +38,8 @@ public static class ClientCommand
                 Behavior = options.GetValueOrDefault("behavior"),
                 Hold = options.ContainsKey("hold"),
                 Backend = options.GetValueOrDefault("backend"),
+                Model = options.GetValueOrDefault("model"),
+                Effort = options.GetValueOrDefault("effort"),
                 Cwd = options.TryGetValue("cwd", out var cwd) ? Path.GetFullPath(cwd) : null,
                 Worktree = options.ContainsKey("worktree"),
                 TimeoutSeconds = Seconds(options, "timeout"),
@@ -50,6 +52,8 @@ public static class ClientCommand
                 IdempotencyKey = options.GetValueOrDefault("key"),
                 Instruction = options.GetValueOrDefault("instruction"),
                 Interrupt = options.ContainsKey("interrupt"),
+                Model = options.GetValueOrDefault("model"),
+                Effort = options.GetValueOrDefault("effort"),
                 TimeoutSeconds = Seconds(options, "timeout"),
                 QueueTtlSeconds = Seconds(options, "queue-ttl"),
             },
@@ -70,7 +74,7 @@ public static class ClientCommand
         if (request is null)
         {
             Console.Error.WriteLine("usage: atf client <submit|follow-up|get|stop|list|logs> --state-dir DIR "
-                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--worktree] [--timeout S] [--queue-ttl S] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT [--interrupt] [--timeout S] [--queue-ttl S]] | stop ID | [--status S] [--backend B] [--since ISO-TIME] [--limit N] [--cursor C]]");
+                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--model M] [--effort E] [--cwd DIR] [--worktree] [--timeout S] [--queue-ttl S] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT [--interrupt] [--model M] [--effort E] [--timeout S] [--queue-ttl S]] | stop ID | [--status S] [--backend B] [--since ISO-TIME] [--limit N] [--cursor C]]");
             return 64;
         }
 

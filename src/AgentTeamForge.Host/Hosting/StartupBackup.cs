@@ -1,3 +1,4 @@
+using AgentTeamForge.DAL.Files;
 using System.Globalization;
 using System.Text;
 using AgentTeamForge.DAL.Sqlite;
@@ -24,6 +25,10 @@ internal static class StartupBackup
             {
                 throw new IOException("backup directory is not private");
             }
+            if (OperatingSystem.IsWindows())
+            {
+                WindowsPrivatePaths.ValidateDirectory(backups);
+            }
 
             var marker = Path.Combine(backups, "boot-id");
             if (File.Exists(marker) && Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(marker)).Trim() == currentBoot)
@@ -36,10 +41,6 @@ internal static class StartupBackup
             try
             {
                 JobDatabase.Backup(state.Database, backup, busyTimeout);
-                if (!OperatingSystem.IsWindows())
-                {
-                    File.SetUnixFileMode(backup, StateDirectory.PrivateFile);
-                }
             }
             catch
             {
@@ -55,12 +56,7 @@ internal static class StartupBackup
             var temporaryMarker = Path.Combine(backups, $"boot-id-{Guid.NewGuid():N}.tmp");
             try
             {
-                using (var stream = new FileStream(temporaryMarker, new FileStreamOptions
-                {
-                    Mode = FileMode.CreateNew,
-                    Access = FileAccess.Write,
-                    UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
-                }))
+                using (var stream = new FileStream(temporaryMarker, PrivateFiles.Options(FileMode.CreateNew, FileAccess.Write)))
                 {
                     stream.Write(Encoding.UTF8.GetBytes(currentBoot));
                     stream.Flush(flushToDisk: true);

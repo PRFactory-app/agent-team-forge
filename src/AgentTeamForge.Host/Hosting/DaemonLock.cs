@@ -1,3 +1,4 @@
+using AgentTeamForge.DAL.Files;
 using System.Runtime.InteropServices;
 using System.Globalization;
 using System.Text;
@@ -11,6 +12,8 @@ namespace AgentTeamForge.Host.Hosting;
 /// </summary>
 public sealed class DaemonLock : IDisposable
 {
+    const long WindowsLockOffset = int.MaxValue;
+
     readonly FileStream _stream;
 
     DaemonLock(FileStream stream) => _stream = stream;
@@ -21,13 +24,7 @@ public sealed class DaemonLock : IDisposable
         FileStream stream;
         try
         {
-            stream = new FileStream(path, new FileStreamOptions
-            {
-                Mode = FileMode.OpenOrCreate,
-                Access = FileAccess.ReadWrite,
-                Share = FileShare.ReadWrite,
-                UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
-            });
+            stream = new FileStream(path, PrivateFiles.Options(FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite));
         }
         catch (IOException)
         {
@@ -37,7 +34,8 @@ public sealed class DaemonLock : IDisposable
 
         if (OperatingSystem.IsWindows())
         {
-            try { stream.Lock(0, 1); }
+            // Lock a byte past the PID text so `atf stop` can still read the owner PID.
+            try { stream.Lock(WindowsLockOffset, 1); }
             catch (IOException) { stream.Dispose(); return null; }
             return new DaemonLock(stream);
         }

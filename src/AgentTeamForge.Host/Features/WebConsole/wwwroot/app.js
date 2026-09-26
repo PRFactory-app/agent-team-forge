@@ -68,6 +68,17 @@
     return td;
   }
 
+  function chipCell(text) {
+    const td = document.createElement('td');
+    if (text) {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = text;
+      td.append(chip);
+    }
+    return td;
+  }
+
   async function loadJobs() {
     const params = new URLSearchParams();
     if ($('status-filter').value) params.set('status', $('status-filter').value);
@@ -94,7 +105,7 @@
       link.textContent = j.job_id;
       link.addEventListener('click', () => select(j.job_id));
       idCell.append(link);
-      tr.append(idCell, cell(j.status), cell(j.backend), cell(j.session_id), cell(j.parent_job_id), cell(j.attempts));
+      tr.append(idCell, cell(j.status), cell(j.backend), chipCell(j.model), chipCell(j.effort), cell(j.session_id), cell(j.parent_job_id), cell(j.attempts));
       const action = document.createElement('td');
       if (j.session_id) {
         const follow = document.createElement('button');
@@ -143,6 +154,8 @@
     $('d-status').textContent = j.status;
     $('d-reason').textContent = j.reason_code || '';
     $('d-backend').textContent = j.backend || '';
+    $('d-model').textContent = j.model || '';
+    $('d-effort').textContent = j.effort || '';
     $('d-session').textContent = j.session_id || '';
     $('d-parent').textContent = j.parent_job_id || '';
     $('d-cwd').textContent = j.cwd || '';
@@ -204,7 +217,8 @@
     $('follow-send').disabled = true;
     $('follow-retry').disabled = true;
     const r = await api('POST', '/api/jobs/' + encodeURIComponent(attempt.jobId) + '/follow-up',
-      { instruction: attempt.text, idempotency_key: attempt.key, interrupt: attempt.interrupt });
+      { instruction: attempt.text, idempotency_key: attempt.key, interrupt: attempt.interrupt,
+        model: attempt.model, effort: attempt.effort });
     $('follow-retry').disabled = false;
     if (!r) return;
     if (r.lost || r.error === 'outcome_unknown') {
@@ -251,7 +265,8 @@
       e.preventDefault();
       const text = $('follow-text').value;
       if (!selected || !selectedJob?.session_id || pending || !text.trim()) return;
-      pending = { jobId: selected, key: crypto.randomUUID(), text, interrupt: $('follow-interrupt').checked };
+      pending = { jobId: selected, key: crypto.randomUUID(), text, interrupt: $('follow-interrupt').checked,
+        model: $('follow-model').value || null, effort: $('follow-effort').value || null };
       sendFollowUp();
     });
     $('follow-retry').addEventListener('click', () => { if (pending) sendFollowUp(); });

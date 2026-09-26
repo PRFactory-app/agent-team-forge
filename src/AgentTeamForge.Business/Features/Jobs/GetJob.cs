@@ -46,6 +46,8 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal)
     internal static JobView ToView(JobRecord job) => new(job.JobId, job.Status, job.ResultText, job.ReasonCode, job.Attempts)
     {
         Backend = job.Backend,
+        Model = JobOptions.Read(job.Options, "model"),
+        Effort = JobOptions.Read(job.Options, "effort"),
         SessionId = job.SessionId,
         ParentJobId = job.ParentJobId,
         Cwd = job.WorktreePath ?? job.Cwd,

@@ -17,6 +17,7 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
     {
         if (!accept.IsValid(request.IdempotencyKey, request.Instruction)
             || !AcceptJob.ValidLimits(request.TimeoutSeconds, request.QueueTtlSeconds)
+            || !AcceptJob.ValidOption(request.Model) || !AcceptJob.ValidOption(request.Effort)
             || string.IsNullOrWhiteSpace(request.ParentJobId) || request.ParentJobId.Length > 64)
         {
             return JobResult.Fail(JobErrors.InvalidRequest);
@@ -72,8 +73,30 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             return JobResult.Fail(JobErrors.FromStorage(ex));
         }
 
-        return accept.Admit(Operation, request.IdempotencyKey, request.Instruction,
-            "behavior=complete;hold=0" + (request.Interrupt ? ";interrupt=1" : ""),
+        // A new turn keeps the parent's concrete selection unless the caller changes it.
+        var inheritedModel = JobOptions.Read(parent.Options, "model");
+        var inheritedEffort = JobOptions.Read(parent.Options, "effort");
+        (string? model, string? effort) selection;
+        try
+        {
+            selection = request.Model is null && request.Effort is null
+                ? (inheritedModel, inheritedEffort)
+                : accept.ResolveModel(parent.Backend, request.Model ?? inheritedModel, request.Effort ?? inheritedEffort);
+        }
+        catch (ArgumentException ex)
+        {
+            return JobResult.Fail(ex.Message);
+        }
+        var options = "behavior=complete;hold=0" + (request.Interrupt ? ";interrupt=1" : "");
+        if (selection.model is not null)
+        {
+            options += ";model=" + selection.model;
+        }
+        if (selection.effort is not null)
+        {
+            options += ";effort=" + selection.effort;
+        }
+        return accept.Admit(Operation, request.IdempotencyKey, request.Instruction, options,
             parent.Backend, parent.Cwd, parent.JobId, request.WakeKey, request.WakeGeneration, worktreeBase: parent.WorktreeBase,
             worktreePath: parent.WorktreePath, worktreeBranch: parent.WorktreeBranch,
             timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds,

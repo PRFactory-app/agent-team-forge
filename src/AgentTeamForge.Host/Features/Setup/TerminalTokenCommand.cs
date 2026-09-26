@@ -1,7 +1,7 @@
+using AgentTeamForge.DAL.Files;
 using System.Globalization;
 using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
-using AgentTeamForge.Host.Hosting;
 
 namespace AgentTeamForge.Host.Features.Setup;
 
@@ -20,12 +20,7 @@ public static class TerminalTokenCommand
         }
         try
         {
-            using var file = new FileStream(sidecar, new FileStreamOptions
-            {
-                Mode = FileMode.CreateNew,
-                Access = FileAccess.Write,
-                UnixCreateMode = StateDirectory.PrivateFile,
-            });
+            using var file = new FileStream(sidecar, PrivateFiles.Options(FileMode.CreateNew, FileAccess.Write));
             file.Write(Encoding.ASCII.GetBytes($"{pid} {token}"));
             file.Flush(flushToDisk: true);
             return 0;

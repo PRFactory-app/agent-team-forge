@@ -44,6 +44,8 @@ public sealed record SubmitJobRequest(string IdempotencyKey, string Instruction,
 /// <summary>A new turn in the parent job's native session, on the same backend and cwd.</summary>
 public sealed record FollowUpRequest(string ParentJobId, string Instruction, string IdempotencyKey)
 {
+    public string? Model { get; init; }
+    public string? Effort { get; init; }
     public bool Interrupt { get; init; }
     public int? TimeoutSeconds { get; init; }
     public int? QueueTtlSeconds { get; init; }
@@ -75,6 +77,8 @@ public static class JobErrors
 public sealed record JobView(string JobId, string Status, string? Result, string? ReasonCode, int Attempts)
 {
     public string? Backend { get; init; }
+    public string? Model { get; init; }
+    public string? Effort { get; init; }
 
     public string? SessionId { get; init; }
 
