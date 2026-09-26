@@ -1,0 +1,9 @@
+# Interactive Herdr mode
+
+`HerdrInteractiveBackend` runs Claude Code, Codex, or Pi as a real TUI in a tab of a fresh ATF-owned Herdr session. It requires explicit `herdr` mode composition; it has no headless fallback. A missing desktop or unusable Herdr CLI fails the launch.
+
+The backend uses D7's `HerdrTerminal` for the owned server, workspace, tab, bootstrap environment proof, pane binding checks, and ownership-checked teardown. It uses Herdr's native `agent start`, `agent prompt`, and `agent get` commands for TUI startup, prompt delivery, and settlement. The request receives a correlation marker. The native JSONL session transcript must contain that marker before its session ID and final assistant text are emitted as `Session` and `Result` evidence. A settled turn closes its owned Herdr session; follow-up launches a new owned tab with Claude `--resume`, Codex `resume`, or Pi `--continue` in the original Pi session directory.
+
+Ported from the read-only win-agent-teams reference: interactive command and permission flags in `src/claude_teams/backends/{claude_code,codex,pi}.py`; Herdr lifecycle and pane targeting in `src/claude_teams/backends/process_manager.py`; correlation and native transcript formats in `src/claude_teams/agent_output.py`. Herdr's installed `agent start/prompt/get` commands replace raw pane keystrokes for this Linux implementation.
+
+The opt-in `ATF_REAL_HERDR=1` test launches a Codex TUI only in its own `atf-test-*` session. It never targets the user's default session. D7's detached server still needs a Herdr UI attach for a human to see the tab. Server/pane binding is held in memory; daemon crash recovery still needs durable binding work. Transcript reading is capped at 32 MiB per file, so a larger rollout needs reconciliation rather than a guessed result.
