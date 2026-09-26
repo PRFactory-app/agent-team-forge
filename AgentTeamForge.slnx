@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AgentTeamForge.DAL/AgentTeamForge.DAL.csproj" />
+    <Project Path="src/AgentTeamForge.Business/AgentTeamForge.Business.csproj" />
+    <Project Path="src/AgentTeamForge.Host/AgentTeamForge.Host.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AgentTeamForge.Tests/AgentTeamForge.Tests.csproj" />
+  </Folder>
+</Solution>
