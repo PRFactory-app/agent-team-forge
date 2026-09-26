@@ -9,6 +9,28 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 
 public sealed class JobLogsTests
 {
+    [Theory]
+    [InlineData(0)]
+    [InlineData(7)]
+    public void Short_header_after_daemon_kill_does_not_break_listing_and_is_repaired_on_append(int bytes)
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("interrupted-log");
+        var state = Path.GetDirectoryName(f.DatabasePath)!;
+        var directory = Path.Combine(state, "logs");
+        Directory.CreateDirectory(directory);
+        File.WriteAllBytes(Path.Combine(directory, job.JobId + ".log"), new byte[bytes]);
+        var logs = new JobLogs(state);
+
+        Assert.Equal(job.JobId, Assert.Single(new ListJobs(f.Store, JobFixture.Operator, logs)
+            .Execute(new ListJobsRequest()).Page!.Jobs).JobId);
+        Assert.Null(logs.LastActivity(job.JobId, "fake"));
+
+        var write = logs.BeginRun(job.JobId, "run-2", "fake");
+        write("stdout", "resumed\n"u8.ToArray());
+        Assert.Contains("resumed", logs.Read(job.JobId).Text);
+    }
+
     [Fact]
     public void Raw_output_is_available_through_authorized_endpoint_while_job_is_running()
     {

@@ -1,3 +1,4 @@
+using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Host.Hosting;
 using AgentTeamForge.Host.Transport;
@@ -29,7 +30,8 @@ public sealed class BridgeReconnectScenarios
 
             OwnedProcesses.KillAbruptly(daemon);
             var listed = await SpikeRig.CallAsync(bridge, "list_jobs", []);
-            Assert.Contains(listed.Page!.Jobs, job => job.JobId == firstId);
+            Assert.True(listed.Ok, $"list_jobs after daemon kill: {listed.Error}");
+            Assert.Contains(Assert.IsType<JobListPage>(listed.Page).Jobs, job => job.JobId == firstId);
             Assert.True((await SpikeRig.CallAsync(bridge, "get_job", new() { ["job_id"] = firstId })).Ok);
             var restartedPid = DaemonLock.ReadOwnerPid(Path.Combine(rig.StateDir, "daemon.lock"));
             Assert.NotNull(restartedPid);
@@ -48,7 +50,9 @@ public sealed class BridgeReconnectScenarios
             var rebound = (await SpikeRig.CallAsync(bridge, "session_info", [])).Session!;
             Assert.Equal(identity.SessionId, rebound.SessionId);
             Assert.Equal(identity.LeadToken, rebound.LeadToken);
-            Assert.Contains((await SpikeRig.CallAsync(bridge, "list_jobs", [])).Page!.Jobs, job => job.JobId == second.Job!.JobId);
+            var afterSecondRestart = await SpikeRig.CallAsync(bridge, "list_jobs", []);
+            Assert.True(afterSecondRestart.Ok, $"list_jobs after second restart: {afterSecondRestart.Error}");
+            Assert.Contains(Assert.IsType<JobListPage>(afterSecondRestart.Page).Jobs, job => job.JobId == second.Job!.JobId);
         }
         finally
         {
