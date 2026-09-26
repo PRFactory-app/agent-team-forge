@@ -10,11 +10,12 @@ must be explicitly opt-in.
 
 ## Status
 
-The repository root now contains a **Linux fake-core checkpoint**, not a
-finished agent-team product. `AgentTeamForge.slnx` contains the three production
-projects **Host → Business → DAL**, plus tests. The checkpoint exercises a
-.NET 11 daemon, SQLite persistence, private IPC, a thin MCP bridge and a fake
-child process; it does not launch Claude Code, Codex or Pi.
+The repository root now contains a **Linux checkpoint**, not a finished
+agent-team product. `AgentTeamForge.slnx` contains the three production
+projects **Host → Business → DAL**, plus tests. The reviewed checkpoint evidence
+covers a .NET 11 daemon, SQLite persistence, private IPC, a thin MCP bridge and
+a fake child process. The source also includes real-agent headless and
+interactive Linux Herdr launch paths, but no real-agent E2E is claimed.
 
 The reviewed checkpoint promoted to `main` (`d7d24ae`) passed 76 tests, 22
 published Native AOT scenarios and one published-binary demo on Linux x64; one

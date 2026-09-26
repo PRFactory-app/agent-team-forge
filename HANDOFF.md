@@ -12,7 +12,7 @@
 
 For the owner-facing Linux build, setup, MCP, and job-command flow, see the
 [Linux quickstart](docs/quickstart.md). It covers current headless setup,
-parallel dispatch, native wake, and the remaining Herdr and stop-job limits.
+Herdr setup, parallel dispatch, native wake, and job and daemon stop commands.
 
 Work from the root of your `agent-team-forge` checkout. All paths in this
 handoff are repository-relative unless explicitly marked otherwise.
