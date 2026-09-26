@@ -78,6 +78,21 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Activity_endpoint_forwards_cursor_and_limit_under_existing_auth_checks()
+    {
+        Daemon = _ => Task.FromResult(new IpcResponse(true, Outcome: "activity", Activity: new JobActivityPage([new ActivityEntry("2026-01-01T00:00:00Z", "assistant_text", "hi")], 42)));
+        var (status, body) = await Send(Api(HttpMethod.Get, "/api/jobs/j1/activity?after_cursor=12&limit=3"));
+        Assert.Equal(HttpStatusCode.OK, status);
+        Assert.Equal("hi", Assert.Single(body.Activity!.Entries).Text);
+        Assert.Equal(42, body.Activity.NextCursor);
+        var request = Assert.Single(_forwarded);
+        Assert.Equal(IpcProtocol.JobActivity, request.Op);
+        Assert.Equal(12, request.AfterCursor);
+        Assert.Equal(3, request.Limit);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Send(Api(HttpMethod.Get, "/api/jobs/j1/activity", token: WebConsoleServer.NewToken()))).Status);
+    }
+
+    [Fact]
     public async Task Page_and_api_carry_the_security_headers()
     {
         using var page = await _http.GetAsync(_server.Url, TestContext.Current.CancellationToken);

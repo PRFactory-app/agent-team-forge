@@ -84,7 +84,7 @@ public static class DaemonCommand
         }
 
         var store = new JobStore(database, checkpoints);
-        var jobLogs = new JobLogs(state.Path, Log);
+        var jobLogs = new JobLogs(state.Path, Log, launchMode is "herdr" or "wt");
         var prune = new PruneJob(new PruneJobs(database), state.Path);
         var wakeStore = new WakeStore(database);
         void RecoverHerdr()
@@ -144,7 +144,7 @@ public static class DaemonCommand
         var connectorTeams = new PRFactoryTeamStore(database);
         var connectorSessions = new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
-            new ListJobs(store, profile.Bound),
+            new ListJobs(store, profile.Bound, jobLogs),
             new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
             new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), new StopAgent(store, profile.Bound, backends));
 

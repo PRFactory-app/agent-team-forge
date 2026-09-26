@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Transport;
 using AgentTeamForge.Host.Hosting;
 using Microsoft.AspNetCore.Builder;
@@ -173,6 +174,13 @@ public sealed class WebConsoleServer : IAsyncDisposable
                 JobId = id,
                 Offset = long.TryParse(request.Query["offset"], out var offset) && offset >= 0 ? offset : 0,
                 MaxBytes = int.TryParse(request.Query["max_bytes"], out var max) && max is > 0 and <= 65536 ? max : 65536,
+            },
+            ("GET", ["jobs", var id, "activity"]) when ValidId(id) => new IpcRequest
+            {
+                Op = IpcProtocol.JobActivity,
+                JobId = id,
+                AfterCursor = long.TryParse(request.Query["after_cursor"], out var after) && after >= 0 ? after : 0,
+                Limit = int.TryParse(request.Query["limit"], out var count) && count is > 0 and <= JobActivity.MaxPageSize ? count : 20,
             },
             ("POST", ["jobs", var id, "follow-up"]) when ValidId(id) => await ReadFollowUpAsync(ctx, id),
             ("POST", ["jobs", var id, "stop"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStop, JobId = id },
