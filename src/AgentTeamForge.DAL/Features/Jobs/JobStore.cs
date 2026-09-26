@@ -62,12 +62,22 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     /// <summary>
     /// Claims the oldest unattempted intent and commits the attempt-start
     /// (generation + correlation) before the caller may cause any effect.
+    /// A follow-up is skipped while any job on its parent's native session is
+    /// running (the parent itself, a job holding that session, or another
+    /// follow-up of a job holding it), so turns on one session never overlap.
     /// </summary>
     public AttemptClaim? BeginNextAttempt() => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
-        var jobId = QueryString(connection, tx,
-            "SELECT job_id FROM dispatch_intents WHERE state='unattempted' ORDER BY created_at, rowid LIMIT 1");
+        var jobId = QueryString(connection, tx, """
+            SELECT i.job_id FROM dispatch_intents i JOIN jobs j ON j.job_id = i.job_id
+            WHERE i.state='unattempted' AND NOT EXISTS (
+                SELECT 1 FROM jobs p JOIN jobs k ON k.status='running'
+                WHERE p.job_id = j.parent_job_id
+                  AND (k.job_id = p.job_id OR k.session_id = p.session_id OR EXISTS (
+                      SELECT 1 FROM jobs q WHERE q.job_id = k.parent_job_id AND q.session_id = p.session_id)))
+            ORDER BY i.created_at, i.rowid LIMIT 1
+            """);
         if (jobId is null)
         {
             return null;
