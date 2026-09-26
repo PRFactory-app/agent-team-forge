@@ -22,7 +22,7 @@ static class HerdrOwnership
 
     public static HerdrTeardownDecision Teardown(string? ownerLabel, string recordedSession, JsonNode sessionList, bool serverIdentityMatches, JsonNode? workspaces)
     {
-        if (ownerLabel is null)
+        if (string.IsNullOrEmpty(ownerLabel))
         {
             return new("no ownership record: session was not created by this daemon", false);
         }

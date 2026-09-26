@@ -232,9 +232,14 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     JobResult WithLocation(JobResult result)
     {
         if (herdrPlacement is null || result.Job is not { HerdrPlacement: not null } job) { return result; }
-        var location = HerdrOwnedSessions.Location(herdrPlacement.StatePath, job.ParentJobId ?? job.JobId);
+        var location = Location(job.JobId, job.ParentJobId);
         return location is null ? result : result with { Job = job with { HerdrSession = location.Value.Session, HerdrTab = location.Value.TabId, HerdrTabLabel = location.Value.TabLabel } };
     }
+
+    // A retained follow-up reuses its parent's tab, so its record carries the parent's job id.
+    (string Session, string? TabId, string? TabLabel)? Location(string jobId, string? parentJobId) =>
+        HerdrOwnedSessions.Location(herdrPlacement!.StatePath, jobId)
+        ?? (parentJobId is null ? null : HerdrOwnedSessions.Location(herdrPlacement!.StatePath, parentJobId));
 
     JobListPage WithLocations(JobListPage page)
     {
@@ -244,7 +249,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             Jobs = [.. page.Jobs.Select(job =>
             {
                 if (job.HerdrPlacement is null) { return job; }
-                var location = HerdrOwnedSessions.Location(herdrPlacement.StatePath, job.ParentJobId ?? job.JobId);
+                var location = Location(job.JobId, job.ParentJobId);
                 return location is null ? job : job with { HerdrSession = location.Value.Session, HerdrTab = location.Value.TabId, HerdrTabLabel = location.Value.TabLabel };
             })]
         };
