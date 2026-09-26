@@ -4,6 +4,18 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const tokenKey = 'atf.web.token';
+  const themeKey = 'atf.web.theme';
+  let theme = 'auto';
+  try {
+    const saved = localStorage.getItem(themeKey);
+    if (saved === 'light' || saved === 'dark') theme = saved;
+  } catch { /* Storage may be blocked; Auto still works. */ }
+
+  function applyTheme(value) {
+    if (value === 'auto') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.dataset.theme = value;
+  }
+  applyTheme(theme);
   let token = null;
   let expandedKey = null;
   let pageCursors = [null];
@@ -835,6 +847,12 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
+    $('theme-select').value = theme;
+    $('theme-select').addEventListener('change', () => {
+      theme = $('theme-select').value;
+      applyTheme(theme);
+      try { localStorage.setItem(themeKey, theme); } catch { /* Keep the in-tab choice. */ }
+    });
     const fragment = new URLSearchParams(location.hash.slice(1));
     if (fragment.has('token')) {
       const fragmentToken = fragment.get('token');
