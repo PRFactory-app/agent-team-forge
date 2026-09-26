@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 
@@ -82,6 +83,57 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
+    /// <summary>Stops the current turn while preserving an interactive agent's live tab.</summary>
+    public void InterruptRunning(string jobId)
+    {
+        if (_running.TryGetValue(jobId, out var active))
+        {
+            // Own the stop effect before cancellation wakes RunAttemptAsync's
+            // catch path, which otherwise wins and kills an interactive TUI.
+            active.TerminateOnce(TryInterrupt);
+            try { active.Stop.Cancel(); }
+            catch (ObjectDisposedException) { }
+            CloseInterruptedIfUnclaimed(jobId);
+        }
+    }
+
+    internal void CloseInterruptedIfUnclaimed(string jobId)
+    {
+        // A stop can win after the child commit but before InterruptTurn remembers
+        // its tab. The committed child state is the final arbiter.
+        try
+        {
+            var parent = store.GetJob(jobId);
+            if (!store.HasQueuedFollowUp(jobId) && parent?.SessionId is { } sessionId &&
+                backends.Resolve(parent.Backend) is HerdrInteractiveBackend interactive)
+            {
+                interactive.CloseUnclaimedSession(sessionId);
+            }
+        }
+        catch (Exception ex)
+        { log($"Herdr interrupt cleanup failed for {jobId}: {ex.Message}"); }
+    }
+
+    /// <summary>Releases a retained Herdr tab when its follow-up was cancelled in the queue.</summary>
+    public void CloseUnclaimedFollowUp(string jobId)
+    {
+        try
+        {
+            var job = store.GetJob(jobId);
+            // A sibling follow-up still queued on the same parent resumes in that tab.
+            if (job?.ParentJobId is not { } parentId || store.HasQueuedFollowUp(parentId)
+                || store.GetJob(parentId)?.SessionId is not { } sessionId)
+            {
+                return;
+            }
+            if (backends.Resolve(job.Backend) is HerdrInteractiveBackend interactive)
+            {
+                interactive.CloseUnclaimedSession(sessionId);
+            }
+        }
+        catch (Exception ex) { log($"Herdr cleanup failed for {jobId}: {ex.Message}"); }
+    }
+
     /// <summary>Commits a daemon-owned cancellation, then interrupts the running attempt.</summary>
     void CancelOwned(string jobId, string reason)
     {
@@ -158,10 +210,7 @@ public sealed class DispatchJob : IDisposable
         {
             try
             {
-                foreach (var jobId in store.ExpireQueued())
-                {
-                    log($"queue ttl expired for {jobId}");
-                }
+                SweepExpiredQueued();
             }
             catch (StorageException ex)
             {
@@ -176,6 +225,15 @@ public sealed class DispatchJob : IDisposable
             {
                 return;
             }
+        }
+    }
+
+    internal void SweepExpiredQueued()
+    {
+        foreach (var jobId in store.ExpireQueued())
+        {
+            log($"queue ttl expired for {jobId}");
+            CloseUnclaimedFollowUp(jobId);
         }
     }
 
@@ -362,7 +420,7 @@ public sealed class DispatchJob : IDisposable
                         log($"ignored stale/mismatched backend evidence for {run.RunId}");
                         break;
                     case BackendEvidence.ProtocolError error:
-                        End(run, JobStatus.NeedsReconciliation, error.Code);
+                        End(run, error.Code == JobErrors.SessionExpired ? JobStatus.Failed : JobStatus.NeedsReconciliation, error.Code);
                         return;
                     case BackendEvidence.EndOfOutput:
                         End(run, JobStatus.NeedsReconciliation, "backend_eof");
@@ -385,7 +443,8 @@ public sealed class DispatchJob : IDisposable
         {
             // Spike-only policy: kill our own direct child through its held handle.
             // A possible surviving child or failed kill stays uncertain, never retried.
-            TryTerminate(backendRun);
+            // Once-only, so a concurrent interrupt keeps its live interactive tab.
+            active.TerminateOnce(TryTerminate);
             End(run, JobStatus.NeedsReconciliation, "backend_timeout");
         }
         catch (Exception) when (stopRequested.IsCancellationRequested)
@@ -398,14 +457,15 @@ public sealed class DispatchJob : IDisposable
             // Unanticipated fault after the attempt commit: the effect is unknown, so
             // quarantine (never failed, never requeued) and stop claiming work.
             log($"dispatcher fault for {run.RunId}: {ex.GetType().Name}");
-            TryTerminate(backendRun);
+            active.TerminateOnce(TryTerminate);
             End(run, JobStatus.NeedsReconciliation, "dispatcher_fault");
             Halt("dispatcher_fault");
         }
         finally
         {
             _running.TryRemove(run.JobId, out _);
-            if (stopRequested.IsCancellationRequested)
+            // An interrupt kills before it cancels, so the turn can end first.
+            if (stopRequested.IsCancellationRequested || active.Terminated)
             {
                 // Descendants reparented away from the owned child escape a tree kill;
                 // this run's unique marker still identifies them.
@@ -464,6 +524,16 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
+    void TryInterrupt(IBackendRun? backendRun)
+    {
+        try { backendRun?.InterruptTurn(); }
+        catch (Exception ex)
+        {
+            log($"owned turn interruption failed: {ex.GetType().Name}; stopping owned backend");
+            TryTerminate(backendRun);
+        }
+    }
+
     sealed class ActiveRun(CancellationTokenSource stop)
     {
         int _terminated;
@@ -471,6 +541,8 @@ public sealed class DispatchJob : IDisposable
         public CancellationTokenSource Stop { get; } = stop;
 
         public IBackendRun? BackendRun;
+
+        public bool Terminated => Volatile.Read(ref _terminated) != 0;
 
         public void TerminateOnce(Action<IBackendRun?> terminate)
         {

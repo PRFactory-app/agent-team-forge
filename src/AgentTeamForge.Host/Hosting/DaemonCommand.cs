@@ -11,6 +11,7 @@ using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Host.Features.FakeBackend;
 using AgentTeamForge.Host.Features.Jobs;
+using AgentTeamForge.Host.Features.PRFactory;
 using AgentTeamForge.Host.Features.Setup;
 using AgentTeamForge.Host.Transport;
 
@@ -71,6 +72,7 @@ public static class DaemonCommand
         JobDatabase database;
         try
         {
+            StartupBackup.Run(state, limits.BusyTimeout, Log);
             database = JobDatabase.Open(state.Database, limits.BusyTimeout);
         }
         catch (StorageException ex)
@@ -83,7 +85,18 @@ public static class DaemonCommand
         var jobLogs = new JobLogs(state.Path, Log);
         var prune = new PruneJob(new PruneJobs(database), state.Path);
         var wakeStore = new WakeStore(database);
-        var quarantined = new RecoverOnStartup(store).Execute();
+        void RecoverHerdr()
+        {
+            if (!Directory.Exists(Path.Combine(state.Path, "herdr")))
+            {
+                return;
+            }
+            var recoveryEnvironment = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
+                .ToDictionary(e => (string)e.Key, e => (string?)e.Value, StringComparer.Ordinal);
+            var terminal = new HerdrTerminal(new HerdrTerminalOptions { Environment = recoveryEnvironment });
+            HerdrOwnedSessions.Recover(state.Path, session => terminal.RecoverOwnedSessionAsync(session, CancellationToken.None), Log);
+        }
+        var quarantined = new RecoverOnStartup(store, RecoverHerdr).Execute();
         Log($"recovery: quarantined {quarantined.Count} uncertain attempt(s)");
 
         var backendEnv = new Dictionary<string, string>();
@@ -100,9 +113,12 @@ public static class DaemonCommand
                 .ToDictionary(e => (string)e.Key, e => (string?)e.Value, StringComparer.Ordinal);
             HerdrInteractiveBackend Interactive(InteractiveAgentKind kind) =>
                 new(new HerdrTerminal(new HerdrTerminalOptions { Environment = seed }), kind, state.Path);
-            backends.Register(BackendCatalog.Claude, () => Interactive(InteractiveAgentKind.Claude));
-            backends.Register(BackendCatalog.Codex, () => Interactive(InteractiveAgentKind.Codex));
-            backends.Register(BackendCatalog.Pi, () => Interactive(InteractiveAgentKind.Pi));
+            var claude = Interactive(InteractiveAgentKind.Claude);
+            var codex = Interactive(InteractiveAgentKind.Codex);
+            var pi = Interactive(InteractiveAgentKind.Pi);
+            backends.Register(BackendCatalog.Claude, () => claude);
+            backends.Register(BackendCatalog.Codex, () => codex);
+            backends.Register(BackendCatalog.Pi, () => pi);
         }
         if (launchMode == "wt")
         {
@@ -114,9 +130,9 @@ public static class DaemonCommand
         var admission = new AdmissionGate();
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs);
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
-        var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept),
+        var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
             new ListJobs(store, profile.Bound),
-            new StopJob(store, profile.Bound, dispatcher.CancelRunning), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs);
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store, new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database));
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
@@ -132,6 +148,7 @@ public static class DaemonCommand
         var dispatching = dispatcher.RunAsync(lifetime.Token);
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path), Log).RunAsync(lifetime.Token);
         var pruning = profile.AutoPrune ? RunPruneAsync(prune, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
+        var prfactory = PRFactoryHeartbeat.RunAsync(state, lifetime.Token, log: Log);
         await Task.WhenAny(serving, dispatching);
 
         // The dispatcher only returns on its own when halted or faulted; it closed
@@ -148,6 +165,7 @@ public static class DaemonCommand
         await serving;
         await waking;
         await pruning;
+        await prfactory;
         try
         {
             await dispatching;

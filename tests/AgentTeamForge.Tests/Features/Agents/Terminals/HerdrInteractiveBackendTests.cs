@@ -1,6 +1,10 @@
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Business.Features.Recovery;
+using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Sqlite;
+using AgentTeamForge.Tests.Support;
 
 namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 
@@ -79,6 +83,196 @@ public sealed class HerdrInteractiveBackendTests
         Assert.Equal(["--permission-mode", "bypassPermissions", "--resume", "native-1"], HerdrAgentControl.AgentArguments(control.Launch!));
         Assert.Contains(evidence, e => e == new BackendEvidence.Session("corr-2", "native-1"));
         Assert.Contains(evidence, e => e == new BackendEvidence.Result("corr-2", "follow-up finished"));
+    }
+
+    [Fact]
+    public async Task Interrupt_keeps_the_live_tab_and_prompts_it_again()
+    {
+        var control = new FakeControl { Status = InteractiveAgentStatus.Working };
+        var backend = new HerdrInteractiveBackend(control,
+            new FakeReader(new InteractiveTranscript("native-1", null)), InteractiveAgentKind.Codex, Path.GetTempPath());
+        var first = backend.Start(new BackendRequest("parent", "corr-parent", "first", "") { WorkingDirectory = Path.GetTempPath() });
+        await first.DeliverAsync(CancellationToken.None);
+        await using (var evidence = first.ReadEvidenceAsync(TestContext.Current.CancellationToken).GetAsyncEnumerator(TestContext.Current.CancellationToken))
+        {
+            Assert.True(await evidence.MoveNextAsync()); // ack
+            Assert.True(await evidence.MoveNextAsync()); // native session
+            Assert.Equal(new BackendEvidence.Session("corr-parent", "native-1"), evidence.Current);
+        }
+
+        first.InterruptTurn();
+        await first.DisposeAsync();
+        Assert.Equal(1, control.Interrupts);
+        Assert.False(control.Stopped);
+
+        var original = control.Launch;
+        await using var second = backend.Start(new BackendRequest("child", "corr-child", "second", "")
+        { WorkingDirectory = Path.GetTempPath(), ResumeSessionId = "native-1" });
+        await second.DeliverAsync(CancellationToken.None);
+        Assert.Equal(1, control.Starts);
+        Assert.Same(original, control.Launch);
+        Assert.Contains("second", control.Prompt);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task Unclaimed_interrupted_follow_up_closes_its_tab_on_stop_or_ttl(bool expire, bool stopBeforeInterrupt)
+    {
+        using var f = new JobFixture();
+        var control = new FakeControl { Status = InteractiveAgentStatus.Working };
+        var backend = new HerdrInteractiveBackend(control,
+            new FakeReader(new InteractiveTranscript("native-1", null)), InteractiveAgentKind.Codex, Path.GetTempPath());
+        var catalog = new BackendCatalog().Register(BackendCatalog.Codex, () => backend);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, catalog.Names);
+        var parent = accept.Execute(new SubmitJobRequest("parent", "first", null, false)
+        { Backend = BackendCatalog.Codex, Cwd = Path.GetTempPath() }).Job!;
+        var claim = f.Store.BeginNextAttempt()!;
+        var first = backend.Start(new BackendRequest(parent.JobId, claim.Correlation, "first", "") { WorkingDirectory = Path.GetTempPath() });
+        await first.DeliverAsync(CancellationToken.None);
+        await using (var evidence = first.ReadEvidenceAsync(TestContext.Current.CancellationToken).GetAsyncEnumerator(TestContext.Current.CancellationToken))
+        {
+            Assert.True(await evidence.MoveNextAsync());
+            Assert.True(await evidence.MoveNextAsync());
+        }
+        Assert.True(f.Store.RecordSession(new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation), "native-1"));
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, accept, _ => { }).Execute(
+            new FollowUpRequest(parent.JobId, "second", "child") { Interrupt = true, QueueTtlSeconds = expire ? 1 : null }).Job!;
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        if (stopBeforeInterrupt)
+        {
+            new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp).Execute(child.JobId);
+        }
+        first.InterruptTurn();
+        await first.DisposeAsync();
+        if (stopBeforeInterrupt)
+        {
+            dispatcher.CloseInterruptedIfUnclaimed(parent.JobId);
+        }
+        if (expire)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(1100), TestContext.Current.CancellationToken);
+            dispatcher.SweepExpiredQueued();
+        }
+        else if (!stopBeforeInterrupt)
+        {
+            new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp).Execute(child.JobId);
+        }
+
+        Assert.Equal(JobStatus.Cancelled, f.Store.GetJob(child.JobId)!.Status);
+        Assert.True(control.Stopped);
+        await using var resumed = backend.Start(new BackendRequest("later", "corr-later", "later", "")
+        { WorkingDirectory = Path.GetTempPath(), ResumeSessionId = "native-1" });
+        Assert.Equal(2, control.Starts); // The cancelled child cannot hand off the old pane.
+    }
+
+    [Fact]
+    public async Task Stopping_one_queued_follow_up_keeps_the_tab_for_a_queued_sibling()
+    {
+        using var f = new JobFixture();
+        var control = new FakeControl { Status = InteractiveAgentStatus.Working };
+        var backend = new HerdrInteractiveBackend(control,
+            new FakeReader(new InteractiveTranscript("native-1", null)), InteractiveAgentKind.Codex, Path.GetTempPath());
+        var catalog = new BackendCatalog().Register(BackendCatalog.Codex, () => backend);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, catalog.Names);
+        var parent = accept.Execute(new SubmitJobRequest("parent", "first", null, false)
+        { Backend = BackendCatalog.Codex, Cwd = Path.GetTempPath() }).Job!;
+        var claim = f.Store.BeginNextAttempt()!;
+        var first = backend.Start(new BackendRequest(parent.JobId, claim.Correlation, "first", "") { WorkingDirectory = Path.GetTempPath() });
+        await first.DeliverAsync(CancellationToken.None);
+        await using (var evidence = first.ReadEvidenceAsync(TestContext.Current.CancellationToken).GetAsyncEnumerator(TestContext.Current.CancellationToken))
+        {
+            Assert.True(await evidence.MoveNextAsync());
+            Assert.True(await evidence.MoveNextAsync());
+        }
+        Assert.True(f.Store.RecordSession(new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation), "native-1"));
+        var followUp = new FollowUpJob(f.Store, JobFixture.Operator, accept, _ => { });
+        var child = followUp.Execute(new FollowUpRequest(parent.JobId, "second", "child") { Interrupt = true }).Job!;
+        first.InterruptTurn();
+        await first.DisposeAsync();
+        var sibling = followUp.Execute(new FollowUpRequest(parent.JobId, "third", "sibling")).Job!;
+        Assert.Equal(JobStatus.Queued, f.Store.GetJob(sibling.JobId)!.Status);
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp).Execute(child.JobId);
+
+        Assert.False(control.Stopped);
+        await using var resumed = backend.Start(new BackendRequest(sibling.JobId, "corr-sibling", "third", "")
+        { WorkingDirectory = Path.GetTempPath(), ResumeSessionId = "native-1" });
+        Assert.Equal(1, control.Starts);
+    }
+
+    [Fact]
+    public void Restart_logs_and_keeps_unprovable_Herdr_record_without_blocking_startup()
+    {
+        using var f = new JobFixture();
+        using var state = new TempStateDir();
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null,
+            Path.Combine(state.Path, "herdr", "atftest.bootstrap"));
+        Directory.CreateDirectory(Path.GetDirectoryName(launch.BootstrapPath)!);
+        HerdrOwnedSessions.Save(launch, new OwnedHerdrSession("atf-test", "/tmp/atf-test.sock", 123, 456, "owner", "workspace"));
+        var logs = new List<string>();
+
+        var recovered = new RecoverOnStartup(f.Store, () => HerdrOwnedSessions.Recover(state.Path,
+            _ => throw new HerdrLaunchException("teardown refused: running server is not the recorded process"), logs.Add)).Execute();
+
+        Assert.Empty(recovered);
+        Assert.Contains(logs, l => l.Contains("teardown refused"));
+        Assert.True(File.Exists(HerdrOwnedSessions.PathFor(launch))); // Retried on the next start.
+    }
+
+    [Fact]
+    public void Restart_closes_recorded_Herdr_session_before_claiming_interrupted_follow_up()
+    {
+        using var f = new JobFixture();
+        using var state = new TempStateDir();
+        var parent = f.Submit("parent");
+        var claim = f.Store.BeginNextAttempt()!;
+        Assert.True(f.Store.RecordSession(new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation), "native-1"));
+        var child = f.Store.AcceptOrGet(new NewJob(JobFixture.Operator.Principal, JobFixture.Operator.Team,
+            JobFixture.Operator.Agent, FollowUpJob.Operation, "child", "fingerprint", "second", "")
+        { ParentJobId = parent.JobId, InterruptParent = true }, f.Limits.QueueLimit).Job!;
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null,
+            Path.Combine(state.Path, "herdr", "atftest.bootstrap"));
+        Directory.CreateDirectory(Path.GetDirectoryName(launch.BootstrapPath)!);
+        var owned = new OwnedHerdrSession("atf-test", "/tmp/atf-test.sock", 123, 456, "owner", "workspace");
+        HerdrOwnedSessions.Save(launch, owned);
+        var stopped = false;
+
+        var recovered = new RecoverOnStartup(f.Store, () => HerdrOwnedSessions.Recover(state.Path, session =>
+        {
+            Assert.Equal(owned, session);
+            Assert.Equal(JobStatus.Queued, f.Store.GetJob(child.JobId)!.Status);
+            stopped = true;
+            return Task.CompletedTask;
+        }, _ => { })).Execute();
+
+        Assert.True(stopped);
+        Assert.Empty(recovered);
+        Assert.False(File.Exists(HerdrOwnedSessions.PathFor(launch)));
+        Assert.Equal(child.JobId, f.Store.BeginNextAttempt()!.Job.JobId);
+    }
+
+    [Fact]
+    public async Task Interrupt_after_a_settled_turn_closed_its_tab_does_not_hand_that_tab_to_the_follow_up()
+    {
+        var control = new FakeControl { Status = InteractiveAgentStatus.Done };
+        var backend = new HerdrInteractiveBackend(control,
+            new FakeReader(new InteractiveTranscript("native-1", "finished")), InteractiveAgentKind.Claude, Path.GetTempPath());
+        var first = backend.Start(new BackendRequest("parent", "corr-parent", "first", "") { WorkingDirectory = Path.GetTempPath() });
+        await first.DeliverAsync(CancellationToken.None);
+        await Collect(first);
+        await first.DisposeAsync();
+        Assert.True(control.Stopped);
+
+        first.InterruptTurn();
+        Assert.Equal(0, control.Interrupts);
+
+        await using var second = backend.Start(new BackendRequest("child", "corr-child", "second", "")
+        { WorkingDirectory = Path.GetTempPath(), ResumeSessionId = "native-1" });
+        Assert.Equal(2, control.Starts);
+        Assert.Equal("native-1", control.Launch!.ResumeSessionId);
     }
 
     [Fact]
@@ -223,6 +417,8 @@ public sealed class HerdrInteractiveBackendTests
     sealed class FakeControl : IHerdrAgentControl
     {
         public InteractiveLaunch? Launch { get; private set; }
+        public int Starts { get; private set; }
+        public int Interrupts { get; private set; }
         public string Prompt { get; private set; } = "";
         public bool Prompted => Prompt.Length != 0;
         public bool Unavailable { get; init; }
@@ -234,6 +430,7 @@ public sealed class HerdrInteractiveBackendTests
                 throw new InteractiveTerminalUnavailableException("no desktop");
             }
             Launch = launch;
+            Starts++;
             return Task.CompletedTask;
         }
 
@@ -257,6 +454,11 @@ public sealed class HerdrInteractiveBackendTests
             FailStatus ? throw new HerdrLaunchException("herdr agent get exited 1: io") : Task.FromResult(Statuses?.Count > 0 ? Statuses.Dequeue() : Status);
 
         public void StopOwned(InteractiveLaunch launch) => Stopped = true;
+        public Task InterruptAsync(InteractiveLaunch launch, CancellationToken cancellationToken)
+        {
+            Interrupts++;
+            return Task.CompletedTask;
+        }
     }
 
     sealed class FakeReader(InteractiveTranscript? output) : IInteractiveTranscriptReader
@@ -304,5 +506,6 @@ public sealed class HerdrInteractiveBackendTests
         }
 
         public void StopOwned(InteractiveLaunch launch) => inner.StopOwned(launch);
+        public Task InterruptAsync(InteractiveLaunch launch, CancellationToken cancellationToken) => inner.InterruptAsync(launch, cancellationToken);
     }
 }
