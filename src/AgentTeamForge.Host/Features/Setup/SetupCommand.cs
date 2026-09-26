@@ -39,8 +39,7 @@ public static class SetupCommand
         }
         WriteMode(state, mode);
 
-        var binary = Path.GetFullPath(executablePath ?? Environment.ProcessPath
-            ?? throw new InvalidOperationException("Executable path unavailable"));
+        var binary = RegistrationExecutable(executablePath);
         commandRunner ??= RunCommand;
         foreach (var (tool, args) in Registrations(binary, state.Path))
         {
@@ -271,6 +270,25 @@ public static class SetupCommand
         ("claude", ["mcp", "add", "--scope", "user", "agentteamforge", "--", binary, "mcp", "--state-dir", stateDir]),
         ("codex", ["mcp", "add", "agentteamforge", "--", binary, "mcp", "--state-dir", stateDir]),
     ];
+
+    static string RegistrationExecutable(string? supplied)
+    {
+        var binary = Path.GetFullPath(supplied ?? Environment.ProcessPath
+            ?? throw new InvalidOperationException("Executable path unavailable"));
+        if (supplied is not null)
+        {
+            return binary;
+        }
+
+        var home = Environment.GetEnvironmentVariable("HOME") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var stable = Path.Combine(home, ".local", "bin", "atf");
+        var root = Path.Combine(home, ".local", "share", "agentteamforge");
+        var current = Path.Combine(root, "current");
+        var link = new FileInfo(stable).LinkTarget;
+        var release = new DirectoryInfo(current).LinkTarget;
+        return link == Path.Combine(current, "atf") && release is not null
+            && Path.GetFullPath(Path.Combine(root, release, "atf")) == binary ? stable : binary;
+    }
 
     internal static string ResolveStateDir(IReadOnlyDictionary<string, string> options) => Path.GetFullPath(
         options.TryGetValue("state-dir", out var specified) ? specified :
