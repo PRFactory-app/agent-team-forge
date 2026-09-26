@@ -8,11 +8,11 @@ still awaits organization creation by the owner; no remote or push exists.
 
 | Snapshot | Observable output | Current qualification |
 | --- | --- | --- |
-| `spike/m0-durable-core` / `55d3c054` | Real `AgentTeamForge.slnx`, Host → Business → DAL, .NET 11 fake-child daemon/SQLite/private IPC/MCP; bridge death and fresh-client result retrieval. | Independent Codex reproduced format, zero-warning build, 37 tests, AOT publish and 13 published process scenarios. **Changes required:** hidden dispatcher faults and deadline not covering initial delivery. Fresh Claude repair in progress. No real backend/platform qualification. |
-| `spike/m0-codex-safety` / `6e06de77` | Stopped-session deletion refusal, atomic launch intent, malformed-history rejection. | Independent per-slice Codex review in progress. Native visible-TUI/thread binding and strict human-input race prevention remain unresolved, not solved by these fixes. |
-| `spike/m0-transport-bounds` / `8f7b6344` | Bounded JSON-RPC request lifecycle and Herdr CLI output. | Independent Codex review in progress; whole Codex-command budget remains a separate concern. |
-| `spike/m0-claude-isolation` / `8a5e385d` | Unsafe Claude managed send/cancel blocked; concurrent hook appends bounded. | Independent Codex review in progress. This refuses unsafe behavior; it does not supply missing native Claude origin/interrupt capability. |
-| `main` / `0dbf44b` | F27 operator-console plan and static HTML mockup; shared roadmap has 27 feature rows. | Mockup rendered in Chromium; no runtime web UI. Independent Codex design/security review in progress; user visual feedback separate. |
+| `spike/m0-durable-core` / `55d3c054` | Real `AgentTeamForge.slnx`, Host → Business → DAL, .NET 11 fake-child daemon/SQLite/private IPC/MCP; bridge death and fresh-client result retrieval. | Independent Codex reproduced format, zero-warning build, 37 tests, AOT publish and 13 published process scenarios. **Changes required:** hidden dispatcher faults and deadline not covering initial delivery. Claude repair committed at `1d3c409`; independent Codex re-review in progress. No real backend/platform qualification. |
+| `spike/m0-codex-safety` / `6e06de77` | Stopped-session deletion refusal, atomic launch intent, malformed-history rejection. | Bounded primitives independently approved and merged into integration at `1f68da5`; complete item validation and identity-bound teardown still open. Native visible-TUI/thread binding and strict human-input race prevention remain unresolved, not solved by these fixes. |
+| `spike/m0-transport-bounds` / `8f7b6344` | Bounded JSON-RPC request lifecycle and Herdr CLI output. | Bounded primitive independently approved and merged into integration; whole Codex-command budget remains a separate concern. |
+| `spike/m0-claude-isolation` / `8a5e385d` | Unsafe Claude managed send/cancel blocked; concurrent hook appends bounded. | Bounded refusal/hook-cap changes independently approved and merged into integration. This refuses unsafe behavior; it does not supply missing native Claude origin/interrupt capability. |
+| `main` / `0dbf44b` | F27 operator-console plan and static HTML mockup; shared roadmap has 27 feature rows. | Mockup rendered in Chromium; no runtime web UI. Independent review `a113bc53` requires pairing-authority and reload-recovery corrections; Pi plan revision in progress. User visual feedback is separate. |
 
 The legacy `AtfSpike` source is retained only as an isolated experimental baseline.
 The new core has real product naming. Consolidate reviewed reusable code/tests and
@@ -23,16 +23,21 @@ recovery evidence during file cleanup.
 
 | Agent / branch | Bounded next handoff |
 | --- | --- |
-| Claude `m0-core-fault-fix` / `spike/m0-core-fault-fix` | Repair core B1/B2 with red regression tests; independent Codex re-review before promotion. |
-| Claude `m0-demo-runner` / `spike/m0-demo-runner` | Safe one-command fake-core demo, unique owned state and bounded cleanup; no fixed-path destructive cleanup. |
-| Claude `m0-job-inspection` / `spike/m0-job-inspection` | Bounded authenticated read-only job listing for CLI/IPC; no browser implementation or extra scheduler. |
-| Claude `codex-control-probe` / `spike/codex-control-probe` | C# fixtures/probe for actual start-or-steer races and history shape. Optional native run only against isolated loopback mock responses with no real credentials/model calls. |
-| Codex `m0-codex-verifier` / `verify/m0-e2e` | Exact-commit independent review of the three legacy safety lanes, per-slice verdicts and combined tests. |
-| Codex `m0-codex-integrator` / `integration/m0-e2e` | Core re-review and later merge of approved small snapshots; combined gates. Parked between immutable inputs, not authorized to self-approve executable fixes. |
-| Codex `operator-console-plan-review` / `review/web-console` | Independent F27 architecture/security review only. |
+| Claude `m0-client-deadlines` / `spike/m0-client-deadlines` | Bound the entire IPC client operation; preserve uncertain acceptance and daemon job independence. |
+| Claude `m0-teardown-fence` / `spike/m0-teardown-fence` | Refuse destructive name-based teardown when provider identity cannot be bound atomically; replacement-race regressions. |
+| Codex `m0-codex-verifier` / `verify/m0-e2e` | Independent review of demo `aba651b` and job inspection `d54ff3a`, separately and combined. |
+| Codex `m0-codex-integrator` / `integration/m0-e2e` | Re-review core B1/B2 repair `1d3c409`; merge only if approved, then combined gates. |
+| Codex `codex-control-probe-review` / `review/codex-control-probe` | Review fake-only probe `73dab8d`; no native capability inferred from fixtures. |
+| Pi `operator-console-plan-revision` | Address independent F27 design findings; no runtime web implementation. |
 
-Approximately six useful active workers is the target; parked integration work
-need not be kept artificially busy. Finished writers have been retired after
+The four previous Claude writers committed their handoffs and were stopped with
+`kill_agent`. The completed web-plan reviewer and obsolete research worker were
+also retired. New Claude workers use win-agent-teams; new Codex/Pi workers use
+native subagents. The two existing MCP-hosted Codex reviews finish their current
+assignments before retirement.
+
+Approximately six useful active workers is the target; waiting workers do not
+count as active work and should be retired after their handoff is captured. Finished writers have been retired after
 committing their handoff; use fresh bounded writers for new repairs. No 400k-token
 implementation session. Codex owns verification/reviews/integration; Claude owns
 runtime code. Semantic merge fixes return to a Claude writer and independent

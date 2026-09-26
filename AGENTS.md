@@ -100,7 +100,14 @@ compatibility layer for other orchestration systems.
   file/worktree ownership while reviews run. Hand off well before roughly
   200,000 context tokens; 400,000-token implementation sessions are unacceptable.
   Preserve decisions/tests/blockers in concise reports, then retire finished
-  workers. Do not keep agents idle when the next safe, testable slice is ready.
+  workers. For workers launched through win-agent-teams, call `kill_agent` once
+  their handoff is captured; a waiting process is not useful parallel work.
+  Do not keep agents idle when the next safe, testable slice is ready.
+- Spawn Claude Code through **win-agent-teams**. Spawn new Pi and Codex workers
+  through the native **subagents** tool (Pi planning, Codex review/verification/
+  integration); do not route new Pi/Codex workers through win-agent-teams.
+  Native subagents terminate when their bounded task finishes. Let already-running
+  reviews finish before retiring their legacy MCP-hosted workers.
 - Parallel implementation uses separate feature branches/worktrees and explicit
   slice ownership. Maintain an integration branch per milestone; use an
   independent **Codex GPT-6 Sol (tier high)** integrator to merge reviewed slices,
