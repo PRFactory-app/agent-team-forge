@@ -41,7 +41,7 @@ public sealed class WakeStore(JobDatabase database)
         command.CommandText = """
             UPDATE wake_jobs SET read_at=$now WHERE job_id=$job AND target_key=$key AND read_at IS NULL
             AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation)
-            AND EXISTS (SELECT 1 FROM jobs WHERE job_id=$job AND status IN ('completed','failed','needs_reconciliation'));
+            AND EXISTS (SELECT 1 FROM jobs WHERE job_id=$job AND status IN ('completed','failed','needs_reconciliation','cancelled'));
             """;
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$job", jobId);
@@ -60,8 +60,8 @@ public sealed class WakeStore(JobDatabase database)
                    sum(CASE WHEN e.seq <= t.notified_seq THEN 1 ELSE 0 END)
             FROM wake_targets t
             JOIN wake_jobs w ON w.target_key=t.target_key AND w.read_at IS NULL
-            JOIN jobs j ON j.job_id=w.job_id AND j.status IN ('completed','failed','needs_reconciliation')
-            JOIN events e ON e.job_id=j.job_id AND e.kind IN ('completed','failed','needs_reconciliation')
+            JOIN jobs j ON j.job_id=w.job_id AND j.status IN ('completed','failed','needs_reconciliation','cancelled')
+            JOIN events e ON e.job_id=j.job_id AND e.kind IN ('completed','failed','needs_reconciliation','cancelled')
             GROUP BY t.target_key;
             """;
         using var reader = command.ExecuteReader();

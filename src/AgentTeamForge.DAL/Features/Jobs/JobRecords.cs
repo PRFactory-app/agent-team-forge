@@ -6,6 +6,7 @@ public static class JobStatus
     public const string Running = "running";
     public const string Completed = "completed";
     public const string Failed = "failed";
+    public const string Cancelled = "cancelled";
     public const string NeedsReconciliation = "needs_reconciliation";
 }
 
@@ -24,6 +25,11 @@ public sealed record NewJob(
     public string? Cwd { get; init; }
 
     public string? ParentJobId { get; init; }
+
+    public string? WorktreePath { get; init; }
+    public string? WorktreeBranch { get; init; }
+    public string? WorktreeBase { get; init; }
+    public bool CreateWorktree { get; init; }
 
     public string? WakeTargetKey { get; init; }
 
@@ -45,7 +51,12 @@ public sealed record JobRecord(
     string Backend,
     string? Cwd,
     string? ParentJobId,
-    string? SessionId);
+    string? SessionId)
+{
+    public string? WorktreePath { get; init; }
+    public string? WorktreeBranch { get; init; }
+    public string? WorktreeBase { get; init; }
+}
 
 public enum AcceptKind
 {
@@ -62,9 +73,15 @@ public sealed record AttemptClaim(JobRecord Job, string RunId, long Generation, 
 
 public sealed record RunRef(string JobId, string RunId, long Generation, string Correlation);
 
+public sealed record CancelOutcome(JobRecord? Job, bool WasRunning, bool Changed);
+
 public sealed record EventRecord(long Seq, string JobId, string? RunId, string Kind);
 
 public sealed record RunRecord(string RunId, long Generation, string Correlation, string State, bool Acked, int? BackendPid, string? ReasonCode);
 
 /// <summary>Read-only inspection row: committed state only, no instruction or result payload.</summary>
-public sealed record JobSummaryRecord(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt);
+public sealed record JobSummaryRecord(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)
+{
+    public string? WorktreePath { get; init; }
+    public string? WorktreeBranch { get; init; }
+}

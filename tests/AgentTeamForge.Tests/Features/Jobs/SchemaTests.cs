@@ -43,6 +43,10 @@ public sealed class SchemaTests
                                  instruction, options, status, result_text, accepted_at, updated_at)
                 VALUES ('job_old', 'local-operator', 'spike-team', 'fake-agent', 'job_submit', 'k', 'fp',
                         'hi', 'behavior=complete;hold=0', 'completed', 'kept', 'a', 'a');
+                INSERT INTO runs(run_id, job_id, generation, correlation, state, started_at, finished_at)
+                VALUES ('run_old', 'job_old', 1, 'corr_old', 'completed', 'a', 'a');
+                INSERT INTO events(job_id, run_id, kind, created_at)
+                VALUES ('job_old', 'run_old', 'completed', 'a');
                 """;
             command.ExecuteNonQuery();
         }
@@ -51,11 +55,53 @@ public sealed class SchemaTests
 
         var job = store.GetJob("job_old")!;
         Assert.Equal(("kept", "fake", null, null), (job.ResultText, job.Backend, job.SessionId, job.ParentJobId));
+        Assert.Equal("completed", Assert.Single(store.GetRuns("job_old")).State);
         using var check = new SqliteConnection($"Data Source={path};Pooling=False");
         check.Open();
         using var version = check.CreateCommand();
         version.CommandText = "SELECT max(version) FROM schema_migrations";
         Assert.Equal((long)AgentTeamForge.DAL.Migrations.Schema.CurrentVersion, (long)version.ExecuteScalar()!);
+        version.CommandText = "PRAGMA foreign_key_check";
+        using var violations = version.ExecuteReader();
+        Assert.False(violations.Read());
+    }
+
+    [Fact]
+    public void Version_3_database_rebuild_keeps_runs_and_wake_rows_and_allows_cancelled()
+    {
+        using var dir = new TempStateDir();
+        var path = dir.File("jobs.db");
+        using (var connection = new SqliteConnection($"Data Source={path};Pooling=False"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = AgentTeamForge.DAL.Migrations.Schema.V1 + AgentTeamForge.DAL.Migrations.Schema.V2 + AgentTeamForge.DAL.Migrations.Schema.V3 + """
+                INSERT INTO schema_migrations(version, applied_at) VALUES (3, 'v3');
+                INSERT INTO jobs(job_id, principal, team, target_agent, operation, idempotency_key, fingerprint,
+                                 instruction, options, status, accepted_at, updated_at, session_id)
+                VALUES ('job_old', 'local-operator', 'spike-team', 'fake-agent', 'job_submit', 'k', 'fp',
+                        'hi', 'behavior=complete;hold=0', 'running', 'a', 'a', 's1');
+                INSERT INTO runs(run_id, job_id, generation, correlation, state, started_at)
+                VALUES ('run_old', 'job_old', 1, 'corr_old', 'started', 'a');
+                INSERT INTO wake_targets(target_key, generation, kind, address, secret, home, registered_at)
+                VALUES ('t', 1, 'codex', 'a', '', '/tmp', 'a');
+                INSERT INTO wake_jobs(job_id, target_key) VALUES ('job_old', 't');
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        var store = new JobStore(JobDatabase.Open(path, TimeSpan.FromSeconds(1)), DurabilityCheckpoints.None);
+        Assert.Equal(JobStatus.Cancelled, store.Cancel("job_old", "local-operator", "spike-team").Job!.Status);
+        Assert.Equal(JobStatus.Cancelled, Assert.Single(store.GetRuns("job_old")).State);
+
+        using var check = new SqliteConnection($"Data Source={path};Pooling=False");
+        check.Open();
+        using var query = check.CreateCommand();
+        query.CommandText = "SELECT count(*) FROM wake_jobs WHERE job_id='job_old'";
+        Assert.Equal(1L, (long)query.ExecuteScalar()!);
+        query.CommandText = "PRAGMA foreign_key_check";
+        using var violations = query.ExecuteReader();
+        Assert.False(violations.Read());
     }
 
     [Fact]

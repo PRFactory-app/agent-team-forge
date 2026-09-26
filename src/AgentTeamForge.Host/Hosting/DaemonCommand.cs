@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Business.Features.Recovery;
 using AgentTeamForge.Business.Features.Wake;
@@ -25,10 +26,10 @@ public static class DaemonCommand
     public static async Task<int> RunAsync(StateDirectory state, string? crashAt, string? failAt)
     {
         var profile = SpikeProfileFile.Load(state);
-        if (SetupCommand.ConfiguredMode(state) == "herdr")
+        var launchMode = SetupCommand.ConfiguredMode(state);
+        if (launchMode == "herdr" && !profile.RealAgents)
         {
-            // TODO: compose the Herdr interactive backend when it lands.
-            Log("error: herdr agent launch is not available yet");
+            Log("error: herdr mode requires an agents profile");
             return 78;
         }
         if ((crashAt is not null || failAt is not null) && !profile.TestProfile)
@@ -74,6 +75,7 @@ public static class DaemonCommand
         }
 
         var store = new JobStore(database, checkpoints);
+        var prune = new PruneJob(new PruneJobs(database), state.Path);
         var wakeStore = new WakeStore(database);
         var quarantined = new RecoverOnStartup(store).Execute();
         Log($"recovery: quarantined {quarantined.Count} uncertain attempt(s)");
@@ -85,13 +87,24 @@ public static class DaemonCommand
         }
 
         var backends = BackendCatalog.Create(
-            new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits), profile.RealAgents);
+            new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits), profile.RealAgents && launchMode != "herdr");
+        if (launchMode == "herdr")
+        {
+            var seed = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
+                .ToDictionary(e => (string)e.Key, e => (string?)e.Value, StringComparer.Ordinal);
+            HerdrInteractiveBackend Interactive(InteractiveAgentKind kind) =>
+                new(new HerdrTerminal(new HerdrTerminalOptions { Environment = seed }), kind, state.Path);
+            backends.Register(BackendCatalog.Claude, () => Interactive(InteractiveAgentKind.Claude));
+            backends.Register(BackendCatalog.Codex, () => Interactive(InteractiveAgentKind.Codex));
+            backends.Register(BackendCatalog.Pi, () => Interactive(InteractiveAgentKind.Pi));
+        }
         Log($"backends: {string.Join(',', backends.Names)}");
         var admission = new AdmissionGate();
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log);
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept),
-            new ListJobs(store, profile.Bound), checkpoints, dispatcher.Signal, wakeStore);
+            new ListJobs(store, profile.Bound),
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning), checkpoints, dispatcher.Signal, wakeStore, prune);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
@@ -106,6 +119,7 @@ public static class DaemonCommand
         var serving = server.ServeAsync(listener, lifetime.Token);
         var dispatching = dispatcher.RunAsync(lifetime.Token);
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path), Log).RunAsync(lifetime.Token);
+        var pruning = profile.AutoPrune ? RunPruneAsync(prune, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
         await Task.WhenAny(serving, dispatching);
 
         // The dispatcher only returns on its own when halted or faulted; it closed
@@ -121,6 +135,7 @@ public static class DaemonCommand
 
         await serving;
         await waking;
+        await pruning;
         try
         {
             await dispatching;
@@ -146,4 +161,26 @@ public static class DaemonCommand
     }
 
     static void Log(string message) => Console.Error.WriteLine($"[atf-daemon] {message}");
+
+    static async Task RunPruneAsync(PruneJob prune, int days, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                var count = prune.Execute(days, dryRun: false);
+                if (count > 0)
+                {
+                    Log($"pruned {count} expired job(s)");
+                }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                Log($"prune failed: {ex.GetType().Name}");
+            }
+
+            try { await Task.Delay(TimeSpan.FromDays(1), cancellationToken); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
+        }
+    }
 }

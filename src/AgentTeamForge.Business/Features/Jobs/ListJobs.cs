@@ -19,7 +19,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal)
     {
         var limit = request.Limit ?? DefaultPageSize;
         if (limit is < 1 or > MaxPageSize
-            || request.Status is not (null or JobStatus.Queued or JobStatus.Running or JobStatus.Completed or JobStatus.Failed or JobStatus.NeedsReconciliation)
+            || request.Status is not (null or JobStatus.Queued or JobStatus.Running or JobStatus.Completed or JobStatus.Failed or JobStatus.NeedsReconciliation or JobStatus.Cancelled)
             || (request.Cursor is not null && (request.Cursor.Length > 64 || !request.Cursor.StartsWith("job_", StringComparison.Ordinal))))
         {
             return new JobListResult(null, JobErrors.InvalidRequest);
@@ -37,7 +37,11 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal)
         }
 
         var hasMore = rows.Count > limit;
-        var jobs = rows.Take(limit).Select(r => new JobSummary(r.JobId, r.Status, r.ReasonCode, r.Attempts, r.AcceptedAt, r.UpdatedAt)).ToList();
+        var jobs = rows.Take(limit).Select(r => new JobSummary(r.JobId, r.Status, r.ReasonCode, r.Attempts, r.AcceptedAt, r.UpdatedAt)
+        {
+            WorktreePath = r.WorktreePath,
+            WorktreeBranch = r.WorktreeBranch,
+        }).ToList();
         return new JobListResult(new JobListPage(jobs, limit, hasMore, hasMore ? jobs[^1].JobId : null), null);
     }
 }
@@ -46,7 +50,11 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal)
 public sealed record ListJobsRequest(string? Status = null, int? Limit = null, string? Cursor = null);
 
 /// <summary>Inspection view of a job; use job_get for its result.</summary>
-public sealed record JobSummary(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt);
+public sealed record JobSummary(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)
+{
+    public string? WorktreePath { get; init; }
+    public string? WorktreeBranch { get; init; }
+}
 
 /// <summary>One page, newest first. `NextCursor` is set exactly when `HasMore` is true.</summary>
 public sealed record JobListPage(IReadOnlyList<JobSummary> Jobs, int Limit, bool HasMore, string? NextCursor);

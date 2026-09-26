@@ -48,6 +48,14 @@ the daemon PID and is safe to repeat. `atf stop` prints the `kill -TERM` command
 for the running daemon. This checkpoint still dispatches the fake backend; the
 selected mode is persisted for subsequent real-agent implementation.
 
+Run `atf prune --dry-run` to count expired jobs, then `atf prune` to remove them.
+`--older-than 30d` is the default; both commands accept `--state-dir DIR` and
+require the daemon to be running. The daemon also prunes once at startup and
+every 24 hours. Set `auto_prune` to `false` or `prune_older_than_days` to a
+positive number in the private `profile.json` to change that schedule. Pruning
+removes completed and failed jobs, their stored output/events/runs, and matching
+files in `logs/<job-id>.log`. Active jobs and parents of active follow-ups remain.
+
 ## Run the bounded checkpoint
 
 From the repository root, with the pinned .NET SDK and Linux native build
@@ -82,7 +90,11 @@ Register the MCP bridge with `claude mcp add atf -- /path/to/atf mcp --state-dir
 and use `submit_job(backend, instruction, cwd?, idempotency_key)`, `get_job`,
 `follow_up(job_id, instruction, idempotency_key)` (resumes the finished job's native
 session on the same backend/cwd) and `list_jobs`. CLI equivalents:
-`atf client submit|get|follow-up|list`. `scripts/demo-real.sh [claude|codex|pi]` is the
+`atf client submit|get|follow-up|list`. Add `worktree: true` to `submit_job` or
+`--worktree` to `atf client submit` with a git `cwd` to run in a separate checkout
+under the daemon state directory. The job view and list show its path and branch;
+follow-ups reuse it. Worktrees remain for manual inspection and cleanup.
+`scripts/demo-real.sh [claude|codex|pi]` is the
 opt-in end-to-end check (spends tokens); `fake` is a plumbing dry run. Jobs run one at
 a time and agents run headless with bypassed permissions.
 

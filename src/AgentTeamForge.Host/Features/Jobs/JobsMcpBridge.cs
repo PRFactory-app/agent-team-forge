@@ -20,6 +20,7 @@ public static class JobsMcpBridge
           "backend":{"type":"string","enum":["claude","codex","pi","fake"],"description":"Agent CLI the daemon runs for this job."},
           "instruction":{"type":"string","description":"Task for the agent."},
           "cwd":{"type":"string","description":"Absolute working directory for the agent (optional)."},
+          "worktree":{"type":"boolean","description":"Create a private git worktree for this job from cwd's HEAD."},
           "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."}
         """;
 
@@ -54,7 +55,7 @@ public static class JobsMcpBridge
 
     const string ListSchema = """
         {"type":"object","properties":{
-          "status":{"type":"string","enum":["queued","running","completed","failed","needs_reconciliation"]},
+          "status":{"type":"string","enum":["queued","running","completed","failed","needs_reconciliation","cancelled"]},
           "limit":{"type":"integer","minimum":1,"maximum":50,"description":"Page size; default 20."},
           "cursor":{"type":"string","description":"next_cursor from the previous page."}}}
         """;
@@ -87,6 +88,7 @@ public static class JobsMcpBridge
         {
             new() { Name = "submit_job", Description = "Durably submit a task to an agent (claude, codex or pi) run by the AgentTeamForge daemon. Returns the job; poll get_job for the result.", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "get_job", Description = "Read a job's status, result output and native session_id.", InputSchema = Parse(GetSchema) },
+            new() { Name = "stop_job", Description = "Cancel a queued or running job. A finished job is returned unchanged.", InputSchema = Parse(GetSchema) },
             new() { Name = "follow_up", Description = "Send a follow-up instruction into a finished job's native agent session (same backend and cwd). Returns the new job.", InputSchema = Parse(FollowUpSchema) },
             new() { Name = "list_jobs", Description = "List jobs, newest first, one bounded page at a time.", InputSchema = Parse(ListSchema) },
             new() { Name = "register_codex_wake", Description = "Register this Codex conversation for native job notices before submitting jobs. Read CODEX_THREAD_ID with a shell tool and pass it here; Codex does not always pass it to MCP servers.", InputSchema = Parse(CodexWakeSchema) },
@@ -158,10 +160,12 @@ public static class JobsMcpBridge
                 Instruction = String(args, "instruction"),
                 Backend = String(args, "backend"),
                 Cwd = String(args, "cwd"),
+                Worktree = args.TryGetValue("worktree", out var worktree) && worktree.ValueKind == JsonValueKind.True,
                 Behavior = testProfile ? String(args, "behavior") : null,
                 Hold = testProfile && args.TryGetValue("hold", out var hold) && hold.ValueKind == JsonValueKind.True,
             }, null),
             "job_get" or "get_job" => (new IpcRequest { Op = IpcProtocol.JobGet, JobId = String(args, "job_id") }, null),
+            "stop_job" => (new IpcRequest { Op = IpcProtocol.JobStop, JobId = String(args, "job_id") }, null),
             "follow_up" => (new IpcRequest
             {
                 Op = IpcProtocol.JobFollowUp,
