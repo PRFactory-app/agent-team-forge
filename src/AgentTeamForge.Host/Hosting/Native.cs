@@ -8,6 +8,7 @@ static partial class Native
     public const int LockNonBlocking = 4;
 
     public const int ENOENT = 2;
+    public const int SigTerm = 15;
     public const int OpenReadOnly = 0;
     public const int OpenNoCtty = 0x100;
     public const int OpenNonBlocking = 0x800;
@@ -37,6 +38,13 @@ static partial class Native
 
     [LibraryImport("libc")]
     public static partial uint geteuid();
+
+    // A pidfd keeps the verified process identity stable if its numeric PID is reused.
+    [LibraryImport("libc", EntryPoint = "pidfd_open", SetLastError = true)]
+    public static partial int PidfdOpen(int pid, uint flags);
+
+    [LibraryImport("libc", EntryPoint = "pidfd_send_signal", SetLastError = true)]
+    public static partial int PidfdSendSignal(int pidfd, int signal, nint info, uint flags);
 
     [LibraryImport("libc", EntryPoint = "open", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int Open(string path, int flags);
