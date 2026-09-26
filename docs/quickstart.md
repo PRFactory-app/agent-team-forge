@@ -60,6 +60,11 @@ is stored separately from the daemon's IPC credential in the owner-private
 `web-console.key` state file. Run `atf web --rotate-token` to revoke old links
 immediately and print a new one.
 
+In interactive launch modes, a finished turn can leave its owned agent tab idle
+for follow-up. Use **Stop agent** in the console to close that tab; **Stop job**
+cancels a queued or running job. The console labels an absent result separately
+from an empty result.
+
 To change the port, run `atf setup --mode headless --web-port 8766` (or use your
 configured launch mode), then restart the daemon. If the port is occupied, the
 daemon logs that the web console is unavailable and continues serving jobs.

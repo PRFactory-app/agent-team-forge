@@ -9,7 +9,8 @@ namespace AgentTeamForge.Host.Features.Jobs;
 
 /// <summary>Thin IPC mapping for the job operations; all rules live in Business.</summary>
 public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, StopJob stop, DurabilityCheckpoints checkpoints, Action onAccepted,
-    WakeStore? wakeStore = null, PruneJob? prune = null, JobLogs? logs = null, JobStore? jobStore = null, LeadSessionStore? sessions = null)
+    WakeStore? wakeStore = null, PruneJob? prune = null, JobLogs? logs = null, JobStore? jobStore = null, LeadSessionStore? sessions = null,
+    StopAgent? stopAgent = null)
 {
     public IpcResponse Handle(IpcRequest request)
     {
@@ -54,7 +55,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             return new IpcResponse(false, JobErrors.InvalidRequest);
         }
         // Reads reach any job in the lead's workspace; stop and follow-up only its own.
-        if (request.LeadSessionId is not null && request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobStop or IpcProtocol.JobFollowUp
+        if (request.LeadSessionId is not null && request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobStop or IpcProtocol.JobStopAgent or IpcProtocol.JobFollowUp
             && (jobStore is null || request.JobId is null
                 || !jobStore.LeadCanAccess(request.JobId, request.LeadSessionId, request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput ? request.Workspace : null)))
         {
@@ -86,6 +87,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 }));
             case IpcProtocol.JobStop:
                 return Map(stop.Execute(request.JobId ?? string.Empty));
+            case IpcProtocol.JobStopAgent:
+                return stopAgent is null ? new IpcResponse(false, JobErrors.BackendUnavailable) : Map(stopAgent.Execute(request.JobId ?? string.Empty));
             case IpcProtocol.JobGet:
                 var found = get.Execute(request.JobId ?? string.Empty);
                 if (found.Error is null && request.WakeKey is not null && request.WakeGeneration is long generation && wakeStore is not null)

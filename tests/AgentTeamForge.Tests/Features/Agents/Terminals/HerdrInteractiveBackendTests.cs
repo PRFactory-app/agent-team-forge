@@ -255,7 +255,7 @@ public sealed class HerdrInteractiveBackendTests
     }
 
     [Fact]
-    public async Task Interrupt_after_a_settled_turn_closed_its_tab_does_not_hand_that_tab_to_the_follow_up()
+    public async Task Settled_turn_retains_owned_tab_until_follow_up_or_stop_agent()
     {
         var control = new FakeControl { Status = InteractiveAgentStatus.Done };
         var backend = new HerdrInteractiveBackend(control,
@@ -264,15 +264,19 @@ public sealed class HerdrInteractiveBackendTests
         await first.DeliverAsync(CancellationToken.None);
         await Collect(first);
         await first.DisposeAsync();
-        Assert.True(control.Stopped);
+        Assert.False(control.Stopped);
 
         first.InterruptTurn();
         Assert.Equal(0, control.Interrupts);
 
         await using var second = backend.Start(new BackendRequest("child", "corr-child", "second", "")
         { WorkingDirectory = Path.GetTempPath(), ResumeSessionId = "native-1" });
-        Assert.Equal(2, control.Starts);
-        Assert.Equal("native-1", control.Launch!.ResumeSessionId);
+        Assert.Equal(1, control.Starts);
+        Assert.Null(control.Launch!.ResumeSessionId);
+        await second.DisposeAsync();
+        Assert.True(backend.StopIdleSession("native-1"));
+        Assert.True(control.Stopped);
+        Assert.False(backend.StopIdleSession("native-1"));
     }
 
     [Fact]

@@ -53,6 +53,7 @@ public static class IpcProtocol
     public const string JobOutput = "job_output";
     public const string JobFollowUp = "job_follow_up";
     public const string JobStop = "job_stop";
+    public const string JobStopAgent = "job_stop_agent";
     public const string JobList = "job_list";
     public const string JobPrune = "job_prune";
     public const string WakeRegister = "wake_register";

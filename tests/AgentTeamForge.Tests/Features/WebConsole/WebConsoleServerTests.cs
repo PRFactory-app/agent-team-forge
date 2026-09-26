@@ -56,6 +56,20 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
     HttpRequestMessage FollowUp(string json = """{"instruction":"next","idempotency_key":"k1"}""", string? origin = null, string? token = null) =>
         Api(HttpMethod.Post, "/api/jobs/j1/follow-up", token, origin ?? Origin, json);
 
+    [Fact]
+    public async Task Stop_agent_uses_the_same_bearer_and_origin_checks_as_other_mutations()
+    {
+        var (badTokenStatus, _) = await Send(Api(HttpMethod.Post, "/api/jobs/j1/stop-agent", WebConsoleServer.NewToken(), Origin));
+        var (badOriginStatus, _) = await Send(Api(HttpMethod.Post, "/api/jobs/j1/stop-agent", origin: "http://attacker.example"));
+        Assert.Equal(HttpStatusCode.Unauthorized, badTokenStatus);
+        Assert.Equal(HttpStatusCode.Forbidden, badOriginStatus);
+        Assert.Empty(_forwarded);
+
+        var (acceptedStatus, _) = await Send(Api(HttpMethod.Post, "/api/jobs/j1/stop-agent", origin: Origin));
+        Assert.Equal(HttpStatusCode.OK, acceptedStatus);
+        Assert.Equal((IpcProtocol.JobStopAgent, "j1"), (Assert.Single(_forwarded).Op, _forwarded[0].JobId));
+    }
+
     async Task<(HttpStatusCode Status, IpcResponse Body)> Send(HttpRequestMessage request)
     {
         using var response = await _http.SendAsync(request, TestContext.Current.CancellationToken);

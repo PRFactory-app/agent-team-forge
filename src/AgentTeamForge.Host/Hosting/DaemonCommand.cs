@@ -109,6 +109,7 @@ public static class DaemonCommand
 
         var backends = BackendCatalog.Create(
             new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits), profile.RealAgents && launchMode is not ("herdr" or "wt"));
+        var interactiveBackends = new List<IInteractiveSessionStop>();
         if (launchMode == "herdr")
         {
             var seed = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
@@ -118,15 +119,20 @@ public static class DaemonCommand
             var claude = Interactive(InteractiveAgentKind.Claude);
             var codex = Interactive(InteractiveAgentKind.Codex);
             var pi = Interactive(InteractiveAgentKind.Pi);
+            interactiveBackends.AddRange([claude, codex, pi]);
             backends.Register(BackendCatalog.Claude, () => claude);
             backends.Register(BackendCatalog.Codex, () => codex);
             backends.Register(BackendCatalog.Pi, () => pi);
         }
         if (launchMode == "wt")
         {
-            backends.Register(BackendCatalog.Claude, () => new WtInteractiveBackend(InteractiveAgentKind.Claude, state.Path));
-            backends.Register(BackendCatalog.Codex, () => new WtInteractiveBackend(InteractiveAgentKind.Codex, state.Path));
-            backends.Register(BackendCatalog.Pi, () => new WtInteractiveBackend(InteractiveAgentKind.Pi, state.Path));
+            var claude = new WtInteractiveBackend(InteractiveAgentKind.Claude, state.Path);
+            var codex = new WtInteractiveBackend(InteractiveAgentKind.Codex, state.Path);
+            var pi = new WtInteractiveBackend(InteractiveAgentKind.Pi, state.Path);
+            interactiveBackends.AddRange([claude, codex, pi]);
+            backends.Register(BackendCatalog.Claude, () => claude);
+            backends.Register(BackendCatalog.Codex, () => codex);
+            backends.Register(BackendCatalog.Pi, () => pi);
         }
         Log($"backends: {string.Join(',', backends.Names)}");
         var admission = new AdmissionGate();
@@ -139,7 +145,8 @@ public static class DaemonCommand
         var connectorSessions = new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
             new ListJobs(store, profile.Bound),
-            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store, new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database));
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
+            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), new StopAgent(store, profile.Bound, backends));
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
@@ -203,6 +210,14 @@ public static class DaemonCommand
         {
             halted = true;
             Log($"error: dispatcher_halted reason=dispatcher_fault ({ex.GetType().Name})");
+        }
+        foreach (var backend in interactiveBackends)
+        {
+            try { backend.StopAllIdleSessions(); }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                Log($"idle agent cleanup failed: {ex.GetType().Name}");
+            }
         }
 
         // Submits admitted before closure finish their bounded transaction before

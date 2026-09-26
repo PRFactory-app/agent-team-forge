@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -6,12 +7,13 @@ using AgentTeamForge.Business.Features.Agents.Backends;
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
 /// <summary>Runs an interactive agent in an owned Windows Terminal tab.</summary>
-public sealed class WtInteractiveBackend : IJobBackend
+public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
 {
     readonly IWtTabControl _tabs;
     readonly IInteractiveTranscriptReader _transcripts;
     readonly InteractiveAgentKind _kind;
     readonly string _stateRoot;
+    readonly ConcurrentDictionary<string, InteractiveLaunch> _liveSessions = new(StringComparer.Ordinal);
 
     public WtInteractiveBackend(InteractiveAgentKind kind, string stateRoot)
         : this(new WtTabControl(), new InteractiveTranscriptReader(), kind, stateRoot) { }
@@ -33,11 +35,45 @@ public sealed class WtInteractiveBackend : IJobBackend
         }
 
         _tabs.Preflight(_kind);
+        if (request.ResumeSessionId is { } resumeId && _liveSessions.TryRemove(resumeId, out var previous))
+        {
+            try { _tabs.StopOwned(previous); }
+            catch
+            {
+                _liveSessions.TryAdd(resumeId, previous);
+                throw;
+            }
+        }
         var agentName = "atf" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(10));
         var piDirectory = _kind == InteractiveAgentKind.Pi ? PiDirectory(request) : null;
         var launch = new InteractiveLaunch(_kind, agentName, cwd, request.ResumeSessionId, piDirectory,
             Path.Combine(_stateRoot, "wt", agentName + ".launch.ps1"));
-        return new Run(_tabs, _transcripts, request, launch, DateTimeOffset.UtcNow);
+        return new Run(_tabs, _transcripts, request, launch, DateTimeOffset.UtcNow, RememberSession);
+    }
+
+    void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions[sessionId] = launch;
+
+    public bool StopIdleSession(string sessionId)
+    {
+        if (!_liveSessions.TryRemove(sessionId, out var launch))
+        {
+            return false;
+        }
+        try { _tabs.StopOwned(launch); }
+        catch
+        {
+            _liveSessions.TryAdd(sessionId, launch);
+            throw;
+        }
+        return true;
+    }
+
+    public void StopAllIdleSessions()
+    {
+        foreach (var sessionId in _liveSessions.Keys)
+        {
+            StopIdleSession(sessionId);
+        }
     }
 
     string PiDirectory(BackendRequest request)
@@ -52,10 +88,12 @@ public sealed class WtInteractiveBackend : IJobBackend
     }
 
     sealed class Run(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, BackendRequest request,
-        InteractiveLaunch launch, DateTimeOffset started) : IBackendRun
+        InteractiveLaunch launch, DateTimeOffset started, Action<string, InteractiveLaunch> rememberSession) : IBackendRun
     {
         bool _launched;
-        bool _completed;
+        bool _stopped;
+        readonly Lock _lifetime = new();
+        string? _sessionId = request.ResumeSessionId;
         int _loggedMessages;
         public int? ProcessId => tabs.ProcessId(launch);
 
@@ -104,18 +142,17 @@ public sealed class WtInteractiveBackend : IJobBackend
                 if (output?.SessionId is { } nativeId && nativeId != session)
                 {
                     session = nativeId;
+                    _sessionId = nativeId;
                     yield return new BackendEvidence.Session(request.Correlation, nativeId);
                 }
                 if (output?.Completed == true && output.Message is { Length: > 0 } message && session is not null)
                 {
-                    _completed = true;
                     yield return new BackendEvidence.Result(request.Correlation, message);
                     yield return new BackendEvidence.EndOfOutput();
                     yield break;
                 }
                 if (!tabs.IsAlive(launch))
                 {
-                    _completed = true;
                     yield return new BackendEvidence.ProtocolError("interactive_agent_exited");
                     yield break;
                 }
@@ -123,13 +160,32 @@ public sealed class WtInteractiveBackend : IJobBackend
             }
         }
 
-        public void TerminateOwnedChild() => tabs.StopOwned(launch);
+        public void TerminateOwnedChild()
+        {
+            lock (_lifetime)
+            {
+                _stopped = true;
+                tabs.StopOwned(launch);
+            }
+        }
 
         public ValueTask DisposeAsync()
         {
-            if (_completed)
+            lock (_lifetime)
             {
-                tabs.StopOwned(launch);
+                if (_stopped)
+                {
+                    return ValueTask.CompletedTask;
+                }
+                _stopped = true;
+                if (_sessionId is { } sessionId && tabs.IsAlive(launch))
+                {
+                    rememberSession(sessionId, launch);
+                }
+                else
+                {
+                    tabs.StopOwned(launch);
+                }
             }
             return ValueTask.CompletedTask;
         }

@@ -168,6 +168,13 @@
           });
           action.append(follow);
         }
+        if (j.status === 'queued' || j.status === 'running' || (j.session_id && j.backend !== 'fake')) {
+          const stop = document.createElement('button');
+          stop.type = 'button';
+          stop.textContent = j.status === 'queued' || j.status === 'running' ? 'Stop job' : 'Stop agent';
+          stop.addEventListener('click', () => stopJob(j.job_id, j.status));
+          action.append(stop);
+        }
         tr.append(action);
         tbody.append(tr);
       }
@@ -214,7 +221,11 @@
     $('d-parent').textContent = j.parent_job_id || '';
     $('d-cwd').textContent = j.cwd || '';
     $('d-attempts').textContent = String(j.attempts);
-    $('d-result').textContent = j.result || '';
+    $('d-result').textContent = j.result == null
+      ? (j.status === 'queued' || j.status === 'running' ? 'No result yet.' : 'Result unavailable.')
+      : j.result === '' ? '(empty result)' : j.result;
+    $('stop-job').textContent = j.status === 'queued' || j.status === 'running' ? 'Stop job' : 'Stop agent';
+    $('stop-job').disabled = j.status !== 'queued' && j.status !== 'running' && (!j.session_id || j.backend === 'fake');
     await loadLogs();
     if (id !== selected) return;
     const active = j.status === 'running' || j.status === 'queued';
@@ -293,6 +304,27 @@
     }
   }
 
+  async function stopJob(jobId, status) {
+    const active = status === 'queued' || status === 'running';
+    const action = active ? 'Stop job ' : 'Stop agent for job ';
+    if (!window.confirm(action + jobId + '?')) return;
+    const r = await api('POST', '/api/jobs/' + encodeURIComponent(jobId) + (active ? '/stop' : '/stop-agent'));
+    if (!r) return;
+    const message = r.lost || r.error === 'outcome_unknown'
+      ? 'Stop outcome unknown; check the job status before trying again.'
+      : r.ok
+      ? 'Outcome: ' + (r.outcome || 'unknown') + '; status: ' + (r.job?.status || 'unknown')
+        + '; reason_code: ' + (r.job?.reason_code || 'none')
+      : 'Stop failed: ' + r.error;
+    await loadJobs();
+    if (selected === jobId) {
+      $('stop-state').textContent = message;
+      await loadDetail();
+    } else {
+      setStatus(message, r.ok ? '' : 'error');
+    }
+  }
+
   document.addEventListener('DOMContentLoaded', () => {
     const fragment = new URLSearchParams(location.hash.slice(1));
     if (fragment.has('token')) {
@@ -325,17 +357,8 @@
     $('follow-retry').addEventListener('click', () => { if (pending) sendFollowUp(); });
     $('logs-refresh').addEventListener('click', loadLogs);
     $('stop-job').addEventListener('click', async () => {
-      if (!selected || !window.confirm('Stop job ' + selected + '?')) return;
-      const r = await api('POST', '/api/jobs/' + encodeURIComponent(selected) + '/stop');
-      if (!r) return;
-      $('stop-state').textContent = r.lost || r.error === 'outcome_unknown'
-        ? 'Stop outcome unknown; check the job status before trying again.'
-        : r.ok
-        ? 'Outcome: ' + (r.outcome || 'unknown') + '; status: ' + (r.job?.status || 'unknown')
-          + '; reason_code: ' + (r.job?.reason_code || 'none')
-        : 'Stop failed: ' + r.error;
-      await loadDetail();
-      await loadJobs();
+      if (!selected || !selectedJob) return;
+      await stopJob(selected, selectedJob.status);
     });
     $('follow-discard').addEventListener('click', () => { pending = null; renderPending(); });
   });

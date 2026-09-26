@@ -9,7 +9,7 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 public enum InteractiveAgentKind { Claude, Codex, Pi }
 
 /// <summary>Runs a real agent TUI in a tab of an ATF-owned Herdr session.</summary>
-public sealed class HerdrInteractiveBackend : IJobBackend
+public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionStop
 {
     readonly IHerdrAgentControl _control;
     readonly IInteractiveTranscriptReader _transcripts;
@@ -68,14 +68,31 @@ public sealed class HerdrInteractiveBackend : IJobBackend
     static string? Option(string options, string name) => options.Split(';', StringSplitOptions.RemoveEmptyEntries)
         .Select(part => part.Split('=', 2)).FirstOrDefault(pair => pair is [var key, { Length: > 0 }] && key == name)?[1];
 
-    /// <summary>Closes an interrupted tab when its queued follow-up ends before claim.</summary>
-    public void CloseUnclaimedSession(string sessionId)
+    public bool StopIdleSession(string sessionId)
     {
-        if (_liveSessions.TryRemove(sessionId, out var launch))
+        if (!_liveSessions.TryRemove(sessionId, out var launch))
         {
-            _control.StopOwned(launch);
+            return false;
+        }
+        try { _control.StopOwned(launch); }
+        catch
+        {
+            _liveSessions.TryAdd(sessionId, launch);
+            throw;
+        }
+        return true;
+    }
+
+    public void StopAllIdleSessions()
+    {
+        foreach (var sessionId in _liveSessions.Keys)
+        {
+            StopIdleSession(sessionId);
         }
     }
+
+    /// <summary>Closes an interrupted tab when its queued follow-up ends before claim.</summary>
+    public void CloseUnclaimedSession(string sessionId) => StopIdleSession(sessionId);
 
     string PiDirectory(BackendRequest request)
     {
@@ -93,7 +110,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend
         InteractiveLaunch launch, DateTimeOffset started, Action<string, InteractiveLaunch> rememberSession) : IBackendRun
     {
         bool _delivered;
-        bool _completed;
+        bool _agentExited;
         readonly Lock _lifetime = new();
         bool _interrupted;
         bool _stopped;
@@ -170,7 +187,6 @@ public sealed class HerdrInteractiveBackend : IJobBackend
                 {
                     if (output?.Message is { Length: > 0 } message && session is not null)
                     {
-                        _completed = true;
                         yield return new BackendEvidence.Result(request.Correlation, message);
                         yield return new BackendEvidence.EndOfOutput();
                         yield break;
@@ -184,7 +200,8 @@ public sealed class HerdrInteractiveBackend : IJobBackend
                 }
                 if (status == InteractiveAgentStatus.Gone)
                 {
-                    _completed = true; // Nothing left to observe; close our owned session on dispose.
+                    // Nothing left to observe; close our owned session on dispose.
+                    _agentExited = true;
                     yield return new BackendEvidence.ProtocolError("interactive_agent_exited");
                     yield break;
                 }
@@ -224,7 +241,14 @@ public sealed class HerdrInteractiveBackend : IJobBackend
             catch (HerdrLaunchException) { return false; }
         }
 
-        public void TerminateOwnedChild() => control.StopOwned(launch);
+        public void TerminateOwnedChild()
+        {
+            lock (_lifetime)
+            {
+                _stopped = true;
+                control.StopOwned(launch);
+            }
+        }
 
         public void InterruptTurn()
         {
@@ -249,13 +273,20 @@ public sealed class HerdrInteractiveBackend : IJobBackend
 
         public ValueTask DisposeAsync()
         {
-            // A settled turn is finished; close only our proven session before a
-            // follow-up resumes its native session in a fresh owned tab.
+            // A settled turn keeps its proven tab available for follow-up or Stop agent.
             lock (_lifetime)
             {
-                if (_completed && !_interrupted)
+                if (_stopped || _interrupted)
                 {
-                    _stopped = true;
+                    return ValueTask.CompletedTask;
+                }
+                _stopped = true;
+                if (!_agentExited && _sessionId is { } sessionId)
+                {
+                    rememberSession(sessionId, launch);
+                }
+                else
+                {
                     control.StopOwned(launch);
                 }
             }
