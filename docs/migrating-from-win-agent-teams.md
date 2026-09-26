@@ -9,8 +9,9 @@ surface. **Landing** means work is in flight, not an available tool.
 | win-agent-teams MCP tool or behavior | ATF equivalent | Difference |
 | --- | --- | --- |
 | `spawn_agent` | `submit_job` | Returns a durable `job_id`; `cwd` and `worktree=true` are optional. No named child or tier selector. |
-| `follow_up_agent` | `follow_up` | New job resumes a finished parent's native session, backend and worktree; use a new idempotency key. |
-| `follow_up_agent(replace_if_idle=...)` | None | No process replacement switch. Interrupt and revive controls are **landing**. |
+| `follow_up_agent` | `follow_up` | New job resumes the parent's native session, backend and worktree; use a new idempotency key. |
+| `follow_up_agent(replace_if_idle=...)` | None | No process replacement switch; `follow_up(interrupt=true)` can replace a running turn. |
+| Interrupt a running turn and continue | `follow_up(interrupt=true)` | Cancels the current turn with reason `interrupted`, then submits the new prompt in its session. |
 | `send_message` | `follow_up` for a managed job | No free-form lead/worker inbox. A job's result and native wake carry the reply. |
 | `read_messages` | `get_job`, `get_job_output` | Read committed result/status or live log; no inbox cursor. |
 | `kill_agent` | `stop_job` | Cancels a queued/running job; keeps its durable history. |
@@ -32,9 +33,9 @@ surface. **Landing** means work is in flight, not an available tool.
 | `external_set_wake` (opt-in) | `register_codex_wake` for a Codex lead | Registers the lead's native notice target, not an external member. |
 | `leave_team` | None/not needed | No membership to leave. |
 
-`interrupt` (pause without cancellation) and `revive` are **landing**. Today's
-`stop_job` cancels a job; do not treat it as either operation. Native wake is
-a notice, while `get_job` is the committed source of status and result.
+Standalone pause/interrupt without a follow-up and `revive` are **landing**.
+`stop_job` cancels a job without submitting a new prompt. Native wake is a
+notice, while `get_job` is the committed source of status and result.
 
 ## Orchestrator loop for skills
 
@@ -49,8 +50,9 @@ a notice, while `get_job` is the committed source of status and result.
 4. On wake, call `list_jobs` and `get_job(job_id="...")`. Use
    `get_job_output(job_id="...")` for live progress if another job still runs.
 5. For a completed job, call `follow_up(job_id="...", instruction="...",
-   idempotency_key="task-1-follow")`; for a job to cancel, call `stop_job`.
-   Yield again for the follow-up wake, then read its `get_job` result.
+   idempotency_key="task-1-follow")`. To replace a running turn, add
+   `interrupt=true`; to cancel without replacement, call `stop_job`. Yield
+   again for the follow-up wake, then read its `get_job` result.
 
 The dogfood run followed this loop with parallel Claude and Codex worktree
 jobs: two wakes arrived without a watcher, Codex was stopped while running,
