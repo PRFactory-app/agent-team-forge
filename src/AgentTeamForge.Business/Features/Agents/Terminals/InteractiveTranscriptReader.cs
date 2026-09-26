@@ -306,6 +306,12 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             tasks.Add(taskId);
             knownTasks.Add(taskId);
         }
+        // An async Agent launch reports back later with a task notification keyed by its agent ID.
+        if (Str(result, "status") == "async_launched" && Str(result, "agentId") is { } agentId)
+        {
+            tasks.Add(agentId);
+            knownTasks.Add(agentId);
+        }
         if (result.ValueKind == JsonValueKind.Object && result.TryGetProperty("task", out var task)
             && Str(task, "task_id") is { } finishedId && Str(task, "status") is "completed" or "failed" or "killed")
         {

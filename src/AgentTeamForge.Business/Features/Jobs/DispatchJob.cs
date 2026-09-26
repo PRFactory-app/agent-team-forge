@@ -516,7 +516,7 @@ public sealed class DispatchJob : IDisposable
         {
             // Unanticipated fault after the attempt commit: the effect is unknown, so
             // quarantine (never failed, never requeued) and stop claiming work.
-            log($"dispatcher fault for {run.RunId}: {ex.GetType().Name}");
+            log($"dispatcher fault for {run.RunId}: {ex.GetType().Name}: {ex.Message}");
             active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
             End(run, JobStatus.NeedsReconciliation, "dispatcher_fault");
             Halt("dispatcher_fault");
