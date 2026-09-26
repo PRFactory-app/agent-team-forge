@@ -164,7 +164,7 @@ public sealed class FakeProcessBackend(string executable, IReadOnlyList<string> 
             {
                 if (!_process.HasExited)
                 {
-                    _process.Kill(entireProcessTree: false);
+                    _process.Kill(entireProcessTree: true);
                 }
             }
             catch (InvalidOperationException)

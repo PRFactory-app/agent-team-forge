@@ -6,7 +6,7 @@ using AgentTeamForge.Host.Transport;
 namespace AgentTeamForge.Host.Features.Jobs;
 
 /// <summary>Thin IPC mapping for the job operations; all rules live in Business.</summary>
-public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, DurabilityCheckpoints checkpoints, Action onAccepted,
+public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, StopJob stop, DurabilityCheckpoints checkpoints, Action onAccepted,
     WakeStore? wakeStore = null, PruneJob? prune = null, JobLogs? logs = null)
 {
     public IpcResponse Handle(IpcRequest request)
@@ -28,6 +28,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     WakeKey = request.WakeKey,
                     WakeGeneration = request.WakeGeneration,
                 }));
+            case IpcProtocol.JobStop:
+                return Map(stop.Execute(request.JobId ?? string.Empty));
             case IpcProtocol.JobGet:
                 var found = get.Execute(request.JobId ?? string.Empty);
                 if (found.Error is null && request.WakeKey is not null && request.WakeGeneration is long generation && wakeStore is not null)

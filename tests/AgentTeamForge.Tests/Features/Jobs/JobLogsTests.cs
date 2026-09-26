@@ -22,7 +22,7 @@ public sealed class JobLogsTests
 
         var accept = f.Accept();
         var endpoint = new JobsEndpoint(accept, f.Get(), new FollowUpJob(f.Store, JobFixture.Operator, accept), f.List(),
-            new DurabilityCheckpoints(null), () => { }, logs: logs);
+            new StopJob(f.Store, JobFixture.Operator, _ => { }), new DurabilityCheckpoints(null), () => { }, logs: logs);
         var response = endpoint.Handle(new IpcRequest { Op = IpcProtocol.JobOutput, JobId = job.JobId, Offset = 0 });
         Assert.True(response.Ok);
         Assert.Contains("hello\n", response.Output!.Text);
@@ -30,35 +30,40 @@ public sealed class JobLogsTests
         Assert.Equal(Encoding.UTF8.GetBytes(response.Output.Text), Convert.FromBase64String(response.Output.DataBase64));
 
         var denied = new JobsEndpoint(accept, f.Get(new("someone-else", "spike-team", "fake-agent")),
-            new FollowUpJob(f.Store, JobFixture.Operator, accept), f.List(), new DurabilityCheckpoints(null), () => { }, logs: logs)
+            new FollowUpJob(f.Store, JobFixture.Operator, accept), f.List(), new StopJob(f.Store, JobFixture.Operator, _ => { }), new DurabilityCheckpoints(null), () => { }, logs: logs)
             .Handle(new IpcRequest { Op = IpcProtocol.JobOutput, JobId = job.JobId });
         Assert.False(denied.Ok);
         Assert.Equal(JobErrors.NotFound, denied.Error);
     }
 
     [Fact]
-    public void Follow_up_appends_to_parent_and_child_and_cap_keeps_absolute_tail_offsets()
+    public void Cap_trims_to_a_bounded_tail_and_keeps_absolute_offsets()
     {
         using var f = new JobFixture();
         var state = Path.GetDirectoryName(f.DatabasePath)!;
         var logs = new JobLogs(state);
-        logs.BeginRun("parent", "first", "codex")("stdout", "first\n"u8.ToArray());
-        var child = logs.BeginRun("child", "second", "codex", ["parent"]);
-        child("stdout", "second\n"u8.ToArray());
-        Assert.Contains("first\n", logs.Read("parent").Text);
-        Assert.Contains("second\n", logs.Read("parent").Text);
-        Assert.DoesNotContain("first\n", logs.Read("child").Text);
-        Assert.Contains("second\n", logs.Read("child").Text);
+        var write = logs.BeginRun("job", "run", "codex");
+        write("stdout", "first\n"u8.ToArray());
+        var chunk = new byte[JobLogs.MaxReadBytes];
+        Array.Fill(chunk, (byte)'x');
+        var written = logs.Read("job").EndOffset;
+        for (var i = 0; i < JobLogs.MaxLogBytes / chunk.Length + 2; i++)
+        {
+            write("stdout", chunk);
+            written += chunk.Length;
+        }
+        write("stderr", "tail"u8.ToArray());
+        written += "\n[stderr]\ntail".Length;
 
-        var large = new byte[JobLogs.MaxLogBytes];
-        Array.Fill(large, (byte)'x');
-        child("stdout", large);
-        child("stderr", "tail"u8.ToArray());
-        var read = logs.Read("parent", 0, 16);
+        var path = Path.Combine(state, "logs", "job.log");
+        var bodyLength = new FileInfo(path).Length - 29;
+        Assert.InRange(bodyLength, JobLogs.TrimmedLogBytes, JobLogs.MaxLogBytes);
+        var read = logs.Read("job", 0, 16);
         Assert.True(read.Truncated);
-        Assert.True(read.StartOffset > 0);
+        Assert.Equal(written, read.EndOffset);
+        Assert.Equal(read.EndOffset - bodyLength, read.StartOffset);
         Assert.Equal(read.StartOffset + 16, read.NextOffset);
-        Assert.Equal(JobLogs.MaxLogBytes, new FileInfo(Path.Combine(state, "logs", "parent.log")).Length - 29);
-        Assert.Equal("tail", logs.Read("parent", read.EndOffset - 4).Text);
+        Assert.Equal("tail", logs.Read("job", read.EndOffset - 4).Text);
+        Assert.DoesNotContain("first", logs.Read("job", read.StartOffset).Text);
     }
 }

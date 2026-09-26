@@ -66,7 +66,7 @@ public sealed class AcceptanceOutcomeTests
     static JobsEndpoint Endpoint(JobFixture f, Action signal)
     {
         var accept = f.Accept();
-        return new(accept, f.Get(), new FollowUpJob(f.Store, JobFixture.Operator, accept), f.List(), new DurabilityCheckpoints(point =>
+        return new(accept, f.Get(), new FollowUpJob(f.Store, JobFixture.Operator, accept), f.List(), new StopJob(f.Store, JobFixture.Operator, _ => { }), new DurabilityCheckpoints(point =>
         {
             if (point == f.FailAt)
             {

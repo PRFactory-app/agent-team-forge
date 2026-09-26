@@ -35,7 +35,8 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
         }
 
         // Resuming a session that is still in a turn would race the running agent.
-        if (parent.SessionId is null || parent.Status != JobStatus.Completed)
+        // A stopped parent's process tree was killed when its cancellation committed.
+        if (parent.SessionId is null || parent.Status is not (JobStatus.Completed or JobStatus.Cancelled))
         {
             return JobResult.Fail(JobErrors.ParentNotReady);
         }

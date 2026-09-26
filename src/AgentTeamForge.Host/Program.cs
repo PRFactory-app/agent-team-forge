@@ -10,6 +10,10 @@ if (args.Length == 0)
 }
 
 var options = ParseOptions([.. args.Skip(args.Length > 1 && !args[1].StartsWith("--", StringComparison.Ordinal) ? 2 : 1)]);
+if (args.Length > 2 && args[0] == "client" && args[1] == "stop" && !args[2].StartsWith("--", StringComparison.Ordinal))
+{
+    options["job"] = args[2];
+}
 try
 {
     switch (args[0])

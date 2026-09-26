@@ -8,6 +8,7 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
 {
     public const int MaxLogBytes = 10 * 1024 * 1024;
     public const int MaxReadBytes = 64 * 1024;
+    public const int TrimmedLogBytes = MaxLogBytes / 4 * 3;
     const int PrefixBytes = 29; // "ATFLOG1 " + twenty decimal digits + newline
     readonly Lock gate = new();
     readonly string directory = Path.Combine(stateDirectory, "logs");
@@ -43,16 +44,10 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
     }
 
     /// <summary>Returns a synchronous sink used by the backend's stdout and stderr readers.</summary>
-    public Action<string, ReadOnlyMemory<byte>> BeginRun(string jobId, string runId, string backend, IReadOnlyList<string>? ancestorIds = null)
+    public Action<string, ReadOnlyMemory<byte>> BeginRun(string jobId, string runId, string backend)
     {
-        var targets = new[] { jobId }.Concat(ancestorIds ?? []).Distinct(StringComparer.Ordinal).ToArray();
-        var lastStreams = new Dictionary<string, string>(StringComparer.Ordinal);
-        var header = Encoding.UTF8.GetBytes($"\n=== run {runId} job {jobId} backend {backend} {DateTimeOffset.UtcNow:O} ===\n");
-        foreach (var target in targets)
-        {
-            TryAppend(target, header);
-        }
-
+        string? lastStream = null;
+        TryAppend(jobId, Encoding.UTF8.GetBytes($"\n=== run {runId} job {jobId} backend {backend} {DateTimeOffset.UtcNow:O} ===\n"));
         return (stream, bytes) =>
         {
             if (bytes.IsEmpty)
@@ -60,18 +55,15 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
                 return;
             }
 
-            foreach (var target in targets)
+            lock (gate)
             {
-                lock (gate)
+                if (lastStream != stream)
                 {
-                    if (lastStreams.GetValueOrDefault(target) != stream)
-                    {
-                        TryAppendLocked(target, Encoding.UTF8.GetBytes($"\n[{stream}]\n"));
-                        lastStreams[target] = stream;
-                    }
-
-                    TryAppendLocked(target, bytes.Span);
+                    TryAppendLocked(jobId, Encoding.UTF8.GetBytes($"\n[{stream}]\n"));
+                    lastStream = stream;
                 }
+
+                TryAppendLocked(jobId, bytes.Span);
             }
         };
     }
@@ -114,15 +106,24 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
                 return;
             }
 
+            // Trim to three quarters of the cap so the in-place rewrite happens once per
+            // MaxLogBytes/4 of new output instead of on every append.
             var start = ReadStart(file);
-            var discard = file.Length - PrefixBytes - MaxLogBytes;
-            var tail = new byte[MaxLogBytes];
-            file.Position = PrefixBytes + discard;
-            file.ReadExactly(tail);
+            var discard = file.Length - PrefixBytes - TrimmedLogBytes;
+            var buffer = new byte[MaxReadBytes];
+            for (long from = PrefixBytes + discard, to = PrefixBytes; from < file.Length;)
+            {
+                file.Position = from;
+                var read = file.Read(buffer);
+                file.Position = to;
+                file.Write(buffer, 0, read);
+                from += read;
+                to += read;
+            }
+
+            file.SetLength(PrefixBytes + TrimmedLogBytes);
             file.Position = 0;
             file.Write(Prefix(start + discard));
-            file.Write(tail);
-            file.SetLength(PrefixBytes + MaxLogBytes);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

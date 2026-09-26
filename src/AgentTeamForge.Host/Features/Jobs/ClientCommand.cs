@@ -43,6 +43,7 @@ public static class ClientCommand
                 Instruction = options.GetValueOrDefault("instruction"),
             },
             "get" => new IpcRequest { Op = IpcProtocol.JobGet, JobId = options.GetValueOrDefault("job") },
+            "stop" => new IpcRequest { Op = IpcProtocol.JobStop, JobId = options.GetValueOrDefault("job") },
             "list" => new IpcRequest
             {
                 Op = IpcProtocol.JobList,
@@ -55,8 +56,8 @@ public static class ClientCommand
         };
         if (request is null)
         {
-            Console.Error.WriteLine("usage: atf client <submit|follow-up|get|list|logs> --state-dir DIR "
-                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--worktree] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT] | [--status S] [--limit N] [--cursor C]]");
+            Console.Error.WriteLine("usage: atf client <submit|follow-up|get|stop|list|logs> --state-dir DIR "
+                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--worktree] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT] | stop ID | [--status S] [--limit N] [--cursor C]]");
             return 64;
         }
 
@@ -107,7 +108,7 @@ public static class ClientCommand
                 return 1;
             }
 
-            terminalPolls = job.Job?.Status is "completed" or "failed" or "needs_reconciliation" ? terminalPolls + 1 : 0;
+            terminalPolls = job.Job?.Status is "completed" or "failed" or "needs_reconciliation" or "cancelled" ? terminalPolls + 1 : 0;
             if (terminalPolls >= 2)
             {
                 return 0;

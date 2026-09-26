@@ -52,6 +52,6 @@ public interface IBackendRun : IAsyncDisposable
 
     IAsyncEnumerable<BackendEvidence> ReadEvidenceAsync(CancellationToken cancellationToken);
 
-    /// <summary>Terminates only the direct child this run started, via its held handle.</summary>
+    /// <summary>Terminates the process tree of the child this run started, via its held handle.</summary>
     void TerminateOwnedChild();
 }
