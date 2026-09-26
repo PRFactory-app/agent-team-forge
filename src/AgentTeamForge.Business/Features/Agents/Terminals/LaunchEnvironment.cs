@@ -19,10 +19,10 @@ static class LaunchEnvironment
 
     static readonly string[] NeverPrefixes = ["CLAUDE_CODE_", "CLAUDE_TEAMS_", "WIN_AGENT_TEAMS_", "HERDR_"];
 
-    static readonly HashSet<string> Never = ["CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT", "AGENT_NAME", "AGENT_PARENT_NAME", "AGENT_SESSION_ID"];
+    static readonly HashSet<string> Never = ["CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT", "AGENT_NAME", "AGENT_PARENT_NAME", "AGENT_SESSION_ID", "CODEX_THREAD_ID", "ATF_EXTERNAL_ONLY"];
 
     public static bool IsInheritedSessionContext(string name) =>
-        Never.Contains(name) || NeverPrefixes.Any(p => name.StartsWith(p, StringComparison.Ordinal));
+        name != "CLAUDE_CODE_OAUTH_TOKEN" && (Never.Contains(name) || NeverPrefixes.Any(p => name.StartsWith(p, StringComparison.Ordinal)));
 
     /// <summary>Removes every variable that is not allowlisted, or that carries agent-session/Herdr context.</summary>
     public static void Apply(IDictionary<string, string?> environment, string? extraAllowed)

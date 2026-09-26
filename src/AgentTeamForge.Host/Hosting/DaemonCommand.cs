@@ -178,14 +178,15 @@ public static class DaemonCommand
         }
         Log($"backends: {string.Join(',', backends.Names)}");
         var admission = new AdmissionGate();
-        using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs);
+        var externalTeam = new ExternalTeam(externalMembers, wakeStore);
+        var childContext = new ManagedChildContext(store, externalTeam, state.Path, Environment.ProcessPath!);
+        using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs, childContext);
         var modelDiscovery = new BackendModelDiscovery();
         var tierMap = new TierMap(state.Path, modelDiscovery.CachedModels, Log);
         var herdrPlacement = herdrTerminal is null ? null : new HerdrPlacement(state.Path, Log);
         Func<string, string?>? checkHerdrSession = herdrTerminal is null ? null : herdrTerminal.CheckExistingSession;
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap,
             herdrPlacement, checkHerdrSession);
-        var externalTeam = new ExternalTeam(externalMembers, wakeStore);
         // Remote claims have their own lead identity and cannot borrow the local MCP lead.
         var connectorAccept = new AcceptJob(store, new BoundPrincipal("prfactory", "connector", "connector-lead"),
             limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap, herdrPlacement, checkHerdrSession);

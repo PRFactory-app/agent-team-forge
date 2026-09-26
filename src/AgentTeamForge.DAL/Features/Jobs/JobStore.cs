@@ -10,6 +10,16 @@ namespace AgentTeamForge.DAL.Features.Jobs;
 /// </summary>
 public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpoints)
 {
+    public (string SessionId, string Workspace)? LeadForJob(string jobId)
+    {
+        using var db = database.OpenConnection();
+        using var command = db.CreateCommand();
+        command.CommandText = "SELECT s.session_id,s.workspace FROM jobs j JOIN lead_sessions s ON s.session_id=j.lead_session_id WHERE j.job_id=$id AND s.closed_at IS NULL";
+        command.Parameters.AddWithValue("$id", jobId);
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? (reader.GetString(0), reader.GetString(1)) : null;
+    }
+
     const string JobColumns = """
         j.job_id, j.principal, j.team, j.target_agent, j.idempotency_key, j.instruction, j.options,
         j.status, j.reason_code, j.result_text,

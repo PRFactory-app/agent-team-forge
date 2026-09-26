@@ -33,6 +33,7 @@ public sealed class DispatchJob : IDisposable
     readonly AdmissionGate admission;
     readonly Action<string> log;
     readonly JobLogs? jobLogs;
+    readonly ManagedChildContext? childContext;
     string? _haltReason;
 
     /// <summary>Single-backend convenience: serves jobs whose backend is "fake".</summary>
@@ -41,7 +42,7 @@ public sealed class DispatchJob : IDisposable
     {
     }
 
-    public DispatchJob(JobStore store, BackendCatalog backends, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log, JobLogs? jobLogs = null)
+    public DispatchJob(JobStore store, BackendCatalog backends, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log, JobLogs? jobLogs = null, ManagedChildContext? childContext = null)
     {
         // Validated before the daemon reports readiness; CancelAfter would otherwise fault the loop.
         if (limits.MaxFakeRuntime <= TimeSpan.Zero || limits.MaxFakeRuntime > MaxAllowedRuntime)
@@ -58,6 +59,7 @@ public sealed class DispatchJob : IDisposable
         this.admission = admission;
         this.log = log;
         this.jobLogs = jobLogs;
+        this.childContext = childContext;
     }
 
     /// <summary>
@@ -431,6 +433,7 @@ public sealed class DispatchJob : IDisposable
                 WorkingDirectory = JobWorktree.WorkingDirectory(claim.Job),
                 Output = jobLogs?.BeginRun(claim.Job.JobId, claim.RunId, claim.Job.Backend),
             };
+            request = childContext?.Prepare(request) ?? request;
             var starting = Task.Run(() => backend.Start(request), CancellationToken.None);
             try
             {

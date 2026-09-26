@@ -9,7 +9,7 @@ namespace AgentTeamForge.DAL.Features.External;
 
 public sealed record JoinTicket(string SessionId, string Name, string Token, DateTimeOffset ExpiresAt)
 {
-    public string JoinPrompt => $"Join my AgentTeamForge team as {Name} using the external-member MCP entry. Call join_team(session_id=\"{SessionId}\", token=\"{Token}\"). Save member_token from the reply. In Codex Desktop, read CODEX_THREAD_ID and the absolute CODEX_HOME for this conversation (default $HOME/.codex), then call external_set_wake(member_token=..., codex_thread_id=..., codex_home=...) to receive queue notices. Call external_read(member_token=...) to read work, external_send(member_token=..., text=...) to reply, and leave_team(member_token=...) only when finished permanently.";
+    public string JoinPrompt => $"Join my AgentTeamForge team as {Name} using the external-member MCP entry. Call mcp__agentteamforge__join_team(session_id=\"{SessionId}\", token=\"{Token}\"). Save member_token from the reply. In Codex Desktop, read CODEX_THREAD_ID and the absolute CODEX_HOME for this conversation (default $HOME/.codex), then call mcp__agentteamforge__external_set_wake(member_token=..., codex_thread_id=..., codex_home=...) to receive queue notices. Call mcp__agentteamforge__external_read(member_token=...) to read work, mcp__agentteamforge__external_send(member_token=..., text=...) to reply, and mcp__agentteamforge__leave_team(member_token=...) only when finished permanently.";
 }
 public sealed record JoinedMember(string SessionId, string Name, string MemberToken);
 public sealed record ExternalMessage(long Seq, string From, string Text, string CreatedAt, bool? Truncated = null, int? FullLen = null)
