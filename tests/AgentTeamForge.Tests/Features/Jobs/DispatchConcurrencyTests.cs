@@ -104,7 +104,7 @@ public sealed class DispatchConcurrencyTests
     }
 
     [Fact]
-    public async Task Shutdown_leaves_concurrent_attempts_started_and_restart_quarantines_them()
+    public async Task Shutdown_terminates_owned_children_and_restart_quarantines_attempts()
     {
         using var f = new JobFixture();
         var backend = new GatedBackend();
@@ -117,6 +117,7 @@ public sealed class DispatchConcurrencyTests
         await lifetime.CancelAsync();
         await loop.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
         Assert.All(jobs, id => Assert.Equal(JobStatus.Running, f.Store.GetJob(id)!.Status));
+        Assert.All(jobs, id => Assert.True(backend.Terminated.ContainsKey(id)));
 
         Assert.Equal(2, new RecoverOnStartup(f.Store).Execute().Count);
         Assert.All(jobs, id => Assert.Equal((JobStatus.NeedsReconciliation, "daemon_restart_uncertain"),
@@ -135,6 +136,8 @@ public sealed class DispatchConcurrencyTests
         public ConcurrentDictionary<string, BackendRequest> Started { get; } = new();
 
         public ConcurrentDictionary<string, bool> Running { get; } = new();
+
+        public ConcurrentDictionary<string, bool> Terminated { get; } = new();
 
         public int MaxRunning { get; private set; }
 
@@ -198,6 +201,7 @@ public sealed class DispatchConcurrencyTests
 
             public void TerminateOwnedChild()
             {
+                owner.Terminated[request.JobId] = true;
             }
 
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;

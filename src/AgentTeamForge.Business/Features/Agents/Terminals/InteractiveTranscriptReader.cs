@@ -127,10 +127,9 @@ internal sealed class InteractiveTranscriptReader : IInteractiveTranscriptReader
             string? last = null;
             foreach (var line in File.ReadLines(path, Encoding.UTF8))
             {
-                if (line.Contains(marker, StringComparison.Ordinal))
+                if (!markerSeen && line.Contains(marker, StringComparison.Ordinal))
                 {
                     markerSeen = true;
-                    last = null;
                     continue;
                 }
                 if (!markerSeen)

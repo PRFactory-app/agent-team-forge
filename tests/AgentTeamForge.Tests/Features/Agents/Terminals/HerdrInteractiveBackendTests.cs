@@ -79,6 +79,7 @@ public sealed class HerdrInteractiveBackendTests
                 """{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"old answer"}]}}""",
                 """{"type":"message","message":{"role":"user","content":[{"type":"text","text":"atf-corr:new-turn"}]}}""",
                 """{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"new answer"}]}}""",
+                """{"type":"last-prompt","lastPrompt":"atf-corr:new-turn"}""",
             ]);
             var reader = new InteractiveTranscriptReader();
             var launch = new InteractiveLaunch(InteractiveAgentKind.Pi, "atftest", root, null, dir, Path.Combine(root, "bootstrap"));
