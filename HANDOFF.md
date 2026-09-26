@@ -76,8 +76,9 @@ translation of the initial Swedish planning documents.
     MCP/IPC, and daemon composition, so it is not named UI.
 12. Use pragmatic TDD for business-critical behavior, not a large suite asserting
     prose or implementation details. Code reviews use the opposite model family.
-    Plans normally come from Claude Opus or GPT-6 Astra; independent plan reviews
-    are for major changes. See `AGENTS.md` for binding rules.
+    Plans normally come from GPT-6 Astra (Pi tier max); Claude Opus writes code;
+    Codex (tier high) reviews and integrates. Independent plan reviews are for
+    major changes. See `AGENTS.md` for binding rules.
 13. Use the P01–P08 waterfall roadmap for the complete product. Planning/reviews
     may be parallel; phase implementation consumes accepted predecessor
     contracts. Scope and options are explicit in `docs/product-scope.md`.
