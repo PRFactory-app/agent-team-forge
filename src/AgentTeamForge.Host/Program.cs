@@ -1,0 +1,62 @@
+using AgentTeamForge.Host.Features.FakeBackend;
+using AgentTeamForge.Host.Features.Jobs;
+using AgentTeamForge.Host.Features.Setup;
+using AgentTeamForge.Host.Hosting;
+
+// Spike-only command surface; not an approved production CLI.
+if (args.Length == 0)
+{
+    return Usage();
+}
+
+var options = ParseOptions([.. args.Skip(args.Length > 1 && !args[1].StartsWith("--", StringComparison.Ordinal) ? 2 : 1)]);
+try
+{
+    switch (args[0])
+    {
+        case "fake-backend":
+            return FakeBackendCommand.Run();
+        case "init" when options.TryGetValue("state-dir", out var initDir):
+            return InitCommand.Run(initDir, options.ContainsKey("test-profile"),
+                options.TryGetValue("queue-limit", out var q) ? int.Parse(q, System.Globalization.CultureInfo.InvariantCulture) : null,
+                options.TryGetValue("max-runtime-seconds", out var m) ? int.Parse(m, System.Globalization.CultureInfo.InvariantCulture) : null);
+        case "daemon" when options.TryGetValue("state-dir", out var daemonDir):
+            return await DaemonCommand.RunAsync(StateDirectory.Open(daemonDir), options.GetValueOrDefault("test-crash-at"), options.GetValueOrDefault("test-fail-at"));
+        case "mcp" when options.TryGetValue("state-dir", out var mcpDir):
+            var mcpState = StateDirectory.Open(mcpDir);
+            return await JobsMcpBridge.RunAsync(mcpState, SpikeProfileFile.Load(mcpState).TestProfile);
+        case "client" when args.Length > 1 && options.TryGetValue("state-dir", out var clientDir):
+            return await ClientCommand.RunAsync(StateDirectory.Open(clientDir), args[1], options);
+        default:
+            return Usage();
+    }
+}
+catch (StateDirectoryException ex)
+{
+    Console.Error.WriteLine($"error: {ex.Code}");
+    return 78;
+}
+
+static int Usage()
+{
+    Console.Error.WriteLine("usage: atf <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
+    return 64;
+}
+
+static Dictionary<string, string> ParseOptions(string[] rest)
+{
+    var options = new Dictionary<string, string>(StringComparer.Ordinal);
+    for (var i = 0; i < rest.Length; i++)
+    {
+        if (!rest[i].StartsWith("--", StringComparison.Ordinal))
+        {
+            continue;
+        }
+
+        var name = rest[i][2..];
+        var hasValue = i + 1 < rest.Length && !rest[i + 1].StartsWith("--", StringComparison.Ordinal);
+        options[name] = hasValue ? rest[++i] : "true";
+    }
+
+    return options;
+}

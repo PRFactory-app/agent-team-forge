@@ -1,0 +1,23 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Needed for IDE0005 in build; missing XML docs (CS1591) are not a gate. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!-- Production projects must stay trim/AOT clean; analyzers run on every build. -->
+    <IsAotCompatible Condition="'$(IsTestProject)' != 'true'">true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Linux reference-transport spike; Windows/macOS are unrun, not supported. -->
+    <AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute">
+      <_Parameter1>linux</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>
