@@ -49,7 +49,7 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
             throw new BackendNotStartedException("pi could not be started", ex);
         }
 
-        return new PiRun(process, request.Correlation, Encoding.UTF8.GetBytes(request.Instruction), request.Output);
+        return new PiRun(process, request.Correlation, Encoding.UTF8.GetBytes(request.Instruction), request.Output, request.ResumeSessionId is not null);
     }
 
     internal static List<string> BuildArguments(BackendRequest request)
@@ -80,11 +80,11 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
         return args;
     }
 
-    sealed class PiRun(Process process, string correlation, byte[] instruction, Action<string, ReadOnlyMemory<byte>>? output) : IBackendRun
+    sealed class PiRun(Process process, string correlation, byte[] instruction, Action<string, ReadOnlyMemory<byte>>? output, bool resuming) : IBackendRun
     {
         readonly Process _process = process;
         readonly Stream _stdout = new CapturingReadStream(process.StandardOutput.BaseStream, "stdout", output);
-        readonly Task _stderrDrain = DrainAsync(new CapturingReadStream(process.StandardError.BaseStream, "stderr", output));
+        readonly Task<string> _stderrDrain = BackendSessionErrors.ReadStderrAsync(new CapturingReadStream(process.StandardError.BaseStream, "stderr", output));
         bool _deliveryFailed;
 
         public int? ProcessId => _process.Id;
@@ -108,7 +108,8 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
         {
             if (_deliveryFailed)
             {
-                yield return new BackendEvidence.ProtocolError("backend_delivery_failed");
+                yield return new BackendEvidence.ProtocolError(resuming && await BackendSessionErrors.HasExpiredDiagnosticAsync(_stderrDrain, cancellationToken)
+                    ? "session_expired" : "backend_delivery_failed");
                 yield break;
             }
 
@@ -119,6 +120,12 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
                 {
                     yield return evidence;
                 }
+            }
+
+            if (resuming && await BackendSessionErrors.HasExpiredDiagnosticAsync(_stderrDrain, cancellationToken))
+            {
+                yield return new BackendEvidence.ProtocolError("session_expired");
+                yield break;
             }
 
             if (turn.FinishAtEndOfOutput() is { } final)

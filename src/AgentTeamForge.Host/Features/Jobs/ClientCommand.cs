@@ -43,6 +43,7 @@ public static class ClientCommand
                 JobId = options.GetValueOrDefault("job"),
                 IdempotencyKey = options.GetValueOrDefault("key"),
                 Instruction = options.GetValueOrDefault("instruction"),
+                Interrupt = options.ContainsKey("interrupt"),
                 TimeoutSeconds = Seconds(options, "timeout"),
                 QueueTtlSeconds = Seconds(options, "queue-ttl"),
             },
@@ -52,6 +53,8 @@ public static class ClientCommand
             {
                 Op = IpcProtocol.JobList,
                 Status = options.GetValueOrDefault("status"),
+                Backend = options.GetValueOrDefault("backend"),
+                Since = options.GetValueOrDefault("since"),
                 // An unparsable limit is sent as 0 so the daemon rejects it rather than defaulting.
                 Limit = options.TryGetValue("limit", out var limit) ? (int.TryParse(limit, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : 0) : null,
                 Cursor = options.GetValueOrDefault("cursor"),
@@ -61,7 +64,7 @@ public static class ClientCommand
         if (request is null)
         {
             Console.Error.WriteLine("usage: atf client <submit|follow-up|get|stop|list|logs> --state-dir DIR "
-                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--worktree] [--timeout S] [--queue-ttl S] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT [--timeout S] [--queue-ttl S]] | stop ID | [--status S] [--limit N] [--cursor C]]");
+                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--worktree] [--timeout S] [--queue-ttl S] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT [--interrupt] [--timeout S] [--queue-ttl S]] | stop ID | [--status S] [--backend B] [--since ISO-TIME] [--limit N] [--cursor C]]");
             return 64;
         }
 

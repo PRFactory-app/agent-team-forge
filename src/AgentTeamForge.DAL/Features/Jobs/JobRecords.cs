@@ -25,6 +25,7 @@ public sealed record NewJob(
     public string? Cwd { get; init; }
 
     public string? ParentJobId { get; init; }
+    public bool InterruptParent { get; init; }
 
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }
@@ -71,9 +72,11 @@ public enum AcceptKind
     Existing,
     Conflict,
     QueueFull,
+    ParentNotReady,
+    ParentNotFound,
 }
 
-public sealed record AcceptOutcome(AcceptKind Kind, JobRecord? Job);
+public sealed record AcceptOutcome(AcceptKind Kind, JobRecord? Job, string? InterruptedJobId = null);
 
 /// <summary>A committed attempt-start: generation and correlation exist before any backend effect.</summary>
 public sealed record AttemptClaim(JobRecord Job, string RunId, long Generation, string Correlation);
@@ -89,6 +92,7 @@ public sealed record RunRecord(string RunId, long Generation, string Correlation
 /// <summary>Read-only inspection row: committed state only, no instruction or result payload.</summary>
 public sealed record JobSummaryRecord(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)
 {
+    public string? Backend { get; init; }
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }
 }

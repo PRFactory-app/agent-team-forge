@@ -40,6 +40,7 @@ public sealed record SubmitJobRequest(string IdempotencyKey, string Instruction,
 /// <summary>A new turn in the parent job's native session, on the same backend and cwd.</summary>
 public sealed record FollowUpRequest(string ParentJobId, string Instruction, string IdempotencyKey)
 {
+    public bool Interrupt { get; init; }
     public int? TimeoutSeconds { get; init; }
     public int? QueueTtlSeconds { get; init; }
 
@@ -59,6 +60,7 @@ public static class JobErrors
     public const string DaemonUnhealthy = "daemon_unhealthy";
     public const string BackendUnavailable = "backend_unavailable";
     public const string ParentNotReady = "parent_not_ready";
+    public const string SessionExpired = "session_expired";
     public const string CwdNotGitRepo = "cwd_not_git_repo";
 
     public static string FromStorage(StorageException ex) => ex.Failure == StorageFailure.Busy ? StorageBusy : StorageUnavailable;

@@ -60,9 +60,10 @@ public static class JobsMcpBridge
 
     const string FollowUpSchema = """
         {"type":"object","properties":{
-          "job_id":{"type":"string","description":"Finished job whose native agent session is resumed."},
+          "job_id":{"type":"string","description":"Job whose native agent session is resumed."},
           "instruction":{"type":"string"},
           "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."},
+          "interrupt":{"type":"boolean","description":"If the parent is running, cancel its turn (reason interrupted) and run this prompt in the same session."},
         """ + LimitProperties + """
         },"required":["job_id","instruction","idempotency_key"]}
         """;
@@ -70,6 +71,8 @@ public static class JobsMcpBridge
     const string ListSchema = """
         {"type":"object","properties":{
           "status":{"type":"string","enum":["queued","running","completed","failed","needs_reconciliation","cancelled"]},
+          "backend":{"type":"string","enum":["fake","claude","codex","pi"]},
+          "since":{"type":"string","description":"Include jobs accepted at or after this ISO 8601 time."},
           "limit":{"type":"integer","minimum":1,"maximum":50,"description":"Page size; default 20."},
           "cursor":{"type":"string","description":"next_cursor from the previous page."}}}
         """;
@@ -104,7 +107,7 @@ public static class JobsMcpBridge
             new() { Name = "get_job", Description = "Read a job's status, result output and native session_id.", InputSchema = Parse(GetSchema) },
             new() { Name = "get_job_output", Description = "Read live stdout/stderr log bytes from a job, starting at an absolute offset. Use next_offset to continue.", InputSchema = Parse(OutputSchema) },
             new() { Name = "stop_job", Description = "Cancel a queued or running job. A finished job is returned unchanged.", InputSchema = Parse(GetSchema) },
-            new() { Name = "follow_up", Description = "Send a follow-up instruction into a finished job's native agent session (same backend and cwd). Returns the new job.", InputSchema = Parse(FollowUpSchema) },
+            new() { Name = "follow_up", Description = "Resume a job's native agent session. A running job needs interrupt=true; otherwise follow_up returns parent_not_ready.", InputSchema = Parse(FollowUpSchema) },
             new() { Name = "list_jobs", Description = "List jobs, newest first, one bounded page at a time.", InputSchema = Parse(ListSchema) },
             new() { Name = "register_codex_wake", Description = "Register this Codex conversation for native job notices before submitting jobs. Read CODEX_THREAD_ID with a shell tool and pass it here; Codex does not always pass it to MCP servers.", InputSchema = Parse(CodexWakeSchema) },
             new() { Name = "job_submit", Description = "Durably submit a job to the AgentTeamForge daemon (spike).", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
@@ -190,6 +193,7 @@ public static class JobsMcpBridge
                 JobId = String(args, "job_id"),
                 Instruction = String(args, "instruction"),
                 IdempotencyKey = String(args, "idempotency_key"),
+                Interrupt = args.TryGetValue("interrupt", out var interrupt) && interrupt.ValueKind == JsonValueKind.True,
                 TimeoutSeconds = Integer(args, "timeout_s"),
                 QueueTtlSeconds = Integer(args, "queue_ttl_s"),
             }, null),
@@ -203,7 +207,8 @@ public static class JobsMcpBridge
     /// </summary>
     static (IpcRequest?, string?) ListRequest(IDictionary<string, JsonElement> args) =>
         OptionalString(args, "status", out var status) && OptionalString(args, "cursor", out var cursor)
-            ? (new IpcRequest { Op = IpcProtocol.JobList, Status = status, Limit = Integer(args, "limit"), Cursor = cursor }, null)
+            && OptionalString(args, "backend", out var backend) && OptionalString(args, "since", out var since)
+            ? (new IpcRequest { Op = IpcProtocol.JobList, Status = status, Backend = backend, Since = since, Limit = Integer(args, "limit"), Cursor = cursor }, null)
             : (null, JobErrors.InvalidRequest);
 
     static bool OptionalString(IDictionary<string, JsonElement> args, string name, out string? value)
