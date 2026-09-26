@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -63,13 +63,33 @@ static class Schema
         ALTER TABLE jobs ADD COLUMN session_id TEXT;
         """;
 
+    /// <summary>v3: wake routing targets and per-job unread state.</summary>
     const string V3 = """
+        CREATE TABLE wake_targets(
+            target_key TEXT PRIMARY KEY,
+            generation INTEGER NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('claude','codex','pi')),
+            address TEXT NOT NULL,
+            secret TEXT NOT NULL,
+            home TEXT NOT NULL,
+            notified_seq INTEGER NOT NULL DEFAULT 0,
+            last_success TEXT,
+            registered_at TEXT NOT NULL);
+        CREATE TABLE wake_jobs(
+            job_id TEXT PRIMARY KEY REFERENCES jobs(job_id),
+            target_key TEXT NOT NULL REFERENCES wake_targets(target_key),
+            read_at TEXT);
+        CREATE INDEX wake_jobs_target ON wake_jobs(target_key, read_at);
+        """;
+
+    /// <summary>v4: opt-in per-job git worktree.</summary>
+    const string V4 = """
         ALTER TABLE jobs ADD COLUMN worktree_path TEXT;
         ALTER TABLE jobs ADD COLUMN worktree_branch TEXT;
         ALTER TABLE jobs ADD COLUMN worktree_base TEXT;
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3];
+    static readonly string[] Migrations = [V1, V2, V3, V4];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

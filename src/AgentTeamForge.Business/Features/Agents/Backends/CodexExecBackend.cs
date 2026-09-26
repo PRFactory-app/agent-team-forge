@@ -31,6 +31,7 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
         {
             info.WorkingDirectory = cwd;
         }
+        OrphanedBackendProcess.Mark(info, request.Correlation);
 
         foreach (var argument in BuildArguments(request))
         {

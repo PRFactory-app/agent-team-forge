@@ -29,6 +29,10 @@ public sealed record NewJob(
     public string? WorktreeBranch { get; init; }
     public string? WorktreeBase { get; init; }
     public bool CreateWorktree { get; init; }
+
+    public string? WakeTargetKey { get; init; }
+
+    public long? WakeGeneration { get; init; }
 }
 
 public sealed record JobRecord(

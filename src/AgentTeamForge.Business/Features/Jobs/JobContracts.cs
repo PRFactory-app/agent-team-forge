@@ -25,10 +25,18 @@ public sealed record SubmitJobRequest(string IdempotencyKey, string Instruction,
     public string? Cwd { get; init; }
 
     public bool Worktree { get; init; }
+
+    /// <summary>Registered wake target of the submitting bridge; bound in the accept transaction.</summary>
+    public string? WakeKey { get; init; }
+    public long? WakeGeneration { get; init; }
 }
 
 /// <summary>A new turn in the parent job's native session, on the same backend and cwd.</summary>
-public sealed record FollowUpRequest(string ParentJobId, string Instruction, string IdempotencyKey);
+public sealed record FollowUpRequest(string ParentJobId, string Instruction, string IdempotencyKey)
+{
+    public string? WakeKey { get; init; }
+    public long? WakeGeneration { get; init; }
+}
 
 /// <summary>Stable machine-readable error codes; English messages are not contract.</summary>
 public static class JobErrors

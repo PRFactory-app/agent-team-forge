@@ -59,6 +59,14 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             ("$i", job.Instruction), ("$opt", job.Options), ("$b", job.Backend), ("$cwd", job.Cwd),
             ("$parent", job.ParentJobId), ("$wtpath", worktreePath), ("$wtbranch", worktreeBranch),
             ("$wtbase", job.WorktreeBase), ("$now", now));
+        if (job.WakeTargetKey is not null && job.WakeGeneration is not null)
+        {
+            Execute(connection, tx, """
+                INSERT INTO wake_jobs(job_id, target_key)
+                SELECT $id, target_key FROM wake_targets
+                WHERE target_key=$key AND generation=$generation
+                """, ("$id", jobId), ("$key", job.WakeTargetKey), ("$generation", job.WakeGeneration.Value));
+        }
         checkpoints.Hit(DurabilityCheckpoints.AcceptBeforeCommit);
         tx.Commit();
 
@@ -245,6 +253,26 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
         tx.Commit();
         return (IReadOnlyList<string>)jobs;
+    });
+
+    /// <summary>
+    /// Run markers whose backend processes may have outlived daemon death,
+    /// including runs that died before their PID was recorded.
+    /// </summary>
+    public IReadOnlyList<string> GetInterruptedRunCorrelations() => Read(connection =>
+    {
+        using var command = Command(connection, null, """
+            SELECT correlation FROM runs
+            WHERE state='started' OR (state='needs_reconciliation' AND reason_code='daemon_restart_uncertain')
+            """);
+        using var reader = command.ExecuteReader();
+        var correlations = new List<string>();
+        while (reader.Read())
+        {
+            correlations.Add(reader.GetString(0));
+        }
+
+        return (IReadOnlyList<string>)correlations;
     });
 
     public JobRecord? GetJob(string jobId) => Read(connection => GetJob(connection, null, jobId));

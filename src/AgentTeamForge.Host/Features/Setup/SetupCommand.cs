@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Host.Hosting;
 
 namespace AgentTeamForge.Host.Features.Setup;
@@ -30,7 +32,11 @@ public static class SetupCommand
         }
 
         var state = StateDirectory.Open(dir);
-        _ = SpikeProfileFile.Load(state);
+        if (!SpikeProfileFile.Load(state).RealAgents)
+        {
+            Console.Error.WriteLine("error: setup requires an agents profile");
+            return 78;
+        }
         WriteMode(state, mode);
 
         var binary = Path.GetFullPath(executablePath ?? Environment.ProcessPath
@@ -60,7 +66,14 @@ public static class SetupCommand
             }
         }
 
-        Console.Out.WriteLine($"Launch mode: {mode}. Run: {FormatCommand(binary, ["start", "--state-dir", state.Path])}");
+        if (mode == "headless")
+        {
+            Console.Out.WriteLine($"Launch mode: headless. Run: {FormatCommand(binary, ["start", "--state-dir", state.Path])}");
+        }
+        else
+        {
+            Console.Out.WriteLine("Launch mode: herdr saved. Herdr agent launch is not available yet; start will refuse this mode.");
+        }
         return 0;
     }
 
@@ -68,7 +81,12 @@ public static class SetupCommand
     {
         var state = StateDirectory.Open(ResolveStateDir(options));
         _ = SpikeProfileFile.Load(state);
-        _ = ReadMode(state);
+        if (ReadMode(state) == "herdr")
+        {
+            // TODO: route Herdr mode through its interactive backend when it lands.
+            Console.Error.WriteLine("error: herdr agent launch is not available yet");
+            return 78;
+        }
         using (var probe = DaemonLock.TryAcquire(state.LockFile))
         {
             if (probe is null)
@@ -124,16 +142,104 @@ public static class SetupCommand
     public static int Stop(IReadOnlyDictionary<string, string> options)
     {
         var state = StateDirectory.Open(ResolveStateDir(options));
-        using var probe = DaemonLock.TryAcquire(state.LockFile);
-        if (probe is not null)
+        if (LockIsFree(state))
         {
             Console.Out.WriteLine("Daemon is not running.");
             return 0;
         }
 
         var pid = DaemonLock.ReadOwnerPid(state.LockFile);
-        Console.Out.WriteLine(pid is { } value ? $"Stop the daemon with: kill -TERM {value}" : "Stop the daemon with SIGTERM to its process.");
-        return 0;
+        if (pid is null)
+        {
+            Console.Error.WriteLine("error: daemon lock is held but its PID is unavailable");
+            return 1;
+        }
+
+        using var process = Pidfd.Open(pid.Value);
+        if (process is null)
+        {
+            return StoppedDuringCheck(state);
+        }
+
+        if (!IsOurDaemon(pid.Value, state.Path))
+        {
+            if (LockIsFree(state))
+            {
+                Console.Out.WriteLine("Daemon is not running.");
+                return 0;
+            }
+
+            Console.Error.WriteLine("error: lock PID is not this state's atf daemon; no signal sent");
+            return 1;
+        }
+
+        if (!Pidfd.Signal(process, Native.SigTerm))
+        {
+            return StoppedDuringCheck(state);
+        }
+
+        for (var i = 0; i < 50; i++)
+        {
+            if (LockIsFree(state))
+            {
+                Console.Out.WriteLine($"Stopped daemon {pid.Value}.");
+                return 0;
+            }
+
+            Thread.Sleep(100);
+        }
+
+        Console.Error.WriteLine($"error: daemon {pid.Value} did not stop within 5 seconds");
+        return 1;
+    }
+
+    static int StoppedDuringCheck(StateDirectory state)
+    {
+        if (LockIsFree(state))
+        {
+            Console.Out.WriteLine("Daemon is not running.");
+            return 0;
+        }
+
+        Console.Error.WriteLine("error: daemon process could not be signaled; no signal sent");
+        return 1;
+    }
+
+    static bool LockIsFree(StateDirectory state)
+    {
+        using var probe = DaemonLock.TryAcquire(state.LockFile);
+        return probe is not null;
+    }
+
+    static bool IsOurDaemon(int pid, string statePath)
+    {
+        try
+        {
+            var proc = $"/proc/{pid}";
+            var exe = File.ResolveLinkTarget(Path.Combine(proc, "exe"), returnFinalTarget: true);
+            if (exe is null || Path.GetFileName(exe.FullName) != "atf")
+            {
+                return false;
+            }
+
+            var uid = File.ReadLines(Path.Combine(proc, "status"))
+                .FirstOrDefault(line => line.StartsWith("Uid:", StringComparison.Ordinal))?
+                .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (uid is not { Length: >= 2 } || !uint.TryParse(uid[1], out var owner) || owner != Native.geteuid())
+            {
+                return false;
+            }
+
+            var args = Encoding.UTF8.GetString(File.ReadAllBytes(Path.Combine(proc, "cmdline")))
+                .Split('\0', StringSplitOptions.RemoveEmptyEntries);
+            return args.Length >= 4 && Path.GetFileName(args[0]) == "atf"
+                && args[1] == "daemon" && args[2] == "--state-dir"
+                && args[3] == statePath;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     internal static IReadOnlyList<(string Tool, IReadOnlyList<string> Args)> Registrations(string binary, string stateDir) =>
@@ -199,6 +305,9 @@ public static class SetupCommand
 
         return settings.Mode;
     }
+
+    internal static string? ConfiguredMode(StateDirectory state) =>
+        File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadMode(state) : null;
 
     static int RunCommand(string tool, IReadOnlyList<string> args)
     {

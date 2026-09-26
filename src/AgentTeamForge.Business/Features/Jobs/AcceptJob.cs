@@ -45,7 +45,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
 
         var options = $"behavior={behavior};hold={(request.Hold ? 1 : 0)};worktree={(request.Worktree ? 1 : 0)}";
         return Admit(Operation, request.IdempotencyKey, request.Instruction, options, backend,
-            cwd, null, request.Worktree, baseCommit);
+            cwd, null, request.WakeKey, request.WakeGeneration, request.Worktree, baseCommit);
     }
 
     internal bool IsValid(string? key, string? instruction) =>
@@ -53,8 +53,9 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         && !string.IsNullOrEmpty(instruction) && instruction.Length <= limits.MaxInstructionChars;
 
     /// <summary>Durable acceptance shared by submit and follow-up; one admission-gated transaction.</summary>
-    internal JobResult Admit(string operation, string key, string instruction, string options, string backend, string? cwd,
-        string? parentJobId, bool createWorktree = false, string? worktreeBase = null, string? worktreePath = null, string? worktreeBranch = null)
+    internal JobResult Admit(string operation, string key, string instruction, string options, string backend, string? cwd, string? parentJobId,
+        string? wakeKey = null, long? wakeGeneration = null, bool createWorktree = false, string? worktreeBase = null,
+        string? worktreePath = null, string? worktreeBranch = null)
     {
         if (!admission.TryEnter())
         {
@@ -73,6 +74,8 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
                 WorktreeBase = worktreeBase,
                 WorktreePath = worktreePath,
                 WorktreeBranch = worktreeBranch,
+                WakeTargetKey = wakeKey,
+                WakeGeneration = wakeGeneration,
             };
 
             AcceptOutcome outcome;

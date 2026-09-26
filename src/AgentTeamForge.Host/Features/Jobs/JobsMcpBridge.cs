@@ -2,6 +2,7 @@ using System.Text.Json;
 using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Hosting;
+using AgentTeamForge.Host.Features.Wake;
 using AgentTeamForge.Host.Transport;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -56,6 +57,27 @@ public static class JobsMcpBridge
     public static async Task<int> RunAsync(StateDirectory state, bool testProfile)
     {
         var client = new IpcClient(state, new SpikeLimits());
+        var wakeTarget = HostSessionWake.Resolve(state);
+        long? wakeGeneration = null;
+        async Task RegisterWakeAsync(CancellationToken cancellationToken)
+        {
+            if (wakeTarget is null || wakeGeneration is not null)
+            {
+                return;
+            }
+
+            // Wake is best effort: a missing daemon or credential must not stop the bridge or fail job calls.
+            try
+            {
+                var registration = await client.SendAsync(wakeTarget, cancellationToken);
+                if (registration.Ok)
+                {
+                    wakeGeneration = registration.WakeGeneration;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException) { }
+        }
+        await RegisterWakeAsync(CancellationToken.None);
         var tools = new List<Tool>
         {
             new() { Name = "submit_job", Description = "Durably submit a task to an agent (claude, codex or pi) run by the AgentTeamForge daemon. Returns the job; poll get_job for the result.", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
@@ -78,7 +100,13 @@ public static class JobsMcpBridge
                 {
                     var call = request.Params ?? throw new InvalidOperationException("missing params");
                     var args = call.Arguments ?? new Dictionary<string, JsonElement>();
+                    await RegisterWakeAsync(cancellationToken);
                     var (ipc, rejection) = Map(call.Name, args, testProfile);
+                    if (ipc is not null && wakeTarget is not null && wakeGeneration is not null
+                        && ipc.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp or IpcProtocol.JobGet)
+                    {
+                        ipc = ipc with { WakeKey = wakeTarget.WakeKey, WakeGeneration = wakeGeneration };
+                    }
                     var response = ipc is null
                         ? new IpcResponse(false, rejection)
                         : await client.SendAsync(ipc, cancellationToken);
