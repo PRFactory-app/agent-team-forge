@@ -76,7 +76,12 @@ public static class PRFactoryHeartbeat
                 catch (WorkerTokenRejectedException)
                 {
                     rejected = true;
-                    PRFactoryConnection.MarkRejected(state);
+                    // A reconnect may have replaced the token while this request was in flight;
+                    // only the token the server actually rejected is marked.
+                    if (StillConfigured(state, connection))
+                    {
+                        PRFactoryConnection.MarkRejected(state);
+                    }
                     log("PRFactory worker token rejected; remote connector stopped");
                     try { await delay(TimeSpan.FromSeconds(5), ct); }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
@@ -93,5 +98,15 @@ public static class PRFactoryHeartbeat
             }
         }
         finally { http?.Dispose(); }
+    }
+
+    static bool StillConfigured(StateDirectory state, string? connection)
+    {
+        try
+        {
+            var settings = PRFactoryConnection.LoadSettings(state);
+            return settings is not null && settings.Url + "\n" + PRFactoryConnection.ReadToken(state) == connection;
+        }
+        catch (Exception ex) when (ex is IOException or StateDirectoryException) { return false; }
     }
 }

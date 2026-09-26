@@ -19,12 +19,12 @@ public static class PRFactoryConnection
     const string TokenName = "prfactory.token";
     const string RejectedName = "prfactory.rejected";
 
-    public static int Run(StateDirectory state, string action, IReadOnlyDictionary<string, string> options, IReadOnlyList<string> args)
+    public static int Run(StateDirectory state, string action, IReadOnlyDictionary<string, string> options, IReadOnlyList<string> args, TextReader tokenInput)
     {
         switch (action)
         {
             case "connect":
-                return Connect(state, options, args);
+                return Connect(state, options, args, tokenInput);
             case "disconnect":
                 File.Delete(Path.Combine(state.Path, SettingsName));
                 File.Delete(Path.Combine(state.Path, TokenName));
@@ -54,14 +54,25 @@ public static class PRFactoryConnection
         }
     }
 
-    static int Connect(StateDirectory state, IReadOnlyDictionary<string, string> options, IReadOnlyList<string> args)
+    static int Connect(StateDirectory state, IReadOnlyDictionary<string, string> options, IReadOnlyList<string> args, TextReader tokenInput)
     {
+        if (options.ContainsKey("token"))
+        {
+            // Command-line arguments are world-readable through ps and /proc.
+            Console.Error.WriteLine("error: --token is not accepted; pipe the worker token on stdin");
+            return 64;
+        }
         if (!options.TryGetValue("url", out var url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri)
             || uri.Scheme != Uri.UriSchemeHttps || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0
-            || uri.AbsolutePath != "/" || !options.TryGetValue("token", out var token)
-            || string.IsNullOrWhiteSpace(token) || token.Any(char.IsControl))
+            || uri.AbsolutePath != "/")
         {
-            Console.Error.WriteLine("error: require an HTTPS --url and nonempty --token");
+            Console.Error.WriteLine("error: require an HTTPS --url");
+            return 64;
+        }
+        var token = tokenInput.ReadLine()?.Trim();
+        if (string.IsNullOrEmpty(token) || token.Any(char.IsControl))
+        {
+            Console.Error.WriteLine("error: pipe a nonempty worker token on stdin");
             return 64;
         }
 

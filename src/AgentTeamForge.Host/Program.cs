@@ -35,7 +35,7 @@ try
         case "prune":
             return await PruneCommand.RunAsync(StateDirectory.Open(SetupCommand.ResolveStateDir(options)), options);
         case "prfactory" when args.Length > 1:
-            return PRFactoryConnection.Run(StateDirectory.Open(SetupCommand.ResolveStateDir(options)), args[1], options, args);
+            return PRFactoryConnection.Run(StateDirectory.Open(SetupCommand.ResolveStateDir(options)), args[1], options, args, Console.In);
         case "daemon" when options.TryGetValue("state-dir", out var daemonDir):
             return await DaemonCommand.RunAsync(StateDirectory.Open(daemonDir), options.GetValueOrDefault("test-crash-at"), options.GetValueOrDefault("test-fail-at"));
         case "mcp" when options.TryGetValue("state-dir", out var mcpDir):
@@ -56,7 +56,7 @@ catch (StateDirectoryException ex)
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: atf setup --mode headless|herdr [--state-dir DIR] [--apply] | start|stop [--state-dir DIR] | prfactory connect|disconnect|status [--state-dir DIR] [--url HTTPS_URL --token TOKEN --repo ID=DIR] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
+    Console.Error.WriteLine("usage: atf setup --mode headless|herdr [--state-dir DIR] [--apply] | start|stop [--state-dir DIR] | prfactory connect|disconnect|status [--state-dir DIR] [--url HTTPS_URL --repo ID=DIR, token on stdin] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
     return 64;
 }
 
