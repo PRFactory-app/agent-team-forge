@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<meta name="description" content="AgentTeamForge Linux MVP status: mainline capabilities, ordered work lanes, dependencies, and current risks.">
+<meta name="description" content="AgentTeamForge Linux status: what runs on main and what is in progress.">
 <title>AgentTeamForge Project Status</title>
 <style>
 :root{--bg:#f4f6f9;--paper:#fff;--ink:#17263a;--muted:#55657a;--line:#d3dce7;--link:#1a4f86;
@@ -96,88 +96,58 @@ code{overflow-wrap:anywhere}
 </style>
 </head>
 <body>
-<a class="skip" href="#lanes">Skip to MVP lane board</a>
+<a class="skip" href="#today">Skip to what runs today</a>
 <header>
-<p class="meta">AgentTeamForge · Linux MVP status · captured 26 September 2026, 17:26 CEST</p>
-<h1>Linux MVP: three headless backends and durable jobs run on main</h1>
-<p class="meta">Source snapshot: <code>main</code> at <code>a03a35e</code>, plus named feature and review branches. Branch work is marked in progress until merged. This is a recorded snapshot, not live telemetry.</p>
-<p class="headline">Today on Linux, the .NET 11 daemon, durable jobs and MCP control run Claude Code, Codex and Pi headlessly on main. Published-binary demos passed for all three with native-session follow-up. Next: integrate explicit setup, parallel dispatch, native wake and interactive Herdr. Windows and macOS follow the Linux MVP.</p>
-<nav aria-label="Report sections"><a href="#main">Done on main</a><a href="#lanes">MVP lanes</a><a href="#parked">Parked scope</a><a href="#risks">Blockers &amp; risks</a><a href="#decisions">Owner decisions</a><a href="#roadmap">Long-term roadmap</a></nav>
+<p class="meta">AgentTeamForge · Linux status · 26 September 2026</p>
+<h1>Linux jobs and interactive agents run on main</h1>
+<p class="meta">Snapshot: <code>main</code> at <code>cdfb2c5</code>, checked against source and branch tips. This page is a recorded status, not live telemetry.</p>
+<p class="headline">Today you can set up the .NET 11 daemon, run Claude Code, Codex or Pi jobs headlessly or in Herdr, follow up in their native sessions, inspect output and stop jobs or the daemon. Native wake has been verified live for all three. A dogfood rehearsal passed without a watcher.</p>
+<nav aria-label="Report sections"><a href="#today">Run today</a><a href="#next">In progress</a><a href="#decisions">Scope decisions</a><a href="#limits">Current limits</a></nav>
 </header>
 <main>
-<section id="main" aria-labelledby="main-h">
-<h2 id="main-h">Done on main</h2>
+<section id="today" aria-labelledby="today-h">
+<h2 id="today-h">Run today on Linux</h2>
+<p>Build or publish the host using the pinned .NET 11 SDK, then choose a launch mode explicitly:</p>
 <ul>
-<li><strong>Canonical Linux fake core promoted</strong> at <code>d7d24ae</code>: durable SQLite acceptance, daemon, private IPC, thin MCP bridge and published-binary fake-child demo.</li>
-<li><strong>P2 private reads and D2 Herdr launch characterization</strong> are included in that promoted checkpoint. D2 is offline, test-only characterization, not interactive mode.</li>
-<li><strong>Queue conformance, D3 Claude hook characterization and promotion docs</strong> landed at <code>f174f8a</code>. These are bounded offline tests and documentation.</li>
-<li><strong>P1 job inspection and paging plus the AGENTS.md simplicity policy</strong> landed by <code>898f05b</code>.</li>
-<li><strong>Headless Codex exec backend and shared <code>IJobBackend</code> delta</strong> landed at <code>9aa67a7</code>. The real-agent job workflow is integrated by the next mainline commit.</li>
+<li><code>atf setup --mode headless --apply</code> or <code>atf setup --mode herdr --apply</code>, then <code>atf start</code>. Herdr mode opens real interactive agent TUIs for Claude Code, Codex and Pi.</li>
+<li>Submit, inspect, follow up, list and cancel jobs through MCP (<code>submit_job</code>, <code>get_job</code>, <code>follow_up</code>, <code>list_jobs</code>, <code>stop_job</code>) or <code>atf client</code>. The fake backend is available for local checks. Dispatch is bounded to eight concurrent jobs by default and preserves order per native session.</li>
+<li>Read live output with <code>get_job_output</code> or <code>atf client logs JOB_ID --follow</code>, including Herdr transcripts. Use <code>--worktree</code> on submit for an isolated per-job Git checkout; follow-ups reuse it. Jobs support run timeouts, queue TTL and interrupting follow-ups. An idle failed or reconciled session can also be resumed when ownership checks pass.</li>
+<li><code>atf client stop JOB_ID</code> cancels one job; <code>atf stop</code> stops the owned daemon. Startup recovery uses pidfd-pinned cleanup for orphaned backend children. <code>atf prune</code> removes eligible jobs after 30 days by default; the daemon also sweeps daily. First start each boot attempts a SQLite backup and keeps the newest two backups.</li>
 </ul>
-<p><strong>Headless MVP jobs and all three approved backends</strong> reached main at <code>a03a35e</code>, including backend/session/follow-up state and <code>submit_job</code>, <code>get_job</code>, <code>follow_up</code>, <code>list_jobs</code>. The <a href="spikes/mvp-jobs-review.md">MVP integration record</a> reports 139 passed tests (3 opt-in real-backend tests skipped), 26/26 published scenarios, the fake-core demo, and one successful published-binary native-session follow-up demo for each backend.</p>
-<p class="small">The earlier <a href="spikes/canonical-wave-integration.md">canonical integration record</a> reports <strong>112/112</strong> managed tests, <strong>25/25</strong> published scenarios and a <strong>1/1</strong> fake-core demo before the MVP jobs integration. No mainline gate here qualifies unmerged lanes.</p>
+<p>Native wake commits the result before sending a notice to a detected Claude Code, Codex or Pi lead; the lead reads the job through MCP. Setup enables Claude <code>crossSessionInbound</code>. Codex may need <code>register_codex_wake</code>; Pi uses the bundled extension. See the <a href="quickstart.md">Linux quickstart</a> for exact build, setup and CLI commands, and the <a href="migrating-from-win-agent-teams.md">migration guide</a> for tool mapping and the dogfood run.</p>
 </section>
 
-<section id="lanes" aria-labelledby="lanes-h">
-<h2 id="lanes-h">Linux MVP lane board</h2>
-<p class="small">Rows follow the intended integration order. “After” names a dependency; concurrent work can proceed on separate branches. Status is written in each row as well as shown by colour.</p>
+<section id="next" aria-labelledby="next-h">
+<h2 id="next-h">In progress</h2>
+<p class="small">These branches and worktrees are outside main. A branch with only a baseline or plan does not mean its runtime feature is ready.</p>
 <ul class="legend" aria-label="Status legend">
-<li><span class="sw ok"></span> Done or review approved</li>
-<li><span class="sw part"></span> In review</li>
-<li><span class="sw act"></span> In progress</li>
-<li><span class="sw plan"></span> Queued or deferred</li>
-<li><span class="sw expl"></span> Blocked for qualification</li>
+<li><span class="sw part"></span> Code in review</li><li><span class="sw act"></span> Implementation in progress</li><li><span class="sw plan"></span> Plan or validation pending</li>
 </ul>
-<div class="scroll" tabindex="0" role="region" aria-label="Ordered MVP lane board, scrolls horizontally on wide table layouts">
+<div class="scroll" tabindex="0" role="region" aria-label="In-progress work, scrolls horizontally on wide layouts">
 <table class="g">
-<caption>Ordered track from backends through job control, setup and Linux operator experience to later platform qualification.</caption>
+<caption>Next Linux work and later platform qualification.</caption>
 <colgroup><col class="c0"><col class="c1"><col class="c2"><col></colgroup>
-<thead><tr><th scope="col">Order · lane</th><th scope="col">Status now</th><th scope="col">After / next integration step</th><th scope="col">Branch evidence</th></tr></thead>
+<thead><tr><th scope="col">Lane</th><th scope="col">Status</th><th scope="col">Next step</th><th scope="col">Evidence</th></tr></thead>
 <tbody>
-<tr><th scope="row"><strong>1 · Headless backends</strong><span class="st">Claude Code, Codex, Pi</span></th><td data-w="Status now"><span class="bar ok">Done on main: all three approved</span></td><td data-w="After / next step">Feeds lane 2. Claude Code, Codex and Pi are merged and registered in the real-agent profile.</td><td data-w="Evidence"><code>review/mvp-claude-backend</code> <code>faafffb</code>; Codex <code>9aa67a7</code> on main; <code>review/mvp-pi-backend</code> <code>0ccda75</code>.</td></tr>
-<tr><th scope="row"><strong>2 · Jobs and agents</strong><span class="st">Session, follow-up, MCP control</span></th><td data-w="Status now"><span class="bar ok">Done on main</span></td><td data-w="After / next step">After 1: backend/session/follow-up and <code>submit_job</code>, <code>get_job</code>, <code>follow_up</code>, <code>list_jobs</code> are integrated. Published-binary demos passed for all three backends.</td><td data-w="Evidence"><code>feature/mvp-jobs-agents</code> <code>37b0e02</code>; main <code>a03a35e</code>.</td></tr>
-<tr><th scope="row"><strong>3 · Setup and lifecycle</strong><span class="st"><code>atf setup --mode headless|herdr</code>, start, stop</span></th><td data-w="Status now"><span class="bar plan">Review approved; queued for integration</span></td><td data-w="After / next step">Integrate with 2, preserving the explicit launch-mode choice and daemon lifecycle.</td><td data-w="Evidence"><code>review/mvp-setup</code> <code>2b4caee</code> approved.</td></tr>
-<tr><th scope="row"><strong>4 · Parallel dispatch</strong><span class="st">Max 8; FIFO per session</span></th><td data-w="Status now"><span class="bar part">In review</span></td><td data-w="After / next step">After 2: merge and exercise bounded concurrency with per-session order.</td><td data-w="Evidence"><code>feature/parallel-dispatch</code> <code>8a1936f</code>.</td></tr>
-<tr><th scope="row"><strong>5 · Recovery test fix</strong><span class="st">Accepted-reply wake ordering</span></th><td data-w="Status now"><span class="bar part">In review / merge</span></td><td data-w="After / next step">Merge the flaky recovery test fix and rerun the combined gate.</td><td data-w="Evidence"><code>review/fix-flaky</code> <code>3f0de4a</code>.</td></tr>
-<tr><th scope="row"><strong>6 · Native wake</strong><span class="st">Port reference model</span></th><td data-w="Status now"><span class="bar act">In progress</span></td><td data-w="After / next step">After 2 for the job-completion hook: commit the message first, then send a notice-only native session wake.</td><td data-w="Evidence"><code>feature/native-wake</code> (Codex); <a href="https://github.com/mikaelliljedahl/agentic-coder-teams-mcp/pull/70">win-agent-teams PR #70</a>.</td></tr>
-<tr><th scope="row"><strong>7 · Interactive Herdr</strong><span class="st">D7 terminal, real agent TUI</span></th><td data-w="Status now"><span class="bar act">In progress</span></td><td data-w="After / next step">After 1–3: connect interactive Herdr mode to the approved D7 terminal and explicit setup choice.</td><td data-w="Evidence"><code>feature/herdr-mode</code> (Codex); D7 approved <code>56190de</code>.</td></tr>
-<tr><th scope="row"><strong>8 · Demo temp-dir cleanup</strong></th><td data-w="Status now"><span class="bar act">In progress</span></td><td data-w="After / next step">Clean up owned demo temporary directories after the Linux demo path is integrated.</td><td data-w="Evidence"><code>fix/demo-tmp-cleanup</code>.</td></tr>
-<tr><th scope="row"><strong>9 · Operator web console</strong><span class="st">Small text-only local surface</span></th><td data-w="Status now"><span class="bar act">In progress · S0a</span></td><td data-w="After / next step">Use the shared job status, output, follow-up and stop operations on authenticated loopback.</td><td data-w="Evidence">Astra’s <code>integration/web-console</code> lane.</td></tr>
-<tr><th scope="row"><strong>10 · Windows and macOS</strong><span class="st">Platform qualification</span></th><td data-w="Status now"><span class="bar expl">Deferred; VM blocked</span></td><td data-w="After / next step">After Linux MVP: finish each platform on its own machine. The Windows VM is currently down.</td><td data-w="Evidence">Owner’s Linux-first decision; no platform support claim yet.</td></tr>
+<tr><th scope="row"><strong>Web console</strong><span class="st">Small authenticated loopback console</span></th><td data-w="Status"><span class="bar act">Code on branch</span></td><td data-w="Next step">Review and integrate status, output, follow-up and stop UI.</td><td data-w="Evidence"><code>feature/web-console</code></td></tr>
+<tr><th scope="row"><strong>Multi-lead and resume</strong></th><td data-w="Status"><span class="bar act">Worktree changes</span></td><td data-w="Next step">Complete multi-lead routing and <code>resume_session</code>; review before merge.</td><td data-w="Evidence"><code>feature/multi-lead</code></td></tr>
+<tr><th scope="row"><strong>Herdr interrupt gaps</strong></th><td data-w="Status"><span class="bar act">Fix lane open</span></td><td data-w="Next step">Close remaining interactive interrupt behavior.</td><td data-w="Evidence"><code>fix/herdr-interrupt-gaps</code></td></tr>
+<tr><th scope="row"><strong>Spike retirement and install</strong></th><td data-w="Status"><span class="bar act">Work in progress</span></td><td data-w="Next step">Retire superseded spike code; finish Linux install and release packaging.</td><td data-w="Evidence"><code>chore/retire-spike</code>; <code>feature/install-release</code>; <code>feature/install-setup</code></td></tr>
+<tr><th scope="row"><strong>PRFactory connector</strong></th><td data-w="Status"><span class="bar plan">Plan; slice 1 underway</span></td><td data-w="Next step">Review the opt-in outbound connector implementation.</td><td data-w="Evidence"><code>docs/plan-prfactory</code>; <code>feature/prfactory-connector</code></td></tr>
+<tr><th scope="row"><strong>Windows terminal tabs</strong></th><td data-w="Status"><span class="bar plan">Port in progress</span></td><td data-w="Next step">Validate <code>wt</code> on the owner's Windows VM after Linux work.</td><td data-w="Evidence"><code>feature/windows-wt</code></td></tr>
 </tbody></table></div>
-<p class="hint">At 375px width, each lane stacks its status, dependency and evidence below its name.</p>
-</section>
-
-<section id="parked" aria-labelledby="parked-h">
-<h2 id="parked-h">Parked or dropped from the MVP</h2>
-<p>Owner simplification parks W6/W7 authority and storage contracts, the D0 managed-seams contract, the native queue probe, and D1/D4 characterization. D8 app-server queue client is dropped from this MVP: review found three issues, and the Codex exec backend is used instead.</p>
-</section>
-
-<section id="risks" aria-labelledby="risks-h">
-<h2 id="risks-h">Blockers and risks</h2>
-<p><strong>No hard blocker for the Linux MVP is currently recorded.</strong> Track these limits:</p>
-<ul>
-<li>One observed Herdr server restart killed spawned agents; interactive mode needs recovery evidence.</li>
-<li>The Windows VM is down, blocking Windows qualification after the Linux MVP.</li>
-<li>License and public publication remain owner decisions.</li>
-</ul>
 </section>
 
 <section id="decisions" aria-labelledby="decisions-h">
-<h2 id="decisions-h">Owner decisions</h2>
-<ul>
-<li>Linux MVP first; Windows and macOS last. Copy the working win-agent-teams spawn/resume and native-wake model; agents bypass permissions for unattended work.</li>
-<li>KISS and focused tests: the weaker Codex queue checkpoint is acceptable, and capped real native runs are allowed.</li>
-<li>The TypeScript Pi extension is acceptable. Minimal JavaScript is acceptable for the operator web console; this status page remains standalone and script-free.</li>
-<li>W6/W7 questions Q1–Q3 were answered yes; their larger contract work is parked for the MVP.</li>
-</ul>
+<h2 id="decisions-h">Scope decisions</h2>
+<p>Agents run unattended with bypass permissions. Human approval relay, W7 multi-team scopes and the earlier contract ceremony were dropped by owner decision. Linux comes first; Windows and macOS need validation on their own machines. The PRFactory connector is optional, and local jobs need no external orchestrator.</p>
 </section>
 
-<section id="roadmap" aria-labelledby="roadmap-h">
-<h2 id="roadmap-h">Long-term roadmap (unchanged docs)</h2>
-<p>The broader phase and feature inventories remain in <a href="roadmap.md">the roadmap</a>, <a href="product-scope.md">product scope</a> and <a href="planning/full-product/README.md">full-product plans</a>. They are long-term references, not the current Linux MVP lane order.</p>
+<section id="limits" aria-labelledby="limits-h">
+<h2 id="limits-h">Current limits</h2>
+<p>Herdr's server and pane binding is still held in memory, so the headless pidfd recovery claim does not imply full interactive tab recovery. Worktrees remain for manual cleanup when jobs are pruned. The web console, installer and Windows terminal port are not available from main yet.</p>
 </section>
 </main>
-<footer>Recorded from Git history, branch tips and the canonical integration note on 26 September 2026. Status changes when work is reviewed and merged.</footer>
+<footer>Recorded from <code>git log d67726b..main</code>, current source and named branch tips on 26 September 2026.</footer>
 </body>
 </html>
