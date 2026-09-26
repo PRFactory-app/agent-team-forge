@@ -23,6 +23,9 @@ The pinned SDK is `11.0.100-rc.1.26425.128`; Native AOT needs Linux compiler/lin
 
 ## Set up and run
 
+Install once; the daemon starts on first agent use or CLI client call. To start
+it at login instead, add `--autostart` to setup. Login autostart is off by default.
+
 Setup requires `--mode`; a fresh headless setup creates a real-agent profile.
 `--apply` registers both MCP clients and sets `crossSessionInbound` to `accept`
 in Claude's `~/.claude/settings.json`, preserving existing settings. Install
@@ -30,10 +33,13 @@ both client CLIs first; log in to each backend CLI you plan to use:
 
 ~~~bash
 atf setup --mode headless --apply
-atf start
 ~~~
 
-For visible interactive agents, run `atf setup --mode herdr --apply` with Herdr installed, then `atf start`.
+For visible interactive agents, run `atf setup --mode herdr --apply` with Herdr installed.
+To enable login startup after setup, run `atf setup --autostart --apply`. To
+remove it, run `atf setup --autostart=off --apply`; `atf doctor` reports whether
+it is installed. `atf start` remains available when you want to start the
+daemon explicitly.
 
 State defaults to `$XDG_STATE_HOME/agentteamforge` or
 `~/.local/state/agentteamforge` if unset; pass one `--state-dir DIR` to override:
@@ -41,7 +47,6 @@ State defaults to `$XDG_STATE_HOME/agentteamforge` or
 ~~~bash
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agentteamforge"
 atf setup --mode headless --state-dir "$STATE" --apply
-atf start --state-dir "$STATE"
 ~~~
 
 `atf start` prints its PID and is safe to repeat. It runs up to 8 jobs
