@@ -79,11 +79,13 @@ public static class DaemonCommand
         var endpoint = new JobsEndpoint(
             new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission),
             new GetJob(store, profile.Bound),
+            new ListJobs(store, profile.Bound),
             checkpoints,
             dispatcher.Signal);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
-        using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply);
+        using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
+            request => request.Op == IpcProtocol.JobSubmit ? dispatcher.PauseClaims() : null);
 
         using var lifetime = new CancellationTokenSource();
         using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; lifetime.Cancel(); });

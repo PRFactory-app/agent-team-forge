@@ -24,8 +24,9 @@ whole-phase ordering. Do not count waiting workers as active or invent busywork.
   capture that, then `kill_agent`. Reuse reports, not huge sessions; hand off
   well before roughly 200k context tokens.
 - Pragmatic TDD on critical behavior. No prose/formatting assertion battery.
-  Major architecture/security/durability changes need independent plan review;
-  small fixes need code review, not another full plan cycle.
+  Only genuinely risky changes (data loss, security) get one plan-review
+  round; everything else gets one Codex code review. Linux first; do not block
+  on Windows/macOS. Follow the working principles at the top of AGENTS.md.
 - Runtime and automated tests are C#/.NET. Minimal shell glue is allowed.
   Static HTML/CSS visualization is explicitly authorized. A future TypeScript
   Pi extension is a proposed exception, **not yet authorized implementation**.

@@ -49,6 +49,8 @@ public sealed class JobFixture : IDisposable
 
     public GetJob Get(BoundPrincipal? principal = null) => new(Store, principal ?? Operator);
 
+    public ListJobs List(BoundPrincipal? principal = null) => new(Store, principal ?? Operator);
+
     public JobView Submit(string key, string instruction = "hello", string? behavior = null, bool hold = false)
     {
         var result = Accept().Execute(new SubmitJobRequest(key, instruction, behavior, hold));

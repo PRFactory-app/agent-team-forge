@@ -16,6 +16,7 @@ public sealed class DispatchJob : IDisposable
     public static readonly TimeSpan MaxAllowedRuntime = TimeSpan.FromHours(24);
 
     readonly SemaphoreSlim _signal = new(0);
+    readonly SemaphoreSlim _claimGate = new(1, 1);
     readonly JobStore store;
     readonly IJobBackend backend;
     readonly SpikeLimits limits;
@@ -51,7 +52,23 @@ public sealed class DispatchJob : IDisposable
 
     public void Signal() => _signal.Release();
 
-    public void Dispose() => _signal.Dispose();
+    /// <summary>Keep a new submission out of the claim loop until its reply is sent.</summary>
+    public IDisposable PauseClaims()
+    {
+        _claimGate.Wait();
+        return new ClaimPause(_claimGate);
+    }
+
+    public void Dispose()
+    {
+        _signal.Dispose();
+        _claimGate.Dispose();
+    }
+
+    sealed class ClaimPause(SemaphoreSlim gate) : IDisposable
+    {
+        public void Dispose() => gate.Release();
+    }
 
     /// <summary>Admission is closed whenever this returns or throws, halted or shut down.</summary>
     public async Task RunAsync(CancellationToken daemonLifetime)
@@ -78,12 +95,24 @@ public sealed class DispatchJob : IDisposable
             AttemptClaim? claim;
             try
             {
-                claim = store.BeginNextAttempt();
+                await _claimGate.WaitAsync(daemonLifetime);
+                try
+                {
+                    claim = store.BeginNextAttempt();
+                }
+                finally
+                {
+                    _claimGate.Release();
+                }
             }
             catch (StorageException ex)
             {
                 log($"dispatch claim failed: {ex.Failure}");
                 claim = null;
+            }
+            catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested)
+            {
+                return;
             }
             catch (Exception ex)
             {
