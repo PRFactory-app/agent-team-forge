@@ -34,7 +34,7 @@
       <option value="needs_reconciliation">Needs reconciliation</option>
     </select>
     <table>
-      <thead><tr><th>Job</th><th>Status</th><th>Backend</th><th>Session</th><th>Parent</th><th>Attempts</th><th>Action</th></tr></thead>
+      <thead><tr><th>Job</th><th>Status</th><th>Backend</th><th>Model</th><th>Effort</th><th>Session</th><th>Parent</th><th>Attempts</th><th>Action</th></tr></thead>
       <tbody id="jobs"></tbody>
     </table>
     <p><button id="page-prev" type="button" disabled>Previous</button> <span id="page-number">Page 1</span> <button id="page-next" type="button" disabled>Next</button></p>
@@ -46,6 +46,8 @@
       <dt>Status</dt><dd id="d-status"></dd>
       <dt>Reason</dt><dd id="d-reason"></dd>
       <dt>Backend</dt><dd id="d-backend"></dd>
+      <dt>Model</dt><dd id="d-model"></dd>
+      <dt>Effort</dt><dd id="d-effort"></dd>
       <dt>Session</dt><dd id="d-session"></dd>
       <dt>Parent</dt><dd id="d-parent"></dd>
       <dt>Cwd</dt><dd id="d-cwd"></dd>
@@ -57,6 +59,8 @@
     <h3>Follow-up</h3>
     <form id="follow-form" autocomplete="off">
       <textarea id="follow-text" rows="4" maxlength="8192" required></textarea>
+      <label for="follow-model">Model or tier (optional)</label><input id="follow-model" maxlength="128" autocomplete="off">
+      <label for="follow-effort">Effort (optional)</label><input id="follow-effort" maxlength="128" autocomplete="off">
       <label><input id="follow-interrupt" type="checkbox"> Interrupt running job</label>
       <button id="follow-send" type="submit">Send follow-up</button>
       <button id="follow-retry" type="button" hidden>Retry with same key</button>

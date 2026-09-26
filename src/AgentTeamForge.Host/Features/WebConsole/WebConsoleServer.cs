@@ -15,7 +15,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace AgentTeamForge.Host.Features.WebConsole;
 
 /// <summary>Browser follow-up body. The key comes from the page and is reused only by an explicit operator retry.</summary>
-public sealed record WebFollowUpBody(string? Instruction, string? IdempotencyKey, bool Interrupt = false);
+public sealed record WebFollowUpBody(string? Instruction, string? IdempotencyKey, bool Interrupt = false, string? Model = null, string? Effort = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 [JsonSerializable(typeof(WebFollowUpBody))]
@@ -230,7 +230,16 @@ public sealed class WebConsoleServer : IAsyncDisposable
             return null;
         }
 
-        return new IpcRequest { Op = IpcProtocol.JobFollowUp, JobId = jobId, Instruction = instruction, IdempotencyKey = key, Interrupt = body.Interrupt };
+        return new IpcRequest
+        {
+            Op = IpcProtocol.JobFollowUp,
+            JobId = jobId,
+            Instruction = instruction,
+            IdempotencyKey = key,
+            Interrupt = body.Interrupt,
+            Model = body.Model,
+            Effort = body.Effort,
+        };
     }
 
     static bool ValidId(string id) => id.Length is > 0 and <= 128 && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');

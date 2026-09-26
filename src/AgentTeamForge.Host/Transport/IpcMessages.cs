@@ -20,6 +20,8 @@ public sealed record IpcRequest
     public bool Hold { get; init; }
     public string? JobId { get; init; }
     public string? Backend { get; init; }
+    public string? Model { get; init; }
+    public string? Effort { get; init; }
     public string? Cwd { get; init; }
     public bool Worktree { get; init; }
     public bool Interrupt { get; init; }

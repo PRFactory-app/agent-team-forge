@@ -103,6 +103,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 return Accepted(accept.Execute(new SubmitJobRequest(request.IdempotencyKey ?? string.Empty, request.Instruction ?? string.Empty, request.Behavior, request.Hold)
                 {
                     Backend = request.Backend,
+                    Model = request.Model,
+                    Effort = request.Effort,
                     Cwd = request.Cwd,
                     Worktree = request.Worktree,
                     TimeoutSeconds = request.TimeoutSeconds,
@@ -118,6 +120,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     QueueTtlSeconds = request.QueueTtlSeconds,
                     LeadSessionId = request.LeadSessionId,
                     Interrupt = request.Interrupt,
+                    Model = request.Model,
+                    Effort = request.Effort,
                     WakeKey = request.WakeKey,
                     WakeGeneration = request.WakeGeneration,
                 }));

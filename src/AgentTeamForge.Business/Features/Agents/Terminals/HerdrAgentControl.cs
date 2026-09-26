@@ -146,7 +146,12 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         }
         if (launch.Model is { Length: > 0 } model)
         {
-            args.AddRange(launch.Kind == InteractiveAgentKind.Codex ? ["-m", model] : ["--model", model]);
+            args.AddRange(launch.Kind switch
+            {
+                InteractiveAgentKind.Codex => ["-m", model],
+                InteractiveAgentKind.Pi => ["--model", model.Contains('/') ? model : "openai-codex/" + model],
+                _ => ["--model", model],
+            });
         }
         if (launch.Effort is { Length: > 0 } effort)
         {

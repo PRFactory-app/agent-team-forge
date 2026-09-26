@@ -25,6 +25,8 @@ public static class JobsMcpBridge
 
     const string SubmitProperties = """
           "backend":{"type":"string","enum":["claude","codex","pi","fake"],"description":"Agent CLI the daemon runs for this job."},
+          "model":{"type":"string","description":"Codex/pi capability tier: cheapest=Luna@high, low=Luna@xhigh, medium=Luna@max, high=Sol@high, xhigh=Astra@low, max=Astra@medium. Pi also has medium-fast=Sol@medium. Claude: haiku, sonnet, opus (default), fable; fast/balanced/powerful aliases. Raw model slugs pass through. Retired pi high-fast errors; use high."},
+          "effort":{"type":"string","description":"Explicit effort for Claude or a raw/blank Codex/pi model. A capability tier owns its effort and ignores this override."},
           "instruction":{"type":"string","description":"Task for the agent."},
           "cwd":{"type":"string","description":"Absolute working directory for the agent (optional)."},
           "worktree":{"type":"boolean","description":"Create a private git worktree for this job from cwd's HEAD."},
@@ -66,6 +68,8 @@ public static class JobsMcpBridge
           "instruction":{"type":"string"},
           "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."},
           "interrupt":{"type":"boolean","description":"If the parent is running, cancel its turn (reason interrupted) and run this prompt in the same session."},
+          "model":{"type":"string","description":"Optional replacement model or capability tier. Codex/pi: cheapest=Luna@high, low=Luna@xhigh, medium=Luna@max, high=Sol@high, xhigh=Astra@low, max=Astra@medium; pi medium-fast=Sol@medium. Omit to inherit the resolved parent model."},
+          "effort":{"type":"string","description":"Optional effort override; ignored when model is a capability tier. Omit to inherit the parent's effort."},
         """ + LimitProperties + """
         },"required":["job_id","instruction","idempotency_key"]}
         """;
@@ -297,6 +301,8 @@ public static class JobsMcpBridge
                 IdempotencyKey = String(args, "idempotency_key"),
                 Instruction = String(args, "instruction"),
                 Backend = String(args, "backend"),
+                Model = String(args, "model"),
+                Effort = String(args, "effort"),
                 Cwd = String(args, "cwd"),
                 Worktree = args.TryGetValue("worktree", out var worktree) && worktree.ValueKind == JsonValueKind.True,
                 TimeoutSeconds = Integer(args, "timeout_s"),
@@ -314,6 +320,8 @@ public static class JobsMcpBridge
                 Instruction = String(args, "instruction"),
                 IdempotencyKey = String(args, "idempotency_key"),
                 Interrupt = args.TryGetValue("interrupt", out var interrupt) && interrupt.ValueKind == JsonValueKind.True,
+                Model = String(args, "model"),
+                Effort = String(args, "effort"),
                 TimeoutSeconds = Integer(args, "timeout_s"),
                 QueueTtlSeconds = Integer(args, "queue_ttl_s"),
             }, null),
