@@ -5,8 +5,15 @@
 # new, unique 0700 directory under evidence/; nothing is deleted.
 # DOTNET selects the SDK (default: <repo>/.tools/dotnet11/dotnet, else PATH).
 set -euo pipefail
-BIN="$(realpath "${1:?usage: published-smoke.sh path/to/atf}")"
-if [[ -n "${DOTNET:-}" && "$DOTNET" == */* ]]; then DOTNET="$(realpath "$DOTNET")"; fi
+# Anchor caller-relative overrides to the caller's cwd (lexically, so a missing
+# target stays missing) before changing to the repository root.
+abs() { if [[ "$1" == /* ]]; then printf '%s\n' "$1"; else printf '%s\n' "$PWD/$1"; fi; }
+BIN="$(abs "${1:?usage: published-smoke.sh path/to/atf}")"
+if [[ -n "${DOTNET:-}" && "$DOTNET" == */* ]]; then
+  DOTNET="$(abs "$DOTNET")"
+  [[ -x "$DOTNET" ]] || { echo "BLOCKED: DOTNET not executable: $DOTNET" >&2; exit 2; }
+  DOTNET="$(realpath "$DOTNET")"
+fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 if [[ -z "${DOTNET:-}" ]]; then
@@ -16,6 +23,7 @@ if [[ -z "${DOTNET:-}" ]]; then
 fi
 if [[ "$DOTNET" == */* ]]; then export DOTNET_ROOT="$(dirname "$DOTNET")"; fi
 [[ -x "$BIN" ]] || { echo "not executable: $BIN" >&2; exit 2; }
+BIN="$(realpath "$BIN")"
 if file "$BIN" | grep -q 'ELF' && [[ ! -f "$(dirname "$BIN")/atf.dll" ]]; then kind=native; else kind=jit; fi
 mkdir -p evidence
 EVIDENCE_DIR="$(mktemp -d "$ROOT/evidence/published-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"

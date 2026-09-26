@@ -6,7 +6,14 @@
 # worktrees share it) is preferred over `dotnet` on PATH.
 # The AOT binary is published to a new, unique directory under artifacts/.
 set -euo pipefail
-if [[ -n "${DOTNET:-}" && "$DOTNET" == */* ]]; then DOTNET="$(realpath "$DOTNET")"; fi
+# Anchor caller-relative overrides to the caller's cwd (lexically, so a missing
+# target stays missing) before changing to the repository root.
+abs() { if [[ "$1" == /* ]]; then printf '%s\n' "$1"; else printf '%s\n' "$PWD/$1"; fi; }
+if [[ -n "${DOTNET:-}" && "$DOTNET" == */* ]]; then
+  DOTNET="$(abs "$DOTNET")"
+  [[ -x "$DOTNET" ]] || { echo "BLOCKED: DOTNET not executable: $DOTNET" >&2; exit 2; }
+  DOTNET="$(realpath "$DOTNET")"
+fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 if [[ -z "${DOTNET:-}" ]]; then
