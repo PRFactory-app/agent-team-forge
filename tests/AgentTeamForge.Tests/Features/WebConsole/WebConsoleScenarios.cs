@@ -46,8 +46,8 @@ public sealed class WebConsoleScenarios
 
         var listed = await Call(new HttpRequestMessage(HttpMethod.Get, "api/jobs"));
         Assert.Equal([parent.JobId], listed.Page!.Jobs.Select(j => j.JobId));
-        Assert.Equal("green", listed.Page.Jobs[0].Light);
-        Assert.Contains("\"light\":\"green\"", raw[^1], StringComparison.Ordinal);
+        Assert.Equal("grey", listed.Page.Jobs[0].Light);
+        Assert.Contains("\"light\":\"grey\"", raw[^1], StringComparison.Ordinal);
 
         var post = new HttpRequestMessage(HttpMethod.Post, $"api/jobs/{parent.JobId}/follow-up")
         {

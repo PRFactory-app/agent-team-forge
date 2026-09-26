@@ -9,7 +9,17 @@
 <script src="/app.js" defer></script>
 </head>
 <body>
-<header><h1>AgentTeamForge console</h1><div id="lights" aria-label="Job status counts"></div><span id="status" role="status"></span></header>
+<div class="window-bar"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>AgentTeamForge · agent monitor</span><span id="status" role="status"></span></div>
+
+<header class="console-header">
+  <div class="heading"><p class="eyebrow">OPERATOR CONSOLE</p><h1>Agent team</h1><p class="note">Live jobs, grouped by lead session</p></div>
+  <div class="team-stats">
+    <span class="live-pill"><span class="dot" aria-hidden="true"></span> TEAM LIVE</span>
+    <span class="stat"><span class="stat-label">ELAPSED · SHOWN</span><strong id="elapsed">—</strong></span>
+    <span class="stat"><span class="stat-label">RUNNING</span><strong id="running-count">0 of 0</strong></span>
+  </div>
+</header>
+<div id="lights" aria-label="Job status counts"></div>
 
 <section id="login">
   <form id="login-form" autocomplete="off">
@@ -22,10 +32,7 @@
 
 <main id="console" hidden>
   <section>
-    <h2>Overview <button id="refresh" type="button">Refresh</button></h2>
-    <p class="note">Live status, grouped by lead session. Counts show this page of history.</p>
-    <label for="status-filter">Status</label>
-    <select id="status-filter">
+    <div class="section-heading"><h2>Overview</h2><div class="toolbar"><label for="status-filter">Status</label><select id="status-filter">
       <option value="">All</option>
       <option value="queued">Queued</option>
       <option value="running">Running</option>
@@ -33,9 +40,10 @@
       <option value="failed">Failed</option>
       <option value="cancelled">Cancelled</option>
       <option value="needs_reconciliation">Needs reconciliation</option>
-    </select>
+    </select><button id="refresh" type="button">Refresh</button></div></div>
+    <p class="note">Counts and elapsed time cover this page of history. Updates every 5 seconds.</p>
     <div id="jobs"></div>
-    <p><button id="page-prev" type="button" disabled>Previous</button> <span id="page-number">Page 1</span> <button id="page-next" type="button" disabled>Next</button></p>
+    <nav class="pager" aria-label="History pages"><button id="page-prev" type="button" disabled>Previous</button> <span id="page-number">Page 1</span> <button id="page-next" type="button" disabled>Next</button></nav>
   </section>
 
   <section id="detail" hidden>

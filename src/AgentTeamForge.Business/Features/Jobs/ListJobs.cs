@@ -51,9 +51,15 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal)
             ParentJobId = r.ParentJobId,
             LeadSessionId = r.LeadSessionId,
             TargetAgent = r.TargetAgent,
+            Model = Option(r.Options, "model"),
+            Effort = Option(r.Options, "effort"),
         }).ToList();
         return new JobListResult(new JobListPage(jobs, limit, hasMore, hasMore ? jobs[^1].JobId : null), null);
     }
+
+    static string? Option(string? options, string name) => options?.Split(';', StringSplitOptions.RemoveEmptyEntries)
+        .Select(part => part.Split('=', 2))
+        .FirstOrDefault(part => part is [var key, { Length: > 0 }] && key == name)?[1];
 }
 
 /// <summary>Optional exact status filter, page size and opaque continuation cursor; no other query surface.</summary>
@@ -75,10 +81,13 @@ public sealed record JobSummary(string JobId, string Status, string? ReasonCode,
     public string? WorktreeBranch { get; init; }
     public string? LeadSessionId { get; init; }
     public string? TargetAgent { get; init; }
+    public string? Model { get; init; }
+    public string? Effort { get; init; }
     public string Light => Status switch
     {
-        JobStatus.Queued or JobStatus.Running or "working" => "yellow",
-        JobStatus.Completed or "succeeded" or "idle" or "done" => "green",
+        JobStatus.Queued or "waiting" or "parked" => "yellow",
+        JobStatus.Running or "working" or "idle" => "green",
+        JobStatus.Completed or "succeeded" or "done" => "grey",
         JobStatus.Cancelled or "stopped" => "grey",
         _ => "red",
     };

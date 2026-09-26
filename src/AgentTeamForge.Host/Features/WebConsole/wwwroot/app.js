@@ -64,10 +64,28 @@
     setStatus(message, 'error');
   }
 
-  function cell(text) {
-    const td = document.createElement('td');
-    td.textContent = text == null ? '' : String(text);
-    return td;
+  function element(tag, cls, value) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (value != null) node.textContent = String(value);
+    return node;
+  }
+
+  function age(when) {
+    const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(when)) / 1000));
+    if (!Number.isFinite(seconds)) return 'unknown';
+    if (seconds < 60) return seconds + 's';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + 'm';
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours + 'h ' + (minutes % 60) + 'm';
+    return Math.floor(hours / 24) + 'd ' + (hours % 24) + 'h';
+  }
+
+  function backendChip(backend) {
+    const names = { claude: 'Claude Code', codex: 'Codex', pi: 'Pi', fake: 'Fake' };
+    const chip = element('span', 'chip backend-' + (Object.hasOwn(names, backend) ? backend : 'other'), names[backend] || backend);
+    return chip;
   }
 
   function light(name, label) {
@@ -122,64 +140,85 @@
     }
     const lights = $('lights');
     lights.replaceChildren();
-    for (const [color, label] of [['yellow', 'Working'], ['green', 'Ready'], ['red', 'Attention'], ['grey', 'Stopped']]) {
+    for (const [color, label] of [['green', 'Running'], ['yellow', 'Waiting'], ['red', 'Attention'], ['grey', 'Done / stopped']]) {
       lights.append(light(color, label + ' ' + counts[color]));
     }
+    $('running-count').textContent = counts.green + ' of ' + jobs.length;
+    const earliest = jobs.map(j => j.accepted_at).filter(Boolean).sort()[0];
+    $('elapsed').textContent = earliest ? age(earliest) : '—';
     const recent = (a, b) => (b.updated_at || '').localeCompare(a.updated_at || '');
     for (const groupJobs of groups.values()) groupJobs.sort(recent);
     const sortedGroups = [...groups].sort((a, b) => recent(a[1][0], b[1][0]));
     for (const [lead, groupJobs] of sortedGroups) {
-      const section = document.createElement('section');
-      section.className = 'lead-group';
-      const heading = document.createElement('h3');
-      heading.textContent = 'Lead session: ' + lead;
-      section.append(heading);
-      const table = document.createElement('table');
-      const thead = document.createElement('thead');
-      const headerRow = document.createElement('tr');
-      for (const title of ['Job', 'Status', 'Agent', 'Backend', 'Session', 'Updated', 'Parent', 'Attempts', 'Action']) {
-        const th = document.createElement('th');
-        th.textContent = title;
-        headerRow.append(th);
-      }
-      thead.append(headerRow);
-      const tbody = document.createElement('tbody');
+      const section = element('section', 'lead-group');
+      const groupRunning = groupJobs.filter(j => j.status === 'running').length;
+      const groupQueued = groupJobs.filter(j => j.status === 'queued').length;
+      const groupFailed = groupJobs.filter(j => j.light === 'red').length;
+      const groupColor = groupFailed ? 'red' : groupRunning ? 'green' : groupQueued ? 'yellow' : 'grey';
+      const leadCard = element('div', 'lead-card ' + (groupFailed ? 'is-failed' : groupQueued && !groupRunning ? 'is-waiting' : ''));
+      const leadDot = light(groupColor, groupFailed ? 'Needs attention' : groupRunning ? 'Running' : groupQueued ? 'Waiting' : 'Done');
+      leadDot.classList.add('lead-state');
+      const leadBody = element('div', 'lead-body');
+      const identity = element('div', 'node-identity');
+      identity.append(element('h3', 'node-name', lead === 'No lead session' ? 'No lead session' : 'Lead session'),
+        element('span', 'session-id', lead === 'No lead session' ? 'unassigned' : lead));
+      const activity = element('p', 'node-activity', groupRunning + ' running · ' + groupQueued + ' queued · ' + groupFailed + ' need attention · ' + groupJobs.length + ' jobs shown');
+      const firstAccepted = groupJobs.map(j => j.accepted_at).filter(Boolean).sort()[0];
+      const meta = element('div', 'node-meta');
+      if (firstAccepted) meta.append(element('span', '', 'first shown job accepted ' + age(firstAccepted) + ' ago'));
+      if (groupJobs[0].updated_at) meta.append(element('span', '', 'latest update ' + age(groupJobs[0].updated_at) + ' ago'));
+      leadBody.append(identity, activity, meta);
+      leadCard.append(leadDot, leadBody, element('span', 'lead-count', groupJobs.length + (groupJobs.length === 1 ? ' job' : ' jobs')));
+      section.append(leadCard);
+      const tree = element('div', 'agent-tree');
       for (const j of groupJobs) {
-        const tr = document.createElement('tr');
-        if (j.job_id === selected) tr.className = 'selected';
-        const idCell = document.createElement('td');
-        const link = document.createElement('button');
-        link.type = 'button';
-        link.textContent = j.job_id;
-        link.addEventListener('click', () => select(j.job_id));
-        idCell.append(link);
-        const statusCell = document.createElement('td');
-        statusCell.append(light(Object.hasOwn(counts, j.light) ? j.light : 'red', j.status));
-        tr.append(idCell, statusCell, cell(j.target_agent), cell(j.backend), cell(j.session_id),
-          cell(j.updated_at ? new Date(j.updated_at).toLocaleString() : ''), cell(j.parent_job_id), cell(j.attempts));
-        const action = document.createElement('td');
+        const card = element('article', 'agent-node' + (j.job_id === selected ? ' selected' : ''));
+        const open = element('button', 'card-main');
+        open.type = 'button';
+        open.setAttribute('aria-label', 'Open job ' + j.job_id);
+        open.addEventListener('click', () => select(j.job_id));
+        const row = element('span', 'card-identity');
+        row.append(light(Object.hasOwn(counts, j.light) ? j.light : 'red', j.status.replaceAll('_', ' ')),
+          element('strong', 'node-name', j.target_agent || 'Agent'),
+          element('span', 'job-id', 'job ' + j.job_id.slice(-8)));
+        const chips = element('span', 'chips');
+        if (j.backend) chips.append(backendChip(j.backend));
+        if (j.model) chips.append(element('span', 'chip', j.model));
+        if (j.effort) chips.append(element('span', 'chip subtle', j.effort));
+        const state = element('span', 'badge ' + (j.status === 'completed' ? 'done' : j.light),
+          j.status === 'completed' ? 'done' : j.status.replaceAll('_', ' '));
+        const cardMeta = element('span', 'card-meta');
+        cardMeta.append(element('span', '', 'accepted ' + age(j.accepted_at) + ' ago'));
+        if (j.updated_at) cardMeta.append(element('span', '', 'updated ' + age(j.updated_at) + ' ago'));
+        if (j.reason_code) cardMeta.append(element('span', 'reason', '› ' + j.reason_code));
+        open.append(row, chips, cardMeta);
+        const side = element('div', 'card-side');
+        side.append(element('span', 'elapsed', age(j.accepted_at)), state);
+        const actions = element('div', 'card-actions');
+        const logs = element('button', '', 'Logs');
+        logs.type = 'button';
+        logs.addEventListener('click', async () => { await select(j.job_id); $('d-logs').scrollIntoView({ block: 'nearest' }); });
+        actions.append(logs);
         if (j.session_id) {
-          const follow = document.createElement('button');
+          const follow = element('button', '', 'Follow up');
           follow.type = 'button';
-          follow.textContent = 'Follow up';
           follow.addEventListener('click', async () => {
             await select(j.job_id);
             $('follow-text').focus();
           });
-          action.append(follow);
+          actions.append(follow);
         }
         if (j.status === 'queued' || j.status === 'running' || (j.session_id && j.backend !== 'fake')) {
-          const stop = document.createElement('button');
+          const stop = element('button', 'danger-action', j.status === 'queued' || j.status === 'running' ? 'Stop job' : 'Stop agent');
           stop.type = 'button';
-          stop.textContent = j.status === 'queued' || j.status === 'running' ? 'Stop job' : 'Stop agent';
           stop.addEventListener('click', () => stopJob(j.job_id, j.status));
-          action.append(stop);
+          actions.append(stop);
         }
-        tr.append(action);
-        tbody.append(tr);
+        side.append(actions);
+        card.append(open, side);
+        tree.append(card);
       }
-      table.append(thead, tbody);
-      section.append(table);
+      section.append(tree);
       overview.append(section);
     }
     if (!jobs.length) overview.textContent = 'No jobs on this page.';
