@@ -61,3 +61,24 @@ Screens and job responses remain in that temporary evidence directory.
 **The requested authenticated Claude + Codex retained-pane follow-up check remains
 unverified.** It requires credentials supplied separately for the isolated HOME.
 Full transcript parsing and the existing 32 MiB limit remain the separate P2 slice.
+
+## Authenticated live Linux check (review)
+
+Binary `artifacts/linux-x64-20260926T213640Z-7Fxn5V/atf` (after review fixes),
+isolated HOME/XDG/CODEX_HOME and state under `/tmp/atf-live-nb-ZaGSj0`, herdr
+mode, read-only copies of the owner's credentials (deleted afterwards).
+Claude 2.1.283 and Codex 0.157.1, each in its own ATF-created Herdr session:
+
+- Claude turn 1 spawned an async subagent whose prompt quoted the correlation
+  marker: result `PARENT-ONE`. Follow-up in the same pane: `PARENT-TWO`, same
+  native session `3e13a535-…`.
+- Codex turn 1 spawned a `thread_spawn` sub-session whose rollout carries the
+  marker: result `CODEX-ONE`, bound to the `source: cli` parent. The follow-up
+  spawned a second child after binding: result `CODEX-TWO`, same session.
+
+Review fixes found by this run and real transcripts: Claude ancestry is read from
+the first `isSidechain` record at any depth (real transcripts can start the first
+message at line 13); an async Agent launch (`status: async_launched`, `agentId`)
+keeps the turn pending until its task notification (before, the interim "still
+running" reply completed the job). A fresh isolated Claude profile also needs the
+first-run upsell state from `.claude.json`, or startup is `agent_not_ready`.
