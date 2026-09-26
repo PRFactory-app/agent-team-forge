@@ -134,7 +134,7 @@ main { padding-top: 23px; }
 .badge.green, .badge.done { border-color: var(--success-line); color: var(--success-text); background: var(--success-soft); }
 .badge.yellow { border-color: var(--warning-line); color: var(--warning-text); background: var(--warning-soft); }
 .badge.red { border-color: var(--danger-line); color: var(--danger-text); background: var(--danger-soft); }
-.card-last-activity { min-width: 0; padding-left: 23px; overflow: hidden; color: var(--faint); font: 10.5px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.card-activity { min-width: 0; padding-left: 23px; overflow: hidden; color: var(--faint); font: 10.5px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .badge.grey { color: var(--muted); }
 .card-expanded { display: grid; grid-column: 1 / -1; gap: 14px; min-width: 0; margin: 2px -14px -11px; padding: 14px; border-top: 1px solid var(--border); border-radius: 0 0 7px 7px; background: var(--raised); }
 .lead-card .card-expanded { margin: 0; padding: 14px 18px; }
@@ -149,8 +149,8 @@ main { padding-top: 23px; }
 .send-button { color: var(--on-accent); background: var(--accent); border-color: var(--accent); font-weight: 700; }
 .send-button:hover { color: var(--on-accent); background: var(--accent); }
 .composer-result { min-height: 1em; margin: 0; color: var(--secondary); font: 11px var(--font-mono); overflow-wrap: anywhere; }
-.card-result, .card-activity, .card-logs { min-width: 0; color: var(--secondary); }
-.card-result h4, .card-activity h4 { display: inline-block; margin: 0 10px 6px 0; color: var(--text); font-size: 12px; }
+.card-result, .activity-transcript, .card-logs { min-width: 0; color: var(--secondary); }
+.card-result h4, .activity-transcript h4 { display: inline-block; margin: 0 10px 6px 0; color: var(--text); font-size: 12px; }
 .result-meta { margin: 0 0 6px; color: var(--muted); font: 11px var(--font-mono); overflow-wrap: anywhere; }
 .activity-entries { display: grid; gap: 4px; max-height: 340px; overflow: auto; margin: 0; padding: 8px 10px; list-style: none; border: 1px solid var(--border); border-radius: 6px; background: var(--sunken); }
 .activity-entry { display: grid; grid-template-columns: auto 92px minmax(0, 1fr); gap: 8px; min-width: 0; font: 10.5px/1.65 var(--font-mono); }
