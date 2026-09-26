@@ -25,6 +25,10 @@ public sealed record NewJob(
     public string? Cwd { get; init; }
 
     public string? ParentJobId { get; init; }
+
+    public string? WakeTargetKey { get; init; }
+
+    public long? WakeGeneration { get; init; }
 }
 
 public sealed record JobRecord(
@@ -64,3 +68,6 @@ public sealed record CancelOutcome(JobRecord? Job, bool WasRunning, bool Changed
 public sealed record EventRecord(long Seq, string JobId, string? RunId, string Kind);
 
 public sealed record RunRecord(string RunId, long Generation, string Correlation, string State, bool Acked, int? BackendPid, string? ReasonCode);
+
+/// <summary>Read-only inspection row: committed state only, no instruction or result payload.</summary>
+public sealed record JobSummaryRecord(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt);

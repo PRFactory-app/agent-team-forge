@@ -4,7 +4,9 @@ using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Business.Features.Recovery;
+using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Host.Features.FakeBackend;
 using AgentTeamForge.Host.Features.Jobs;
@@ -23,6 +25,12 @@ public static class DaemonCommand
     public static async Task<int> RunAsync(StateDirectory state, string? crashAt, string? failAt)
     {
         var profile = SpikeProfileFile.Load(state);
+        if (SetupCommand.ConfiguredMode(state) == "herdr")
+        {
+            // TODO: compose the Herdr interactive backend when it lands.
+            Log("error: herdr agent launch is not available yet");
+            return 78;
+        }
         if ((crashAt is not null || failAt is not null) && !profile.TestProfile)
         {
             Log("test controls require an explicit test profile");
@@ -36,6 +44,8 @@ public static class DaemonCommand
             Log("error: daemon_already_running");
             return 75;
         }
+
+        daemonLock.WriteOwnerPid();
 
         var limits = profile.Limits;
         var checkpoints = new DurabilityCheckpoints(point =>
@@ -64,6 +74,7 @@ public static class DaemonCommand
         }
 
         var store = new JobStore(database, checkpoints);
+        var wakeStore = new WakeStore(database);
         var quarantined = new RecoverOnStartup(store).Execute();
         Log($"recovery: quarantined {quarantined.Count} uncertain attempt(s)");
 
@@ -78,12 +89,14 @@ public static class DaemonCommand
         Log($"backends: {string.Join(',', backends.Names)}");
         var admission = new AdmissionGate();
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log);
-        var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, dispatcher.Signal, backends.Names);
+        var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept),
-            new StopJob(store, profile.Bound, dispatcher.CancelRunning), checkpoints);
+            new ListJobs(store, profile.Bound),
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning), checkpoints, dispatcher.Signal, wakeStore);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
-        using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log);
+        using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
+            request => request.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp ? dispatcher.PauseClaims() : null);
 
         using var lifetime = new CancellationTokenSource();
         using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; lifetime.Cancel(); });
@@ -93,6 +106,7 @@ public static class DaemonCommand
         Log($"ready pid={Environment.ProcessId}");
         var serving = server.ServeAsync(listener, lifetime.Token);
         var dispatching = dispatcher.RunAsync(lifetime.Token);
+        var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path), Log).RunAsync(lifetime.Token);
         await Task.WhenAny(serving, dispatching);
 
         // The dispatcher only returns on its own when halted or faulted; it closed
@@ -107,6 +121,7 @@ public static class DaemonCommand
         }
 
         await serving;
+        await waking;
         try
         {
             await dispatching;

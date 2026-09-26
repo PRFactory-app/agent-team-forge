@@ -151,3 +151,82 @@ Its scenario manifest is in ignored
 ignored `.run/demo-20260926T150233Z-WpVrX8/`. The failed first run's TRX is in
 `evidence/published-20260926T150113Z-vqfU6A/`. All of this qualifies only the
 Linux fake-core checkpoint.
+
+## Queue conformance, D3 characterization, and promotion documents
+
+After `main` promoted the earlier checkpoint at `d7d24ae`, this integration
+worktree fast-forwarded from `e2340dd` to `main`. The approved inputs then
+merged in order, without squash or conflicts:
+
+| Input | Reviewed tip | Integration merge |
+| --- | --- | --- |
+| `feature/port-queue-conformance` | `8b85cfc` | `657ba34` |
+| `review/port-queue-conformance` | `8787863` | `0a86cd4` |
+| `feature/char-d3-claude-hook` | `77c024d` | `6225144` |
+| `review/char-d3` | `51f43fc` | `912cd8d` |
+| `review/canonical-promotion-docs` | `c72a286` | `f0508ec` |
+
+The queue and D3 reviews approve bounded offline test characterization, not
+native Codex/Claude adapters. The promotion-docs branch includes its Claude
+review. No semantic merge correction or runtime source change was needed.
+
+Fresh combined checks ran on Linux 7.2.5-3-omarchy x86_64 with
+`DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet`
+(SDK `11.0.100-rc.1.26425.128`):
+
+```bash
+DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet ./scripts/verify.sh
+DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet ATF_DEMO_BIN=/home/mikael/code/github/agent-team-forge/.worktrees/canonical-wave/artifacts/linux-x64-20260926T150745Z-wg5L7U/atf ./scripts/demo.sh
+git diff --check d7d24ae..HEAD
+bash -n scripts/verify.sh scripts/published-smoke.sh scripts/demo.sh scripts/check-caller-cwd.sh
+```
+
+| Gate | Result |
+| --- | --- |
+| Restore and `dotnet format --verify-no-changes --no-restore` | Passed |
+| Release build, `-warnaserror` | Passed, 0 warnings and 0 errors |
+| Full tests | **95/95** passed, 0 failed/skipped |
+| Linux x64 Native AOT publish | Passed; native `atf`, 9,792,752 bytes |
+| Published process scenarios | **22/22** passed, 0 failed/skipped |
+| Published-binary fake-core demo | **1/1** passed |
+| `git diff --check` and `bash -n` | Passed |
+
+The native binary SHA-256 is
+`34a3265c141fb766acbbc1e9ef5ac173ed14527dadc48b1c2723d8ad739b7937`.
+The published-scenario manifest and TRX are in ignored
+`evidence/published-20260926T150755Z-GLW0kz/`; demo logs and TRX are in
+ignored `.run/demo-20260926T150808Z-2ty1J1/`. No scenario flaked in this
+combined run, so no five-run scenario retry was triggered. The demo reported
+five new `/tmp/atf-*` state directories; all five were gone on immediate
+read-only inspection. No cleanup was performed.
+
+These gates qualify the combined Linux fake-core checkpoint and offline tests.
+They do not qualify live agents, native wake, interactive terminals, Windows,
+or macOS.
+
+## Main batch 3: P1 inspection and simplicity policy
+
+From `main` at `f174f8a`, merged without squash in the requested order:
+`feature/port-p1-inspection` `4d3fdfa` → `524ac5c`, its approving
+`review/port-p1` `46bcce7` → `2c4cd67`, and owner-directed
+`docs/simplicity-principles` `f121f12` → `1ad0c73`. The only text conflict was
+the `HANDOFF.md` workflow paragraph. Resolution took the owner's new simplicity
+wording and preserved main's newer checkpoint status; no runtime source or test
+was changed during integration. The untracked `spikes/m0-interactive/` files were
+left untouched.
+
+On Linux x86_64 with repository-local .NET SDK `11.0.100-rc.1.26425.128`,
+`DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet
+./scripts/verify.sh` passed restore, format, Release build (0 warnings/errors),
+**112/112** full tests, Native AOT publish and **25/25** published process
+scenarios. The native binary is
+`artifacts/linux-x64-20260926T151132Z-QmNMLU/atf` (9,859,200 bytes; SHA-256
+`ec150eb7ada1a8e5430a48af0d101c5794178febb7d303b4f840923d9de369d6`).
+Its ignored scenario evidence is in `evidence/published-20260926T151142Z-BmEvjZ/`.
+
+The published-binary `scripts/demo.sh` passed **1/1** selected fake-core
+scenario; ignored evidence is in `.run/demo-20260926T151156Z-jOX0Fm/`. It
+reported 18 newly observed `/tmp/atf-*` state directories. They were not
+cleaned because process ownership was unverified. `git diff --check
+f174f8a..HEAD`, `bash -n` on the four root scripts, and local link existence
+checks for `AGENTS.md` passed. This is a Linux fake-core qualification only.

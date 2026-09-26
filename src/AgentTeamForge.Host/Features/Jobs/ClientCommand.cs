@@ -31,13 +31,20 @@ public static class ClientCommand
             },
             "get" => new IpcRequest { Op = IpcProtocol.JobGet, JobId = options.GetValueOrDefault("job") },
             "stop" => new IpcRequest { Op = IpcProtocol.JobStop, JobId = options.GetValueOrDefault("job") },
-            "list" => new IpcRequest { Op = IpcProtocol.JobList },
+            "list" => new IpcRequest
+            {
+                Op = IpcProtocol.JobList,
+                Status = options.GetValueOrDefault("status"),
+                // An unparsable limit is sent as 0 so the daemon rejects it rather than defaulting.
+                Limit = options.TryGetValue("limit", out var limit) ? (int.TryParse(limit, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : 0) : null,
+                Cursor = options.GetValueOrDefault("cursor"),
+            },
             _ => null,
         };
         if (request is null)
         {
             Console.Error.WriteLine("usage: atf client <submit|follow-up|get|stop|list> --state-dir DIR "
-                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT] | stop ID]");
+                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT] | stop ID | [--status S] [--limit N] [--cursor C]]");
             return 64;
         }
 

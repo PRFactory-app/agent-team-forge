@@ -54,9 +54,22 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             ("$o", job.Operation), ("$k", job.IdempotencyKey), ("$f", job.Fingerprint),
             ("$i", job.Instruction), ("$opt", job.Options), ("$b", job.Backend), ("$cwd", job.Cwd),
             ("$parent", job.ParentJobId), ("$now", now));
+        if (job.WakeTargetKey is not null && job.WakeGeneration is not null)
+        {
+            Execute(connection, tx, """
+                INSERT INTO wake_jobs(job_id, target_key)
+                SELECT $id, target_key FROM wake_targets
+                WHERE target_key=$key AND generation=$generation
+                """, ("$id", jobId), ("$key", job.WakeTargetKey), ("$generation", job.WakeGeneration.Value));
+        }
         checkpoints.Hit(DurabilityCheckpoints.AcceptBeforeCommit);
         tx.Commit();
-        return new AcceptOutcome(AcceptKind.Accepted, GetJob(connection, null, jobId));
+
+        // The committed row as written, without a post-commit read: a read failure
+        // here would otherwise be reported as a storage error for an accepted job.
+        return new AcceptOutcome(AcceptKind.Accepted, new JobRecord(jobId, job.Principal, job.Team, job.TargetAgent,
+            job.IdempotencyKey, job.Instruction, job.Options, JobStatus.Queued, null, null, 0,
+            job.Backend, job.Cwd, job.ParentJobId, null));
     });
 
     /// <summary>
@@ -270,6 +283,26 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return (IReadOnlyList<string>)jobs;
     });
 
+    /// <summary>
+    /// Run markers whose backend processes may have outlived daemon death,
+    /// including runs that died before their PID was recorded.
+    /// </summary>
+    public IReadOnlyList<string> GetInterruptedRunCorrelations() => Read(connection =>
+    {
+        using var command = Command(connection, null, """
+            SELECT correlation FROM runs
+            WHERE state IN ('started','cancelled') OR (state='needs_reconciliation' AND reason_code='daemon_restart_uncertain')
+            """);
+        using var reader = command.ExecuteReader();
+        var correlations = new List<string>();
+        while (reader.Read())
+        {
+            correlations.Add(reader.GetString(0));
+        }
+
+        return (IReadOnlyList<string>)correlations;
+    });
+
     public JobRecord? GetJob(string jobId) => Read(connection => GetJob(connection, null, jobId));
 
     /// <summary>Newest first, scoped to one principal/team.</summary>
@@ -314,6 +347,36 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         }
 
         return (IReadOnlyList<RunRecord>)runs;
+    });
+
+    /// <summary>
+    /// One output-bounded keyset page of a principal/team's jobs, newest job ID first.
+    /// A single read-only statement: it takes no write lock and changes no row,
+    /// intent, event or cursor. Each call is an independent committed read (live
+    /// keyset, not a snapshot). No `(principal, team, job_id)` index exists, so DB
+    /// work still grows with the caller's total jobs; only the returned rows are capped.
+    /// </summary>
+    public IReadOnlyList<JobSummaryRecord> ListJobs(string principal, string team, string? status, string? beforeJobId, int take) => Read(connection =>
+    {
+        using var command = Command(connection, null, """
+            SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at
+            FROM jobs j
+            WHERE j.principal=$p AND j.team=$t
+              AND ($status IS NULL OR j.status=$status)
+              AND ($before IS NULL OR j.job_id < $before)
+            ORDER BY j.job_id DESC
+            LIMIT $take
+            """,
+            ("$p", principal), ("$t", team), ("$status", status), ("$before", beforeJobId), ("$take", take));
+        using var reader = command.ExecuteReader();
+        var jobs = new List<JobSummaryRecord>();
+        while (reader.Read())
+        {
+            jobs.Add(new JobSummaryRecord(reader.GetString(0), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.GetInt32(3), reader.GetString(4), reader.GetString(5)));
+        }
+
+        return (IReadOnlyList<JobSummaryRecord>)jobs;
     });
 
     public long CountUnattemptedIntents() => Read(connection => Scalar(connection, null, "SELECT count(*) FROM dispatch_intents WHERE state='unattempted'"));

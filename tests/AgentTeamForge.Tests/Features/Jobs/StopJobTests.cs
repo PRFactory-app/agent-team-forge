@@ -77,4 +77,35 @@ public sealed class StopJobTests
         Assert.Equal((JobStatus.Completed, "unchanged"), (terminal.Job!.Status, terminal.Outcome));
         Assert.Equal("done", f.Store.GetJob(completed.JobId)!.ResultText);
     }
+
+    [Fact]
+    public async Task Result_racing_a_committed_stop_is_fenced_out_without_halting_dispatch()
+    {
+        using var f = new JobFixture();
+        using var resultReady = new ManualResetEventSlim();
+        IEnumerable<BackendEvidence> Script(BackendRequest r)
+        {
+            yield return new BackendEvidence.Session(r.Correlation, "session-1");
+            resultReady.Wait(Bounded.ScenarioDeadline);
+            yield return new BackendEvidence.Result(r.Correlation, "late");
+        }
+
+        var backend = new ScriptedBackend(Script);
+        var job = f.Submit("race");
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+        var claim = f.Store.BeginNextAttempt()!;
+        var attempt = Task.Run(() => dispatcher.RunAttemptAsync(claim, CancellationToken.None), TestContext.Current.CancellationToken);
+        await Bounded.Until(() => f.Store.GetJob(job.JobId)!.SessionId == "session-1", "session evidence");
+
+        new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning).Execute(job.JobId);
+        resultReady.Set();
+        await attempt.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+
+        var stored = f.Store.GetJob(job.JobId)!;
+        Assert.Equal((JobStatus.Cancelled, null), (stored.Status, stored.ResultText));
+        Assert.False(dispatcher.Halted);
+        Assert.Equal(1, backend.Terminations);
+        // A crash before the kill completed must still find this run's processes on restart.
+        Assert.Contains(claim.Correlation, f.Store.GetInterruptedRunCorrelations());
+    }
 }

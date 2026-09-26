@@ -1,6 +1,8 @@
 using System.Text.Json;
 using AgentTeamForge.Business;
+using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Hosting;
+using AgentTeamForge.Host.Features.Wake;
 using AgentTeamForge.Host.Transport;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -44,18 +46,47 @@ public static class JobsMcpBridge
          "required":["job_id","instruction","idempotency_key"]}
         """;
 
-    const string ListSchema = """{"type":"object","properties":{}}""";
+    const string ListSchema = """
+        {"type":"object","properties":{
+          "status":{"type":"string","enum":["queued","running","completed","failed","needs_reconciliation","cancelled"]},
+          "limit":{"type":"integer","minimum":1,"maximum":50,"description":"Page size; default 20."},
+          "cursor":{"type":"string","description":"next_cursor from the previous page."}}}
+        """;
 
     public static async Task<int> RunAsync(StateDirectory state, bool testProfile)
     {
         var client = new IpcClient(state, new SpikeLimits());
+        var wakeTarget = HostSessionWake.Resolve(state);
+        long? wakeGeneration = null;
+        async Task RegisterWakeAsync(CancellationToken cancellationToken)
+        {
+            if (wakeTarget is null || wakeGeneration is not null)
+            {
+                return;
+            }
+
+            // Wake is best effort: a missing daemon or credential must not stop the bridge or fail job calls.
+            try
+            {
+                var registration = await client.SendAsync(wakeTarget, cancellationToken);
+                if (registration.Ok)
+                {
+                    wakeGeneration = registration.WakeGeneration;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException) { }
+        }
+        await RegisterWakeAsync(CancellationToken.None);
         var tools = new List<Tool>
         {
             new() { Name = "submit_job", Description = "Durably submit a task to an agent (claude, codex or pi) run by the AgentTeamForge daemon. Returns the job; poll get_job for the result.", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "get_job", Description = "Read a job's status, result output and native session_id.", InputSchema = Parse(GetSchema) },
             new() { Name = "stop_job", Description = "Cancel a queued or running job. A finished job is returned unchanged.", InputSchema = Parse(GetSchema) },
             new() { Name = "follow_up", Description = "Send a follow-up instruction into a finished job's native agent session (same backend and cwd). Returns the new job.", InputSchema = Parse(FollowUpSchema) },
-            new() { Name = "list_jobs", Description = "List recent jobs (without result text).", InputSchema = Parse(ListSchema) },
+            new() { Name = "list_jobs", Description = "List jobs, newest first, one bounded page at a time.", InputSchema = Parse(ListSchema) },
+            new() { Name = "job_submit", Description = "Durably submit a job to the AgentTeamForge daemon (spike).", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
+            new() { Name = "job_get", Description = "Read a job's committed state and result (spike).", InputSchema = Parse(GetSchema) },
+            new() { Name = "job_list", Description = "List your jobs' committed state, newest first, one bounded page at a time (read-only, spike).", InputSchema = Parse(ListSchema) },
         };
 
         var options = new McpServerOptions
@@ -69,32 +100,15 @@ public static class JobsMcpBridge
                 {
                     var call = request.Params ?? throw new InvalidOperationException("missing params");
                     var args = call.Arguments ?? new Dictionary<string, JsonElement>();
-                    var ipc = call.Name switch
+                    await RegisterWakeAsync(cancellationToken);
+                    var (ipc, rejection) = Map(call.Name, args, testProfile);
+                    if (ipc is not null && wakeTarget is not null && wakeGeneration is not null
+                        && ipc.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp or IpcProtocol.JobGet)
                     {
-                        "submit_job" => new IpcRequest
-                        {
-                            Op = IpcProtocol.JobSubmit,
-                            IdempotencyKey = String(args, "idempotency_key"),
-                            Instruction = String(args, "instruction"),
-                            Backend = String(args, "backend"),
-                            Cwd = String(args, "cwd"),
-                            Behavior = testProfile ? String(args, "behavior") : null,
-                            Hold = testProfile && args.TryGetValue("hold", out var hold) && hold.ValueKind == JsonValueKind.True,
-                        },
-                        "get_job" => new IpcRequest { Op = IpcProtocol.JobGet, JobId = String(args, "job_id") },
-                        "stop_job" => new IpcRequest { Op = IpcProtocol.JobStop, JobId = String(args, "job_id") },
-                        "follow_up" => new IpcRequest
-                        {
-                            Op = IpcProtocol.JobFollowUp,
-                            JobId = String(args, "job_id"),
-                            Instruction = String(args, "instruction"),
-                            IdempotencyKey = String(args, "idempotency_key"),
-                        },
-                        "list_jobs" => new IpcRequest { Op = IpcProtocol.JobList },
-                        _ => null,
-                    };
+                        ipc = ipc with { WakeKey = wakeTarget.WakeKey, WakeGeneration = wakeGeneration };
+                    }
                     var response = ipc is null
-                        ? new IpcResponse(false, IpcProtocol.UnknownOp)
+                        ? new IpcResponse(false, rejection)
                         : await client.SendAsync(ipc, cancellationToken);
                     return new CallToolResult
                     {
@@ -110,8 +124,66 @@ public static class JobsMcpBridge
         return 0;
     }
 
+    /// <summary>Maps a tool call to one IPC request, or to a rejection code without contacting the daemon.</summary>
+    static (IpcRequest? Request, string? Rejection) Map(string name, IDictionary<string, JsonElement> args, bool testProfile) =>
+        name switch
+        {
+            "job_submit" or "submit_job" => (new IpcRequest
+            {
+                Op = IpcProtocol.JobSubmit,
+                IdempotencyKey = String(args, "idempotency_key"),
+                Instruction = String(args, "instruction"),
+                Backend = String(args, "backend"),
+                Cwd = String(args, "cwd"),
+                Behavior = testProfile ? String(args, "behavior") : null,
+                Hold = testProfile && args.TryGetValue("hold", out var hold) && hold.ValueKind == JsonValueKind.True,
+            }, null),
+            "job_get" or "get_job" => (new IpcRequest { Op = IpcProtocol.JobGet, JobId = String(args, "job_id") }, null),
+            "stop_job" => (new IpcRequest { Op = IpcProtocol.JobStop, JobId = String(args, "job_id") }, null),
+            "follow_up" => (new IpcRequest
+            {
+                Op = IpcProtocol.JobFollowUp,
+                JobId = String(args, "job_id"),
+                Instruction = String(args, "instruction"),
+                IdempotencyKey = String(args, "idempotency_key"),
+            }, null),
+            "job_list" or "list_jobs" => ListRequest(args),
+            _ => (null, IpcProtocol.UnknownOp),
+        };
+
+    /// <summary>
+    /// Present optional fields must match the advertised schema type. A null or wrongly typed
+    /// status/cursor is rejected here instead of being read as absent (no filter / first page).
+    /// </summary>
+    static (IpcRequest?, string?) ListRequest(IDictionary<string, JsonElement> args) =>
+        OptionalString(args, "status", out var status) && OptionalString(args, "cursor", out var cursor)
+            ? (new IpcRequest { Op = IpcProtocol.JobList, Status = status, Limit = Integer(args, "limit"), Cursor = cursor }, null)
+            : (null, JobErrors.InvalidRequest);
+
+    static bool OptionalString(IDictionary<string, JsonElement> args, string name, out string? value)
+    {
+        value = null;
+        if (!args.TryGetValue(name, out var element))
+        {
+            return true;
+        }
+
+        if (element.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        value = element.GetString();
+        return true;
+    }
+
     static string? String(IDictionary<string, JsonElement> args, string name) =>
         args.TryGetValue(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
+    /// <summary>A present but non-integer (or null) value becomes 0 so the daemon rejects it rather than defaulting.</summary>
+    static int? Integer(IDictionary<string, JsonElement> args, string name) =>
+        !args.TryGetValue(name, out var value) ? null
+        : value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var n) ? n : 0;
 
     static JsonElement Parse(string json)
     {

@@ -22,7 +22,7 @@ public sealed class FollowUpJobTests
     }
 
     static AcceptJob Accept(JobFixture f, BackendCatalog catalog) =>
-        new(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, () => { }, catalog.Names);
+        new(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
 
     [Fact]
     public async Task Follow_up_resumes_the_parent_session_on_the_parent_backend_and_cwd()
@@ -61,6 +61,26 @@ public sealed class FollowUpJobTests
         Assert.Equal(JobErrors.ParentNotReady, followUp.Execute(new FollowUpRequest(parent.JobId, "next", "c")).Error);
         Assert.Equal(JobErrors.NotFound, followUp.Execute(new FollowUpRequest("job_missing", "next", "c")).Error);
         Assert.Equal(1, f.Store.CountUnattemptedIntents());
+    }
+
+    [Fact]
+    public async Task Follow_up_is_refused_when_a_parent_with_a_session_needs_reconciliation()
+    {
+        using var f = new JobFixture();
+        var backend = new ScriptedBackend(r =>
+        [
+            new BackendEvidence.Session(r.Correlation, "sess-uncertain"),
+            new BackendEvidence.ProtocolError("uncertain"),
+        ]);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var accept = Accept(f, catalog);
+        var parent = accept.Execute(new SubmitJobRequest("p", "first", null, false)).Job!;
+        await DispatchNext(f, catalog);
+
+        Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(parent.JobId)!.Status);
+        Assert.Equal(JobErrors.ParentNotReady,
+            new FollowUpJob(f.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "next", "c")).Error);
+        Assert.Equal(0, f.Store.CountUnattemptedIntents());
     }
 
     [Fact]

@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -56,15 +56,34 @@ static class Schema
         """;
 
     /// <summary>v2: per-job backend, working directory, follow-up parent and native session.</summary>
-    const string V2 = """
+    internal const string V2 = """
         ALTER TABLE jobs ADD COLUMN backend TEXT NOT NULL DEFAULT 'fake';
         ALTER TABLE jobs ADD COLUMN cwd TEXT;
         ALTER TABLE jobs ADD COLUMN parent_job_id TEXT REFERENCES jobs(job_id);
         ALTER TABLE jobs ADD COLUMN session_id TEXT;
         """;
 
-    // SQLite cannot extend a CHECK constraint; rebuild these two tables in one migration.
-    const string V3 = """
+    /// <summary>v3: wake routing targets and per-job unread state.</summary>
+    internal const string V3 = """
+        CREATE TABLE wake_targets(
+            target_key TEXT PRIMARY KEY,
+            generation INTEGER NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('claude','codex','pi')),
+            address TEXT NOT NULL,
+            secret TEXT NOT NULL,
+            home TEXT NOT NULL,
+            notified_seq INTEGER NOT NULL DEFAULT 0,
+            last_success TEXT,
+            registered_at TEXT NOT NULL);
+        CREATE TABLE wake_jobs(
+            job_id TEXT PRIMARY KEY REFERENCES jobs(job_id),
+            target_key TEXT NOT NULL REFERENCES wake_targets(target_key),
+            read_at TEXT);
+        CREATE INDEX wake_jobs_target ON wake_jobs(target_key, read_at);
+        """;
+
+    /// <summary>v4: cancelled job/run state. SQLite cannot extend a CHECK constraint, so both tables are rebuilt.</summary>
+    const string V4 = """
         CREATE TABLE jobs_new(
             job_id TEXT PRIMARY KEY, principal TEXT NOT NULL, team TEXT NOT NULL,
             target_agent TEXT NOT NULL, operation TEXT NOT NULL, idempotency_key TEXT NOT NULL,
@@ -88,7 +107,7 @@ static class Schema
         ALTER TABLE runs_new RENAME TO runs;
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3];
+    static readonly string[] Migrations = [V1, V2, V3, V4];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused
@@ -118,8 +137,8 @@ static class Schema
             wal.ExecuteNonQuery();
         }
 
-        // v3 replaces tables referenced by foreign keys; enforcement resumes after commit.
-        if (stored < 3)
+        // v4 replaces tables referenced by foreign keys; enforcement resumes after commit.
+        if (stored < 4)
         {
             using var foreignKeys = connection.CreateCommand();
             foreignKeys.CommandText = "PRAGMA foreign_keys=OFF;";
@@ -139,7 +158,7 @@ static class Schema
         }
 
         tx.Commit();
-        if (stored < 3)
+        if (stored < 4)
         {
             using var foreignKeys = connection.CreateCommand();
             foreignKeys.CommandText = "PRAGMA foreign_keys=ON;";

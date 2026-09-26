@@ -33,7 +33,6 @@ public sealed class JobFixture : IDisposable
 
     public string? FailAt { get; set; }
 
-    public int AcceptedSignals { get; private set; }
 
     public AdmissionGate Admission { get; } = new();
 
@@ -46,9 +45,11 @@ public sealed class JobFixture : IDisposable
     }));
 
     public AcceptJob Accept(JobStore? store = null, BoundPrincipal? principal = null) =>
-        new(store ?? Store, principal ?? Operator, Limits, TestProfile, Admission, () => AcceptedSignals++);
+        new(store ?? Store, principal ?? Operator, Limits, TestProfile, Admission);
 
     public GetJob Get(BoundPrincipal? principal = null) => new(Store, principal ?? Operator);
+
+    public ListJobs List(BoundPrincipal? principal = null) => new(Store, principal ?? Operator);
 
     public JobView Submit(string key, string instruction = "hello", string? behavior = null, bool hold = false)
     {

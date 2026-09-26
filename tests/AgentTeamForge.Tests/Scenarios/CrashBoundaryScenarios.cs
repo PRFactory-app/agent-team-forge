@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Tests.Support;
+using Microsoft.Data.Sqlite;
 
 namespace AgentTeamForge.Tests.Scenarios;
 
@@ -76,6 +78,12 @@ public sealed class CrashBoundaryScenarios
         var daemon = await rig.StartDaemonAsync();
         var accepted = await rig.SubmitAsync("k-running", "x", hold: true);
         await rig.WaitForAckAsync(accepted.Job!.JobId);
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(rig.StateDir, "jobs.db")}");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT backend_pid FROM runs WHERE job_id=$id";
+        command.Parameters.AddWithValue("$id", accepted.Job.JobId);
+        var childPid = Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
 
         OwnedProcesses.KillAbruptly(daemon);
         await rig.StartDaemonAsync();
@@ -84,6 +92,18 @@ public sealed class CrashBoundaryScenarios
         Assert.Equal(JobStatus.NeedsReconciliation, after.Job!.Status);
         Assert.Equal(1, after.Job.Attempts);
         Assert.Equal(1, rig.Invocations(accepted.Job.JobId));
+        await Bounded.Until(() =>
+        {
+            try
+            {
+                using var child = Process.GetProcessById(childPid);
+                return child.HasExited;
+            }
+            catch (ArgumentException)
+            {
+                return true;
+            }
+        }, "orphaned backend child to stop after restart");
     }
 
     [Theory]

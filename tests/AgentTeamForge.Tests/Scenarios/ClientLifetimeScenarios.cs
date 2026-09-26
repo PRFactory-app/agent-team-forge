@@ -80,7 +80,7 @@ public sealed class ClientLifetimeScenarios
         Assert.Equal(parent.Job.SessionId, child.Job!.SessionId);
         Assert.Equal((parent.Job.JobId, rig.StateDir, "fake-result: second"), (child.Job.ParentJobId, child.Job.Cwd, child.Job.Result));
         var listed = await SpikeRig.CallAsync(client, "list_jobs", []);
-        Assert.Equal([child.Job.JobId, parent.Job.JobId], listed.Jobs!.Select(j => j.JobId));
+        Assert.Equal([child.Job.JobId, parent.Job.JobId], listed.Page!.Jobs.Select(j => j.JobId));
     }
 
     [Fact]

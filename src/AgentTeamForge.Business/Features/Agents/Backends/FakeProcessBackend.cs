@@ -37,6 +37,7 @@ public sealed class FakeProcessBackend(string executable, IReadOnlyList<string> 
         {
             info.Environment[key] = value;
         }
+        OrphanedBackendProcess.Mark(info, request.Correlation);
 
         if (behavior == FakeBehavior.StallBeforeRead)
         {
