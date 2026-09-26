@@ -82,4 +82,19 @@ public sealed class JobActivityTests
         Assert.Contains(json + "\n", raw);
         Assert.DoesNotContain(json[..split] + "\n[stderr]", raw);
     }
+
+    [Fact]
+    public void Cursor_taken_between_tag_and_line_keeps_the_stream()
+    {
+        using var state = new TempStateDir();
+        var logs = new JobLogs(state.Path);
+        logs.BeginRun("job", "run", "codex");
+        var path = System.IO.Path.Combine(state.Path, "logs", "job.log");
+        File.AppendAllText(path, "[stderr]\n");
+
+        var cursor = logs.ReadActivity("job", "codex").NextCursor;
+        File.AppendAllText(path, "boom\n");
+        var next = logs.ReadActivity("job", "codex", cursor).Entries;
+        Assert.Equal("error", Assert.Single(next).Kind);
+    }
 }

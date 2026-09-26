@@ -84,10 +84,10 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
                 }
                 var text = line.Length <= 4 * 1024 * 1024 ? Encoding.UTF8.GetString(line.ToArray()).TrimEnd('\r') : "";
                 line.SetLength(0);
-                if (text is "[stdout]" or "[stderr]")
+                if (text is "[stdout]" or "[stderr]" or "[status]")
                 {
+                    // The cursor stays before the tag so a resumed page re-learns the stream.
                     stream = text[1..^1];
-                    cursor = position + i + 1;
                     continue;
                 }
                 foreach (var entry in JobActivity.Normalize(plainOutput ? "plain" : backend, text, stream))
