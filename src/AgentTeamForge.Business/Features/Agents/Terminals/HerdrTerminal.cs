@@ -141,6 +141,9 @@ public sealed class HerdrTerminal
         {
             // Claude's per-process trust latch. Inject it only into this owned launch;
             // inherited CLAUDE_CODE_* context remains excluded by LaunchEnvironment.
+            // In Claude Code 2.1.x it only marks the workspace trusted without writing
+            // ~/.claude.json (so project settings' permission rules apply); it does not
+            // enable a sandbox or touch telemetry. The bypass warning is skipped via --settings.
             args.AddRange(["--env", "CLAUDE_CODE_SANDBOXED=1"]);
         }
         var created = await OwnedAsync(session.SocketPath, cancellationToken, [.. args]);

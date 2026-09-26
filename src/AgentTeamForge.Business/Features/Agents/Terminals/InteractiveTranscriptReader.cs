@@ -237,6 +237,10 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
         {
             tasks.Remove(finishedId); // TaskOutput can observe completion before a notification arrives.
         }
+        if (Str(result, "task_id") is { } stoppedId && Str(result, "task_type") is not null)
+        {
+            tasks.Remove(stoppedId); // TaskStop (KillShell): a stopped task is marked notified and never sends a notification.
+        }
     }
 
     static bool TaskNotification(string text, HashSet<string> tasks, HashSet<string> knownTasks, out bool wasPending)
