@@ -1,3 +1,4 @@
+using System.Reflection;
 using AgentTeamForge.Host.Features.FakeBackend;
 using AgentTeamForge.Host.Features.Jobs;
 using AgentTeamForge.Host.Features.PRFactory;
@@ -18,6 +19,13 @@ if (args.Length > 2 && args[0] == "client" && args[1] == "stop" && !args[2].Star
 }
 try
 {
+    if (args is ["--version"])
+    {
+        var version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        Console.WriteLine($"atf {version?.Split('+')[0] ?? "unknown"}");
+        return 0;
+    }
+
     switch (args[0])
     {
         case "fake-backend":
@@ -36,6 +44,8 @@ try
             return await SetupCommand.StartAsync(options);
         case "stop":
             return SetupCommand.Stop(options);
+        case "uninstall":
+            return InstallCommand.Uninstall(options);
         case "prune":
             return await PruneCommand.RunAsync(StateDirectory.Open(SetupCommand.ResolveStateDir(options)), options);
         case "prfactory" when args.Length > 1:
@@ -62,7 +72,7 @@ catch (StateDirectoryException ex)
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: atf setup --mode headless|herdr|wt [--state-dir DIR] [--apply|--check] | doctor [--state-dir DIR] | start|stop [--state-dir DIR] | prfactory connect|disconnect|status [--state-dir DIR] [--url HTTPS_URL --repo ID=DIR, token on stdin] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|web|fake-backend> --state-dir DIR [options]");
+    Console.Error.WriteLine("usage: atf --version | setup --mode headless|herdr|wt [--state-dir DIR] [--apply|--check] | doctor [--state-dir DIR] | start|stop [--state-dir DIR] | uninstall [--purge] [--state-dir DIR] | prfactory connect|disconnect|status [--state-dir DIR] [--url HTTPS_URL --repo ID=DIR, token on stdin] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|web|fake-backend> --state-dir DIR [options]");
     return 64;
 }
 

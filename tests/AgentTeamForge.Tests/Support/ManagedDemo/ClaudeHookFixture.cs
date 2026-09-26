@@ -9,10 +9,9 @@ namespace AgentTeamForge.Tests.Support.ManagedDemo;
 /// <summary>
 /// Test-only characterization copy of the reviewed legacy Claude hook parser and capability gate.
 /// Provenance: branch <c>spike/m0-claude-isolation</c> at <c>8a5e385dd11ca4105c145c452e990c823eaf2654</c>
-/// (approved in <c>docs/spikes/m0-safety-lanes-review.md</c>), files
-/// <c>spikes/m0-interactive/src/AtfSpike/Claude/{ClaudeHookRecord,ClaudeHookLog}.cs</c>,
-/// <c>Delivery/{JobReconciler,JobTag}.cs</c> and <c>ClaudeCapabilityGate</c> in <c>ClaudeCommands.cs</c>.
-/// Logic is kept verbatim apart from nesting and naming. Inbox dispatch and prompt-tag
+/// (approved in <c>docs/spikes/m0-safety-lanes-review.md</c>): legacy Claude hook records/log,
+/// delivery reconciliation/tag, and the Claude capability gate. Logic is kept verbatim apart
+/// from nesting and naming. Inbox dispatch and prompt-tag
 /// correlation (<c>ClaudeCorrelation</c>) are deliberately not imported. This is not a product
 /// adapter; D11 replaces it with production code under a reviewed contract.
 /// </summary>

@@ -28,17 +28,13 @@ Binding inputs: [contributor policy](../../../AGENTS.md),
 
 ### Existing evidence, with limits
 
-The [interactive report](../../../spikes/m0-interactive/REPORT.md) describes
-Linux x64, .NET SDK 10.0.401/runtime 10.0.12, Herdr 0.8.2, Claude Code 2.1.283,
-and Codex 0.157.1. Real TUIs and selected follow-ups/controller-death recovery
-were observed. These are candidate versions, not a product compatibility list.
-The [independent review](../../../spikes/m0-interactive/CODE-REVIEW.md) rejects
-promotion as a safe adapter: eight blocking findings remain. Its 49 passing
-tests do not resolve those findings. Claude turn cancellation and trusted
+An earlier Linux/.NET 10 interactive experiment reported real Herdr TUIs and
+selected follow-up/controller-death observations. Its report and raw captures
+are not retained in the tracked tree. The tracked
+[safety review](../../spikes/m0-safety-lanes-review.md) records why the
+experiment is not a safe product adapter. Claude turn cancellation and trusted
 message origin remain unresolved; human input, actual MCP lead crash, durable
 SQLite, .NET 11, AOT, service contexts, and Windows/macOS are not established.
-Raw spike artifacts require separate publication review; summaries are not
-substitutes for reproducible, sanitized evidence.
 
 ## 2. Entry criteria and freeze boundary
 
