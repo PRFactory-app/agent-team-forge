@@ -96,14 +96,17 @@ compatibility layer for other orchestration systems.
 - A narrow demonstration is an explicitly labelled checkpoint, not completion
   of a full phase. Change contracts/scope visibly and update dependent plans.
 - A **Claude Code orchestrator (Claude Opus)** leads. It does no hands-on
-  implementation or review itself; its sole goal is shortest wall-clock
-  delivery: keep a ready queue of small, bounded, testable slices and roughly
-  **six to eight useful parallel workers**. Do not count waiting workers as
+  work at all (no implementation, review, planning, research or gate runs);
+  its sole goal is shortest wall-clock delivery: keep a ready queue of small,
+  bounded, testable slices and **up to 14 useful parallel agents** (owner
+  authorized). Do not count waiting workers as
   active, manufacture busywork, or bypass prerequisite safety decisions.
-- Spawn **all** workers through the **win-agent-teams** MCP (`spawn_agent`), not
-  native subagents:
+- The orchestrator spawns **all** its workers through the **win-agent-teams**
+  MCP (`spawn_agent`), not native subagents:
   - Planning, research and contract drafting: backend `pi`, tier `max`
-    (GPT-6 Astra).
+    (GPT-6 Astra). A Pi planner may use its own subagents or act as sub-team
+    lead for its assigned area; it owns that work and reports consolidated
+    results back to the orchestrator. Its internal agents count toward the cap.
   - Implementation (runtime, tests, small docs fixes): backend `claude-code`,
     model `opus`, reasoning effort `medium` (`low` for trivial tasks).
   - Code, plan and contract review, branch integration, combined gate/test runs:
@@ -124,8 +127,9 @@ compatibility layer for other orchestration systems.
 This section is the authoritative contributor review policy. General references
 elsewhere to independent review must be interpreted using these rules.
 
-1. Plans are normally written by **Claude Opus** or **GPT-6 Astra**. These are
-   preferred planning models, not a claim that either is available in every host.
+1. Plans are normally written by **GPT-6 Astra** (Pi tier max); Claude Opus
+   writes code. This is the preferred assignment, not a claim that either model
+   is available in every host.
 2. Match planning depth to change size. **Independent plan review is required
    only for major changes**: architecture changes, broad refactors, new subsystem
    or platform contracts, or changes to persistence/recovery, security, or delivery
