@@ -17,9 +17,18 @@ public sealed record NewJob(
     string IdempotencyKey,
     string Fingerprint,
     string Instruction,
-    string Options,
-    string? WakeTargetKey = null,
-    long? WakeGeneration = null);
+    string Options)
+{
+    public string Backend { get; init; } = "fake";
+
+    public string? Cwd { get; init; }
+
+    public string? ParentJobId { get; init; }
+
+    public string? WakeTargetKey { get; init; }
+
+    public long? WakeGeneration { get; init; }
+}
 
 public sealed record JobRecord(
     string JobId,
@@ -32,7 +41,11 @@ public sealed record JobRecord(
     string Status,
     string? ReasonCode,
     string? ResultText,
-    int Attempts);
+    int Attempts,
+    string Backend,
+    string? Cwd,
+    string? ParentJobId,
+    string? SessionId);
 
 public enum AcceptKind
 {

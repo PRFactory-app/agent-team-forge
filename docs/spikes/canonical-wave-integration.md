@@ -203,3 +203,30 @@ read-only inspection. No cleanup was performed.
 These gates qualify the combined Linux fake-core checkpoint and offline tests.
 They do not qualify live agents, native wake, interactive terminals, Windows,
 or macOS.
+
+## Main batch 3: P1 inspection and simplicity policy
+
+From `main` at `f174f8a`, merged without squash in the requested order:
+`feature/port-p1-inspection` `4d3fdfa` → `524ac5c`, its approving
+`review/port-p1` `46bcce7` → `2c4cd67`, and owner-directed
+`docs/simplicity-principles` `f121f12` → `1ad0c73`. The only text conflict was
+the `HANDOFF.md` workflow paragraph. Resolution took the owner's new simplicity
+wording and preserved main's newer checkpoint status; no runtime source or test
+was changed during integration. The untracked `spikes/m0-interactive/` files were
+left untouched.
+
+On Linux x86_64 with repository-local .NET SDK `11.0.100-rc.1.26425.128`,
+`DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet
+./scripts/verify.sh` passed restore, format, Release build (0 warnings/errors),
+**112/112** full tests, Native AOT publish and **25/25** published process
+scenarios. The native binary is
+`artifacts/linux-x64-20260926T151132Z-QmNMLU/atf` (9,859,200 bytes; SHA-256
+`ec150eb7ada1a8e5430a48af0d101c5794178febb7d303b4f840923d9de369d6`).
+Its ignored scenario evidence is in `evidence/published-20260926T151142Z-BmEvjZ/`.
+
+The published-binary `scripts/demo.sh` passed **1/1** selected fake-core
+scenario; ignored evidence is in `.run/demo-20260926T151156Z-jOX0Fm/`. It
+reported 18 newly observed `/tmp/atf-*` state directories. They were not
+cleaned because process ownership was unverified. `git diff --check
+f174f8a..HEAD`, `bash -n` on the four root scripts, and local link existence
+checks for `AGENTS.md` passed. This is a Linux fake-core qualification only.

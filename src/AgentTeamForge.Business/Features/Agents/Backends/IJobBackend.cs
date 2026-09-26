@@ -1,11 +1,20 @@
 namespace AgentTeamForge.Business.Features.Agents.Backends;
 
-public sealed record BackendRequest(string JobId, string Correlation, string Instruction, string Options);
+public sealed record BackendRequest(string JobId, string Correlation, string Instruction, string Options)
+{
+    /// <summary>Native session to resume for a follow-up; null starts a new session.</summary>
+    public string? ResumeSessionId { get; init; }
+
+    /// <summary>Working directory for the agent; null uses the daemon default.</summary>
+    public string? WorkingDirectory { get; init; }
+}
 
 /// <summary>Evidence observed from a backend; Business alone decides what it means.</summary>
 public abstract record BackendEvidence
 {
     public sealed record Ack(string Correlation) : BackendEvidence;
+
+    public sealed record Session(string Correlation, string SessionId) : BackendEvidence;
 
     public sealed record Result(string Correlation, string Output) : BackendEvidence;
 

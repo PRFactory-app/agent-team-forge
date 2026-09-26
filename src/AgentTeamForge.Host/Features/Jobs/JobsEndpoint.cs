@@ -1,35 +1,32 @@
 using AgentTeamForge.Business.Features.Jobs;
-using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.DAL.Features.Wake;
+using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Host.Transport;
 
 namespace AgentTeamForge.Host.Features.Jobs;
 
-/// <summary>Thin IPC mapping for job_submit/job_get/job_list; all rules live in Business.</summary>
-public sealed class JobsEndpoint(AcceptJob accept, GetJob get, ListJobs list, DurabilityCheckpoints checkpoints, WakeStore? wakeStore = null)
+/// <summary>Thin IPC mapping for the job operations; all rules live in Business.</summary>
+public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, DurabilityCheckpoints checkpoints, Action onAccepted,
+    WakeStore? wakeStore = null)
 {
     public IpcResponse Handle(IpcRequest request)
     {
         switch (request.Op)
         {
             case IpcProtocol.JobSubmit:
-                var submitted = accept.Execute(new SubmitJobRequest(request.IdempotencyKey ?? string.Empty, request.Instruction ?? string.Empty, request.Behavior, request.Hold,
-                    request.WakeKey, request.WakeGeneration));
-                if (submitted.Outcome == "accepted")
+                return Accepted(accept.Execute(new SubmitJobRequest(request.IdempotencyKey ?? string.Empty, request.Instruction ?? string.Empty, request.Behavior, request.Hold)
                 {
-                    try
-                    {
-                        checkpoints.Hit(DurabilityCheckpoints.AcceptAfterCommit);
-                    }
-                    catch (Exception ex) when (ex is not OutOfMemoryException)
-                    {
-                        // Acceptance is committed but no reply can be produced: never
-                        // report "not accepted". The caller recovers by same-key retry.
-                        return new IpcResponse(false, IpcProtocol.OutcomeUnknown);
-                    }
-                }
-
-                return Map(submitted);
+                    Backend = request.Backend,
+                    Cwd = request.Cwd,
+                    WakeKey = request.WakeKey,
+                    WakeGeneration = request.WakeGeneration,
+                }));
+            case IpcProtocol.JobFollowUp:
+                return Accepted(followUp.Execute(new FollowUpRequest(request.JobId ?? string.Empty, request.Instruction ?? string.Empty, request.IdempotencyKey ?? string.Empty)
+                {
+                    WakeKey = request.WakeKey,
+                    WakeGeneration = request.WakeGeneration,
+                }));
             case IpcProtocol.JobGet:
                 var found = get.Execute(request.JobId ?? string.Empty);
                 if (found.Error is null && request.WakeKey is not null && request.WakeGeneration is long generation && wakeStore is not null)
@@ -53,6 +50,32 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, ListJobs list, Du
                 return new IpcResponse(true, Outcome: "registered", WakeGeneration: registration.Generation);
             default:
                 return new IpcResponse(false, IpcProtocol.UnknownOp);
+        }
+    }
+
+    IpcResponse Accepted(JobResult result)
+    {
+        if (result.Outcome == "accepted")
+        {
+            try
+            {
+                checkpoints.Hit(DurabilityCheckpoints.AcceptAfterCommit);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                return new IpcResponse(false, IpcProtocol.OutcomeUnknown);
+            }
+        }
+
+        return Map(result);
+    }
+
+    /// <summary>Wake dispatch after the accepted reply is written or its write fails.</summary>
+    public void AfterReply(IpcResponse response)
+    {
+        if (response.Outcome == "accepted" || response.Error == IpcProtocol.OutcomeUnknown)
+        {
+            onAccepted();
         }
     }
 

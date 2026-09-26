@@ -21,7 +21,7 @@ public sealed class WakeTests
 
     static string Finish(JobFixture fixture, WakeRegistration target, string key)
     {
-        var accepted = fixture.Accept().Execute(new SubmitJobRequest(key, "secret result", null, false, target.Key, target.Generation));
+        var accepted = fixture.Accept().Execute(new SubmitJobRequest(key, "secret result", null, false) { WakeKey = target.Key, WakeGeneration = target.Generation });
         Assert.Equal("accepted", accepted.Outcome);
         var claim = fixture.Store.BeginNextAttempt()!;
         Assert.True(fixture.Store.Complete(new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "secret result"));

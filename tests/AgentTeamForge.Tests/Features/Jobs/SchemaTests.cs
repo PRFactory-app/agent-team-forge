@@ -1,3 +1,4 @@
+using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Tests.Support;
 using Microsoft.Data.Sqlite;
@@ -25,6 +26,36 @@ public sealed class SchemaTests
 
         Assert.Equal(StorageFailure.SchemaTooNew, ex.Failure);
         Assert.Equal(before, File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public void Version_1_database_is_migrated_keeping_its_jobs()
+    {
+        using var dir = new TempStateDir();
+        var path = dir.File("jobs.db");
+        using (var connection = new SqliteConnection($"Data Source={path};Pooling=False"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = AgentTeamForge.DAL.Migrations.Schema.V1 + """
+                INSERT INTO schema_migrations(version, applied_at) VALUES (1, 'v1');
+                INSERT INTO jobs(job_id, principal, team, target_agent, operation, idempotency_key, fingerprint,
+                                 instruction, options, status, result_text, accepted_at, updated_at)
+                VALUES ('job_old', 'local-operator', 'spike-team', 'fake-agent', 'job_submit', 'k', 'fp',
+                        'hi', 'behavior=complete;hold=0', 'completed', 'kept', 'a', 'a');
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        var store = new JobStore(JobDatabase.Open(path, TimeSpan.FromSeconds(1)), DurabilityCheckpoints.None);
+
+        var job = store.GetJob("job_old")!;
+        Assert.Equal(("kept", "fake", null, null), (job.ResultText, job.Backend, job.SessionId, job.ParentJobId));
+        using var check = new SqliteConnection($"Data Source={path};Pooling=False");
+        check.Open();
+        using var version = check.CreateCommand();
+        version.CommandText = "SELECT max(version) FROM schema_migrations";
+        Assert.Equal((long)AgentTeamForge.DAL.Migrations.Schema.CurrentVersion, (long)version.ExecuteScalar()!);
     }
 
     [Fact]

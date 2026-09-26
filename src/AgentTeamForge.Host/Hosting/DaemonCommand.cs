@@ -39,6 +39,8 @@ public static class DaemonCommand
             return 75;
         }
 
+        daemonLock.WriteOwnerPid();
+
         var limits = profile.Limits;
         var checkpoints = new DurabilityCheckpoints(point =>
         {
@@ -76,17 +78,18 @@ public static class DaemonCommand
             backendEnv[FakeBackendCommand.BarrierDirVariable] = state.BarrierDir;
         }
 
-        var backend = new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits);
+        var backends = BackendCatalog.Create(
+            new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits), profile.RealAgents);
+        Log($"backends: {string.Join(',', backends.Names)}");
         var admission = new AdmissionGate();
-        using var dispatcher = new DispatchJob(store, backend, limits, checkpoints, admission, Log);
-        var endpoint = new JobsEndpoint(
-            new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, dispatcher.Signal),
-            new GetJob(store, profile.Bound),
-            new ListJobs(store, profile.Bound),
-            checkpoints, wakeStore);
+        using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log);
+        var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
+        var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept),
+            new ListJobs(store, profile.Bound), checkpoints, dispatcher.Signal, wakeStore);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
-        using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log);
+        using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
+            request => request.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp ? dispatcher.PauseClaims() : null);
 
         using var lifetime = new CancellationTokenSource();
         using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; lifetime.Cancel(); });

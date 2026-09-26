@@ -27,6 +27,27 @@ Product name: **AgentTeamForge**. Repository name: **`agent-team-forge`**.
 GitHub publication and licensing remain owner decisions. Keep raw evidence,
 session state, credentials and runtime databases out of commits.
 
+## Quick start (Linux)
+
+Build `atf` with the pinned SDK, then select a launch mode explicitly:
+
+```bash
+DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet
+export DOTNET_ROOT="$(dirname "$DOTNET")"
+"$DOTNET" build src/AgentTeamForge.Host/AgentTeamForge.Host.csproj -c Release
+ATF="$(pwd)/src/AgentTeamForge.Host/bin/Release/net11.0/atf"
+"$ATF" setup --mode headless --apply
+"$ATF" start
+```
+
+Use `--mode herdr` to record an interactive Herdr choice. Omit `--apply` to print
+the Claude Code and Codex MCP registration commands for review. `setup` creates
+private state under `$XDG_STATE_HOME/agentteamforge`, or
+`~/.local/state/agentteamforge`; `--state-dir DIR` overrides it. `start` prints
+the daemon PID and is safe to repeat. `atf stop` prints the `kill -TERM` command
+for the running daemon. This checkpoint still dispatches the fake backend; the
+selected mode is persisted for subsequent real-agent implementation.
+
 ## Run the bounded checkpoint
 
 From the repository root, with the pinned .NET SDK and Linux native build
@@ -53,11 +74,24 @@ contact models, install a service or control Herdr. Native artifacts use a
 unique directory per verification run; use the printed path, not a guessed
 fixed output directory. Only Linux x64 has recorded checkpoint evidence.
 
+## MVP: real agents from Claude Code (Linux)
+
+`atf init --state-dir DIR` now defaults to real agent backends (`--backends fake`
+or `--test-profile` keeps fake only); `atf daemon --state-dir DIR` runs them.
+Register the MCP bridge with `claude mcp add atf -- /path/to/atf mcp --state-dir DIR`
+and use `submit_job(backend, instruction, cwd?, idempotency_key)`, `get_job`,
+`follow_up(job_id, instruction, idempotency_key)` (resumes the finished job's native
+session on the same backend/cwd) and `list_jobs`. CLI equivalents:
+`atf client submit|get|follow-up|list`. `scripts/demo-real.sh [claude|codex|pi]` is the
+opt-in end-to-end check (spends tokens); `fake` is a plumbing dry run. Jobs run one at
+a time and agents run headless with bypassed permissions.
+
 ## Reading order
 
 | Document | Contents |
 | --- | --- |
 | [Handoff](HANDOFF.md) | Current status, constraints, validation boundaries, and starting context. |
+| [Linux MVP project status](docs/project-status.html) | Current mainline progress, ordered lanes, dependencies and blockers. |
 | [Contributor instructions](AGENTS.md) | Authoritative project and review policy. |
 | README (this file) | Short project orientation and status. |
 | [Setup choices and terminal requirements](docs/terminal-modes.md) | Mandatory choice of interactive or headless execution; Herdr, Windows, and macOS. |
