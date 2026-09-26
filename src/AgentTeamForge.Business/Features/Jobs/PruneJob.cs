@@ -1,8 +1,9 @@
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Features.External;
 
 namespace AgentTeamForge.Business.Features.Jobs;
 
-public sealed class PruneJob(PruneJobs jobs, string stateDirectory)
+public sealed class PruneJob(PruneJobs jobs, string stateDirectory, ExternalMemberStore? external = null)
 {
     public int Execute(int olderThanDays, bool dryRun)
     {
@@ -17,6 +18,7 @@ public sealed class PruneJob(PruneJobs jobs, string stateDirectory)
         }
 
         var ids = jobs.Execute(DateTimeOffset.UtcNow.AddDays(-olderThanDays), dryRun);
+        external?.Prune(DateTimeOffset.UtcNow.AddDays(-olderThanDays), dryRun);
         if (!dryRun && Directory.Exists(logs))
         {
             foreach (var id in ids.Where(id => Path.GetFileName(id) == id))

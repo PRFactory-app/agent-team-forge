@@ -121,6 +121,12 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE external_messages;
+                DROP TABLE external_members;
+                ALTER TABLE wake_targets DROP COLUMN external_notified_seq;
+                ALTER TABLE wake_targets DROP COLUMN last_external_success;
+                ALTER TABLE lead_sessions DROP COLUMN closed_at;
+                DELETE FROM schema_migrations WHERE version=8;
                 DROP INDEX jobs_lead_session;
                 ALTER TABLE jobs DROP COLUMN lead_session_id;
                 DROP TABLE lead_sessions;

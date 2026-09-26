@@ -80,9 +80,18 @@ public static class JobsMcpBridge
 
     const string ResumeSchema = """{"type":"object","properties":{"session_id":{"type":"string"}},"required":["session_id"]}""";
     const string EmptySchema = """{"type":"object","properties":{}}""";
+    const string TicketSchema = """{"type":"object","properties":{"name":{"type":"string"},"note":{"type":"string"}},"required":["name"]}""";
+    const string JoinSchema = """{"type":"object","properties":{"session_id":{"type":"string"},"token":{"type":"string"}},"required":["session_id","token"]}""";
+    const string MemberSendSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"text":{"type":"string"}},"required":["member_token","text"]}""";
+    const string LeadSendSchema = """{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}""";
+    const string MemberReadSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"since_seq":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"required":["member_token"]}""";
+    const string LeadReadSchema = """{"type":"object","properties":{"since_seq":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}}}""";
+    const string LeaveSchema = """{"type":"object","properties":{"member_token":{"type":"string"}},"required":["member_token"]}""";
+    const string MemberWakeSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"codex_thread_id":{"type":"string"},"codex_home":{"type":"string"}},"required":["member_token","codex_thread_id"]}""";
 
     public static async Task<int> RunAsync(StateDirectory state, bool testProfile)
     {
+        var externalOnly = Environment.GetEnvironmentVariable("ATF_EXTERNAL_ONLY") == "1";
         var client = new IpcClient(state, new SpikeLimits());
         var workspace = Path.GetFullPath(Environment.CurrentDirectory);
         var parentId = Environment.GetEnvironmentVariable("WIN_AGENT_TEAMS_PARENT_ID") ?? ParentPid().ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -123,8 +132,11 @@ public static class JobsMcpBridge
             }
             catch (Exception ex) when (ex is not OperationCanceledException) { }
         }
-        await RegisterWakeAsync(CancellationToken.None);
-        await EnsureSessionAsync(CancellationToken.None);
+        if (!externalOnly)
+        {
+            await RegisterWakeAsync(CancellationToken.None);
+            await EnsureSessionAsync(CancellationToken.None);
+        }
         var tools = new List<Tool>
         {
             new() { Name = "submit_job", Description = "Durably submit a task to an agent (claude, codex or pi) run by the AgentTeamForge daemon. Returns the job; poll get_job for the result.", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
@@ -135,11 +147,24 @@ public static class JobsMcpBridge
             new() { Name = "list_jobs", Description = "List jobs, newest first, one bounded page at a time.", InputSchema = Parse(ListSchema) },
             new() { Name = "session_info", Description = "Report this lead's session and recoverable sessions in its workspace.", InputSchema = Parse(EmptySchema) },
             new() { Name = "resume_session", Description = "Adopt a prior lead session and its jobs after a restart.", InputSchema = Parse(ResumeSchema) },
+            new() { Name = "close_team", Description = "Close this lead session and revoke all external member tokens.", InputSchema = Parse(EmptySchema) },
             new() { Name = "register_codex_wake", Description = "Register this Codex conversation for native job notices before submitting jobs. Read CODEX_THREAD_ID with a shell tool and pass it here; Codex does not always pass it to MCP servers.", InputSchema = Parse(CodexWakeSchema) },
+            new() { Name = "create_join_ticket", Description = "Issue a one-time, ten-minute ticket for a manually started member of this lead session.", InputSchema = Parse(TicketSchema) },
+            new() { Name = "join_team", Description = "Join a lead session using its one-time ticket. Save member_token for subsequent calls.", InputSchema = Parse(JoinSchema) },
+            new() { Name = "external_send", Description = "Send a durable message to the joined lead using member_token.", InputSchema = Parse(MemberSendSchema) },
+            new() { Name = "external_read", Description = "Read this member's inbox using member_token and an optional cursor.", InputSchema = Parse(MemberReadSchema) },
+            new() { Name = "external_set_wake", Description = "Opt this member into Codex queue notices. Pass an empty codex_thread_id to clear.", InputSchema = Parse(MemberWakeSchema) },
+            new() { Name = "leave_team", Description = "Revoke this external membership without stopping its process.", InputSchema = Parse(LeaveSchema) },
+            new() { Name = "send_message", Description = "Send a durable message to an external member of this lead session.", InputSchema = Parse(LeadSendSchema) },
+            new() { Name = "read_messages", Description = "Read durable messages from external members of this lead session.", InputSchema = Parse(LeadReadSchema) },
             new() { Name = "job_submit", Description = "Durably submit a job to the AgentTeamForge daemon (spike).", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "job_get", Description = "Read a job's committed state and result (spike).", InputSchema = Parse(GetSchema) },
             new() { Name = "job_list", Description = "List your jobs' committed state, newest first, one bounded page at a time (read-only, spike).", InputSchema = Parse(ListSchema) },
         };
+        if (externalOnly)
+        {
+            tools.RemoveAll(tool => tool.Name is not ("join_team" or "external_send" or "external_read" or "external_set_wake" or "leave_team"));
+        }
 
         var options = new McpServerOptions
         {
@@ -152,6 +177,18 @@ public static class JobsMcpBridge
                 {
                     var call = request.Params ?? throw new InvalidOperationException("missing params");
                     var args = call.Arguments ?? new Dictionary<string, JsonElement>();
+                    if (externalOnly)
+                    {
+                        var (memberRequest, rejection) = Map(call.Name, args, testProfile);
+                        var memberResponse = memberRequest is null || tools.All(tool => tool.Name != call.Name)
+                            ? new IpcResponse(false, rejection ?? IpcProtocol.UnknownOp)
+                            : await client.SendAsync(memberRequest, cancellationToken);
+                        return new CallToolResult
+                        {
+                            IsError = !memberResponse.Ok,
+                            Content = [new TextContentBlock { Text = JsonSerializer.Serialize(memberResponse, IpcJson.Default.IpcResponse) }],
+                        };
+                    }
                     await RegisterWakeAsync(cancellationToken);
                     var started = await EnsureSessionAsync(cancellationToken);
                     IpcResponse response;
@@ -188,6 +225,14 @@ public static class JobsMcpBridge
                             await BindWakeAsync(cancellationToken);
                         }
                     }
+                    else if (call.Name == "close_team")
+                    {
+                        response = await client.SendAsync(new IpcRequest { Op = IpcProtocol.SessionClose, LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
+                        if (response.Ok)
+                        {
+                            sessionId = null;
+                        }
+                    }
                     else
                     {
                         var (ipc, rejection) = Map(call.Name, args, testProfile);
@@ -198,7 +243,9 @@ public static class JobsMcpBridge
                         }
                         response = ipc is null
                             ? new IpcResponse(false, rejection)
-                            : await client.SendAsync(ipc with { LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
+                            : await client.SendAsync(ipc.Op is IpcProtocol.ExternalJoin or IpcProtocol.ExternalSend or IpcProtocol.ExternalRead
+                                or IpcProtocol.ExternalSetWake or IpcProtocol.ExternalLeave ? ipc
+                                : ipc with { LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
                     }
                     return new CallToolResult
                     {
@@ -224,7 +271,10 @@ public static class JobsMcpBridge
             }
         }
 
-        await BindWakeAsync(CancellationToken.None);
+        if (!externalOnly)
+        {
+            await BindWakeAsync(CancellationToken.None);
+        }
         await using var server = McpServer.Create(new StdioServerTransport("agentteamforge"), options);
         await server.RunAsync();
         return 0;
@@ -261,6 +311,14 @@ public static class JobsMcpBridge
                 QueueTtlSeconds = Integer(args, "queue_ttl_s"),
             }, null),
             "job_list" or "list_jobs" => ListRequest(args),
+            "create_join_ticket" => (new IpcRequest { Op = IpcProtocol.ExternalTicket, MemberName = String(args, "name"), Note = String(args, "note") }, null),
+            "join_team" => (new IpcRequest { Op = IpcProtocol.ExternalJoin, LeadSessionId = String(args, "session_id"), TicketToken = String(args, "token") }, null),
+            "external_send" => (new IpcRequest { Op = IpcProtocol.ExternalSend, MemberToken = String(args, "member_token"), Text = String(args, "text") }, null),
+            "external_read" => (new IpcRequest { Op = IpcProtocol.ExternalRead, MemberToken = String(args, "member_token"), SinceSeq = Long(args, "since_seq"), Limit = Integer(args, "limit") }, null),
+            "external_set_wake" => (new IpcRequest { Op = IpcProtocol.ExternalSetWake, MemberToken = String(args, "member_token"), CodexThreadId = String(args, "codex_thread_id"), WakeHome = String(args, "codex_home") ?? Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex") }, null),
+            "leave_team" => (new IpcRequest { Op = IpcProtocol.ExternalLeave, MemberToken = String(args, "member_token") }, null),
+            "send_message" => (new IpcRequest { Op = IpcProtocol.ExternalLeadSend, MemberName = String(args, "to"), Text = String(args, "text") }, null),
+            "read_messages" => (new IpcRequest { Op = IpcProtocol.ExternalLeadRead, SinceSeq = Long(args, "since_seq"), Limit = Integer(args, "limit") }, null),
             _ => (null, IpcProtocol.UnknownOp),
         };
 

@@ -3,7 +3,7 @@ using AgentTeamForge.DAL.Sqlite;
 namespace AgentTeamForge.DAL.Features.Wake;
 
 public sealed record WakeRegistration(string Key, long Generation, string Kind, string Address, string Secret, string Home);
-public sealed record WakeSnapshot(WakeRegistration Target, int Unread, long LatestSeq, long NotifiedSeq, DateTimeOffset? LastSuccess, bool Outstanding);
+public sealed record WakeSnapshot(WakeRegistration Target, int Unread, long LatestSeq, long NotifiedSeq, DateTimeOffset? LastSuccess, bool Outstanding, bool External = false);
 
 /// <summary>Committed wake routing and unread state. A posted notice is only a doorbell, never a read receipt.</summary>
 public sealed class WakeStore(JobDatabase database)
@@ -20,7 +20,7 @@ public sealed class WakeStore(JobDatabase database)
             ON CONFLICT(target_key) DO UPDATE SET
                 generation=generation+1, kind=excluded.kind, address=excluded.address,
                 secret=excluded.secret, home=excluded.home, registered_at=excluded.registered_at,
-                notified_seq=0, last_success=NULL;
+                notified_seq=0, last_success=NULL, external_notified_seq=0, last_external_success=NULL;
             SELECT generation FROM wake_targets WHERE target_key=$key;
             """;
         command.Parameters.AddWithValue("$key", key);
@@ -76,11 +76,37 @@ public sealed class WakeStore(JobDatabase database)
         return result;
     }
 
-    public bool MarkNotified(WakeSnapshot snapshot, DateTimeOffset now)
+    public IReadOnlyList<WakeSnapshot> PendingExternal()
     {
         using var connection = database.OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
+            SELECT t.target_key,t.generation,t.kind,t.address,t.secret,t.home,
+                   count(m.seq),max(m.seq),t.external_notified_seq,t.last_external_success,
+                   sum(CASE WHEN m.seq<=t.external_notified_seq THEN 1 ELSE 0 END)
+            FROM wake_targets t JOIN external_messages m ON m.wake_key=t.target_key AND m.read_at IS NULL
+            GROUP BY t.target_key
+            """;
+        using var reader = command.ExecuteReader();
+        var result = new List<WakeSnapshot>();
+        while (reader.Read())
+        {
+            var target = new WakeRegistration(reader.GetString(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetString(5));
+            result.Add(new WakeSnapshot(target, reader.GetInt32(6), reader.GetInt64(7), reader.GetInt64(8),
+                reader.IsDBNull(9) ? null : DateTimeOffset.Parse(reader.GetString(9), System.Globalization.CultureInfo.InvariantCulture),
+                reader.GetInt64(10) > 0, true));
+        }
+        return result;
+    }
+
+    public bool MarkNotified(WakeSnapshot snapshot, DateTimeOffset now)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = snapshot.External ? """
+            UPDATE wake_targets SET external_notified_seq=max(external_notified_seq,$seq), last_external_success=$now
+            WHERE target_key=$key AND generation=$generation;
+            """ : """
             UPDATE wake_targets SET notified_seq=max(notified_seq,$seq), last_success=$now
             WHERE target_key=$key AND generation=$generation;
             """;

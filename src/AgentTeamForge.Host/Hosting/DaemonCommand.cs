@@ -4,9 +4,11 @@ using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Business.Features.External;
 using AgentTeamForge.Business.Features.Recovery;
 using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Features.External;
 using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Host.Features.FakeBackend;
@@ -83,7 +85,8 @@ public static class DaemonCommand
 
         var store = new JobStore(database, checkpoints);
         var jobLogs = new JobLogs(state.Path, Log);
-        var prune = new PruneJob(new PruneJobs(database), state.Path);
+        var externalMembers = new ExternalMemberStore(database);
+        var prune = new PruneJob(new PruneJobs(database), state.Path, externalMembers);
         var wakeStore = new WakeStore(database);
         void RecoverHerdr()
         {
@@ -132,7 +135,7 @@ public static class DaemonCommand
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
             new ListJobs(store, profile.Bound),
-            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store, new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database));
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store, new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), new ExternalTeam(externalMembers, wakeStore));
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,

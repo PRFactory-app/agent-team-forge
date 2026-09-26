@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 7;
+    public const int CurrentVersion = 8;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -134,7 +134,38 @@ static class Schema
         CREATE INDEX jobs_lead_session ON jobs(lead_session_id, job_id);
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7];
+    const string V8 = """
+        ALTER TABLE lead_sessions ADD COLUMN closed_at TEXT;
+        ALTER TABLE wake_targets ADD COLUMN external_notified_seq INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE wake_targets ADD COLUMN last_external_success TEXT;
+        CREATE TABLE external_members(
+            member_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES lead_sessions(session_id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            note TEXT NOT NULL,
+            ticket_hash TEXT NOT NULL UNIQUE,
+            ticket_expires TEXT NOT NULL,
+            ticket_used_at TEXT,
+            token_hash TEXT UNIQUE,
+            active INTEGER NOT NULL DEFAULT 0,
+            wake_key TEXT,
+            created_at TEXT NOT NULL,
+            left_at TEXT,
+            UNIQUE(session_id,name));
+        CREATE TABLE external_messages(
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL REFERENCES lead_sessions(session_id) ON DELETE CASCADE,
+            sender TEXT NOT NULL,
+            recipient TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            read_at TEXT,
+            wake_key TEXT);
+        CREATE INDEX external_messages_inbox ON external_messages(session_id,recipient,seq);
+        CREATE INDEX external_messages_wake ON external_messages(wake_key,read_at,seq);
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused
