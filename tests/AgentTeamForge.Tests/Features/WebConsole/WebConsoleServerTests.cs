@@ -65,6 +65,23 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
             JsonSerializer.Serialize(body, WebConsoleJson.Default.WebJoinTicketBody));
 
     [Fact]
+    public async Task Tier_settings_require_bearer_host_and_origin_before_forwarding()
+    {
+        const string body = """{"backend":"codex","tier":"xhigh","model":"gpt-6-sol","effort":"xhigh"}""";
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Send(Api(HttpMethod.Get, "/api/settings/tiers", WebConsoleServer.NewToken()))).Status);
+        var badHost = Api(HttpMethod.Get, "/api/settings/tiers");
+        badHost.Headers.Host = "localhost:" + _server.Port;
+        Assert.Equal(HttpStatusCode.MisdirectedRequest, (await Send(badHost)).Status);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Send(Api(HttpMethod.Put, "/api/settings/tiers", origin: "http://attacker.example", json: body))).Status);
+        Assert.Empty(_forwarded);
+        Assert.Equal(HttpStatusCode.OK, (await Send(Api(HttpMethod.Get, "/api/settings/tiers"))).Status);
+        Assert.Equal(HttpStatusCode.OK, (await Send(Api(HttpMethod.Put, "/api/settings/tiers", origin: Origin, json: body))).Status);
+        Assert.Equal([IpcProtocol.TierSettingsGet, IpcProtocol.TierSettingsPut], _forwarded.Select(r => r.Op));
+        Assert.Equal(("codex", "xhigh", "gpt-6-sol", "xhigh"),
+            (_forwarded[1].Backend, _forwarded[1].Tier, _forwarded[1].Model, _forwarded[1].Effort));
+    }
+
+    [Fact]
     public async Task New_agent_forwards_valid_options_and_directory_after_auth_checks()
     {
         var body = new WebSubmitBody("codex", "do work", "new-agent-1", Environment.CurrentDirectory,

@@ -17,6 +17,14 @@ public static class ModelSelection
         };
 
     static readonly string[] SharedTierOrder = [.. Tiers.Keys];
+    public static IReadOnlyList<string> TierNames(string backend) => backend == "pi"
+        ? [.. SharedTierOrder.Take(3), "medium-fast", .. SharedTierOrder.Skip(3)]
+        : backend == "codex" ? SharedTierOrder : [];
+
+    public static (string Model, string Effort) DefaultTier(string backend, string tier) =>
+        backend == "pi" && tier == "medium-fast" ? ("gpt-6-sol", "medium")
+        : backend is "codex" or "pi" && Tiers.TryGetValue(tier, out var value) ? value
+        : throw new ArgumentException("Unknown backend or tier");
     static readonly Dictionary<string, string> ClaudeModelMap = new(StringComparer.Ordinal)
     {
         ["opus"] = "opus",
@@ -46,7 +54,7 @@ public static class ModelSelection
     static readonly BackendModelDiscovery DefaultDiscovery = new();
 
     public static (string? Model, string? Effort) Resolve(string backend, string? model, string? effort,
-        Func<string, IReadOnlyCollection<string>>? discover = null)
+        Func<string, IReadOnlyCollection<string>>? discover = null, TierMap? tierMap = null)
     {
         var key = model?.Trim();
         if (backend == "claude")
@@ -70,9 +78,9 @@ public static class ModelSelection
             throw new ArgumentException("Tier 'high-fast' was removed from pi; use 'high' instead.");
         }
 
-        var tier = Tiers.TryGetValue(key, out var shared) ? shared
-            : backend == "pi" && key.Equals("medium-fast", StringComparison.OrdinalIgnoreCase)
-                ? ("gpt-6-sol", "medium") : ((string Model, string Effort)?)null;
+        var tier = TierNames(backend).Contains(key, StringComparer.OrdinalIgnoreCase)
+            ? tierMap?.Effective(backend, key.ToLowerInvariant()) ?? DefaultTier(backend, key.ToLowerInvariant())
+            : ((string Model, string Effort)?)null;
         var selected = tier?.Model ?? key;
         var available = (discover ?? DefaultDiscovery.GetModels)(backend);
         var found = available.Count == 0 || (backend == "pi"

@@ -7,11 +7,20 @@ namespace AgentTeamForge.Tests.Features.Setup;
 
 public sealed class SetupCommandTests
 {
+    static (int, string) NoClient(string tool, IReadOnlyList<string> args) => (127, "");
+
     [Fact]
     public void WindowsDrivePathIsALocalPiExtensionSource()
     {
         Assert.True(ClientSetup.IsLocalPackageSource(@"C:\Program Files\AgentTeamForge\extensions\pi-wake"));
         Assert.False(ClientSetup.IsLocalPackageSource("npm:pi-mcp-adapter"));
+    }
+
+    [Fact]
+    public void ClientFailureDetailIsBounded()
+    {
+        Assert.Equal(401, ClientSetup.BoundedError(new string('x', 500)).Length);
+        Assert.Contains("network unavailable", ClientSetup.BoundedError("\nnetwork unavailable\n"));
     }
 
     [Fact]
@@ -37,8 +46,178 @@ public sealed class SetupCommandTests
         using var temp = new TempStateDir();
         var options = new Dictionary<string, string> { ["state-dir"] = temp.File("state") };
 
-        Assert.Equal(64, SetupCommand.Run(options, (_, _) => throw new InvalidOperationException()));
+        Assert.Equal(64, SetupCommand.Run(options, NoClient, input: new StringReader(""), interactive: false));
         Assert.False(Directory.Exists(options["state-dir"]));
+    }
+
+    [Fact]
+    public void InteractiveChoicePersistsAndBareRerunPreservesMode()
+    {
+        using var temp = new TempStateDir();
+        var dir = temp.File("state");
+        var options = new Dictionary<string, string> { ["state-dir"] = dir, ["force"] = "true" };
+        Assert.Equal(0, SetupCommand.Run(options, NoClient, "/tmp/atf", homePath: temp.File("home"),
+            input: new StringReader("headless\n"), interactive: true));
+        Assert.Equal("headless", SetupCommand.ConfiguredMode(StateDirectory.Open(dir)));
+        Assert.Equal(0, SetupCommand.Run(options, NoClient, "/tmp/atf", homePath: temp.File("home"), interactive: false));
+        Assert.Equal("headless", SetupCommand.ConfiguredMode(StateDirectory.Open(dir)));
+    }
+
+    [Theory]
+    [InlineData("/tmp/atf", "safe/state")]
+    [InlineData("safe/atf", "/tmp/atf-state")]
+    [InlineData(".worktrees/build/atf", "safe/state")]
+    [InlineData("artifacts/build/atf", "safe/state")]
+    public void UnsafeRegistrationPathsRequireForce(string binaryPart, string statePart)
+    {
+        using var temp = new TempStateDir();
+        // The temporary home is isolated even when checking a non-temporary path.
+        var binary = Path.IsPathRooted(binaryPart) ? binaryPart : Path.Combine("/home", binaryPart);
+        var state = Path.IsPathRooted(statePart) ? statePart : Path.Combine("/home", statePart);
+        var options = new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = state };
+        Assert.Equal(64, SetupCommand.Run(options, NoClient, binary, homePath: temp.File("home"), interactive: false));
+        Assert.False(File.Exists(Path.Combine(state, "launch-mode.json")));
+    }
+
+    [Theory]
+    [InlineData("claude")]
+    [InlineData("codex")]
+    [InlineData("pi")]
+    public void SetupRegistersEachClientAlone(string installedClient)
+    {
+        using var temp = new TempStateDir();
+        var home = temp.File("home");
+        var state = temp.File("state");
+        var extension = temp.File("pi-wake");
+        Directory.CreateDirectory(extension);
+        File.WriteAllText(Path.Combine(extension, "package.json"), "{}");
+        var piSettings = Path.Combine(home, ".pi", "agent", "settings.json");
+        var registrations = new List<string>();
+        (int, string) Runner(string tool, IReadOnlyList<string> args)
+        {
+            if (args[0] == "--version")
+            {
+                return (tool == installedClient ? 0 : 127, "test");
+            }
+            if (tool == "pi")
+            {
+                var settings = File.Exists(piSettings)
+                    ? System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(piSettings))!.AsObject()
+                    : [];
+                if (settings["packages"] is null)
+                {
+                    settings["packages"] = new System.Text.Json.Nodes.JsonArray(
+                        (System.Text.Json.Nodes.JsonNode?)System.Text.Json.Nodes.JsonValue.Create(args[1]));
+                }
+                else
+                {
+                    settings["packages"]!.AsArray().Add((System.Text.Json.Nodes.JsonNode?)System.Text.Json.Nodes.JsonValue.Create(args[1]));
+                }
+                Directory.CreateDirectory(Path.GetDirectoryName(piSettings)!);
+                File.WriteAllText(piSettings, settings.ToJsonString());
+                return (0, "");
+            }
+            if (args[1] == "get")
+            {
+                return (1, "missing");
+            }
+            registrations.Add(tool);
+            return (0, "");
+        }
+        var options = new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = state, ["force"] = "true" };
+        Assert.Equal(0, SetupCommand.Run(options, Runner, "/tmp/atf", homePath: home, extensionPath: extension));
+        if (installedClient == "pi")
+        {
+            Assert.True(File.Exists(Path.Combine(home, ".pi", "agent", "mcp.json")));
+            Assert.Contains("npm:pi-mcp-adapter", File.ReadAllText(piSettings));
+        }
+        else
+        {
+            Assert.Equal([installedClient], registrations);
+        }
+    }
+
+    [Fact]
+    public void PartialRegistrationFailureCanBeRerun()
+    {
+        using var temp = new TempStateDir();
+        var state = temp.File("state");
+        var registered = new HashSet<string>();
+        var failCodex = true;
+        (int, string) Runner(string tool, IReadOnlyList<string> args)
+        {
+            if (args[0] == "--version")
+            {
+                return (tool == "pi" ? 127 : 0, "test");
+            }
+            if (args[1] == "get")
+            {
+                return registered.Contains(tool)
+                    ? (0, $"Scope: User config\n enabled: true\n Command: /tmp/atf\n Args: mcp --state-dir {state}\n") : (1, "missing");
+            }
+            if (tool == "codex" && failCodex)
+            {
+                return (1, new string('x', 500) + " stderr detail");
+            }
+            registered.Add(tool);
+            return (0, "");
+        }
+        var options = new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = state, ["force"] = "true" };
+        var home = temp.File("home");
+        Assert.Equal(1, SetupCommand.Run(options, Runner, "/tmp/atf", homePath: home));
+        Assert.Contains("claude", registered);
+        failCodex = false;
+        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["state-dir"] = state, ["force"] = "true" },
+            Runner, "/tmp/atf", homePath: home, interactive: false));
+        Assert.Equal(2, registered.Count);
+        Assert.Equal("headless", SetupCommand.ConfiguredMode(StateDirectory.Open(state)));
+    }
+
+    [Fact]
+    public void PiAdapterFailureLeavesNoRegistrationAndRerunSucceeds()
+    {
+        using var temp = new TempStateDir();
+        var home = temp.File("home");
+        var state = temp.File("state");
+        var extension = temp.File("pi-wake");
+        var settingsPath = Path.Combine(home, ".pi", "agent", "settings.json");
+        var mcpPath = Path.Combine(home, ".pi", "agent", "mcp.json");
+        Directory.CreateDirectory(extension);
+        File.WriteAllText(Path.Combine(extension, "package.json"), "{}");
+        var fail = true;
+        (int, string) Runner(string tool, IReadOnlyList<string> args)
+        {
+            if (args[0] == "--version")
+            {
+                return (tool == "pi" ? 0 : 127, "test");
+            }
+            if (fail)
+            {
+                return (1, "network unavailable");
+            }
+            var settings = File.Exists(settingsPath)
+                ? System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(settingsPath))!.AsObject()
+                : [];
+            if (settings["packages"] is null)
+            {
+                settings["packages"] = new System.Text.Json.Nodes.JsonArray(
+                    (System.Text.Json.Nodes.JsonNode?)System.Text.Json.Nodes.JsonValue.Create(args[1]));
+            }
+            else
+            {
+                settings["packages"]!.AsArray().Add((System.Text.Json.Nodes.JsonNode?)System.Text.Json.Nodes.JsonValue.Create(args[1]));
+            }
+            Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
+            File.WriteAllText(settingsPath, settings.ToJsonString());
+            return (0, "");
+        }
+        var options = new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = state, ["force"] = "true" };
+        Assert.Equal(1, SetupCommand.Run(options, Runner, "/tmp/atf", homePath: home, extensionPath: extension));
+        Assert.False(File.Exists(mcpPath));
+        fail = false;
+        Assert.Equal(0, SetupCommand.Run(options, Runner, "/tmp/atf", homePath: home, extensionPath: extension));
+        Assert.Contains("npm:pi-mcp-adapter", File.ReadAllText(settingsPath));
+        Assert.Contains("agentteamforge", File.ReadAllText(mcpPath));
     }
 
     [Fact]
@@ -46,15 +225,15 @@ public sealed class SetupCommandTests
     {
         using var temp = new TempStateDir();
         var dir = temp.File("state");
-        var options = new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = dir, ["web-port"] = "9123" };
+        var options = new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = dir, ["web-port"] = "9123", ["force"] = "true" };
         Assert.Equal(64, SetupCommand.Run(new Dictionary<string, string>(options) { ["web-port"] = "0" }));
         Assert.False(Directory.Exists(dir));
 
-        Assert.Equal(0, SetupCommand.Run(options, executablePath: "/tmp/atf", homePath: temp.File("home")));
+        Assert.Equal(0, SetupCommand.Run(options, NoClient, executablePath: "/tmp/atf", homePath: temp.File("home")));
         var state = StateDirectory.Open(dir);
         Assert.Equal(9123, SetupCommand.ConfiguredWebPort(state));
         options.Remove("web-port");
-        Assert.Equal(0, SetupCommand.Run(options, executablePath: "/tmp/atf", homePath: temp.File("home")));
+        Assert.Equal(0, SetupCommand.Run(options, NoClient, executablePath: "/tmp/atf", homePath: temp.File("home")));
         Assert.Equal(9123, SetupCommand.ConfiguredWebPort(state));
     }
 
@@ -95,6 +274,7 @@ public sealed class SetupCommandTests
             ["mode"] = "headless",
             ["state-dir"] = temp.File("state"),
             ["apply"] = "true",
+            ["force"] = "true",
         };
         var home = temp.File("home");
         var extension = temp.File("pi-wake");
@@ -196,16 +376,13 @@ public sealed class SetupCommandTests
     }
 
     [Fact]
-    public async Task HerdrModePersistsAndAllowsDaemonStart()
+    public void RequestedUnavailableHerdrDoesNotWriteMode()
     {
         using var temp = new TempStateDir();
         var dir = temp.File("state");
-        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "herdr", ["state-dir"] = dir },
-            (_, _) => throw new InvalidOperationException(), "/tmp/atf"));
-
-        var state = StateDirectory.Open(dir);
-        Assert.Equal("herdr", SetupCommand.ConfiguredMode(state));
-        Assert.False(File.Exists(state.Socket));
+        Assert.Equal(64, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "herdr", ["state-dir"] = dir },
+            NoClient, "/tmp/atf"));
+        Assert.False(File.Exists(Path.Combine(dir, "launch-mode.json")));
     }
 
     [Fact]
@@ -215,7 +392,7 @@ public sealed class SetupCommandTests
         var dir = temp.File("state");
         Assert.Equal(0, InitCommand.Run(dir, testProfile: true, queueLimit: null, maxRuntimeSeconds: null));
 
-        Assert.Equal(78, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = dir },
+        Assert.Equal(78, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = dir, ["force"] = "true" },
             (_, _) => throw new InvalidOperationException(), "/tmp/atf"));
         Assert.False(File.Exists(Path.Combine(dir, "launch-mode.json")));
     }
@@ -303,8 +480,11 @@ public sealed class SetupCommandTests
         Assert.False(LoginAutostart.IsInstalled(home, "macos"));
     }
 
-    [Fact]
-    public void AutostartOnSpellingEnablesForConfiguredStateInTempHome()
+    [Theory]
+    [InlineData("/tmp/atf")]
+    [InlineData("/home/safe/.worktrees/build/atf")]
+    [InlineData("/home/safe/atf")]
+    public void AutostartRequiresForceForUnsafeBinaryOrState(string binary)
     {
         if (!OperatingSystem.IsLinux())
         {
@@ -313,12 +493,27 @@ public sealed class SetupCommandTests
         using var temp = new TempStateDir();
         var dir = temp.File("state");
         var home = temp.File("home");
-        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = dir },
-            (_, _) => throw new InvalidOperationException(), "/tmp/atf", homePath: home));
+        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = dir, ["force"] = "true" },
+            NoClient, "/tmp/atf", homePath: home, interactive: false));
 
-        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["autostart"] = "on", ["apply"] = "true", ["state-dir"] = dir },
-            (_, _) => (0, ""), "/tmp/atf", homePath: home));
+        var calls = 0;
+        (int, string) Runner(string _, IReadOnlyList<string> __)
+        {
+            calls++;
+            return (0, "");
+        }
+        Assert.Equal(64, SetupCommand.Run(new Dictionary<string, string> { ["autostart"] = "on", ["apply"] = "true", ["state-dir"] = dir },
+            Runner, binary, homePath: home));
+        Assert.False(LoginAutostart.IsInstalled(home, "linux"));
+        Assert.Equal(0, calls);
+
+        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["autostart"] = "on", ["apply"] = "true", ["state-dir"] = dir, ["force"] = "true" },
+            Runner, binary, homePath: home));
         Assert.True(LoginAutostart.IsInstalled(home, "linux"));
+
+        Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["autostart"] = "off", ["apply"] = "true", ["state-dir"] = dir },
+            Runner, binary, homePath: home));
+        Assert.False(LoginAutostart.IsInstalled(home, "linux"));
     }
 
     [Fact]

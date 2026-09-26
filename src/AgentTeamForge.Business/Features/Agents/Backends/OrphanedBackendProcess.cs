@@ -12,7 +12,8 @@ public static class OrphanedBackendProcess
     public static void Mark(ProcessStartInfo info, string correlation) => info.Environment[Marker] = correlation;
 
     /// <summary>Read-only Unix check used before reviving an uncertain native session.</summary>
-    public static bool HasMarkedProcess(IReadOnlyCollection<string> correlations)
+    public static bool HasMarkedProcess(IReadOnlyCollection<string> correlations,
+        IReadOnlyCollection<int>? knownPids = null, Func<int, byte[]>? readEnvironment = null)
     {
         if (OperatingSystem.IsMacOS())
         {
@@ -37,6 +38,26 @@ public static class OrphanedBackendProcess
         }
 
         var markers = correlations.Select(c => Encoding.UTF8.GetBytes($"{Marker}={c}\0")).ToList();
+        readEnvironment ??= pid => File.ReadAllBytes($"/proc/{pid}/environ");
+        // Only previously owned PIDs warrant conservative treatment when identity
+        // is unreadable. A readable environment without our random run marker
+        // proves this is no longer that launch; unrelated inaccessible PIDs do not.
+        foreach (var pid in knownPids ?? [])
+        {
+            try
+            {
+                var environment = readEnvironment(pid);
+                if (markers.Any(marker => HasEntry(environment, marker)))
+                {
+                    return true;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (MayBeAlive(pid)) { return true; }
+            }
+        }
+
         try
         {
             foreach (var directory in Directory.EnumerateDirectories("/proc"))
@@ -48,7 +69,7 @@ public static class OrphanedBackendProcess
 
                 try
                 {
-                    var environment = File.ReadAllBytes($"/proc/{pid}/environ");
+                    var environment = readEnvironment(pid);
                     if (markers.Any(marker => HasEntry(environment, marker)))
                     {
                         return true;
@@ -56,7 +77,7 @@ public static class OrphanedBackendProcess
                 }
                 catch (FileNotFoundException) { } // Process exited during the scan.
                 catch (DirectoryNotFoundException) { }
-                catch (UnauthorizedAccessException) { } // Other users' processes cannot carry our run marker.
+                catch (UnauthorizedAccessException) { } // Known owned PIDs were checked above.
                 catch (IOException) { }
             }
 
@@ -65,6 +86,24 @@ public static class OrphanedBackendProcess
         catch (IOException)
         {
             return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return true;
+        }
+    }
+
+    static bool MayBeAlive(int pid)
+    {
+        try
+        {
+            // Enumerate rather than inspect process metadata: /proc/<pid>/stat
+            // may be unreadable too. Directory.Exists also hides access errors.
+            return Directory.EnumerateDirectories("/proc", pid.ToString(System.Globalization.CultureInfo.InvariantCulture)).Any();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return true; // Failure to inspect is not proof of exit.
         }
     }
 

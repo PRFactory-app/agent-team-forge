@@ -21,6 +21,7 @@ public sealed record WebFollowUpBody(string? Instruction, string? IdempotencyKey
 public sealed record WebSubmitBody(string? Backend, string? Instruction, string? IdempotencyKey, string? Cwd,
     string? Model = null, string? Effort = null, string? LeadSessionId = null, string? Workspace = null, string? Name = null);
 public sealed record WebJoinTicketBody(string? Name, string? Workspace, string? Note = null);
+public sealed record WebTierBody(string? Backend, string? Tier, string? Model, string? Effort, bool ResetAll = false);
 public sealed record WebDirectoryEntry(string Name, string Path);
 public sealed record WebDirectoryList(string Path, string? Parent, IReadOnlyList<WebDirectoryEntry> Directories);
 
@@ -28,6 +29,7 @@ public sealed record WebDirectoryList(string Path, string? Parent, IReadOnlyList
 [JsonSerializable(typeof(WebFollowUpBody))]
 [JsonSerializable(typeof(WebSubmitBody))]
 [JsonSerializable(typeof(WebJoinTicketBody))]
+[JsonSerializable(typeof(WebTierBody))]
 [JsonSerializable(typeof(WebDirectoryList))]
 public sealed partial class WebConsoleJson : JsonSerializerContext;
 
@@ -159,8 +161,8 @@ public sealed class WebConsoleServer : IAsyncDisposable
         }
 
         var origin = request.Headers.Origin;
-        var isPost = HttpMethods.IsPost(request.Method);
-        if ((isPost || origin.Count > 0) && (origin.Count != 1 || !string.Equals(origin[0], _origin, StringComparison.Ordinal)))
+        var isMutation = HttpMethods.IsPost(request.Method) || HttpMethods.IsPut(request.Method);
+        if ((isMutation || origin.Count > 0) && (origin.Count != 1 || !string.Equals(origin[0], _origin, StringComparison.Ordinal)))
         {
             await Reject(ctx, StatusCodes.Status403Forbidden, ForbiddenOrigin);
             return;
@@ -183,6 +185,8 @@ public sealed class WebConsoleServer : IAsyncDisposable
                 OrderByActivity = true,
             },
             ("GET", ["config"]) => new IpcRequest { Op = IpcProtocol.JobCapabilities },
+            ("GET", ["settings", "tiers"]) => new IpcRequest { Op = IpcProtocol.TierSettingsGet },
+            ("PUT", ["settings", "tiers"]) => await ReadTierAsync(ctx),
             ("POST", ["jobs"]) => await ReadSubmitAsync(ctx),
             ("GET", ["jobs", var id]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobGet, JobId = id },
             ("GET", ["jobs", var id, "output"]) when ValidId(id) => new IpcRequest
@@ -209,7 +213,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
         {
             if (!ctx.Response.HasStarted)
             {
-                await Reject(ctx, isPost ? StatusCodes.Status400BadRequest : StatusCodes.Status404NotFound, isPost ? BadRequest : NotFound);
+                await Reject(ctx, isMutation ? StatusCodes.Status400BadRequest : StatusCodes.Status404NotFound, isMutation ? BadRequest : NotFound);
             }
 
             return;
@@ -283,6 +287,25 @@ public sealed class WebConsoleServer : IAsyncDisposable
             Interrupt = body.Interrupt,
             Model = body.Model,
             Effort = body.Effort,
+        };
+    }
+
+    static async Task<IpcRequest?> ReadTierAsync(HttpContext ctx)
+    {
+        var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebTierBody);
+        if (body is null)
+        {
+            return null;
+        }
+
+        return new IpcRequest
+        {
+            Op = IpcProtocol.TierSettingsPut,
+            Backend = body.Backend,
+            Tier = body.Tier,
+            Model = body.Model,
+            Effort = body.Effort,
+            ResetAllTiers = body.ResetAll
         };
     }
 

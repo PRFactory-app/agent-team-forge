@@ -14,6 +14,7 @@
 <header class="console-header">
   <div class="heading"><p class="eyebrow">OPERATOR CONSOLE</p><h1>Agent team</h1><p class="note">Live jobs, grouped by lead session</p></div>
   <div class="team-stats">
+    <button id="settings-toggle" type="button" aria-controls="settings-view" aria-expanded="false">Settings</button>
     <label class="theme-picker" for="theme-select">Theme<select id="theme-select"><option value="auto">Auto</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
     <span class="live-pill"><span class="dot" aria-hidden="true"></span> TEAM LIVE</span>
     <span class="stat"><span class="stat-label">ELAPSED · SHOWN</span><strong id="elapsed">—</strong></span>
@@ -32,7 +33,7 @@
 </section>
 
 <main id="console" hidden>
-  <section>
+  <section id="overview-view">
     <div class="section-heading"><h2>Overview</h2><div class="toolbar"><button id="new-agent-toggle" type="button" aria-expanded="false" aria-controls="new-agent-form">New agent</button><label for="status-filter">Status</label><select id="status-filter">
       <option value="">All</option>
       <option value="queued">Queued</option>
@@ -62,6 +63,12 @@
     <p class="note">Counts and elapsed time cover this page of history. Updates every 5 seconds.</p>
     <div id="jobs"></div>
     <nav class="pager" aria-label="History pages"><button id="page-prev" type="button" disabled>Previous</button> <span id="page-number">Page 1</span> <button id="page-next" type="button" disabled>Next</button></nav>
+  </section>
+
+  <section id="settings-view" hidden>
+    <div class="section-heading"><div><h2>Settings · capability tiers</h2><p class="note">Changes apply to new jobs. Existing jobs keep their selected model and effort.</p></div><button id="settings-back" type="button">Back to overview</button></div>
+    <div id="tier-settings"></div>
+    <div class="settings-actions"><button id="tiers-reset-all" type="button">Reset all to default</button><span id="settings-status" role="status"></span></div>
   </section>
 
 </main>

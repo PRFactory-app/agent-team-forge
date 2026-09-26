@@ -25,7 +25,7 @@ public static class JobsMcpBridge
 
     const string SubmitProperties = """
           "backend":{"type":"string","enum":["claude","codex","pi","fake"],"description":"Agent CLI the daemon runs for this job."},
-          "model":{"type":"string","description":"Codex/pi capability tier: cheapest=Luna@high, low=Luna@xhigh, medium=Luna@max, high=Sol@high, xhigh=Astra@low, max=Astra@medium. Pi also has medium-fast=Sol@medium. Claude: haiku, sonnet, opus (default), fable; fast/balanced/powerful aliases. Raw model slugs pass through. Retired pi high-fast errors; use high."},
+          "model":{"type":"string","description":"Codex/pi capability tier: cheapest, low, medium, high, xhigh, max; pi also has medium-fast. Tier mappings are configurable; read the effective table in session_info or the web console Settings view. Claude: haiku, sonnet, opus (default), fable; fast/balanced/powerful aliases. Raw model slugs pass through. Retired pi high-fast errors; use high."},
           "effort":{"type":"string","description":"Explicit effort for Claude or a raw/blank Codex/pi model. A capability tier owns its effort and ignores this override."},
           "instruction":{"type":"string","description":"Task for the agent."},
           "cwd":{"type":"string","description":"Absolute working directory for the agent (optional)."},
@@ -68,7 +68,7 @@ public static class JobsMcpBridge
           "instruction":{"type":"string"},
           "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."},
           "interrupt":{"type":"boolean","description":"If the parent is running, cancel its turn (reason interrupted) and run this prompt in the same session."},
-          "model":{"type":"string","description":"Optional replacement model or capability tier. Codex/pi: cheapest=Luna@high, low=Luna@xhigh, medium=Luna@max, high=Sol@high, xhigh=Astra@low, max=Astra@medium; pi medium-fast=Sol@medium. Omit to inherit the resolved parent model."},
+          "model":{"type":"string","description":"Optional replacement model or capability tier. Codex/pi: cheapest, low, medium, high, xhigh, max; pi also has medium-fast. Mappings are configurable; read the effective table in session_info or the web console Settings view. Omit to inherit the resolved parent model."},
           "effort":{"type":"string","description":"Optional effort override; ignored when model is a capability tier. Omit to inherit the parent's effort."},
         """ + LimitProperties + """
         },"required":["job_id","instruction","idempotency_key"]}
@@ -182,7 +182,7 @@ public static class JobsMcpBridge
             new() { Name = "external_read", Description = "Read this member's inbox using member_token and an optional cursor.", InputSchema = Parse(MemberReadSchema) },
             new() { Name = "external_set_wake", Description = "Opt this member into Codex queue notices. Pass an empty codex_thread_id to clear.", InputSchema = Parse(MemberWakeSchema) },
             new() { Name = "leave_team", Description = "Revoke this external membership without stopping its process.", InputSchema = Parse(LeaveSchema) },
-            new() { Name = "send_message", Description = "Send a durable message to an external member of this lead session.", InputSchema = Parse(LeadSendSchema) },
+            new() { Name = "send_message", Description = "Send a durable message to a joined external member of this AgentTeamForge lead session. This tool does not reach win-agent-teams members.", InputSchema = Parse(LeadSendSchema) },
             new() { Name = "read_messages", Description = "Read durable messages from external members of this lead session.", InputSchema = Parse(LeadReadSchema) },
             new() { Name = "job_submit", Description = "Durably submit a job to the AgentTeamForge daemon (spike).", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "job_get", Description = "Read a job's committed state and result (spike).", InputSchema = Parse(GetSchema) },

@@ -47,6 +47,14 @@ public sealed class BackendModelDiscovery
         return lookup.Value;
     }
 
+    public IReadOnlyCollection<string> CachedModels(string backend)
+    {
+        lock (_cache)
+        {
+            return _cache.TryGetValue(backend, out var entry) && entry.Lookup.IsValueCreated ? entry.Lookup.Value : [];
+        }
+    }
+
     bool Expired(Lazy<IReadOnlyCollection<string>> lookup, long started) =>
         lookup.IsValueCreated
         && TimeSpan.FromMilliseconds(Environment.TickCount64 - started) >= (lookup.Value.Count == 0 ? _unknownTtl : _catalogTtl);

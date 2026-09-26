@@ -134,11 +134,10 @@ public sealed class ModelSelectionTests
         Assert.Equal("xx", File.ReadAllText(calls));
 
         File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        File.WriteAllText(script, $"#!/bin/sh\nprintf x >> '{calls}'\nsleep 5\n");
+        var completed = dir.File("completed");
+        File.WriteAllText(script, $"#!/bin/sh\nprintf x >> '{calls}'\nsleep 5\nprintf done >> '{completed}'\n");
         var hung = new BackendModelDiscovery(TimeSpan.FromMilliseconds(100), _ => script);
-        var start = System.Diagnostics.Stopwatch.StartNew();
         Assert.Empty(hung.GetModels("codex"));
-        Assert.True(start.Elapsed < TimeSpan.FromSeconds(2));
         Assert.Empty(hung.GetModels("codex"));
         Assert.Equal("xxx", File.ReadAllText(calls));
 
@@ -147,6 +146,7 @@ public sealed class ModelSelectionTests
         Assert.Empty(retried.GetModels("codex"));
         Assert.Empty(retried.GetModels("codex"));
         Assert.Equal("xxxxx", File.ReadAllText(calls));
+        Assert.False(File.Exists(completed));
     }
 
     [Theory]
@@ -186,8 +186,10 @@ public sealed class ModelSelectionTests
     public async Task Follow_up_inherits_resolved_selection_and_resolves_overrides()
     {
         using var fixture = new JobFixture();
+        using var state = new TempStateDir();
+        var tierMap = new TierMap(state.Path, AllModels);
         var accept = new AcceptJob(fixture.Store, JobFixture.Operator, fixture.Limits, fixture.TestProfile,
-            fixture.Admission, ["fake", "codex"], AllModels);
+            fixture.Admission, ["fake", "codex"], AllModels, tierMap);
         var parent = accept.Execute(new SubmitJobRequest("parent", "task", null, false)
         { Backend = "codex", Model = "cheapest", TargetAgent = "codex-named" }).Job!;
         var backend = new ScriptedBackend(r =>
@@ -200,17 +202,20 @@ public sealed class ModelSelectionTests
         using var dispatcher = new DispatchJob(fixture.Store, new BackendCatalog().Register("codex", () => backend), fixture.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
         await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
         Assert.Equal(JobStatus.Completed, fixture.Store.GetJob(parent.JobId)!.Status);
+        tierMap.Change("codex", "cheapest", "gpt-6-sol", "xhigh");
 
         var followUp = new FollowUpJob(fixture.Store, JobFixture.Operator, accept);
         var inherited = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f1")).Job!;
         var effortOnly = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f2") { Effort = "low" }).Job!;
         var tier = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f3") { Model = "max", Effort = "low" }).Job!;
         var unavailable = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f4") { Model = "gpt-7" });
+        var changedTier = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f5") { Model = "cheapest" }).Job!;
 
         Assert.Equal(("gpt-6-luna", "high"), (inherited.Model, inherited.Effort));
         Assert.Equal("codex-named", fixture.Store.GetJob(inherited.JobId)!.TargetAgent);
         Assert.Equal(("gpt-6-luna", "low"), (effortOnly.Model, effortOnly.Effort));
         Assert.Equal(("gpt-6-astra", "medium"), (tier.Model, tier.Effort));
+        Assert.Equal(("gpt-6-sol", "xhigh"), (changedTier.Model, changedTier.Effort));
         Assert.Contains("not available", unavailable.Error);
     }
 }
