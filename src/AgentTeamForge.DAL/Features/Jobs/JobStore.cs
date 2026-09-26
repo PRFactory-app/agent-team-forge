@@ -449,7 +449,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         using var command = Command(connection, null, """
             SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at, j.worktree_path, j.worktree_branch,
                    j.backend, j.session_id, j.parent_job_id, j.lead_session_id, j.target_agent, j.options,
-                   (SELECT s.workspace FROM lead_sessions s WHERE s.session_id=j.lead_session_id AND s.closed_at IS NULL)
+                   (SELECT s.workspace FROM lead_sessions s WHERE s.session_id=j.lead_session_id AND s.closed_at IS NULL), j.cwd
             FROM jobs j
             WHERE j.principal=$p AND j.team=$t
               AND ($lead IS NULL OR j.lead_session_id=$lead OR ($workspace IS NOT NULL AND j.lead_session_id IN (SELECT session_id FROM lead_sessions WHERE workspace=$workspace)))
@@ -479,6 +479,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 TargetAgent = reader.GetString(12),
                 Options = NullableString(reader, 13),
                 LeadWorkspace = NullableString(reader, 14),
+                Cwd = NullableString(reader, 15),
             });
         }
 

@@ -4,6 +4,8 @@ using System.Text.Json;
 
 namespace AgentTeamForge.Business.Features.Jobs;
 
+public sealed record AgentModelOptions(IReadOnlyList<string> Models, IReadOnlyList<string> Efforts);
+
 /// <summary>Resolve the caller's model choice once, before the job is accepted.</summary>
 public static class ModelSelection
 {
@@ -17,6 +19,23 @@ public static class ModelSelection
             ["xhigh"] = ("gpt-6-astra", "low"),
             ["max"] = ("gpt-6-astra", "medium"),
         };
+
+    static readonly string[] SharedTierOrder = [.. Tiers.Keys];
+    static readonly string[] ClaudeModels = ["opus", "sonnet", "haiku", "fable", "fast", "balanced", "powerful"];
+    static readonly string[] ClaudeEfforts = ["low", "medium", "high", "xhigh", "max"];
+
+    public static IReadOnlyDictionary<string, AgentModelOptions> ConsoleOptions { get; } =
+        new Dictionary<string, AgentModelOptions>
+        {
+            ["claude"] = new(ClaudeModels, ClaudeEfforts),
+            ["codex"] = new(SharedTierOrder, []),
+            ["pi"] = new([.. SharedTierOrder.Take(3), "medium-fast", .. SharedTierOrder.Skip(3)], []),
+        };
+
+    public static bool ValidConsoleSelection(string backend, string? model, string? effort) =>
+        ConsoleOptions.TryGetValue(backend, out var options)
+        && model is not null && options.Models.Contains(model, StringComparer.Ordinal)
+        && (effort is null || options.Efforts.Contains(effort, StringComparer.Ordinal));
 
     static readonly ConcurrentDictionary<string, IReadOnlyCollection<string>> Discovered = new();
 

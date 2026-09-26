@@ -68,7 +68,7 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
     public async Task New_agent_forwards_valid_options_and_directory_after_auth_checks()
     {
         var body = new WebSubmitBody("codex", "do work", "new-agent-1", Environment.CurrentDirectory,
-            "gpt-5.3-codex", "high");
+            "high");
         Assert.Equal(HttpStatusCode.Unauthorized, (await Send(Submit(body, WebConsoleServer.NewToken()))).Status);
         Assert.Equal(HttpStatusCode.Forbidden, (await Send(Submit(body, origin: "http://attacker.example"))).Status);
         Assert.Empty(_forwarded);
@@ -76,9 +76,10 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
         var (status, _) = await Send(Submit(body));
         Assert.Equal(HttpStatusCode.OK, status);
         var request = Assert.Single(_forwarded);
-        Assert.Equal((IpcProtocol.JobSubmit, "codex", "gpt-5.3-codex", "high", Environment.CurrentDirectory),
+        Assert.Equal((IpcProtocol.JobSubmit, "codex", "high", null, Environment.CurrentDirectory),
             (request.Op, request.Backend, request.Model, request.Effort, request.Cwd));
         Assert.Equal("new-agent-1", request.IdempotencyKey);
+        Assert.Matches("^codex-[0-9a-f]{8}$", request.TargetAgent);
     }
 
     [Fact]
@@ -86,19 +87,30 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
     {
         var lead = Guid.NewGuid().ToString("D");
         var body = new WebSubmitBody("claude", "do work", "lead-agent-1", Environment.CurrentDirectory,
-            LeadSessionId: lead, Workspace: Environment.CurrentDirectory);
+            "opus", "medium", LeadSessionId: lead, Workspace: Environment.CurrentDirectory, Name: "my-agent");
 
         Assert.Equal(HttpStatusCode.OK, (await Send(Submit(body))).Status);
         var request = Assert.Single(_forwarded);
         Assert.Equal((lead, Environment.CurrentDirectory), (request.LeadSessionId, request.Workspace));
+        Assert.Equal("my-agent", request.TargetAgent);
+    }
+
+    [Fact]
+    public async Task Generated_name_is_stable_for_a_submission_retry()
+    {
+        var body = new WebSubmitBody("pi", "do work", "retry-key", Environment.CurrentDirectory, "medium-fast");
+        await Send(Submit(body));
+        await Send(Submit(body));
+        Assert.Equal(2, _forwarded.Count);
+        Assert.Equal(_forwarded[0].TargetAgent, _forwarded[1].TargetAgent);
+        Assert.Matches("^pi-[0-9a-f]{8}$", _forwarded[0].TargetAgent);
     }
 
     [Theory]
     [InlineData("-bad", null)]
-    [InlineData("ok;rm", null)]
-    [InlineData("ok'quoted", null)]
-    [InlineData("ok$HOME", null)]
-    [InlineData(null, "high&echo")]
+    [InlineData("high-fast", null)]
+    [InlineData("gpt-6-sol", null)]
+    [InlineData("high", "medium")]
     public async Task Unsafe_new_agent_options_have_no_effect(string? model, string? effort)
     {
         var body = new WebSubmitBody("codex", "do work", "unsafe-1", Environment.CurrentDirectory, model, effort);
@@ -109,11 +121,55 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
     [Fact]
     public async Task New_agent_requires_an_existing_absolute_directory()
     {
-        var relative = new WebSubmitBody("claude", "do work", "cwd-1", "relative/path");
+        var relative = new WebSubmitBody("claude", "do work", "cwd-1", "relative/path", "opus");
         var absent = relative with { Cwd = Path.Combine(Path.GetTempPath(), "atf-web-absent-" + Guid.NewGuid().ToString("N")) };
         Assert.Equal(HttpStatusCode.BadRequest, (await Send(Submit(relative))).Status);
         Assert.Equal(HttpStatusCode.BadRequest, (await Send(Submit(absent))).Status);
         Assert.Empty(_forwarded);
+    }
+
+    [Theory]
+    [InlineData("bad name")]
+    [InlineData("fake-agent")]
+    [InlineData("-bad")]
+    public async Task Invalid_new_agent_name_is_rejected(string name)
+    {
+        var body = new WebSubmitBody("claude", "do work", "named-1", Environment.CurrentDirectory, "opus", Name: name);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Send(Submit(body))).Status);
+        Assert.Empty(_forwarded);
+    }
+
+    [Fact]
+    public async Task Directory_picker_requires_auth_and_lists_only_bounded_directories()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "atf-dir-picker-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            for (var i = 0; i < 105; i++)
+            {
+                Directory.CreateDirectory(Path.Combine(root, $"sub-{i:D3}"));
+            }
+            File.WriteAllText(Path.Combine(root, "private.txt"), "secret");
+            var path = "/api/directories?path=" + Uri.EscapeDataString(root);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await Send(Api(HttpMethod.Get, path, WebConsoleServer.NewToken()))).Status);
+            var wrongHost = Api(HttpMethod.Get, path);
+            wrongHost.Headers.Host = "localhost:" + _server.Port;
+            Assert.Equal(HttpStatusCode.MisdirectedRequest, (await Send(wrongHost)).Status);
+            Assert.Equal(HttpStatusCode.BadRequest, (await Send(Api(HttpMethod.Get, "/api/directories?path=relative"))).Status);
+            Assert.Empty(_forwarded);
+
+            using var response = await _http.SendAsync(Api(HttpMethod.Get, path), TestContext.Current.CancellationToken);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+            var directories = json.RootElement.GetProperty("directories").EnumerateArray().ToArray();
+            Assert.Equal(100, directories.Length);
+            Assert.All(directories, entry => Assert.StartsWith("sub-", entry.GetProperty("name").GetString()));
+            Assert.DoesNotContain(directories, entry => entry.GetProperty("name").GetString() == "private.txt");
+            Assert.DoesNotContain("secret", json.RootElement.ToString(), StringComparison.Ordinal);
+            Assert.Empty(_forwarded);
+        }
+        finally { Directory.Delete(root, recursive: true); }
     }
 
     [Fact]

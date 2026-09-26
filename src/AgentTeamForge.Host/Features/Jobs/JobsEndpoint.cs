@@ -91,7 +91,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         switch (request.Op)
         {
             case IpcProtocol.JobCapabilities:
-                return new IpcResponse(true, Outcome: "capabilities", Backends: configuredBackends ?? []);
+                return new IpcResponse(true, Outcome: "capabilities", Backends: configuredBackends ?? [], ModelOptions: ModelSelection.ConsoleOptions);
             case IpcProtocol.ExternalTicket:
                 return external is null ? new IpcResponse(false, JobErrors.InvalidRequest)
                     : MapExternal(external.CreateTicket(request.LeadSessionId, request.Workspace, request.MemberName, request.Note));
@@ -106,6 +106,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 return Accepted(accept.Execute(new SubmitJobRequest(request.IdempotencyKey ?? string.Empty, request.Instruction ?? string.Empty, request.Behavior, request.Hold)
                 {
                     Backend = request.Backend,
+                    TargetAgent = request.TargetAgent,
                     Model = request.Model,
                     Effort = request.Effort,
                     Cwd = request.Cwd,
