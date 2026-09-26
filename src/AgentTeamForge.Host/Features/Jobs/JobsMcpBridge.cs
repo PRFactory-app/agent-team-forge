@@ -16,13 +16,18 @@ namespace AgentTeamForge.Host.Features.Jobs;
 /// </summary>
 public static class JobsMcpBridge
 {
+    const string LimitProperties = """
+          "timeout_s":{"type":"integer","minimum":1,"maximum":86400,"description":"Cancel the job (reason timeout) this many seconds after it starts running."},
+          "queue_ttl_s":{"type":"integer","minimum":1,"maximum":86400,"description":"Cancel the job (reason queue_ttl) if it has not started this many seconds after acceptance."}
+        """;
+
     const string SubmitProperties = """
           "backend":{"type":"string","enum":["claude","codex","pi","fake"],"description":"Agent CLI the daemon runs for this job."},
           "instruction":{"type":"string","description":"Task for the agent."},
           "cwd":{"type":"string","description":"Absolute working directory for the agent (optional)."},
           "worktree":{"type":"boolean","description":"Create a private git worktree for this job from cwd's HEAD."},
-          "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."}
-        """;
+          "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."},
+        """ + LimitProperties;
 
     const string SubmitSchema = """{"type":"object","properties":{""" + SubmitProperties + """
         },"required":["backend","instruction","idempotency_key"]}
@@ -39,12 +44,27 @@ public static class JobsMcpBridge
         {"type":"object","properties":{"job_id":{"type":"string"}},"required":["job_id"]}
         """;
 
+    const string CodexWakeSchema = """
+        {"type":"object","properties":{
+          "thread_id":{"type":"string","description":"Your CODEX_THREAD_ID from a shell tool."}},
+         "required":["thread_id"]}
+        """;
+
+    const string OutputSchema = """
+        {"type":"object","properties":{
+          "job_id":{"type":"string"},
+          "offset":{"type":"integer","minimum":0,"description":"Absolute byte offset; default 0."},
+          "max_bytes":{"type":"integer","minimum":1,"maximum":65536,"description":"Maximum bytes; default 65536."}},
+         "required":["job_id"]}
+        """;
+
     const string FollowUpSchema = """
         {"type":"object","properties":{
           "job_id":{"type":"string","description":"Finished job whose native agent session is resumed."},
           "instruction":{"type":"string"},
-          "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."}},
-         "required":["job_id","instruction","idempotency_key"]}
+          "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."},
+        """ + LimitProperties + """
+        },"required":["job_id","instruction","idempotency_key"]}
         """;
 
     const string ListSchema = """
@@ -82,9 +102,11 @@ public static class JobsMcpBridge
         {
             new() { Name = "submit_job", Description = "Durably submit a task to an agent (claude, codex or pi) run by the AgentTeamForge daemon. Returns the job; poll get_job for the result.", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "get_job", Description = "Read a job's status, result output and native session_id.", InputSchema = Parse(GetSchema) },
+            new() { Name = "get_job_output", Description = "Read live stdout/stderr log bytes from a job, starting at an absolute offset. Use next_offset to continue.", InputSchema = Parse(OutputSchema) },
             new() { Name = "stop_job", Description = "Cancel a queued or running job. A finished job is returned unchanged.", InputSchema = Parse(GetSchema) },
             new() { Name = "follow_up", Description = "Send a follow-up instruction into a finished job's native agent session (same backend and cwd). Returns the new job.", InputSchema = Parse(FollowUpSchema) },
             new() { Name = "list_jobs", Description = "List jobs, newest first, one bounded page at a time.", InputSchema = Parse(ListSchema) },
+            new() { Name = "register_codex_wake", Description = "Register this Codex conversation for native job notices before submitting jobs. Read CODEX_THREAD_ID with a shell tool and pass it here; Codex does not always pass it to MCP servers.", InputSchema = Parse(CodexWakeSchema) },
             new() { Name = "job_submit", Description = "Durably submit a job to the AgentTeamForge daemon (spike).", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "job_get", Description = "Read a job's committed state and result (spike).", InputSchema = Parse(GetSchema) },
             new() { Name = "job_list", Description = "List your jobs' committed state, newest first, one bounded page at a time (read-only, spike).", InputSchema = Parse(ListSchema) },
@@ -102,15 +124,32 @@ public static class JobsMcpBridge
                     var call = request.Params ?? throw new InvalidOperationException("missing params");
                     var args = call.Arguments ?? new Dictionary<string, JsonElement>();
                     await RegisterWakeAsync(cancellationToken);
-                    var (ipc, rejection) = Map(call.Name, args, testProfile);
-                    if (ipc is not null && wakeTarget is not null && wakeGeneration is not null
-                        && ipc.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp or IpcProtocol.JobGet)
+                    IpcResponse response;
+                    if (call.Name == "register_codex_wake")
                     {
-                        ipc = ipc with { WakeKey = wakeTarget.WakeKey, WakeGeneration = wakeGeneration };
+                        var host = HostSessionWake.NearestHost();
+                        var home = host?.Kind == "codex" ? HostSessionWake.CodexHome(host.Value.Pid) : null;
+                        var target = home is null ? null : HostSessionWake.ForCodexThread(String(args, "thread_id"), home);
+                        response = target is null ? new IpcResponse(false, JobErrors.InvalidRequest)
+                            : await client.SendAsync(target, cancellationToken);
+                        if (response.Ok && response.WakeGeneration is long generation)
+                        {
+                            wakeTarget = target;
+                            wakeGeneration = generation;
+                        }
                     }
-                    var response = ipc is null
-                        ? new IpcResponse(false, rejection)
-                        : await client.SendAsync(ipc, cancellationToken);
+                    else
+                    {
+                        var (ipc, rejection) = Map(call.Name, args, testProfile);
+                        if (ipc is not null && wakeTarget is not null && wakeGeneration is not null
+                            && ipc.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp or IpcProtocol.JobGet)
+                        {
+                            ipc = ipc with { WakeKey = wakeTarget.WakeKey, WakeGeneration = wakeGeneration };
+                        }
+                        response = ipc is null
+                            ? new IpcResponse(false, rejection)
+                            : await client.SendAsync(ipc, cancellationToken);
+                    }
                     return new CallToolResult
                     {
                         IsError = !response.Ok,
@@ -137,10 +176,13 @@ public static class JobsMcpBridge
                 Backend = String(args, "backend"),
                 Cwd = String(args, "cwd"),
                 Worktree = args.TryGetValue("worktree", out var worktree) && worktree.ValueKind == JsonValueKind.True,
+                TimeoutSeconds = Integer(args, "timeout_s"),
+                QueueTtlSeconds = Integer(args, "queue_ttl_s"),
                 Behavior = testProfile ? String(args, "behavior") : null,
                 Hold = testProfile && args.TryGetValue("hold", out var hold) && hold.ValueKind == JsonValueKind.True,
             }, null),
             "job_get" or "get_job" => (new IpcRequest { Op = IpcProtocol.JobGet, JobId = String(args, "job_id") }, null),
+            "get_job_output" => (new IpcRequest { Op = IpcProtocol.JobOutput, JobId = String(args, "job_id"), Offset = Long(args, "offset"), MaxBytes = Integer(args, "max_bytes") }, null),
             "stop_job" => (new IpcRequest { Op = IpcProtocol.JobStop, JobId = String(args, "job_id") }, null),
             "follow_up" => (new IpcRequest
             {
@@ -148,6 +190,8 @@ public static class JobsMcpBridge
                 JobId = String(args, "job_id"),
                 Instruction = String(args, "instruction"),
                 IdempotencyKey = String(args, "idempotency_key"),
+                TimeoutSeconds = Integer(args, "timeout_s"),
+                QueueTtlSeconds = Integer(args, "queue_ttl_s"),
             }, null),
             "job_list" or "list_jobs" => ListRequest(args),
             _ => (null, IpcProtocol.UnknownOp),
@@ -186,6 +230,10 @@ public static class JobsMcpBridge
     static int? Integer(IDictionary<string, JsonElement> args, string name) =>
         !args.TryGetValue(name, out var value) ? null
         : value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var n) ? n : 0;
+
+    static long? Long(IDictionary<string, JsonElement> args, string name) =>
+        !args.TryGetValue(name, out var value) ? null
+        : value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var n) ? n : -1;
 
     static JsonElement Parse(string json)
     {

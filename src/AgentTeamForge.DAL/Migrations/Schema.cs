@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 5;
+    public const int CurrentVersion = 6;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -115,7 +115,13 @@ static class Schema
         ALTER TABLE runs_new RENAME TO runs;
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5];
+    /// <summary>v6: optional running timeout and queued expiry per job.</summary>
+    const string V6 = """
+        ALTER TABLE jobs ADD COLUMN timeout_s INTEGER;
+        ALTER TABLE jobs ADD COLUMN queue_deadline TEXT;
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

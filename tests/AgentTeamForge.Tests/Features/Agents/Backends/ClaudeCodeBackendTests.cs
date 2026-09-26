@@ -47,10 +47,14 @@ public sealed class ClaudeCodeBackendTests : IDisposable
 
         var evidence = await RunAsync(backend, new BackendRequest("j1", "c1", "say --hi", "") { WorkingDirectory = _dir.Path });
 
+        // The session id is chosen up front and reported before any output.
+        var argv = File.ReadAllLines(_dir.File("argv"));
+        Assert.Equal(["-p", "--output-format", "json", "--dangerously-skip-permissions", "--session-id"], argv[..^1]);
+        var chosen = argv[^1];
+        Assert.True(Guid.TryParse(chosen, out _));
         Assert.Equal<BackendEvidence>(
-            [new BackendEvidence.Ack("c1"), new BackendEvidence.Session("c1", "s-1"), new BackendEvidence.Result("c1", "hello"), new BackendEvidence.EndOfOutput()],
+            [new BackendEvidence.Session("c1", chosen), new BackendEvidence.Ack("c1"), new BackendEvidence.Session("c1", "s-1"), new BackendEvidence.Result("c1", "hello"), new BackendEvidence.EndOfOutput()],
             evidence);
-        Assert.Equal(["-p", "--output-format", "json", "--dangerously-skip-permissions"], File.ReadAllLines(_dir.File("argv")));
         Assert.Equal("say --hi", File.ReadAllText(_dir.File("stdin")));
         Assert.Equal(_dir.Path, File.ReadAllText(_dir.File("cwd")).Trim());
     }

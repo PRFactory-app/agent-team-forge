@@ -14,7 +14,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         j.job_id, j.principal, j.team, j.target_agent, j.idempotency_key, j.instruction, j.options,
         j.status, j.reason_code, j.result_text,
         (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id),
-        j.backend, j.cwd, j.parent_job_id, j.session_id, j.worktree_path, j.worktree_branch, j.worktree_base
+        j.backend, j.cwd, j.parent_job_id, j.session_id, j.worktree_path, j.worktree_branch, j.worktree_base, j.timeout_s
         """;
 
     public string WorktreeRoot => Path.Combine(Path.GetDirectoryName(database.Path)!, "worktrees");
@@ -46,11 +46,13 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         var jobId = "job_" + Guid.CreateVersion7().ToString("N");
         var worktreePath = job.CreateWorktree ? Path.Combine(WorktreeRoot, jobId) : job.WorktreePath;
         var worktreeBranch = job.CreateWorktree ? $"atf/job-{jobId}" : job.WorktreeBranch;
-        var now = Now();
+        var acceptedAt = DateTimeOffset.UtcNow;
+        var now = acceptedAt.ToString("O");
+        var queueDeadline = job.QueueTtlSeconds is int ttl ? acceptedAt.AddSeconds(ttl).ToString("O") : null;
         Execute(connection, tx, """
             INSERT INTO jobs(job_id, principal, team, target_agent, operation, idempotency_key, fingerprint,
-                             instruction, options, backend, cwd, parent_job_id, worktree_path, worktree_branch, worktree_base, status, accepted_at, updated_at)
-            VALUES ($id, $p, $t, $a, $o, $k, $f, $i, $opt, $b, $cwd, $parent, $wtpath, $wtbranch, $wtbase, 'queued', $now, $now);
+                             instruction, options, backend, cwd, parent_job_id, worktree_path, worktree_branch, worktree_base, timeout_s, queue_deadline, status, accepted_at, updated_at)
+            VALUES ($id, $p, $t, $a, $o, $k, $f, $i, $opt, $b, $cwd, $parent, $wtpath, $wtbranch, $wtbase, $timeout, $deadline, 'queued', $now, $now);
             INSERT INTO dispatch_intents(job_id, state, created_at) VALUES ($id, 'unattempted', $now);
             INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'accepted', $now);
             """,
@@ -58,7 +60,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             ("$o", job.Operation), ("$k", job.IdempotencyKey), ("$f", job.Fingerprint),
             ("$i", job.Instruction), ("$opt", job.Options), ("$b", job.Backend), ("$cwd", job.Cwd),
             ("$parent", job.ParentJobId), ("$wtpath", worktreePath), ("$wtbranch", worktreeBranch),
-            ("$wtbase", job.WorktreeBase), ("$now", now));
+            ("$wtbase", job.WorktreeBase), ("$timeout", job.TimeoutSeconds),
+            ("$deadline", queueDeadline), ("$now", now));
         if (job.WakeTargetKey is not null && job.WakeGeneration is not null)
         {
             Execute(connection, tx, """
@@ -79,6 +82,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             WorktreePath = worktreePath,
             WorktreeBranch = worktreeBranch,
             WorktreeBase = job.WorktreeBase,
+            TimeoutSeconds = job.TimeoutSeconds,
         });
     });
 
@@ -94,13 +98,14 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         using var tx = connection.BeginTransaction(deferred: false);
         var jobId = QueryString(connection, tx, """
             SELECT i.job_id FROM dispatch_intents i JOIN jobs j ON j.job_id = i.job_id
-            WHERE i.state='unattempted' AND j.status='queued' AND NOT EXISTS (
+            WHERE i.state='unattempted' AND j.status='queued'
+              AND (j.queue_deadline IS NULL OR j.queue_deadline > $now) AND NOT EXISTS (
                 SELECT 1 FROM jobs p JOIN jobs k ON k.status='running'
                 WHERE p.job_id = j.parent_job_id
                   AND (k.job_id = p.job_id OR k.session_id = p.session_id OR EXISTS (
                       SELECT 1 FROM jobs q WHERE q.job_id = k.parent_job_id AND q.session_id = p.session_id)))
             ORDER BY i.created_at, i.rowid LIMIT 1
-            """);
+            """, ("$now", Now()));
         if (jobId is null)
         {
             return null;
@@ -183,11 +188,16 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     }
 
     /// <summary>Atomically cancels queued or running work; terminal jobs are unchanged.</summary>
-    public CancelOutcome Cancel(string jobId, string principal, string team) => Write(connection =>
+    public CancelOutcome Cancel(string jobId, string principal, string team) => Cancel(jobId, principal, team, "stopped");
+
+    /// <summary>The daemon's own cancellation (a job timeout), through the same path as a stop.</summary>
+    public CancelOutcome CancelOwned(string jobId, string reason) => Cancel(jobId, null, null, reason);
+
+    CancelOutcome Cancel(string jobId, string? principal, string? team, string reason) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         var job = GetJob(connection, tx, jobId);
-        if (job is null || job.Principal != principal || job.Team != team)
+        if (job is null || (principal is not null && (job.Principal != principal || job.Team != team)))
         {
             return new CancelOutcome(null, false, false);
         }
@@ -200,9 +210,9 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             if (running)
             {
                 Execute(connection, tx, """
-                    UPDATE runs SET state='cancelled', reason_code='stopped', finished_at=$now
+                    UPDATE runs SET state='cancelled', reason_code=$reason, finished_at=$now
                     WHERE job_id=$id AND state='started';
-                    """, ("$id", jobId), ("$now", now));
+                    """, ("$id", jobId), ("$now", now), ("$reason", reason));
             }
             else
             {
@@ -210,14 +220,43 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             }
 
             Execute(connection, tx, """
-                UPDATE jobs SET status='cancelled', reason_code='stopped', updated_at=$now WHERE job_id=$id;
+                UPDATE jobs SET status='cancelled', reason_code=$reason, updated_at=$now WHERE job_id=$id;
                 INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'cancelled', $now);
-                """, ("$id", jobId), ("$now", now));
+                """, ("$id", jobId), ("$now", now), ("$reason", reason));
             tx.Commit();
             job = GetJob(connection, null, jobId)!;
         }
 
         return new CancelOutcome(job, running, changed);
+    });
+
+    /// <summary>Cancels every queued job whose queue deadline has passed; returns their ids.</summary>
+    public IReadOnlyList<string> ExpireQueued() => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        var now = Now();
+        var expired = new List<string>();
+        using (var select = Command(connection, tx,
+            "SELECT job_id FROM jobs WHERE status='queued' AND queue_deadline IS NOT NULL AND queue_deadline <= $now", ("$now", now)))
+        using (var reader = select.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                expired.Add(reader.GetString(0));
+            }
+        }
+
+        foreach (var jobId in expired)
+        {
+            Execute(connection, tx, """
+                UPDATE dispatch_intents SET state='attempted' WHERE job_id=$id AND state='unattempted';
+                UPDATE jobs SET status='cancelled', reason_code='queue_ttl', updated_at=$now WHERE job_id=$id;
+                INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'cancelled', $now);
+                """, ("$id", jobId), ("$now", now));
+        }
+
+        tx.Commit();
+        return (IReadOnlyList<string>)expired;
     });
 
     bool Finish(RunRef run, string runState, string jobStatus, string? reason, string? result, string eventKind, string? checkpoint) =>
@@ -407,7 +446,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             return null;
         }
 
-        return (ReadJob(reader), reader.GetString(18));
+        return (ReadJob(reader), reader.GetString(19));
     }
 
     static JobRecord ReadJob(SqliteDataReader reader) => new(
@@ -419,6 +458,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         WorktreePath = NullableString(reader, 15),
         WorktreeBranch = NullableString(reader, 16),
         WorktreeBase = NullableString(reader, 17),
+        TimeoutSeconds = reader.IsDBNull(18) ? null : reader.GetInt32(18),
     };
 
     static string? NullableString(SqliteDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);

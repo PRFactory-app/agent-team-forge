@@ -7,7 +7,7 @@ namespace AgentTeamForge.Host.Features.Jobs;
 
 /// <summary>Thin IPC mapping for the job operations; all rules live in Business.</summary>
 public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, StopJob stop, DurabilityCheckpoints checkpoints, Action onAccepted,
-    WakeStore? wakeStore = null, PruneJob? prune = null)
+    WakeStore? wakeStore = null, PruneJob? prune = null, JobLogs? logs = null)
 {
     public IpcResponse Handle(IpcRequest request)
     {
@@ -19,12 +19,16 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     Backend = request.Backend,
                     Cwd = request.Cwd,
                     Worktree = request.Worktree,
+                    TimeoutSeconds = request.TimeoutSeconds,
+                    QueueTtlSeconds = request.QueueTtlSeconds,
                     WakeKey = request.WakeKey,
                     WakeGeneration = request.WakeGeneration,
                 }));
             case IpcProtocol.JobFollowUp:
                 return Accepted(followUp.Execute(new FollowUpRequest(request.JobId ?? string.Empty, request.Instruction ?? string.Empty, request.IdempotencyKey ?? string.Empty)
                 {
+                    TimeoutSeconds = request.TimeoutSeconds,
+                    QueueTtlSeconds = request.QueueTtlSeconds,
                     WakeKey = request.WakeKey,
                     WakeGeneration = request.WakeGeneration,
                 }));
@@ -37,6 +41,17 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     wakeStore.MarkRead(request.JobId!, request.WakeKey, generation);
                 }
                 return Map(found);
+            case IpcProtocol.JobOutput:
+                var outputJob = get.Execute(request.JobId ?? string.Empty);
+                if (outputJob.Error is not null)
+                {
+                    return new IpcResponse(false, outputJob.Error);
+                }
+                if (logs is null || request.Offset is < 0 || request.MaxBytes is < 1 or > JobLogs.MaxReadBytes)
+                {
+                    return new IpcResponse(false, JobErrors.InvalidRequest);
+                }
+                return new IpcResponse(true, Outcome: "output", Output: logs.Read(request.JobId!, request.Offset ?? 0, request.MaxBytes ?? JobLogs.MaxReadBytes));
             case IpcProtocol.JobList:
                 var listed = list.Execute(new ListJobsRequest(request.Status, request.Limit, request.Cursor));
                 return listed.Error is null ? new IpcResponse(true, Outcome: "listed", Page: listed.Page) : new IpcResponse(false, listed.Error);

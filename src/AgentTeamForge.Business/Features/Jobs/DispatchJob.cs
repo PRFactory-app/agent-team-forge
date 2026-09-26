@@ -30,15 +30,16 @@ public sealed class DispatchJob : IDisposable
     readonly DurabilityCheckpoints checkpoints;
     readonly AdmissionGate admission;
     readonly Action<string> log;
+    readonly JobLogs? jobLogs;
     string? _haltReason;
 
     /// <summary>Single-backend convenience: serves jobs whose backend is "fake".</summary>
-    public DispatchJob(JobStore store, IJobBackend backend, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log)
-        : this(store, new BackendCatalog().Register(BackendCatalog.Fake, () => backend), limits, checkpoints, admission, log)
+    public DispatchJob(JobStore store, IJobBackend backend, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log, JobLogs? jobLogs = null)
+        : this(store, new BackendCatalog().Register(BackendCatalog.Fake, () => backend), limits, checkpoints, admission, log, jobLogs)
     {
     }
 
-    public DispatchJob(JobStore store, BackendCatalog backends, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log)
+    public DispatchJob(JobStore store, BackendCatalog backends, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log, JobLogs? jobLogs = null)
     {
         // Validated before the daemon reports readiness; CancelAfter would otherwise fault the loop.
         if (limits.MaxFakeRuntime <= TimeSpan.Zero || limits.MaxFakeRuntime > MaxAllowedRuntime)
@@ -54,6 +55,7 @@ public sealed class DispatchJob : IDisposable
         this.checkpoints = checkpoints;
         this.admission = admission;
         this.log = log;
+        this.jobLogs = jobLogs;
     }
 
     /// <summary>
@@ -77,6 +79,23 @@ public sealed class DispatchJob : IDisposable
             try { active.Stop.Cancel(); }
             catch (ObjectDisposedException) { } // The attempt just finished.
             active.TerminateOnce(TryTerminate);
+        }
+    }
+
+    /// <summary>Commits a daemon-owned cancellation, then interrupts the running attempt.</summary>
+    void CancelOwned(string jobId, string reason)
+    {
+        try
+        {
+            if (store.CancelOwned(jobId, reason).WasRunning)
+            {
+                CancelRunning(jobId);
+            }
+        }
+        catch (StorageException ex)
+        {
+            // Left running; the runtime deadline still bounds the attempt.
+            log($"{reason} cancel failed for {jobId}: {ex.Failure}");
         }
     }
 
@@ -105,6 +124,7 @@ public sealed class DispatchJob : IDisposable
         using var stopping = CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, _halted.Token);
         using var slots = new SemaphoreSlim(limits.MaxConcurrentJobs);
         var inFlight = new List<Task>();
+        var sweeping = SweepQueueAsync(stopping.Token);
         try
         {
             await ClaimLoopAsync(slots, inFlight, stopping.Token);
@@ -119,11 +139,42 @@ public sealed class DispatchJob : IDisposable
             try
             {
                 // Attempts observe the stopping token; wait so none outlives the dispatcher.
-                await Task.WhenAll(inFlight);
+                await Task.WhenAll([.. inFlight, sweeping]);
             }
             finally
             {
                 admission.Close(HaltReason ?? "daemon_stopping");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Cancels queued jobs whose queue TTL passed, even while every slot is busy.
+    /// The claim query also skips them, so an expired job never starts.
+    /// </summary>
+    async Task SweepQueueAsync(CancellationToken stopping)
+    {
+        while (!stopping.IsCancellationRequested)
+        {
+            try
+            {
+                foreach (var jobId in store.ExpireQueued())
+                {
+                    log($"queue ttl expired for {jobId}");
+                }
+            }
+            catch (StorageException ex)
+            {
+                log($"queue ttl sweep failed: {ex.Failure}");
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), stopping);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
             }
         }
     }
@@ -235,6 +286,10 @@ public sealed class DispatchJob : IDisposable
             deadline.CancelAfter(limits.MaxFakeRuntime);
             checkpoints.Hit(DurabilityCheckpoints.AttemptAfterCommit);
 
+            // A job timeout ends the attempt through the same cancel path as a stop.
+            using var jobTimeout = claim.Job.TimeoutSeconds is int seconds ? new CancellationTokenSource(TimeSpan.FromSeconds(seconds)) : null;
+            using var onTimeout = jobTimeout?.Token.Register(() => CancelOwned(run.JobId, "timeout"));
+
             // A stop may have committed after claim but before this task was scheduled.
             if (store.GetJob(run.JobId)?.Status == JobStatus.Cancelled)
             {
@@ -260,6 +315,7 @@ public sealed class DispatchJob : IDisposable
             {
                 ResumeSessionId = resumeSessionId,
                 WorkingDirectory = JobWorktree.WorkingDirectory(claim.Job),
+                Output = jobLogs?.BeginRun(claim.Job.JobId, claim.RunId, claim.Job.Backend),
             };
             var starting = Task.Run(() => backend.Start(request), CancellationToken.None);
             try

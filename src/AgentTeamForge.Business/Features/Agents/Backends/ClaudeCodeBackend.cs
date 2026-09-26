@@ -9,7 +9,9 @@ namespace AgentTeamForge.Business.Features.Agents.Backends;
 /// <summary>
 /// Headless Claude Code: one <c>claude -p --output-format json</c> process per
 /// turn. The instruction travels on stdin (not argv) so Start does not deliver
-/// it; a follow-up resumes the native session with <c>--resume</c>.
+/// it; a follow-up resumes the native session with <c>--resume</c>. A new
+/// session gets its id up front (<c>--session-id</c>), so it is recorded before
+/// the turn ends and a stopped or timed-out turn can still be followed up.
 /// </summary>
 public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBackend
 {
@@ -25,7 +27,8 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        foreach (var argument in Arguments(request))
+        var sessionId = request.ResumeSessionId ?? Guid.NewGuid().ToString();
+        foreach (var argument in Arguments(request, sessionId))
         {
             info.ArgumentList.Add(argument);
         }
@@ -46,24 +49,21 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             throw new BackendNotStartedException("claude could not be started", ex);
         }
 
-        return new ClaudeRun(process, request.Correlation, Encoding.UTF8.GetBytes(request.Instruction));
+        return new ClaudeRun(process, request.Correlation, sessionId, Encoding.UTF8.GetBytes(request.Instruction), request.Output);
     }
 
-    internal static List<string> Arguments(BackendRequest request)
+    internal static List<string> Arguments(BackendRequest request, string sessionId)
     {
         List<string> arguments = ["-p", "--output-format", "json", "--dangerously-skip-permissions"];
-        if (request.ResumeSessionId is { } session)
-        {
-            arguments.AddRange(["--resume", session]);
-        }
-
+        arguments.AddRange(request.ResumeSessionId is null ? ["--session-id", sessionId] : ["--resume", sessionId]);
         return arguments;
     }
 
-    sealed class ClaudeRun(Process process, string correlation, byte[] instruction) : IBackendRun
+    sealed class ClaudeRun(Process process, string correlation, string sessionId, byte[] instruction, Action<string, ReadOnlyMemory<byte>>? output) : IBackendRun
     {
         readonly Process _process = process;
-        readonly Task _stderrDrain = DrainAsync(process.StandardError.BaseStream);
+        readonly Stream _stdout = new CapturingReadStream(process.StandardOutput.BaseStream, "stdout", output);
+        readonly Task _stderrDrain = DrainAsync(new CapturingReadStream(process.StandardError.BaseStream, "stderr", output));
         bool _deliveryFailed;
 
         public int? ProcessId => _process.Id;
@@ -93,7 +93,9 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
                 yield break;
             }
 
-            var (output, overflow) = await ReadBoundedAsync(_process.StandardOutput.BaseStream, cancellationToken);
+            // Known before the turn ends: a stopped turn stays resumable.
+            yield return new BackendEvidence.Session(correlation, sessionId);
+            var (output, overflow) = await ReadBoundedAsync(_stdout, cancellationToken);
             if (overflow)
             {
                 TerminateOwnedChild();
@@ -104,7 +106,10 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             yield return new BackendEvidence.Ack(correlation);
             foreach (var evidence in Interpret(correlation, output))
             {
-                yield return evidence;
+                if (evidence is not BackendEvidence.Session { SessionId: var reported } || reported != sessionId)
+                {
+                    yield return evidence;
+                }
             }
 
             yield return new BackendEvidence.EndOfOutput();
@@ -126,6 +131,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
 
         public async ValueTask DisposeAsync()
         {
+            var stdoutDrain = DrainAsync(_stdout);
             try
             {
                 try
@@ -148,6 +154,14 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
                 try
                 {
                     await _stderrDrain.WaitAsync(TimeSpan.FromSeconds(1));
+                }
+                catch (TimeoutException)
+                {
+                }
+
+                try
+                {
+                    await stdoutDrain.WaitAsync(TimeSpan.FromSeconds(1));
                 }
                 catch (TimeoutException)
                 {
