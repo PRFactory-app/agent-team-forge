@@ -64,7 +64,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         {
             // A long turn can outlive the wait, and a fresh TUI can accept input without an
             // observed state change (agent_prompt_stalled). The prompt may already be executing;
-            // ReadEvidenceAsync keeps observing this exact bound pane/transcript and retries once.
+            // ReadEvidenceAsync keeps observing this exact bound pane/transcript and never resends.
         }
     }
 
@@ -103,6 +103,10 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
             _ => InteractiveAgentStatus.Unknown,
         };
     }
+
+    public bool StopJobs(string stateRoot, IReadOnlyList<string> jobIds) =>
+        HerdrOwnedSessions.Stop(stateRoot, jobIds, session =>
+            terminal.RecoverOwnedSessionAsync(session, CancellationToken.None).GetAwaiter().GetResult());
 
     public void StopOwned(InteractiveLaunch launch)
     {

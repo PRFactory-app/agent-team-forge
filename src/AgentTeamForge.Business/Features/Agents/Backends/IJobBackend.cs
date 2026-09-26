@@ -44,6 +44,9 @@ public interface IBackendRun : IAsyncDisposable
 {
     int? ProcessId { get; }
 
+    /// <summary>Positive proof that this run's owned interactive session was stopped.</summary>
+    bool OwnedSessionStopped => false;
+
     /// <summary>
     /// Delivers the request given to Start. May not observe cancellation
     /// promptly (a blocked pipe write); once called, delivery is uncertain.

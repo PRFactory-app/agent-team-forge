@@ -47,11 +47,15 @@
       <p class="note">The working directory must be an existing absolute directory on this machine.</p>
       <div class="new-agent-fields">
         <label>Backend <select id="new-agent-backend" required></select></label>
-        <label>Model <input id="new-agent-model" type="text" maxlength="128" placeholder="Optional model slug"></label>
-        <label>Effort <input id="new-agent-effort" type="text" maxlength="128" placeholder="Optional effort"></label>
+        <label>Name <input id="new-agent-name" type="text" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" placeholder="Auto: backend-short id"></label>
+        <label>Model / tier <select id="new-agent-model" required></select></label>
+        <label id="new-agent-effort-field">Effort <select id="new-agent-effort"></select></label>
         <label class="new-agent-directory">Working directory <input id="new-agent-cwd" type="text" maxlength="4096" placeholder="/absolute/existing/directory" required></label>
+        <button id="new-agent-browse" type="button">Browse directories</button>
         <label>Lead session <select id="new-agent-lead"><option value="">No lead session</option></select></label>
       </div>
+      <div id="new-agent-recent" class="directory-recent" hidden><span>Recent directories</span><div id="new-agent-recent-list"></div></div>
+      <div id="new-agent-picker" class="directory-picker" hidden><div id="new-agent-breadcrumb" class="directory-breadcrumb"></div><div id="new-agent-directory-list" class="directory-list"></div><div class="directory-picker-actions"><button id="new-agent-use-dir" type="button">Use this directory</button><button id="new-agent-close-picker" type="button">Close</button><span id="new-agent-picker-status" role="status"></span></div></div>
       <label>Prompt <textarea id="new-agent-prompt" rows="4" maxlength="8192" required></textarea></label>
       <div class="new-agent-actions"><button id="new-agent-submit" type="submit">Submit job</button><button id="new-agent-retry" type="button" hidden>Retry same submission</button><button id="new-agent-discard" type="button" hidden>Discard attempt</button><span id="new-agent-result" role="status"></span></div>
     </form>

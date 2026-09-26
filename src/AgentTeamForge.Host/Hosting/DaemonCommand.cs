@@ -113,10 +113,7 @@ public static class DaemonCommand
             {
                 return;
             }
-            var recoveryEnvironment = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
-                .ToDictionary(e => (string)e.Key, e => (string?)e.Value, StringComparer.Ordinal);
-            var terminal = new HerdrTerminal(new HerdrTerminalOptions { Environment = recoveryEnvironment });
-            HerdrOwnedSessions.Recover(state.Path, session => terminal.RecoverOwnedSessionAsync(session, CancellationToken.None), Log);
+            HerdrOwnedSessions.Recover(state.Path, store.FenceSession, Log);
         }
         var quarantined = new RecoverOnStartup(store, () =>
         {

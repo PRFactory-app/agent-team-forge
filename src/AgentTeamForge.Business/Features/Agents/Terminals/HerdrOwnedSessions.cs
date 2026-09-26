@@ -12,38 +12,61 @@ public static class HerdrOwnedSessions
     {
         var path = PathFor(launch);
         var temporary = path + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(session, HerdrSessionJson.Default.OwnedHerdrSession));
+        File.WriteAllText(temporary, JsonSerializer.Serialize(session with { JobId = launch.JobId }, HerdrSessionJson.Default.OwnedHerdrSession));
         File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         File.Move(temporary, path, overwrite: true);
     }
 
     internal static void Delete(InteractiveLaunch launch) => File.Delete(PathFor(launch));
 
-    /// <summary>
-    /// Runs before claims. A record whose ownership cannot be proven (or a Herdr fault) is
-    /// logged and kept for the next start; the session is never touched and startup continues.
-    /// </summary>
-    public static void Recover(string stateRoot, Func<OwnedHerdrSession, Task> stop, Action<string> log)
+    /// <summary>Preserve launch proof and fence its job; recovery never stops an interactive TUI.</summary>
+    public static void Recover(string stateRoot, Action<string> fence, Action<string> log)
+    {
+        foreach (var (path, session) in Read(stateRoot, log))
+        {
+            if (session.JobId is { } jobId) { fence(jobId); }
+            log($"recovery: preserved owned Herdr session {session.SessionName} ({path})");
+        }
+    }
+
+    internal static IEnumerable<(string Path, OwnedHerdrSession Session)> Read(string stateRoot, Action<string> log)
     {
         var directory = System.IO.Path.Combine(stateRoot, "herdr");
-        if (!Directory.Exists(directory))
-        {
-            return;
-        }
+        if (!Directory.Exists(directory)) { yield break; }
         foreach (var path in Directory.EnumerateFiles(directory, "*.owned.json"))
         {
+            OwnedHerdrSession? session = null;
             try
             {
-                var session = JsonSerializer.Deserialize(File.ReadAllText(path), HerdrSessionJson.Default.OwnedHerdrSession)
+                session = JsonSerializer.Deserialize(File.ReadAllText(path), HerdrSessionJson.Default.OwnedHerdrSession)
                     ?? throw new HerdrLaunchException("invalid Herdr ownership record");
-                stop(session).GetAwaiter().GetResult(); // Re-proves PID, start time and owner label; absent sessions return.
-                File.Delete(path);
             }
-            catch (Exception e)
+            catch (Exception e) when (e is IOException or JsonException or HerdrLaunchException)
             {
-                log($"warning: Herdr session recovery skipped for {path}: {e.Message}");
+                log($"warning: Herdr ownership record unreadable at {path}: {e.Message}");
             }
+            if (session is not null) { yield return (path, session); }
         }
+    }
+
+    internal static void Forget(string stateRoot, IReadOnlyList<string> jobIds)
+    {
+        foreach (var (path, session) in Read(stateRoot, message => throw new HerdrLaunchException(message)))
+        {
+            if (session.JobId is not null && jobIds.Contains(session.JobId)) { File.Delete(path); }
+        }
+    }
+
+    internal static bool Stop(string stateRoot, IReadOnlyList<string> jobIds, Action<OwnedHerdrSession> stop)
+    {
+        var stopped = false;
+        foreach (var (path, session) in Read(stateRoot, message => throw new HerdrLaunchException(message)))
+        {
+            if (session.JobId is null || !jobIds.Contains(session.JobId)) { continue; }
+            stop(session); // Verifies server start time and owner label; never falls back to a PID.
+            stopped = true; // Keep proof until the caller commits fence release.
+        }
+        return stopped;
     }
 }
 
