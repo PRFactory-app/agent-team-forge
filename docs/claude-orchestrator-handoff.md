@@ -8,21 +8,20 @@ useful wave. No replacement orchestrator has been spawned by this handoff.
 ## 1. Immediate objective and operating rules
 
 Deliver a testable tool quickly, not more planning for its own sake. Maintain a
-ready queue of small, bounded implementation/review/integration tasks. The user
-requested **at least five to six useful parallel workers**, and asked whether
-there could be eight Claude writers. Eight phase plans are not eight independent
+ready queue of small, bounded implementation/review/integration tasks. Use up to 14 useful parallel agents (owner authorized). Eight phase plans are not eight independent
 implementations: distinguish real contract dependencies from unnecessarily serial
 whole-phase ordering. Do not count waiting workers as active or invent busywork.
 
-- Claude writes runtime/test code; Codex GPT-6 Sol, high, reviews and integrates.
-  Semantic merge corrections go to a fresh Claude writer, then Codex re-review.
-- Spawn Claude Code Opus/medium through **win-agent-teams**. New Codex and Pi
-  workers use **native subagents**, not win-agent-teams. Pi Astra/medium plans
-  and researches. If the next harness lacks those tools, state the routing gap;
-  do not silently use the rejected orchestration route.
-- Capture each worker's immutable commit, report, gates and remaining findings;
-  then call `kill_agent` for finished MCP workers. Native subagents terminate
-  after their task. Reuse reports, not huge implementation sessions; hand off
+- The Claude Code orchestrator (Opus) does no hands-on work at all; it
+  keeps up to 14 useful agents busy. All orchestrator-spawned workers use
+  **win-agent-teams** `spawn_agent`: Pi tier max (GPT-6 Astra) plans/researches and may use its own subagents or lead a
+  sub-team for its area, reporting results back;
+  Claude Code Opus, effort medium (low if trivial), implements; Codex tier high
+  (GPT-6 Sol) reviews, integrates and runs combined gates. Semantic merge fixes
+  go to a fresh Claude writer, then Codex re-review. Astra may remain a
+  subordinate member via a join ticket.
+- Workers `send_message` DONE/FAILED, commit sha and gates to `team-lead`;
+  capture that, then `kill_agent`. Reuse reports, not huge sessions; hand off
   well before roughly 200k context tokens.
 - Pragmatic TDD on critical behavior. No prose/formatting assertion battery.
   Major architecture/security/durability changes need independent plan review;

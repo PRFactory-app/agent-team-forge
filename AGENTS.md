@@ -95,40 +95,41 @@ compatibility layer for other orchestration systems.
   phase; do not postpone testing or security until system qualification.
 - A narrow demonstration is an explicitly labelled checkpoint, not completion
   of a full phase. Change contracts/scope visibly and update dependent plans.
-- Keep implementation moving through fresh, bounded agents per slice rather than
-  repeatedly extending one session. Parallelize independent slices with explicit
-  file/worktree ownership while reviews run. Hand off well before roughly
-  200,000 context tokens; 400,000-token implementation sessions are unacceptable.
-  Preserve decisions/tests/blockers in concise reports, then retire finished
-  workers. For workers launched through win-agent-teams, call `kill_agent` once
-  their handoff is captured; a waiting process is not useful parallel work.
-  Do not keep agents idle when the next safe, testable slice is ready.
-- Spawn Claude Code through **win-agent-teams**. Spawn new Pi and Codex workers
-  through the native **subagents** tool (Pi planning, Codex review/verification/
-  integration); do not route new Pi/Codex workers through win-agent-teams.
-  Native subagents terminate when their bounded task finishes. Let already-running
-  reviews finish before retiring their legacy MCP-hosted workers.
-- Parallel implementation uses separate feature branches/worktrees and explicit
-  slice ownership. Maintain an integration branch per milestone; use an
-  independent **Codex GPT-6 Sol (tier high)** integrator to merge reviewed slices,
-  resolve conflicts and run combined gates. Integration is not review approval.
-  Current staffing is **Claude for implementation only; Codex for verification,
-  code review and integration**. Route semantic/runtime conflict fixes back to
-  a Claude writer, then let independent Codex verify; do not silently create a
-  same-family self-approved implementation in the integration lane. Never resolve
-  a conflict by dropping safety tests or weakening a contract. Keep merge inputs
-  small, snapshot-bound and backed by a complete epic plan.
-- Aim for approximately five to six useful parallel agents while independent
-  work exists. Small child coding tasks are allowed when tools support them,
-  ownership is disjoint and the parent reviews the handoff; coordinate capacity
-  rather than creating an unbounded fan-out tree. Do not manufacture busywork or
-  bypass prerequisite safety decisions merely to maintain a head count.
+- A **Claude Code orchestrator (Claude Opus)** leads. It does no hands-on
+  work at all (no implementation, review, planning, research or gate runs);
+  its sole goal is shortest wall-clock delivery: keep a ready queue of small,
+  bounded, testable slices and **up to 14 useful parallel agents** (owner
+  authorized). Do not count waiting workers as
+  active, manufacture busywork, or bypass prerequisite safety decisions.
+- The orchestrator spawns **all** its workers through the **win-agent-teams**
+  MCP (`spawn_agent`), not native subagents:
+  - Planning, research and contract drafting: backend `pi`, tier `max`
+    (GPT-6 Astra). A Pi planner may use its own subagents or act as sub-team
+    lead for its assigned area; it owns that work and reports consolidated
+    results back to the orchestrator. Its internal agents count toward the cap.
+  - Implementation (runtime, tests, small docs fixes): backend `claude-code`,
+    model `opus`, reasoning effort `medium` (`low` for trivial tasks).
+  - Code, plan and contract review, branch integration, combined gate/test runs:
+    backend `codex`, tier `high` (GPT-6 Sol).
+- The previous orchestrator (Astra) may remain a subordinate external member via
+  a win-agent-teams join ticket, taking tasks from the Claude orchestrator.
+- Use fresh, bounded workers per slice with explicit file/worktree ownership and
+  separate feature branches. Hand off well before roughly 200,000 context tokens.
+  Workers report to `team-lead` with `send_message`: DONE/FAILED, commit sha and
+  gate results. Once the handoff is captured, call `kill_agent`.
+- Maintain an integration branch per milestone. The Codex integrator merges
+  reviewed slices, resolves mechanical conflicts and runs combined gates;
+  integration is not review approval and it never self-approves semantic
+  changes. Route semantic/runtime fixes to a fresh Claude writer, then Codex
+  re-review. Never resolve a conflict by dropping safety tests or weakening a
+  contract. Keep merge inputs small, snapshot-bound and backed by an epic plan.
 
 This section is the authoritative contributor review policy. General references
 elsewhere to independent review must be interpreted using these rules.
 
-1. Plans are normally written by **Claude Opus** or **GPT-6 Astra**. These are
-   preferred planning models, not a claim that either is available in every host.
+1. Plans are normally written by **GPT-6 Astra** (Pi tier max); Claude Opus
+   writes code. This is the preferred assignment, not a claim that either model
+   is available in every host.
 2. Match planning depth to change size. **Independent plan review is required
    only for major changes**: architecture changes, broad refactors, new subsystem
    or platform contracts, or changes to persistence/recovery, security, or delivery

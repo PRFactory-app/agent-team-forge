@@ -18,12 +18,13 @@ implementation attempt was stopped and redirected to C#/.NET. Earlier non-.NET
 snippets do not qualify as M0 implementation. The concurrent spike's runtime
 results are not validated by this architecture/documentation update.
 
-The **complete waterfall product plan** has one GPT-6 Astra/medium-authored
-plan per phase. Current priority is continuous bounded implementation toward a
-runnable E2E checkpoint: roughly six parallel lanes, Claude writing code and
-Codex GPT-6 Sol high verifying/reviewing/integrating separate worktrees. See
+The **complete waterfall product plan** has one GPT-6 Astra-authored plan per
+phase (historically written at medium effort). Current priority is continuous bounded implementation toward a
+runnable E2E checkpoint under the staffing rules in `AGENTS.md` (Claude Code
+orchestrator, up to 14 agents; Pi tier max plans, Claude writes code, Codex
+GPT-6 Sol high reviews/integrates separate worktrees). See
 [the execution allocation](docs/spikes/m0-integration-plan.md). A later user
-addition requests a small text-only operator web console; Pi Astra/medium owns
+addition requests a small text-only operator web console; Pi Astra (now tier max) owns
 its plan and static HTML mockup first, not production UI implementation. The near-term real Linux demo remains a
 checkpoint, not the full scope. Interactive-spike safety repairs are separately
 in progress after independent GPT review; no adapter safety approval is implied.
@@ -75,13 +76,14 @@ translation of the initial Swedish planning documents.
     MCP/IPC, and daemon composition, so it is not named UI.
 12. Use pragmatic TDD for business-critical behavior, not a large suite asserting
     prose or implementation details. Code reviews use the opposite model family.
-    Plans normally come from Claude Opus or GPT-6 Astra; independent plan reviews
-    are for major changes. See `AGENTS.md` for binding rules.
+    Plans normally come from GPT-6 Astra (Pi tier max); Claude Opus writes code;
+    Codex (tier high) reviews and integrates. Independent plan reviews are for
+    major changes. See `AGENTS.md` for binding rules.
 13. Use the P01–P08 waterfall roadmap for the complete product. Planning/reviews
     may be parallel; phase implementation consumes accepted predecessor
     contracts. Scope and options are explicit in `docs/product-scope.md`.
-14. Spawn Pi planning/review agents through `subagent_spawn`; Claude Code
-    coordination may continue through its configured agent-team tools.
+14. Spawn all workers (Pi planning, Claude implementation, Codex review/
+    integration) through win-agent-teams `spawn_agent`; see `AGENTS.md`.
 15. Managed/spawned Pi is first-class alongside Claude Code/Codex in P03, not
     deferred to P06 or satisfied by attached/lead-only Pi. Native Windows Pi
     spawn/follow-up/results/interrupt/stop/reconnect must pass in selected
