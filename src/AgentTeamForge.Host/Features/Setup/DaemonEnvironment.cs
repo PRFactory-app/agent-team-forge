@@ -4,8 +4,27 @@ namespace AgentTeamForge.Host.Features.Setup;
 
 internal static class DaemonEnvironment
 {
-    // A daemon can outlive the lead that started it. Carry only user-session
-    // plumbing, not the lead's agent identity, hooks, or one-off credentials.
+    // A daemon can outlive the lead that started it, and its agents inherit
+    // its environment. Keep user configuration and credentials (provider keys,
+    // CODEX_HOME, CLAUDE_CONFIG_DIR, proxies, SSH/git, Windows essentials);
+    // drop only the starting session's identity, wake targets, Herdr pane
+    // targeting and ATF run markers.
+    static readonly string[] DroppedPrefixes =
+    [
+        "CLAUDE_CODE_SESSION", "CLAUDE_CODE_MESSAGING_", "CLAUDE_TEAMS_", "WIN_AGENT_TEAMS_", "HERDR_",
+        "CODEX_SANDBOX",
+    ];
+
+    static readonly HashSet<string> Dropped = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_SSE_PORT", "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+        "CODEX_THREAD_ID", "AGENT_NAME", "AGENT_PARENT_NAME", "AGENT_SESSION_ID",
+        // An agent run by an earlier daemon carries its run marker; a daemon
+        // that inherited it would be killed by its own orphan cleanup.
+        "ATF_RUN_CORRELATION", "ATF_BOOTSTRAP_FILE", "ATF_DAEMON_LOG",
+    };
+
     internal static void Scrub(IDictionary<string, string?> environment)
     {
         foreach (var key in environment.Keys.ToArray())
@@ -17,22 +36,8 @@ internal static class DaemonEnvironment
         }
     }
 
-    internal static bool Keep(string key)
-    {
-        var name = key.ToUpperInvariant();
-        if (name.StartsWith("LC_", StringComparison.Ordinal) || name.StartsWith("XDG_", StringComparison.Ordinal)
-            || name.EndsWith("_PROXY", StringComparison.Ordinal))
-        {
-            return true;
-        }
-        return name is "PATH" or "HOME" or "LANG" or "LANGUAGE" or "USER" or "LOGNAME" or "SHELL"
-            or "TMPDIR" or "TMP" or "TEMP" or "TERM" or "COLORTERM" or "DISPLAY" or "WAYLAND_DISPLAY"
-            or "DBUS_SESSION_BUS_ADDRESS" or "XAUTHORITY" or "SSH_AUTH_SOCK" or "NO_PROXY"
-            or "SYSTEMROOT" or "WINDIR" or "COMSPEC" or "PATHEXT" or "USERPROFILE" or "APPDATA"
-            or "LOCALAPPDATA" or "PROGRAMDATA" or "PROGRAMFILES" or "PROGRAMFILES(X86)"
-            or "COMMONPROGRAMFILES" or "COMMONPROGRAMFILES(X86)" or "PROCESSOR_ARCHITECTURE"
-            or "DOTNET_ROOT" or "DOTNET_ROOT_X64" or "DOTNET_ROOT_X86";
-    }
+    internal static bool Keep(string key) => !Dropped.Contains(key)
+        && !DroppedPrefixes.Any(prefix => key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
 
     internal static Dictionary<string, string?> Current()
     {

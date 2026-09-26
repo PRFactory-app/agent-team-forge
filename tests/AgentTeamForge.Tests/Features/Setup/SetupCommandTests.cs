@@ -284,32 +284,23 @@ public sealed class SetupCommandTests
     }
 
     [Fact]
-    public void DaemonEnvironmentDropsLeadIdentityAndKeepsSessionBasics()
+    public void DaemonEnvironmentDropsLeadIdentityAndKeepsAgentConfiguration()
     {
-        var environment = new Dictionary<string, string?>
+        var kept = new[]
         {
-            ["PATH"] = "/usr/bin",
-            ["HOME"] = "/tmp/home",
-            ["LANG"] = "en_US.UTF-8",
-            ["HTTPS_PROXY"] = "http://proxy",
-            ["XDG_RUNTIME_DIR"] = "/run/user/1",
-            ["DISPLAY"] = ":0",
-            ["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/tmp/bus",
-            ["CLAUDECODE"] = "1",
-            ["CLAUDE_CODE_MESSAGING_TOKEN"] = "secret",
-            ["HERDR_SESSION"] = "lead",
-            ["CODEX_THREAD_ID"] = "lead",
-            ["AGENT_NAME"] = "lead",
-            ["WIN_AGENT_TEAMS_SESSION_DIR"] = "lead",
-            ["OPENAI_API_KEY"] = "secret",
+            "PATH", "HOME", "HTTPS_PROXY", "XDG_RUNTIME_DIR", "SSH_AUTH_SOCK", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "CODEX_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_USE_BEDROCK", "GH_TOKEN", "SystemRoot",
         };
+        var dropped = new[]
+        {
+            "CLAUDECODE", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT",
+            "HERDR_PANE_ID", "CODEX_THREAD_ID", "AGENT_NAME", "WIN_AGENT_TEAMS_PARENT_ID", "ATF_RUN_CORRELATION",
+        };
+        var environment = kept.Concat(dropped).ToDictionary(key => key, key => (string?)"value");
 
         DaemonEnvironment.Scrub(environment);
 
-        Assert.Equal(7, environment.Count);
-        Assert.Equal("/usr/bin", environment["PATH"]);
-        Assert.Equal("/run/user/1", environment["XDG_RUNTIME_DIR"]);
-        Assert.DoesNotContain("AGENT_NAME", environment.Keys);
+        Assert.Equal(kept.Order(), environment.Keys.Order());
     }
 
     [Fact]
@@ -318,17 +309,20 @@ public sealed class SetupCommandTests
         using var temp = new TempStateDir();
         var home = temp.File("home");
         var path = LoginAutostart.FilePath(home, "linux");
-        Assert.False(LoginAutostart.UseSystemdUserUnit(home));
+        Assert.False(LoginAutostart.UseSystemdUserUnit(home, "/tmp/atf", "/tmp/state"));
         static (int, string) FailEnable(string _, IReadOnlyList<string> args) => args.Contains("enable") ? (1, "failed") : (0, "");
 
         Assert.Equal(1, LoginAutostart.Apply(home, "/tmp/atf", "/tmp/state", true, FailEnable, "linux"));
         Assert.False(File.Exists(path));
-        Assert.False(LoginAutostart.UseSystemdUserUnit(home));
 
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, "old unit");
         Assert.Equal(1, LoginAutostart.Apply(home, "/tmp/atf", "/tmp/state", true, FailEnable, "linux"));
         Assert.Equal("old unit", File.ReadAllText(path));
-        Assert.True(LoginAutostart.UseSystemdUserUnit(home));
+
+        File.WriteAllText(path, LoginAutostart.LinuxUnit("/tmp/atf", "/tmp/state", "/usr/bin"));
+        Assert.True(LoginAutostart.UseSystemdUserUnit(home, "/tmp/atf", "/tmp/state"));
+        Assert.False(LoginAutostart.UseSystemdUserUnit(home, "/tmp/other/atf", "/tmp/state"));
+        Assert.False(LoginAutostart.UseSystemdUserUnit(home, "/tmp/atf", "/tmp/other-state"));
     }
 }

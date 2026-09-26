@@ -161,8 +161,9 @@ public static class SetupCommand
 
     static async Task<int> StartPosixAsync(StateDirectory state, string binary, bool quiet)
     {
-        if (OperatingSystem.IsLinux() && LoginAutostart.UseSystemdUserUnit(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)))
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (OperatingSystem.IsLinux()
+            && LoginAutostart.UseSystemdUserUnit(home, ClientSetup.StableBinary(binary, home), state.Path))
         {
             var service = new ProcessStartInfo("systemctl")
             {

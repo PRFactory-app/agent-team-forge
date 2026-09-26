@@ -104,7 +104,14 @@ public static class LoginAutostart
         _ => throw new PlatformNotSupportedException(platform),
     };
 
-    internal static bool UseSystemdUserUnit(string home) => IsInstalled(home, "linux");
+    // Lazy start goes through the unit only when it runs this binary on this
+    // state directory; a stale or foreign unit would start the wrong daemon.
+    internal static bool UseSystemdUserUnit(string home, string binary, string stateDir)
+    {
+        var path = FilePath(home, "linux");
+        var execStart = $"ExecStart={SystemdQuote(binary)} daemon --state-dir {SystemdQuote(stateDir)}";
+        return File.Exists(path) && File.ReadLines(path).Any(line => line.Trim() == execStart);
+    }
 
     internal static string LinuxUnit(string binary, string stateDir, string searchPath) => $"""
         [Unit]
@@ -182,7 +189,8 @@ public static class LoginAutostart
             var previous = File.Exists(launcher) ? File.ReadAllText(launcher) : null;
             try
             {
-                File.WriteAllText(launcher, script);
+                // WSH reads BOM-less scripts in the ANSI code page; UTF-16 keeps non-ASCII profile paths intact.
+                File.WriteAllText(launcher, script, System.Text.Encoding.Unicode);
                 key.SetValue("AgentTeamForge", $"wscript.exe //B //Nologo {WindowsQuote(launcher)}");
             }
             catch
@@ -193,7 +201,7 @@ public static class LoginAutostart
                 }
                 else
                 {
-                    File.WriteAllText(launcher, previous);
+                    File.WriteAllText(launcher, previous, System.Text.Encoding.Unicode);
                 }
                 throw;
             }
