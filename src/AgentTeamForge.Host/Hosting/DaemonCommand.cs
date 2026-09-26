@@ -103,7 +103,8 @@ public static class DaemonCommand
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log);
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept),
-            new ListJobs(store, profile.Bound), checkpoints, dispatcher.Signal, wakeStore, prune);
+            new ListJobs(store, profile.Bound),
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning), checkpoints, dispatcher.Signal, wakeStore, prune);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,

@@ -19,7 +19,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal)
     {
         var limit = request.Limit ?? DefaultPageSize;
         if (limit is < 1 or > MaxPageSize
-            || request.Status is not (null or JobStatus.Queued or JobStatus.Running or JobStatus.Completed or JobStatus.Failed or JobStatus.NeedsReconciliation)
+            || request.Status is not (null or JobStatus.Queued or JobStatus.Running or JobStatus.Completed or JobStatus.Failed or JobStatus.NeedsReconciliation or JobStatus.Cancelled)
             || (request.Cursor is not null && (request.Cursor.Length > 64 || !request.Cursor.StartsWith("job_", StringComparison.Ordinal))))
         {
             return new JobListResult(null, JobErrors.InvalidRequest);
