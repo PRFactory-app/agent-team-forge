@@ -65,7 +65,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
     {
         readonly Process _process = process;
         readonly Stream _stdout = new CapturingReadStream(process.StandardOutput.BaseStream, "stdout", output);
-        readonly Task _stderrDrain = DrainAsync(new CapturingReadStream(process.StandardError.BaseStream, "stderr", output));
+        readonly Task<string> _stderrDrain = BackendSessionErrors.ReadStderrAsync(new CapturingReadStream(process.StandardError.BaseStream, "stderr", output));
         bool _deliveryFailed;
 
         public int? ProcessId => _process.Id;
@@ -91,7 +91,8 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             if (_deliveryFailed)
             {
                 TerminateOwnedChild();
-                yield return new BackendEvidence.ProtocolError("backend_delivery_failed");
+                yield return new BackendEvidence.ProtocolError(!newSession && await BackendSessionErrors.HasExpiredDiagnosticAsync(_stderrDrain, cancellationToken)
+                    ? "session_expired" : "backend_delivery_failed");
                 yield break;
             }
 
@@ -105,8 +106,19 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
                 yield break;
             }
 
+            // A successful turn may itself mention these phrases; only a turn without a
+            // result is checked for a missing native session.
+            var interpreted = Interpret(correlation, output).ToList();
+            if (!newSession && !interpreted.Any(e => e is BackendEvidence.Result)
+                && (BackendSessionErrors.IsExpired(Encoding.UTF8.GetString(output))
+                    || await BackendSessionErrors.HasExpiredDiagnosticAsync(_stderrDrain, cancellationToken)))
+            {
+                yield return new BackendEvidence.ProtocolError("session_expired");
+                yield break;
+            }
+
             yield return new BackendEvidence.Ack(correlation);
-            foreach (var evidence in Interpret(correlation, output))
+            foreach (var evidence in interpreted)
             {
                 if (evidence is not BackendEvidence.Session { SessionId: var reported } || reported != sessionId)
                 {

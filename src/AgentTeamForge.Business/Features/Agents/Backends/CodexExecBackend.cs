@@ -48,7 +48,7 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
             throw new BackendNotStartedException("codex could not be started", ex);
         }
 
-        return new CodexRun(process, request.Correlation, Encoding.UTF8.GetBytes(request.Instruction), request.Output);
+        return new CodexRun(process, request.Correlation, Encoding.UTF8.GetBytes(request.Instruction), request.Output, request.ResumeSessionId is not null);
     }
 
     internal static List<string> BuildArguments(BackendRequest request)
@@ -73,11 +73,11 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
         return args;
     }
 
-    sealed class CodexRun(Process process, string correlation, byte[] instruction, Action<string, ReadOnlyMemory<byte>>? output) : IBackendRun
+    sealed class CodexRun(Process process, string correlation, byte[] instruction, Action<string, ReadOnlyMemory<byte>>? output, bool resuming) : IBackendRun
     {
         readonly Process _process = process;
         readonly Stream _stdout = new CapturingReadStream(process.StandardOutput.BaseStream, "stdout", output);
-        readonly Task _stderrDrain = DrainAsync(new CapturingReadStream(process.StandardError.BaseStream, "stderr", output));
+        readonly Task<string> _stderrDrain = BackendSessionErrors.ReadStderrAsync(new CapturingReadStream(process.StandardError.BaseStream, "stderr", output));
         bool _deliveryFailed;
 
         public int? ProcessId => _process.Id;
@@ -101,7 +101,8 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
         {
             if (_deliveryFailed)
             {
-                yield return new BackendEvidence.ProtocolError("backend_delivery_failed");
+                yield return new BackendEvidence.ProtocolError(resuming && await BackendSessionErrors.HasExpiredDiagnosticAsync(_stderrDrain, cancellationToken)
+                    ? "session_expired" : "backend_delivery_failed");
                 yield break;
             }
 
@@ -126,6 +127,12 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
 
                     yield return evidence;
                 }
+            }
+
+            if (resuming && await BackendSessionErrors.HasExpiredDiagnosticAsync(_stderrDrain, cancellationToken))
+            {
+                yield return new BackendEvidence.ProtocolError("session_expired");
+                yield break;
             }
 
             if (parser.Finish() is { } error)
