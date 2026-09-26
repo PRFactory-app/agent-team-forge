@@ -162,6 +162,27 @@ public sealed class IpcClientDeadlineTests
     }
 
     [Fact]
+    public async Task Handler_io_exception_is_a_daemon_error_not_a_dropped_client()
+    {
+        using var state = new TempStateDir();
+        var credential = FakePeer.WriteCredential(state);
+        var dir = StateDirectory.Open(state.Path);
+        using var server = new IpcServer(dir.Socket, Encoding.UTF8.GetBytes(credential), new BoundPrincipal("op", "team", "agent"),
+            new SpikeLimits(), _ => throw new IOException("Invalid job log header"), _ => { });
+        using var daemonLifetime = new CancellationTokenSource();
+        using var listener = server.Bind();
+        var serving = server.ServeAsync(listener, daemonLifetime.Token);
+
+        var response = await new IpcClient(dir, new SpikeLimits(), TimeSpan.FromSeconds(5))
+            .SendAsync(Submit, TestContext.Current.CancellationToken);
+
+        Assert.Equal(IpcProtocol.InternalError, response.Error);
+        await daemonLifetime.CancelAsync();
+        listener.Dispose();
+        await serving.WaitAsync(Slack, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Missing_endpoint_is_provably_unsent_without_waiting()
     {
         using var state = new TempStateDir();

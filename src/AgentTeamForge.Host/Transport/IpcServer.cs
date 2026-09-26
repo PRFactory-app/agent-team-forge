@@ -140,7 +140,7 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
             // a vanished client cannot cancel a committed job.
             var response = request.ProtocolVersion != IpcProtocol.Version
                 ? new IpcResponse(false, IpcProtocol.UnsupportedVersion)
-                : handle(request);
+                : HandleRequest(request);
             try
             {
                 await Frames.WriteAsync(stream, response, IpcJson.Default.IpcResponse, daemonLifetime);
@@ -170,6 +170,20 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
             // E.g. a storage or injected failure: report no acceptance, keep serving.
             log($"request failed: {ex.GetType().Name}");
             await TryWriteAsync(stream, new IpcResponse(false, IpcProtocol.InternalError));
+        }
+    }
+
+    // A handler's own IOException (e.g. file access) must not look like a dropped client.
+    IpcResponse HandleRequest(IpcRequest request)
+    {
+        try
+        {
+            return handle(request);
+        }
+        catch (Exception ex) when (ex is not (OutOfMemoryException or OperationCanceledException))
+        {
+            log($"request failed: {ex.GetType().Name}");
+            return new IpcResponse(false, IpcProtocol.InternalError);
         }
     }
 
