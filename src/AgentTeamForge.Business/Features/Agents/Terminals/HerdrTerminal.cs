@@ -306,7 +306,8 @@ public sealed class HerdrTerminal
         return err.Length > 300 ? err[..300] : err;
     }
 
-    string? Env(string name) => _options.Environment.TryGetValue(name, out var v) ? v : null;
+    /// <summary>A variable of the environment Herdr panes are launched with.</summary>
+    internal string? Env(string name) => _options.Environment.TryGetValue(name, out var v) ? v : null;
 
     string Home() => Env("HOME") is { Length: > 0 } home && Path.IsPathRooted(home) ? home : "/";
 

@@ -51,7 +51,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
         }
 
         return new ClaudeRun(process, request.Correlation, sessionId, Encoding.UTF8.GetBytes(request.Instruction),
-            request.ResumeSessionId is null, request.Output);
+            request.ResumeSessionId is null, request.WorkingDirectory ?? Environment.CurrentDirectory, request.Output);
     }
 
     internal static List<string> Arguments(BackendRequest request, string sessionId)
@@ -73,7 +73,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
         return arguments;
     }
 
-    sealed class ClaudeRun(Process process, string correlation, string sessionId, byte[] instruction, bool newSession,
+    sealed class ClaudeRun(Process process, string correlation, string sessionId, byte[] instruction, bool newSession, string workingDirectory,
         Action<string, ReadOnlyMemory<byte>>? output) : IBackendRun
     {
         readonly Process _process = process;
@@ -173,9 +173,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             {
                 // --session-id is known before Claude initializes its transcript.
                 // A resume sent before that file exists exits without a result.
-                var root = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR")
-                    ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
-                var projects = Path.Combine(root, "projects");
+                var projects = Path.Combine(ClaudeConfigRoot.Resolve(Environment.GetEnvironmentVariable, workingDirectory), "projects");
                 var deadline = DateTime.UtcNow.AddSeconds(10);
                 while (DateTime.UtcNow < deadline && !_process.HasExited)
                 {
