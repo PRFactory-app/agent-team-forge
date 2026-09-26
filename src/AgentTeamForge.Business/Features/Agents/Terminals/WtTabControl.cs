@@ -18,10 +18,6 @@ internal sealed class WtTabControl : IWtTabControl
         {
             throw new BackendNotStartedException("wt interactive mode requires Windows");
         }
-        if (FindExecutable("wt.exe") is null)
-        {
-            throw new BackendNotStartedException("Windows Terminal (wt.exe) is unavailable");
-        }
         if (FindExecutable("powershell.exe") is null)
         {
             throw new BackendNotStartedException("Windows PowerShell is unavailable");
@@ -41,40 +37,92 @@ internal sealed class WtTabControl : IWtTabControl
         Preflight(launch.Kind);
         var wrapper = launch.BootstrapPath;
         var sidecar = Path.ChangeExtension(wrapper, ".pid");
+        var promptFile = Path.ChangeExtension(wrapper, ".prompt.txt");
         Directory.CreateDirectory(Path.GetDirectoryName(wrapper)!);
         if (File.Exists(sidecar))
         {
             File.Delete(sidecar);
         }
 
+        await File.WriteAllTextAsync(promptFile, prompt, Encoding.UTF8, cancellationToken);
+        if (launch.Kind == InteractiveAgentKind.Codex)
+        {
+            await File.WriteAllTextAsync(HookScript(launch), CodexHookScript(launch), Encoding.UTF8, cancellationToken);
+            await File.WriteAllTextAsync(HookLauncher(launch), CodexHookLauncher(launch), Encoding.ASCII, cancellationToken);
+        }
         await File.WriteAllBytesAsync(wrapper, WrapperBytes(launch, prompt, sidecar), cancellationToken);
 
+        if (FindExecutable("wt.exe") is null)
+        {
+            await StartConsoleAsync(launch, wrapper, sidecar, cancellationToken);
+            return;
+        }
         var start = new ProcessStartInfo("wt.exe") { UseShellExecute = false, CreateNoWindow = true };
         foreach (var arg in new[] { "-w", "wt-atf", "nt", "--title", launch.AgentName,
             "--suppressApplicationTitle", "--", "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", wrapper })
         {
             start.ArgumentList.Add(arg);
         }
-        using var launcher = Process.Start(start) ?? throw new IOException("wt.exe did not start");
+        Process? launcher = null;
+        try
+        {
+            try { launcher = Process.Start(start); }
+            catch (System.ComponentModel.Win32Exception) { }
+            if (launcher is not null)
+            {
+                await AwaitTabAsync(launch, wrapper, sidecar, launcher, cancellationToken);
+                return;
+            }
+        }
+        catch (TabExitedException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // A tab can attach to a degraded WT window with no usable TTY.
+        }
+        finally { launcher?.Dispose(); }
+        // Retry only when the wrapper provably never ran (wt.exe did not start) or its tab
+        // exited during startup. A timeout or wt.exe error is ambiguous: the tab may still
+        // run the wrapper, so a retry could run the agent twice (as in the reference).
+        // A fresh console remains interactive; never switch to a pipe/headless run.
+        await StartConsoleAsync(launch, wrapper, sidecar, cancellationToken);
+    }
+
+    /// <summary>The wrapper started and exited within the settle window, so a retry cannot double-run it.</summary>
+    internal sealed class TabExitedException() : IOException("Windows Terminal tab exited during startup");
+
+    async Task StartConsoleAsync(InteractiveLaunch launch, string wrapper, string sidecar, CancellationToken token)
+    {
+        WindowsConsoleProcess started;
+        try { started = WindowsConsoleProcess.Start(wrapper); }
+        catch (System.ComponentModel.Win32Exception ex) { throw new IOException("interactive console could not start", ex); }
+        using var process = started;
+        await AwaitTabAsync(launch, wrapper, sidecar, () => (process.HasExited, process.ExitCode), token);
+    }
+
+    Task AwaitTabAsync(InteractiveLaunch launch, string wrapper, string sidecar, Process launcher, CancellationToken cancellationToken) =>
+        AwaitTabAsync(launch, wrapper, sidecar, () => (launcher.HasExited, launcher.HasExited ? launcher.ExitCode : 0), cancellationToken);
+
+    async Task AwaitTabAsync(InteractiveLaunch launch, string wrapper, string sidecar, Func<(bool Exited, int Code)> status, CancellationToken cancellationToken)
+    {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(12));
         while (true)
         {
-            if (TryReadPid(sidecar) is { } pid && TryIdentity(pid) is { } created)
+            if (TryReadOwned(sidecar, wrapper) is { } tab && TryIdentity(tab.Pid) == tab.Created)
             {
-                // The wt.exe PID is transient. Only the in-tab wrapper is an owned handle.
-                _tabs[launch.AgentName] = new OwnedTab(pid, created, wrapper, sidecar);
+                _tabs[launch.AgentName] = tab;
+                WindowsTabJob.Assign(tab.Pid);
                 await Task.Delay(TimeSpan.FromSeconds(2), deadline.Token);
                 if (!IsAlive(launch))
                 {
                     _tabs.TryRemove(launch.AgentName, out _);
-                    throw new IOException("Windows Terminal tab exited during startup");
+                    throw new TabExitedException();
                 }
                 return;
             }
-            if (launcher.HasExited && launcher.ExitCode != 0)
+            var (exited, code) = status();
+            if (exited && code != 0)
             {
-                throw new IOException($"wt.exe exited {launcher.ExitCode}");
+                throw new IOException($"interactive launcher exited {code}");
             }
             await Task.Delay(100, deadline.Token);
         }
@@ -93,6 +141,12 @@ internal sealed class WtTabControl : IWtTabControl
             return;
         }
 
+        StopOwned(tab);
+        _tabs.TryRemove(launch.AgentName, out _);
+    }
+
+    static bool StopOwned(OwnedTab tab)
+    {
         if (TryIdentity(tab.Pid) == tab.Created)
         {
             // Killing the agent child lets the wrapper reach exit 0, which closes its tab.
@@ -115,9 +169,43 @@ internal sealed class WtTabControl : IWtTabControl
                 KillTree(tab.Pid);
             }
         }
-        _tabs.TryRemove(launch.AgentName, out _);
+        if (TryIdentity(tab.Pid) == tab.Created)
+        {
+            // Preserve the sidecar so the next daemon can retry owned cleanup.
+            return false;
+        }
         try { File.Delete(tab.Sidecar); } catch (IOException) { }
         try { File.Delete(tab.Wrapper); } catch (IOException) { }
+        try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".prompt.txt")); } catch (IOException) { }
+        try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".hook.ps1")); } catch (IOException) { }
+        try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".hook.cmd")); } catch (IOException) { }
+        return true;
+    }
+
+    public static int RecoverOwned(string stateRoot) => OperatingSystem.IsWindows()
+        ? RecoverOwned(stateRoot, TryIdentity, StopOwned) : 0;
+
+    internal static int RecoverOwned(string stateRoot, Func<int, DateTime?> identity, Func<OwnedTab, bool> stop)
+    {
+        var directory = Path.Combine(stateRoot, "wt");
+        if (!Directory.Exists(directory))
+        {
+            return 0;
+        }
+        var count = 0;
+        foreach (var sidecar in Directory.EnumerateFiles(directory, "atf*.pid"))
+        {
+            var wrapper = Path.ChangeExtension(sidecar, ".ps1");
+            if (TryReadOwned(sidecar, wrapper) is not { } tab || identity(tab.Pid) != tab.Created)
+            {
+                continue;
+            }
+            if (stop(tab))
+            {
+                count++;
+            }
+        }
+        return count;
     }
 
     internal static byte[] WrapperBytes(InteractiveLaunch launch, string prompt, string sidecar)
@@ -130,7 +218,7 @@ internal sealed class WtTabControl : IWtTabControl
             // Remove the caller's agent/session identity before starting a child agent.
             "Get-ChildItem Env: | Where-Object { $_.Name -match '^(CLAUDE_CODE_|CLAUDE_TEAMS_|WIN_AGENT_TEAMS_|AGENT_)' -or $_.Name -in @('CLAUDECODE','CLAUDE_PID','CODEX_THREAD_ID') } | ForEach-Object { Remove-Item -LiteralPath ('Env:' + $_.Name) }",
             "Set-Location -LiteralPath " + Quote(launch.WorkingDirectory),
-            "$PID | Out-File -FilePath " + Quote(sidecar) + " -Encoding ascii",
+            "($PID.ToString() + '|' + (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks) | Out-File -FilePath " + Quote(sidecar) + " -Encoding ascii",
             // Windows PowerShell 5.1 does not escape embedded double quotes when it
             // passes arguments to a native program, which splits or rewrites the
             // prompt. Start the agent with a pre-built command line instead.
@@ -143,6 +231,11 @@ internal sealed class WtTabControl : IWtTabControl
             "$agent.WaitForExit()",
             "exit 0"
         };
+        if (args[0].EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
+        {
+            lines.RemoveRange(lines.Count - 8, 7);
+            lines.Insert(lines.Count - 1, "& " + string.Join(' ', args.Select(Quote)));
+        }
         // PowerShell 5.1 needs a UTF-8 BOM. Joining lines explicitly preserves
         // literal newlines within a quoted prompt (no text-mode LF conversion).
         return [.. new UTF8Encoding(encoderShouldEmitUTF8Identifier: true).GetPreamble()
@@ -165,6 +258,7 @@ internal sealed class WtTabControl : IWtTabControl
                 break;
             case InteractiveAgentKind.Codex:
                 args.AddRange([WindowsAgentBinary("codex"), "--dangerously-bypass-approvals-and-sandbox", "-C", launch.WorkingDirectory]);
+                args.AddRange(CodexHookArguments(HookLauncher(launch)));
                 if (launch.ResumeSessionId is { } codexId)
                 {
                     args.AddRange(["resume", codexId]);
@@ -182,6 +276,13 @@ internal sealed class WtTabControl : IWtTabControl
 
                 break;
             default: throw new ArgumentOutOfRangeException(nameof(launch));
+        }
+        var command = args[0];
+        if (command.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
+        {
+            args.Add(ShimPrompt(launch.Kind, Path.ChangeExtension(launch.BootstrapPath, ".prompt.txt")));
+            WindowsCliLaunch.EnsureCmdSafe(args);
+            return args;
         }
         args.Add(launch.Kind == InteractiveAgentKind.Pi && prompt.Length > 0 && prompt[0] is '@' or '/' or '-'
             || launch.Kind == InteractiveAgentKind.Codex && prompt.StartsWith('-', StringComparison.Ordinal)
@@ -214,6 +315,45 @@ internal sealed class WtTabControl : IWtTabControl
         }
         return quoted.Append('\\', backslashes * 2).Append('"').ToString();
     }));
+
+    internal static string ShimPrompt(InteractiveAgentKind kind, string path) => kind == InteractiveAgentKind.Pi
+        ? "@" + path : "Read the complete task in this UTF-8 file and follow it: " + path;
+
+    internal static IReadOnlyList<string> CodexHookArguments(string launcher)
+    {
+        if (launcher.Contains('\''))
+        {
+            throw new BackendNotStartedException("Codex hook path contains an unsupported quote");
+        }
+        var args = new List<string>();
+        foreach (var evt in new[] { "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop" })
+        {
+            args.Add("-c");
+            args.Add($"hooks.{evt}=[{{hooks=[{{type='command',command='true',commandWindows='{launcher}'}}]}}]");
+        }
+        args.Add("--dangerously-bypass-hook-trust");
+        return args;
+    }
+
+    static string HookScript(InteractiveLaunch launch) => Path.ChangeExtension(launch.BootstrapPath, ".hook.ps1");
+    static string HookLauncher(InteractiveLaunch launch) => Path.ChangeExtension(launch.BootstrapPath, ".hook.cmd");
+
+    static string CodexHookLauncher(InteractiveLaunch launch) => "@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File \""
+        + HookScript(launch) + "\"\r\nexit /b %errorlevel%\r\n";
+
+    static string CodexHookScript(InteractiveLaunch launch)
+    {
+        var marker = Path.ChangeExtension(launch.BootstrapPath, ".state.json");
+        return "$ErrorActionPreference = 'Stop'\r\n"
+            + "$eventJson = [Console]::In.ReadToEnd() | ConvertFrom-Json\r\n"
+            + "$state = if ($eventJson.hook_event_name -eq 'Stop') { 'waiting' } else { 'running' }\r\n"
+            + "$record = @{ state = $state; event = $eventJson.hook_event_name; ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0 } | ConvertTo-Json -Compress\r\n"
+            + "$target = " + Quote(marker) + "\r\n"
+            + "$temporary = $target + '.' + $PID + '.tmp'\r\n"
+            + "$record | Set-Content -LiteralPath $temporary -Encoding UTF8\r\n"
+            + "Move-Item -LiteralPath $temporary -Destination $target -Force\r\n";
+    }
+
 
     internal static string WindowsAgentBinary(string name)
     {
@@ -265,11 +405,10 @@ internal sealed class WtTabControl : IWtTabControl
                 }
             }
         }
-        // A .cmd shim sends multiline prompts through cmd.exe and truncates them.
-        throw new BackendNotStartedException($"native {name} executable is unavailable");
+        return shim;
     }
 
-    static IReadOnlyList<string> WindowsPiLauncher()
+    internal static IReadOnlyList<string> WindowsPiLauncher()
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -281,24 +420,33 @@ internal sealed class WtTabControl : IWtTabControl
             return [direct];
         }
 
-        if (FindExecutable("pi.cmd") is { } shim && FindExecutable("node.exe") is { } node)
+        if (FindExecutable("pi.cmd") is { } shim)
         {
             var entry = Path.Combine(Path.GetDirectoryName(shim)!, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
-            if (File.Exists(entry))
+            if (File.Exists(entry) && FindExecutable("node.exe") is { } node)
             {
                 return [node, entry];
             }
+            return [shim];
         }
         throw new BackendNotStartedException("native Pi launcher is unavailable");
     }
 
-    static int? TryReadPid(string path)
+    internal static OwnedTab? TryReadOwned(string path, string wrapper)
     {
         try
         {
-            return int.TryParse(File.ReadAllText(path).Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var pid) && pid > 0 ? pid : null;
+            var file = new FileInfo(path);
+            if (!file.Exists || file.LinkTarget is not null || file.Length > 128)
+            {
+                return null;
+            }
+            var parts = File.ReadAllText(path).Trim().Split('|');
+            return parts.Length == 2 && int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var pid) && pid > 0
+                && long.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var ticks) && ticks > 0 && ticks <= DateTime.MaxValue.Ticks
+                ? new OwnedTab(pid, new DateTime(ticks, DateTimeKind.Utc), wrapper, path) : null;
         }
-        catch (IOException) { return null; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
     }
 
     static DateTime? TryIdentity(int pid)
@@ -361,5 +509,5 @@ internal sealed class WtTabControl : IWtTabControl
         return null;
     }
 
-    sealed record OwnedTab(int Pid, DateTime Created, string Wrapper, string Sidecar);
+    internal sealed record OwnedTab(int Pid, DateTime Created, string Wrapper, string Sidecar);
 }

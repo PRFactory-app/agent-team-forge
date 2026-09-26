@@ -19,16 +19,32 @@ public static class SetupCommand
     {
         var check = options.ContainsKey("check");
         var apply = options.ContainsKey("apply");
+        var autostart = options.GetValueOrDefault("autostart");
+        if (autostart == "on")
+        {
+            autostart = "true";
+        }
+        if (autostart is not null and not ("true" or "off"))
+        {
+            Console.Error.WriteLine("error: --autostart must be on or off");
+            return 64;
+        }
         if (check && apply)
         {
             Console.Error.WriteLine("error: --check and --apply are mutually exclusive");
             return 64;
         }
-        if (!options.TryGetValue("mode", out var mode) || mode is not ("headless" or "herdr" or "wt"))
+        var dir = ResolveStateDir(options);
+        var mode = options.GetValueOrDefault("mode");
+        if (mode is null && Directory.Exists(dir))
         {
-            if (!check)
+            mode = ConfiguredMode(StateDirectory.Open(dir));
+        }
+        if (mode is not ("headless" or "herdr" or "wt") || (!check && !options.ContainsKey("mode") && !(autostart is not null && apply)))
+        {
+            if (!check && !(autostart == "off" && apply && !options.ContainsKey("mode") && mode is null))
             {
-                Console.Error.WriteLine("usage: atf setup --mode headless|herdr|wt [--state-dir DIR] [--apply|--check]");
+                Console.Error.WriteLine("usage: atf setup --mode headless|herdr|wt [--autostart[=off]] [--state-dir DIR] [--apply|--check]");
                 return 64;
             }
         }
@@ -38,7 +54,6 @@ public static class SetupCommand
             return 64;
         }
 
-        var dir = ResolveStateDir(options);
         var home = homePath ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var binary = ClientSetup.StableBinary(executablePath ?? Environment.ProcessPath
             ?? throw new InvalidOperationException("Executable path unavailable"), home);
@@ -46,7 +61,13 @@ public static class SetupCommand
         var settingsPath = claudeSettingsPath ?? Path.Combine(home, ".claude", "settings.json");
         if (check)
         {
+            Console.Out.WriteLine($"Login autostart: {(LoginAutostart.IsInstalled(home) ? "on" : "off")}");
             return ClientSetup.Reconcile(binary, dir, home, settingsPath, extensionPath, commandRunner, apply: false) ? 0 : 1;
+        }
+
+        if (autostart is not null && apply && !options.ContainsKey("mode"))
+        {
+            return LoginAutostart.Apply(home, binary, dir, enable: autostart == "true", commandRunner);
         }
 
         if (!File.Exists(Path.Combine(dir, "profile.json")))
@@ -72,6 +93,10 @@ public static class SetupCommand
             {
                 return 1;
             }
+            if (autostart is not null && LoginAutostart.Apply(home, binary, state.Path, autostart == "true", commandRunner) != 0)
+            {
+                return 1;
+            }
         }
         else
         {
@@ -92,30 +117,49 @@ public static class SetupCommand
         return 0;
     }
 
-    public static async Task<int> StartAsync(IReadOnlyDictionary<string, string> options, string? executablePath = null)
+    public static async Task<int> StartAsync(IReadOnlyDictionary<string, string> options, string? executablePath = null, bool quiet = false)
     {
         var state = StateDirectory.Open(ResolveStateDir(options));
-        _ = SpikeProfileFile.Load(state);
-        var mode = ReadMode(state);
+        var profile = SpikeProfileFile.Load(state);
+        var mode = ConfiguredMode(state) ?? (profile.TestProfile ? "headless" : ReadMode(state));
         if (!ModeAvailable(mode))
         {
             Console.Error.WriteLine($"error: launch mode {mode} is unavailable on this platform");
             return 64;
         }
+        // Concurrent starters (several MCP bridges) queue here so only one probes and
+        // launches; a probe must never overlap a starting daemon's own lock attempt.
+        using var gate = await AcquireStartGateAsync(state);
+        if (gate is null)
+        {
+            Console.Error.WriteLine($"error: another daemon start did not finish; see {state.Path}/daemon.log");
+            return 1;
+        }
         using (var probe = DaemonLock.TryAcquire(state.LockFile))
         {
             if (probe is null)
             {
-                return PrintRunningPid(state);
+                return await WaitForReadyAsync(state, quiet);
             }
         }
 
         var binary = Path.GetFullPath(executablePath ?? Environment.ProcessPath
             ?? throw new InvalidOperationException("Executable path unavailable"));
-        if (OperatingSystem.IsWindows())
+        try
         {
-            return await StartWindowsAsync(state, binary);
+            return OperatingSystem.IsWindows()
+                ? await StartWindowsAsync(state, binary, quiet)
+                : await StartPosixAsync(state, binary, quiet);
         }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
+        {
+            Console.Error.WriteLine($"error: daemon could not start: {ex.Message}");
+            return 1;
+        }
+    }
+
+    static async Task<int> StartPosixAsync(StateDirectory state, string binary, bool quiet)
+    {
         // setsid separates the daemon from the invoking shell; the shell only
         // redirects its streams and then execs the real atf process.
         var info = new ProcessStartInfo("setsid") { UseShellExecute = false };
@@ -129,33 +173,7 @@ public static class SetupCommand
         info.ArgumentList.Add(state.Path);
         info.Environment["ATF_DAEMON_LOG"] = Path.Combine(state.Path, "daemon.log");
         using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
-        // The daemon holds the lock for its lifetime and writes its PID under that lock.
-        for (var i = 0; i < 100; i++)
-        {
-            if (process.HasExited)
-            {
-                using var other = DaemonLock.TryAcquire(state.LockFile);
-                if (other is null)
-                {
-                    return PrintRunningPid(state);
-                }
-
-                Console.Error.WriteLine($"error: daemon exited ({process.ExitCode}); see {state.Path}/daemon.log");
-                return 1;
-            }
-
-            // Do not probe the lock here: holding it even briefly can make the
-            // starting daemon lose the race and exit. setsid/sh exec keep the PID.
-            if (DaemonLock.ReadOwnerPid(state.LockFile) == process.Id && File.Exists(state.Socket))
-            {
-                return PrintRunningPid(state);
-            }
-
-            await Task.Delay(50);
-        }
-
-        Console.Error.WriteLine("error: daemon did not become ready");
-        return 1;
+        return await WaitForReadyAsync(state, quiet, process);
     }
 
     public static int Stop(IReadOnlyDictionary<string, string> options)
@@ -229,35 +247,82 @@ public static class SetupCommand
         return 1;
     }
 
-    static async Task<int> StartWindowsAsync(StateDirectory state, string binary)
+    static async Task<int> StartWindowsAsync(StateDirectory state, string binary, bool quiet)
     {
         var info = new ProcessStartInfo(binary) { UseShellExecute = false, CreateNoWindow = true };
         info.ArgumentList.Add("daemon");
         info.ArgumentList.Add("--state-dir");
         info.ArgumentList.Add(state.Path);
         using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
-        for (var i = 0; i < 100; i++)
+        return await WaitForReadyAsync(state, quiet, process);
+    }
+
+    static async Task<int> WaitForReadyAsync(StateDirectory state, bool quiet, Process? launched = null)
+    {
+        for (var i = 0; i < 200; i++)
         {
-            if (process.HasExited)
+            var pid = DaemonLock.ReadOwnerPid(state.LockFile);
+            if (pid is > 0 && (launched is null || pid != launched.Id || OperatingSystem.IsWindows() || ReadyLogged(state, pid.Value))
+                && await EndpointReadyAsync(state))
             {
-                Console.Error.WriteLine($"error: daemon exited ({process.ExitCode})");
-                return 1;
+                return PrintRunningPid(state, quiet);
             }
-            if (DaemonLock.ReadOwnerPid(state.LockFile) == process.Id)
+            if (launched?.HasExited == true)
             {
-                using var pipe = new NamedPipeClientStream(".", state.Socket, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-                try
+                using var other = DaemonLock.TryAcquire(state.LockFile);
+                if (other is not null)
                 {
-                    await pipe.ConnectAsync(50);
-                    return PrintRunningPid(state);
+                    Console.Error.WriteLine($"error: daemon exited ({launched.ExitCode}); see {state.Path}/daemon.log");
+                    return 1;
                 }
-                catch (TimeoutException) { }
-                catch (IOException) { }
             }
             await Task.Delay(50);
         }
-        Console.Error.WriteLine("error: daemon did not become ready");
+        Console.Error.WriteLine($"error: daemon did not become ready; see {state.Path}/daemon.log");
         return 1;
+    }
+
+    static async Task<DaemonLock?> AcquireStartGateAsync(StateDirectory state)
+    {
+        for (var i = 0; i < 300; i++)
+        {
+            if (DaemonLock.TryAcquire(Path.Combine(state.Path, "start.lock")) is { } gate)
+            {
+                return gate;
+            }
+            await Task.Delay(50);
+        }
+        return null;
+    }
+
+    static bool ReadyLogged(StateDirectory state, int pid)
+    {
+        try
+        {
+            return File.Exists(Path.Combine(state.Path, "daemon.log")) && File.ReadLines(Path.Combine(state.Path, "daemon.log"))
+                .Any(line => line == $"[atf-daemon] ready pid={pid}");
+        }
+        catch (IOException) { return false; }
+    }
+
+    static async Task<bool> EndpointReadyAsync(StateDirectory state)
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                using var pipe = new NamedPipeClientStream(".", state.Socket, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                await pipe.ConnectAsync(50);
+            }
+            else
+            {
+                using var socket = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.Unix, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Unspecified);
+                using var timeout = new CancellationTokenSource(50);
+                await socket.ConnectAsync(new System.Net.Sockets.UnixDomainSocketEndPoint(state.Socket), timeout.Token);
+            }
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or OperationCanceledException or TimeoutException) { return false; }
     }
 
     static int StopWindows(StateDirectory state)
@@ -276,6 +341,8 @@ public static class SetupCommand
         try
         {
             using var process = Process.GetProcessById(pid.Value);
+            // Settle owned agents first so their PowerShell wrappers close their tabs.
+            _ = WtInteractiveBackend.RecoverOwned(state.Path);
             process.Kill();
             process.WaitForExit(5000);
             Console.Out.WriteLine($"Stopped daemon {pid.Value}.");
@@ -380,7 +447,7 @@ public static class SetupCommand
             : Path.Combine(Environment.GetEnvironmentVariable("XDG_STATE_HOME") is { Length: > 0 } xdg ? xdg :
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state"), "agentteamforge"));
 
-    static int PrintRunningPid(StateDirectory state)
+    static int PrintRunningPid(StateDirectory state, bool quiet = false)
     {
         var pid = DaemonLock.ReadOwnerPid(state.LockFile);
         if (pid is null)
@@ -389,7 +456,10 @@ public static class SetupCommand
             return 1;
         }
 
-        Console.Out.WriteLine(pid.Value);
+        if (!quiet)
+        {
+            Console.Out.WriteLine(pid.Value);
+        }
         return 0;
     }
 

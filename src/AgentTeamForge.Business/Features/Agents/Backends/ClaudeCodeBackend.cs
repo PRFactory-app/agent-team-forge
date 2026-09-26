@@ -38,6 +38,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             info.WorkingDirectory = cwd;
         }
         OrphanedBackendProcess.Mark(info, request.Correlation);
+        WindowsCliLaunch.Configure(info, "claude", executable == "claude");
 
         Process process;
         try
