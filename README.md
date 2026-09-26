@@ -34,6 +34,18 @@ Product name: **AgentTeamForge**. Repository name: **`agent-team-forge`**.
 The CLI name will be decided later; `atf` is a working name in these documents,
 not an available command yet.
 
+## MVP: real agents from Claude Code (Linux)
+
+`atf init --state-dir DIR` now defaults to real agent backends (`--backends fake`
+or `--test-profile` keeps fake only); `atf daemon --state-dir DIR` runs them.
+Register the MCP bridge with `claude mcp add atf -- /path/to/atf mcp --state-dir DIR`
+and use `submit_job(backend, instruction, cwd?, idempotency_key)`, `get_job`,
+`follow_up(job_id, instruction, idempotency_key)` (resumes the finished job's native
+session on the same backend/cwd) and `list_jobs`. CLI equivalents:
+`atf client submit|get|follow-up|list`. `scripts/demo-real.sh [claude|codex|pi]` is the
+opt-in end-to-end check (spends tokens); `fake` is a plumbing dry run. Jobs run one at
+a time and agents run headless with bypassed permissions.
+
 ## Reading order
 
 | Document | Contents |
