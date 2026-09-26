@@ -521,10 +521,11 @@ public static class SetupCommand
 
     internal static string ResolveStateDir(IReadOnlyDictionary<string, string> options) => Path.GetFullPath(
         options.TryGetValue("state-dir", out var specified) ? specified :
-        OperatingSystem.IsWindows()
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentTeamForge")
-            : Path.Combine(Environment.GetEnvironmentVariable("XDG_STATE_HOME") is { Length: > 0 } xdg ? xdg :
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state"), "agentteamforge"));
+        // One home-based default on every OS. Not %LOCALAPPDATA% on Windows: Windows Terminal is a
+        // packaged (MSIX) app whose tabs see a virtualized AppData\Local where directories created by
+        // unpackaged processes are invisible, so `wt ... powershell -File <state>\wt\*.ps1` fails.
+        Path.Combine(Environment.GetEnvironmentVariable("XDG_STATE_HOME") is { Length: > 0 } xdg ? xdg :
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state"), "agentteamforge"));
 
     static int PrintRunningPid(StateDirectory state, bool quiet = false)
     {
