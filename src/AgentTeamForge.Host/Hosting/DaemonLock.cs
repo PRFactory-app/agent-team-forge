@@ -26,7 +26,7 @@ public sealed class DaemonLock : IDisposable
                 Mode = FileMode.OpenOrCreate,
                 Access = FileAccess.ReadWrite,
                 Share = FileShare.ReadWrite,
-                UnixCreateMode = StateDirectory.PrivateFile,
+                UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
             });
         }
         catch (IOException)
@@ -35,6 +35,12 @@ public sealed class DaemonLock : IDisposable
             return null;
         }
 
+        if (OperatingSystem.IsWindows())
+        {
+            try { stream.Lock(0, 1); }
+            catch (IOException) { stream.Dispose(); return null; }
+            return new DaemonLock(stream);
+        }
         var fd = stream.SafeFileHandle.DangerousGetHandle();
         if (Native.flock(fd, Native.LockExclusive | Native.LockNonBlocking) != 0)
         {

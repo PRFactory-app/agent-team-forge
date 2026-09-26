@@ -1,13 +1,15 @@
 using System.Diagnostics;
+using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Host.Hosting;
 
 namespace AgentTeamForge.Host.Features.Setup;
 
-/// <summary>Local Linux setup and daemon process controls.</summary>
+/// <summary>Local setup and daemon process controls.</summary>
 public static class SetupCommand
 {
     const string SettingsFile = "launch-mode.json";
@@ -22,13 +24,18 @@ public static class SetupCommand
             Console.Error.WriteLine("error: --check and --apply are mutually exclusive");
             return 64;
         }
-        if (!options.TryGetValue("mode", out var mode) || mode is not ("headless" or "herdr"))
+        if (!options.TryGetValue("mode", out var mode) || mode is not ("headless" or "herdr" or "wt"))
         {
             if (!check)
             {
-                Console.Error.WriteLine("usage: atf setup --mode headless|herdr [--state-dir DIR] [--apply|--check]");
+                Console.Error.WriteLine("usage: atf setup --mode headless|herdr|wt [--state-dir DIR] [--apply|--check]");
                 return 64;
             }
+        }
+        else if (!ModeAvailable(mode))
+        {
+            Console.Error.WriteLine($"error: launch mode {mode} is unavailable on this platform");
+            return 64;
         }
 
         var dir = ResolveStateDir(options);
@@ -80,7 +87,7 @@ public static class SetupCommand
         }
         else
         {
-            Console.Out.WriteLine($"Launch mode: herdr. Run: {FormatCommand(binary, ["start", "--state-dir", state.Path])}");
+            Console.Out.WriteLine($"Launch mode: {mode}. Run: {FormatCommand(binary, ["start", "--state-dir", state.Path])}");
         }
         return 0;
     }
@@ -89,7 +96,12 @@ public static class SetupCommand
     {
         var state = StateDirectory.Open(ResolveStateDir(options));
         _ = SpikeProfileFile.Load(state);
-        _ = ReadMode(state);
+        var mode = ReadMode(state);
+        if (!ModeAvailable(mode))
+        {
+            Console.Error.WriteLine($"error: launch mode {mode} is unavailable on this platform");
+            return 64;
+        }
         using (var probe = DaemonLock.TryAcquire(state.LockFile))
         {
             if (probe is null)
@@ -100,6 +112,10 @@ public static class SetupCommand
 
         var binary = Path.GetFullPath(executablePath ?? Environment.ProcessPath
             ?? throw new InvalidOperationException("Executable path unavailable"));
+        if (OperatingSystem.IsWindows())
+        {
+            return await StartWindowsAsync(state, binary);
+        }
         // setsid separates the daemon from the invoking shell; the shell only
         // redirects its streams and then execs the real atf process.
         var info = new ProcessStartInfo("setsid") { UseShellExecute = false };
@@ -145,6 +161,11 @@ public static class SetupCommand
     public static int Stop(IReadOnlyDictionary<string, string> options)
     {
         var state = StateDirectory.Open(ResolveStateDir(options));
+        if (OperatingSystem.IsWindows())
+        {
+            return StopWindows(state);
+        }
+
         if (LockIsFree(state))
         {
             Console.Out.WriteLine("Daemon is not running.");
@@ -208,6 +229,94 @@ public static class SetupCommand
         return 1;
     }
 
+    static async Task<int> StartWindowsAsync(StateDirectory state, string binary)
+    {
+        var info = new ProcessStartInfo(binary) { UseShellExecute = false, CreateNoWindow = true };
+        info.ArgumentList.Add("daemon");
+        info.ArgumentList.Add("--state-dir");
+        info.ArgumentList.Add(state.Path);
+        using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
+        for (var i = 0; i < 100; i++)
+        {
+            if (process.HasExited)
+            {
+                Console.Error.WriteLine($"error: daemon exited ({process.ExitCode})");
+                return 1;
+            }
+            if (DaemonLock.ReadOwnerPid(state.LockFile) == process.Id)
+            {
+                using var pipe = new NamedPipeClientStream(".", state.Socket, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                try
+                {
+                    await pipe.ConnectAsync(50);
+                    return PrintRunningPid(state);
+                }
+                catch (TimeoutException) { }
+                catch (IOException) { }
+            }
+            await Task.Delay(50);
+        }
+        Console.Error.WriteLine("error: daemon did not become ready");
+        return 1;
+    }
+
+    static int StopWindows(StateDirectory state)
+    {
+        if (LockIsFree(state))
+        {
+            Console.Out.WriteLine("Daemon is not running.");
+            return 0;
+        }
+        var pid = DaemonLock.ReadOwnerPid(state.LockFile);
+        if (pid is null || !IsOurWindowsDaemon(pid.Value, state.Path))
+        {
+            Console.Error.WriteLine("error: lock PID is not this state's atf daemon; no signal sent");
+            return 1;
+        }
+        try
+        {
+            using var process = Process.GetProcessById(pid.Value);
+            process.Kill();
+            process.WaitForExit(5000);
+            Console.Out.WriteLine($"Stopped daemon {pid.Value}.");
+            return 0;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return StoppedDuringCheck(state);
+        }
+    }
+
+    static bool IsOurWindowsDaemon(int pid, string statePath)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            if (!Path.GetFullPath(process.MainModule?.FileName ?? "").Equals(Path.GetFullPath(Environment.ProcessPath!), StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var info = new ProcessStartInfo("powershell.exe") { UseShellExecute = false, RedirectStandardOutput = true, CreateNoWindow = true };
+            info.ArgumentList.Add("-NoProfile");
+            info.ArgumentList.Add("-Command");
+            info.ArgumentList.Add($"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine");
+            using var query = Process.Start(info);
+            if (query is null)
+            {
+                return false;
+            }
+
+            var commandLine = query.StandardOutput.ReadToEnd();
+            query.WaitForExit(5000);
+            var args = query.ExitCode == 0 ? WindowsCommandLine.Split(commandLine.Trim()) : null;
+            return args is { Length: >= 4 } && args[1] == "daemon" && args[2] == "--state-dir"
+                && Path.TrimEndingDirectorySeparator(Path.GetFullPath(args[3])).Equals(
+                    Path.TrimEndingDirectorySeparator(statePath), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is IOException or ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { return false; }
+    }
+
     static bool LockIsFree(StateDirectory state)
     {
         using var probe = DaemonLock.TryAcquire(state.LockFile);
@@ -266,8 +375,10 @@ public static class SetupCommand
 
     internal static string ResolveStateDir(IReadOnlyDictionary<string, string> options) => Path.GetFullPath(
         options.TryGetValue("state-dir", out var specified) ? specified :
-        Path.Combine(Environment.GetEnvironmentVariable("XDG_STATE_HOME") is { Length: > 0 } xdg ? xdg :
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state"), "agentteamforge"));
+        OperatingSystem.IsWindows()
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentTeamForge")
+            : Path.Combine(Environment.GetEnvironmentVariable("XDG_STATE_HOME") is { Length: > 0 } xdg ? xdg :
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state"), "agentteamforge"));
 
     static int PrintRunningPid(StateDirectory state)
     {
@@ -292,7 +403,7 @@ public static class SetupCommand
             {
                 Mode = FileMode.CreateNew,
                 Access = FileAccess.Write,
-                UnixCreateMode = StateDirectory.PrivateFile,
+                UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
             }))
             {
                 JsonSerializer.Serialize(file, new LaunchModeSettings(mode), SetupCommandJson.Default.LaunchModeSettings);
@@ -313,7 +424,7 @@ public static class SetupCommand
     internal static void EnableClaudeInbound(string path)
     {
         var parent = Path.GetDirectoryName(path)!;
-        Directory.CreateDirectory(parent, StateDirectory.PrivateDir);
+        StateDirectory.CreatePrivateDirectory(parent);
         using var existing = File.Exists(path)
             ? JsonDocument.Parse(File.ReadAllBytes(path), new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip })
             : null;
@@ -334,7 +445,7 @@ public static class SetupCommand
             {
                 Mode = FileMode.CreateNew,
                 Access = FileAccess.Write,
-                UnixCreateMode = StateDirectory.PrivateFile,
+                UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
             }))
             {
                 using var writer = new Utf8JsonWriter(file, new JsonWriterOptions { Indented = true });
@@ -370,7 +481,7 @@ public static class SetupCommand
     {
         var path = Path.Combine(state.Path, SettingsFile);
         var settings = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(path), SetupCommandJson.Default.LaunchModeSettings);
-        if (settings?.Mode is not ("headless" or "herdr"))
+        if (settings?.Mode is not ("headless" or "herdr" or "wt"))
         {
             throw new StateDirectoryException("launch_mode_invalid");
         }
@@ -378,15 +489,38 @@ public static class SetupCommand
         return settings.Mode;
     }
 
+    static bool ModeAvailable(string mode) => mode switch
+    {
+        "wt" => OperatingSystem.IsWindows(),
+        "herdr" => OperatingSystem.IsLinux(),
+        _ => true,
+    };
+
     internal static string? ConfiguredMode(StateDirectory state) =>
         File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadMode(state) : null;
 
     internal static (int ExitCode, string Output) RunCommand(string tool, IReadOnlyList<string> args)
     {
-        var info = new ProcessStartInfo(tool) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (var arg in args)
+        var info = new ProcessStartInfo(OperatingSystem.IsWindows() ? "powershell.exe" : tool)
         {
-            info.ArgumentList.Add(arg);
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        if (OperatingSystem.IsWindows())
+        {
+            info.ArgumentList.Add("-NoProfile");
+            info.ArgumentList.Add("-Command");
+            // Keep the not-installed (127) and native exit-code contract of the direct launch.
+            info.ArgumentList.Add($"if (-not (Get-Command -Name {QuotePowerShell(tool)} -CommandType Application,ExternalScript -ErrorAction SilentlyContinue)) {{ exit 127 }}; & "
+                + string.Join(' ', new[] { tool }.Concat(args).Select(QuotePowerShell)) + "; exit $LASTEXITCODE");
+        }
+        else
+        {
+            foreach (var arg in args)
+            {
+                info.ArgumentList.Add(arg);
+            }
         }
 
         try
@@ -405,8 +539,11 @@ public static class SetupCommand
         }
     }
 
-    static string FormatCommand(string tool, IReadOnlyList<string> args) =>
-        string.Join(' ', new[] { tool }.Concat(args).Select(Quote));
+    static string FormatCommand(string tool, IReadOnlyList<string> args) => OperatingSystem.IsWindows()
+        ? "powershell -NoProfile -Command \"& " + string.Join(' ', new[] { tool }.Concat(args).Select(QuotePowerShell)) + "\""
+        : string.Join(' ', new[] { tool }.Concat(args).Select(Quote));
+
+    static string QuotePowerShell(string value) => PowerShellText.Quote(value);
 
     static string Quote(string value) => value.All(c => char.IsAsciiLetterOrDigit(c) || c is '/' or '-' or '_' or '.')
         ? value : "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.Jobs;
@@ -28,10 +29,15 @@ public static class DaemonCommand
     {
         var profile = SpikeProfileFile.Load(state);
         var launchMode = SetupCommand.ConfiguredMode(state);
-        if (launchMode == "herdr" && !profile.RealAgents)
+        if (launchMode is "herdr" or "wt" && !profile.RealAgents)
         {
-            Log("error: herdr mode requires an agents profile");
+            Log($"error: {launchMode} mode requires an agents profile");
             return 78;
+        }
+        if (launchMode == "wt" && !OperatingSystem.IsWindows() || launchMode == "herdr" && !OperatingSystem.IsLinux())
+        {
+            Log($"error: {launchMode} mode is unavailable on this platform");
+            return 64;
         }
         if ((crashAt is not null || failAt is not null) && !profile.TestProfile)
         {
@@ -101,7 +107,7 @@ public static class DaemonCommand
         }
 
         var backends = BackendCatalog.Create(
-            new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits), profile.RealAgents && launchMode != "herdr");
+            new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits), profile.RealAgents && launchMode is not ("herdr" or "wt"));
         if (launchMode == "herdr")
         {
             var seed = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
@@ -115,10 +121,21 @@ public static class DaemonCommand
             backends.Register(BackendCatalog.Codex, () => codex);
             backends.Register(BackendCatalog.Pi, () => pi);
         }
+        if (launchMode == "wt")
+        {
+            backends.Register(BackendCatalog.Claude, () => new WtInteractiveBackend(InteractiveAgentKind.Claude, state.Path));
+            backends.Register(BackendCatalog.Codex, () => new WtInteractiveBackend(InteractiveAgentKind.Codex, state.Path));
+            backends.Register(BackendCatalog.Pi, () => new WtInteractiveBackend(InteractiveAgentKind.Pi, state.Path));
+        }
         Log($"backends: {string.Join(',', backends.Names)}");
         var admission = new AdmissionGate();
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs);
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
+        // Remote claims have their own lead identity and cannot borrow the local MCP lead.
+        var connectorAccept = new AcceptJob(store, new BoundPrincipal("prfactory", "connector", "connector-lead"),
+            limits, profile.TestProfile, admission, backends.Names);
+        var connectorTeams = new PRFactoryTeamStore(database);
+        var connectorSessions = new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
             new ListJobs(store, profile.Bound),
             new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store, new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database));
@@ -128,16 +145,20 @@ public static class DaemonCommand
             request => request.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp ? dispatcher.PauseClaims() : null);
 
         using var lifetime = new CancellationTokenSource();
-        using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; lifetime.Cancel(); });
-        using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, context => { context.Cancel = true; lifetime.Cancel(); });
+        using var sigterm = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; lifetime.Cancel(); });
+        using var sigint = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGINT, context => { context.Cancel = true; lifetime.Cancel(); });
 
-        using var listener = server.Bind();
+        using var listener = OperatingSystem.IsWindows() ? null : server.Bind();
         Log($"ready pid={Environment.ProcessId}");
-        var serving = server.ServeAsync(listener, lifetime.Token);
+        var serving = OperatingSystem.IsWindows() ? server.ServeWindowsAsync(lifetime.Token) : server.ServeAsync(listener!, lifetime.Token);
         var dispatching = dispatcher.RunAsync(lifetime.Token);
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path), Log).RunAsync(lifetime.Token);
         var pruning = profile.AutoPrune ? RunPruneAsync(prune, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
-        var prfactory = PRFactoryHeartbeat.RunAsync(state, lifetime.Token, log: Log);
+        var prfactory = PRFactoryHeartbeat.RunAsync(state, lifetime.Token, log: Log,
+            onConnected: (client, settings, machineId, ct) =>
+                new PRFactoryWorkItems(settings.Url, settings.Repositories, connectorTeams, client,
+                    connectorAccept.Execute, store.GetJob, dispatcher.Signal,
+                    cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId, Log).TickAsync(machineId, ct));
         await Task.WhenAny(serving, dispatching);
 
         // The dispatcher only returns on its own when halted or faulted; it closed

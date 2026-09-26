@@ -75,6 +75,10 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
             {
                 args.AddRange(["--thinking", thinking]);
             }
+            else if (pair is ["effort", { Length: > 0 } effort])
+            {
+                args.AddRange(["--thinking", effort]);
+            }
         }
 
         return args;

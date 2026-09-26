@@ -124,6 +124,7 @@ internal sealed class InteractiveTranscriptReader : IInteractiveTranscriptReader
                 return null;
             }
             var markerSeen = false;
+            var completed = false;
             string? last = null;
             var progress = new List<string>();
             foreach (var line in File.ReadLines(path, Encoding.UTF8))
@@ -138,13 +139,14 @@ internal sealed class InteractiveTranscriptReader : IInteractiveTranscriptReader
                     continue;
                 }
                 using var json = JsonDocument.Parse(line);
+                completed |= CompletedTurn(json.RootElement, kind);
                 if (AssistantText(json.RootElement, kind) is { } text)
                 {
                     last = text;
                     progress.Add(text);
                 }
             }
-            return markerSeen ? new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress) : null;
+            return markerSeen ? new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress, completed) : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { return null; }
     }
@@ -192,6 +194,22 @@ internal sealed class InteractiveTranscriptReader : IInteractiveTranscriptReader
             .Where(text => text is not null);
         var joined = string.Concat(parts);
         return joined.Length > 0 ? joined : null;
+    }
+
+    static bool CompletedTurn(JsonElement root, InteractiveAgentKind kind)
+    {
+        if (kind == InteractiveAgentKind.Codex)
+        {
+            return Str(root, "type") == "event_msg" && root.TryGetProperty("payload", out var payload)
+                && Str(payload, "type") == "task_complete";
+        }
+        if (kind == InteractiveAgentKind.Claude)
+        {
+            return Str(root, "type") == "assistant" && root.TryGetProperty("message", out var message)
+                && Str(message, "stop_reason") == "end_turn";
+        }
+        return Str(root, "type") == "message" && root.TryGetProperty("message", out var piMessage)
+            && Str(piMessage, "role") == "assistant" && Str(piMessage, "stopReason") is "stop" or "end_turn";
     }
 
     static string? Str(JsonElement element, string name) =>

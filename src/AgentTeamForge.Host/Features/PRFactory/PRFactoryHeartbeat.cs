@@ -2,13 +2,14 @@ using AgentTeamForge.Host.Hosting;
 
 namespace AgentTeamForge.Host.Features.PRFactory;
 
-/// <summary>Opt-in machine registration/heartbeat. It never admits or claims remote work.</summary>
+/// <summary>Opt-in machine registration/heartbeat and connected work-item tick.</summary>
 public static class PRFactoryHeartbeat
 {
     public static async Task RunAsync(StateDirectory state, CancellationToken ct,
         Func<HttpMessageHandler>? handlerFactory = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        Func<PRFactoryClient, PRFactorySettings, Guid, CancellationToken, Task>? onConnected = null)
     {
         delay ??= Task.Delay;
         log ??= _ => { };
@@ -71,6 +72,11 @@ public static class PRFactoryHeartbeat
                         throw new HttpRequestException("PRFactory machine registration expired");
                     }
                     failures = 0;
+                    if (onConnected is not null)
+                    {
+                        await onConnected(client!, settings, machineId!.Value, ct);
+                    }
+
                     await delay(interval, ct);
                 }
                 catch (WorkerTokenRejectedException)

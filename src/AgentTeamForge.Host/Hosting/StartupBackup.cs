@@ -18,9 +18,9 @@ internal static class StartupBackup
 
             var currentBoot = (bootId ?? CurrentBootId)();
             var backups = Path.Combine(state.Path, "backups");
-            Directory.CreateDirectory(backups, StateDirectory.PrivateDir);
+            StateDirectory.CreatePrivateDirectory(backups);
             var info = new DirectoryInfo(backups);
-            if (info.LinkTarget is not null || info.UnixFileMode != StateDirectory.PrivateDir)
+            if (info.LinkTarget is not null || !OperatingSystem.IsWindows() && info.UnixFileMode != StateDirectory.PrivateDir)
             {
                 throw new IOException("backup directory is not private");
             }
@@ -36,7 +36,10 @@ internal static class StartupBackup
             try
             {
                 JobDatabase.Backup(state.Database, backup, busyTimeout);
-                File.SetUnixFileMode(backup, StateDirectory.PrivateFile);
+                if (!OperatingSystem.IsWindows())
+                {
+                    File.SetUnixFileMode(backup, StateDirectory.PrivateFile);
+                }
             }
             catch
             {
@@ -56,7 +59,7 @@ internal static class StartupBackup
                 {
                     Mode = FileMode.CreateNew,
                     Access = FileAccess.Write,
-                    UnixCreateMode = StateDirectory.PrivateFile,
+                    UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
                 }))
                 {
                     stream.Write(Encoding.UTF8.GetBytes(currentBoot));

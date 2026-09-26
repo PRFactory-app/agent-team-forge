@@ -30,12 +30,13 @@ Normative inputs are [architecture](../../architecture.md),
 [execution and recovery contracts](../../plan.md), [PoC cases](../../poc.md),
 [terminal requirements](../../terminal-modes.md),
 [product scope](../../product-scope.md), [cross-phase contracts](contracts.md), and the
-[bounded Linux demo](../../spikes/e2e-demo-plan.md). The
-[interactive spike report](../../../spikes/m0-interactive/REPORT.md) and
-[independent review](../../../spikes/m0-interactive/CODE-REVIEW.md) provide
-version-specific feasibility and unresolved safety findings, not an approved
-adapter. Repair work is concurrent; no later revision inherits approval from
-this plan or from an earlier review snapshot.
+[bounded Linux demo](../../spikes/e2e-demo-plan.md). The tracked
+[Herdr report](../../spikes/char-d2-report.md),
+[Codex control verification](../../spikes/codex-native-control-verification.md),
+and [safety review](../../spikes/m0-safety-lanes-review.md) retain selected
+feasibility and unresolved safety findings. They do not approve the retired
+experiment as a product adapter. No later revision inherits approval from this
+plan or from an earlier review snapshot.
 
 - The reported Linux spike used .NET SDK 10.0.401, Herdr 0.8.2, Claude Code
   2.1.283 and Codex 0.157.1. It showed real TUIs and useful native Codex control.

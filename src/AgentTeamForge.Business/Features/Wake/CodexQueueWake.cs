@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.DAL.Features.Wake;
 using Microsoft.Data.Sqlite;
 
@@ -82,7 +84,8 @@ public sealed class CodexQueueWake(Func<WakeRegistration, bool>? verify = null,
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(15));
-            var start = new ProcessStartInfo("codex")
+            var executable = OperatingSystem.IsWindows() ? WtTabControl.WindowsAgentBinary("codex") : "codex";
+            var start = new ProcessStartInfo(executable)
             {
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
@@ -124,7 +127,7 @@ public sealed class CodexQueueWake(Func<WakeRegistration, bool>? verify = null,
                 return false;
             }
         }
-        catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception or OperationCanceledException)
+        catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception or OperationCanceledException or BackendNotStartedException)
         {
             return false;
         }
