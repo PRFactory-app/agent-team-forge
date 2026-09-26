@@ -92,8 +92,8 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
             }
             // Notice-only: job IDs and result content stay in get_job.
             var notice = snapshot.External
-                ? $"[AgentTeamForge wake] {snapshot.Unread} external message(s) await reading. Call external_read or read_messages."
-                : $"[AgentTeamForge wake] {snapshot.Unread} completed job(s) await reading. Call list_jobs and get_job.";
+                ? $"[AgentTeamForge wake] {snapshot.Unread} external message(s) await reading. Call mcp__agentteamforge__external_read or mcp__agentteamforge__read_messages."
+                : $"[AgentTeamForge wake] {snapshot.Unread} completed job(s) await reading. Call mcp__agentteamforge__list_jobs and mcp__agentteamforge__get_job.";
             bool posted;
             try { posted = await poster.PostAsync(target, notice, cancellationToken); }
             catch (Exception ex) when (ex is not OperationCanceledException)

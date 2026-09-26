@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
+using AgentTeamForge.Business.Features.Agents.Backends;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
@@ -26,7 +27,9 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
             if (!session.Shared) { HerdrOwnedSessions.Save(launch, session); }
             var binding = await terminal.OpenAgentTabAsync(session, launch.AgentName, launch.WorkingDirectory, launch.BootstrapPath, cancellationToken,
                 workspaceTrustEnvironment: InteractiveAgentCommand.WorkspaceTrustEnvironment(launch.Kind),
-                onCreated: created => { session = created; HerdrOwnedSessions.Save(launch, created); });
+                onCreated: created => { session = created; HerdrOwnedSessions.Save(launch, created); },
+                exclusivePiMcp: launch.Kind == InteractiveAgentKind.Pi && launch.JobId is { } jobId
+                    && File.Exists(ManagedChildContext.ConfigPath(Path.GetDirectoryName(bootstrap)!, jobId)));
             _runs[launch.AgentName] = (session, binding);
             var args = new List<string> { "agent", "start", launch.AgentName, "--kind", Kind(launch.Kind), "--pane", binding.PaneId, "--timeout", "15000", "--" };
             args.AddRange(AgentArguments(launch));
@@ -178,7 +181,17 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         _ => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 
-    internal static IReadOnlyList<string> AgentArguments(InteractiveLaunch launch) => InteractiveAgentCommand.Arguments(launch);
+    internal static IReadOnlyList<string> AgentArguments(InteractiveLaunch launch)
+    {
+        var args = new List<string>();
+        if (launch.JobId is { } jobId)
+        {
+            var stateRoot = Path.GetDirectoryName(Path.GetDirectoryName(launch.BootstrapPath))!;
+            args.AddRange(ManagedChildContext.Arguments(Kind(launch.Kind), ManagedChildContext.ConfigPath(stateRoot, jobId)));
+        }
+        args.AddRange(InteractiveAgentCommand.Arguments(launch));
+        return args;
+    }
 
     static string? FindStatus(JsonNode? node)
     {

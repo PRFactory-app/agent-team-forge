@@ -31,6 +31,7 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
         {
             info.WorkingDirectory = cwd;
         }
+        ManagedChildContext.ClearInheritedIdentity(info);
         OrphanedBackendProcess.Mark(info, request.Correlation);
 
         foreach (var argument in BuildArguments(request))
@@ -57,6 +58,7 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
         // `exec resume` has no -C; the working directory is the process cwd for both forms.
         List<string> args = request.ResumeSessionId is not null ? ["exec", "resume"] : ["exec"];
         args.AddRange(["--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"]);
+        args.AddRange(ManagedChildContext.Arguments("codex", request.ManagedMcpConfig));
         foreach (var part in request.Options.Split(';', StringSplitOptions.RemoveEmptyEntries))
         {
             if (part.Split('=', 2) is ["model", var model] && model.Length > 0)

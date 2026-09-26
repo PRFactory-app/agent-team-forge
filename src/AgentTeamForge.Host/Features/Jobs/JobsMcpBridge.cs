@@ -96,9 +96,21 @@ public static class JobsMcpBridge
     const string LeaveSchema = """{"type":"object","properties":{"member_token":{"type":"string"}},"required":["member_token"]}""";
     const string MemberWakeSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"codex_thread_id":{"type":"string"},"codex_home":{"type":"string"}},"required":["member_token","codex_thread_id"]}""";
 
-    public static async Task<int> RunAsync(StateDirectory state, bool testProfile)
+    public static async Task<int> RunAsync(StateDirectory state, bool testProfile, string? managedContextPath = null)
     {
-        var externalOnly = Environment.GetEnvironmentVariable("ATF_EXTERNAL_ONLY") == "1";
+        string? parentMemberToken = null;
+        string? childBinding = null;
+        if (managedContextPath is not null)
+        {
+            using var context = JsonDocument.Parse(StateDirectory.ReadPrivateFile(managedContextPath));
+            if (context.RootElement.GetProperty("state_dir").GetString() != state.Path)
+            {
+                throw new StateDirectoryException("managed_context_state_mismatch");
+            }
+            parentMemberToken = context.RootElement.GetProperty("member_token").GetString();
+            childBinding = context.RootElement.GetProperty("binding_key").GetString();
+        }
+        var externalOnly = managedContextPath is null && Environment.GetEnvironmentVariable("ATF_EXTERNAL_ONLY") == "1";
         _ = StateDirectory.ReadPrivateFile(state.CredentialFile);
         if (await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = state.Path }, quiet: true) != 0)
         {
@@ -123,7 +135,7 @@ public static class JobsMcpBridge
         }
         var workspace = Path.GetFullPath(Environment.CurrentDirectory);
         var parentId = Environment.GetEnvironmentVariable("WIN_AGENT_TEAMS_PARENT_ID") ?? ParentPid().ToString(System.Globalization.CultureInfo.InvariantCulture);
-        var bindingKey = $"identity=team-lead\nparent={parentId}\ncwd={workspace}";
+        var bindingKey = childBinding ?? $"identity=team-lead\nparent={parentId}\ncwd={workspace}";
         string? sessionId = null;
         async Task<IpcResponse> EnsureSessionAsync(CancellationToken cancellationToken)
         {
@@ -167,7 +179,7 @@ public static class JobsMcpBridge
         }
         var tools = new List<Tool>
         {
-            new() { Name = "submit_job", Description = "Durably submit a task to an agent (claude, codex or pi) run by the AgentTeamForge daemon. Returns the job; poll get_job for the result.", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
+            new() { Name = "submit_job", Description = "Durably submit a task to an agent (claude, codex or pi) run by the AgentTeamForge daemon. Read get_job for the result; registered native wake provides best-effort notices.", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "get_job", Description = "Read a job's status, result output and native session_id.", InputSchema = Parse(GetSchema) },
             new() { Name = "get_job_output", Description = "Read live stdout/stderr log bytes from a job, starting at an absolute offset. Use next_offset to continue.", InputSchema = Parse(OutputSchema) },
             new() { Name = "stop_job", Description = "Cancel a queued or running job. A finished job is returned unchanged.", InputSchema = Parse(GetSchema) },
@@ -183,7 +195,7 @@ public static class JobsMcpBridge
             new() { Name = "external_read", Description = "Read this member's inbox using member_token and an optional cursor.", InputSchema = Parse(MemberReadSchema) },
             new() { Name = "external_set_wake", Description = "Opt this member into Codex queue notices. Pass an empty codex_thread_id to clear.", InputSchema = Parse(MemberWakeSchema) },
             new() { Name = "leave_team", Description = "Revoke this external membership without stopping its process.", InputSchema = Parse(LeaveSchema) },
-            new() { Name = "send_message", Description = "Send a durable message to a joined external member of this AgentTeamForge lead session. This tool does not reach win-agent-teams members.", InputSchema = Parse(LeadSendSchema) },
+            new() { Name = "send_message", Description = "Send a durable message to your ATF parent (team-lead, managed children only) or a joined external member of your own lead session. Use follow_up for managed downstream work. This tool does not reach win-agent-teams members.", InputSchema = Parse(LeadSendSchema) },
             new() { Name = "read_messages", Description = "Read durable messages from external members of this lead session.", InputSchema = Parse(LeadReadSchema) },
             new() { Name = "job_submit", Description = "Durably submit a job to the AgentTeamForge daemon (spike).", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "job_get", Description = "Read a job's committed state and result (spike).", InputSchema = Parse(GetSchema) },
@@ -264,6 +276,7 @@ public static class JobsMcpBridge
                     else
                     {
                         var (ipc, rejection) = Map(call.Name, args, testProfile);
+                        ipc = RouteParent(ipc, parentMemberToken);
                         if (ipc is not null && wakeTarget is not null && wakeGeneration is not null
                             && ipc.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp or IpcProtocol.JobGet)
                         {
@@ -307,6 +320,12 @@ public static class JobsMcpBridge
         await server.RunAsync();
         return 0;
     }
+
+    /// <summary>Only the explicit parent recipient uses the injected membership; typos never fall back upstream.</summary>
+    internal static IpcRequest? RouteParent(IpcRequest? request, string? memberToken) =>
+        request is { Op: IpcProtocol.ExternalLeadSend, MemberName: "team-lead" } && memberToken is not null
+            ? new IpcRequest { Op = IpcProtocol.ExternalSend, MemberToken = memberToken, Text = request.Text }
+            : request;
 
     /// <summary>Maps a tool call to one IPC request, or to a rejection code without contacting the daemon.</summary>
     static (IpcRequest? Request, string? Rejection) Map(string name, IDictionary<string, JsonElement> args, bool testProfile) =>
