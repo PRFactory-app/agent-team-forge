@@ -121,7 +121,8 @@ public sealed class HerdrTerminal
     /// Opens one visible, unfocused tab in the owned workspace and proves that its shell is a child of
     /// the recorded server carrying exactly this bootstrap path. The tab is never closed on failure.
     /// </summary>
-    public async Task<HerdrTabBinding> OpenAgentTabAsync(OwnedHerdrSession session, string label, string cwd, string bootstrapFile, CancellationToken cancellationToken)
+    public async Task<HerdrTabBinding> OpenAgentTabAsync(OwnedHerdrSession session, string label, string cwd, string bootstrapFile, CancellationToken cancellationToken,
+        bool bypassClaudeWorkspaceTrust = false)
     {
         ArgumentException.ThrowIfNullOrEmpty(label);
         ArgumentException.ThrowIfNullOrEmpty(cwd);
@@ -134,8 +135,18 @@ public sealed class HerdrTerminal
             throw new HerdrLaunchException("refusing to open a tab: " + problem);
         }
 
-        var created = await OwnedAsync(session.SocketPath, cancellationToken,
-            "tab", "create", "--workspace", session.WorkspaceId, "--cwd", cwd, "--label", label, "--env", BootstrapVariable + "=" + bootstrapFile, "--no-focus");
+        var args = new List<string> { "tab", "create", "--workspace", session.WorkspaceId, "--cwd", cwd, "--label", label,
+            "--env", BootstrapVariable + "=" + bootstrapFile, "--no-focus" };
+        if (bypassClaudeWorkspaceTrust)
+        {
+            // Claude's per-process trust latch. Inject it only into this owned launch;
+            // inherited CLAUDE_CODE_* context remains excluded by LaunchEnvironment.
+            // In Claude Code 2.1.x it only marks the workspace trusted without writing
+            // ~/.claude.json (so project settings' permission rules apply); it does not
+            // enable a sandbox or touch telemetry. The bypass warning is skipped via --settings.
+            args.AddRange(["--env", "CLAUDE_CODE_SANDBOXED=1"]);
+        }
+        var created = await OwnedAsync(session.SocketPath, cancellationToken, [.. args]);
         var tab = Str(created, "result", "root_pane", "tab_id");
         var pane = Str(created, "result", "root_pane", "pane_id");
         var terminal = Str(created, "result", "root_pane", "terminal_id");
@@ -223,6 +234,11 @@ public sealed class HerdrTerminal
             ? throw new HerdrLaunchException(problem)
             : await OwnedAsync(session.SocketPath, cancellationToken, args);
 
+    internal async Task<string> ReadAgentAsync(OwnedHerdrSession session, string pane, CancellationToken cancellationToken) =>
+        ServerProblem(session) is { } problem
+            ? throw new HerdrLaunchException(problem)
+            : (await RunAsync(session.SocketPath, ["agent", "read", pane, "--source", "detection", "--lines", "100"], cancellationToken, rawText: true)).GetValue<string>();
+
     async Task RequireVisibleProviderAsync(CancellationToken cancellationToken)
     {
         if (!OperatingSystem.IsMacOS() && string.IsNullOrEmpty(Env("WAYLAND_DISPLAY")) && string.IsNullOrEmpty(Env("DISPLAY")))
@@ -254,7 +270,7 @@ public sealed class HerdrTerminal
 
     Task<JsonNode> OwnedAsync(string socketPath, CancellationToken cancellationToken, params string[] args) => RunAsync(socketPath, args, cancellationToken);
 
-    async Task<JsonNode> RunAsync(string? socketPath, string[] args, CancellationToken cancellationToken)
+    async Task<JsonNode> RunAsync(string? socketPath, string[] args, CancellationToken cancellationToken, bool rawText = false)
     {
         var what = "herdr " + string.Join(' ', args.Take(2));
         var psi = HerdrCommands.CommandStartInfo(_options.Environment, _options.ExtraAllowedEnvironment, socketPath, args);
@@ -283,6 +299,7 @@ public sealed class HerdrTerminal
         {
             return new JsonObject();
         }
+        if (rawText) { return JsonValue.Create(r.Stdout); }
         try
         {
             return r.Stdout.Trim() is { Length: > 0 } text ? JsonNode.Parse(text) ?? new JsonObject() : new JsonObject();

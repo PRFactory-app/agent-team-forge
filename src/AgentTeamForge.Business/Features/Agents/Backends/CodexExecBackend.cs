@@ -222,19 +222,7 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
             }
         }
 
-        public void TerminateOwnedChild()
-        {
-            try
-            {
-                if (!_process.HasExited)
-                {
-                    _process.Kill(entireProcessTree: true);
-                }
-            }
-            catch (InvalidOperationException)
-            {
-            }
-        }
+        public void TerminateOwnedChild() => OwnedProcessTermination.Kill(_process);
 
         public async ValueTask DisposeAsync()
         {

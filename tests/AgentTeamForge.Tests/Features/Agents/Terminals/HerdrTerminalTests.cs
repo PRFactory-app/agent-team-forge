@@ -281,6 +281,37 @@ public class HerdrTerminalTests
     }
 
     [Theory]
+    [InlineData(InteractiveAgentKind.Codex)]
+    [InlineData(InteractiveAgentKind.Claude)]
+    [InlineData(InteractiveAgentKind.Pi)]
+    public async Task Prompt_waits_for_stable_ready_state_before_sending(InteractiveAgentKind kind)
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { BootstrapFromTab = true, AgentStatuses = new Queue<string>(["unknown", "idle", "working", "done"]) };
+        var control = new HerdrAgentControl(Terminal(fake));
+        var launch = new InteractiveLaunch(kind, "atftest", state.Path, null, state.Path, Path.Combine(state.Path, "bootstrap"));
+        await control.StartAsync(launch, TestContext.Current.CancellationToken);
+        await control.PromptAsync(launch, "one prompt", TestContext.Current.CancellationToken);
+        Assert.Equal(kind == InteractiveAgentKind.Claude,
+            fake.Calls.Single(c => c.Args is ["tab", "create", ..]).Args.Contains("CLAUDE_CODE_SANDBOXED=1"));
+        var promptIndex = fake.Calls.FindIndex(c => c.Args is ["--session", _, "agent", "prompt", ..]);
+        Assert.True(fake.Calls.Take(promptIndex).Count(c => c.Args is ["agent", "get", ..]) >= 8);
+        Assert.Single(fake.Calls, c => c.Args is ["--session", _, "agent", "prompt", ..]);
+    }
+
+    [Fact]
+    public async Task Blocked_startup_sends_no_prompt()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { BootstrapFromTab = true, AgentStatuses = new Queue<string>(["blocked"]) };
+        var control = new HerdrAgentControl(Terminal(fake));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, Path.Combine(state.Path, "bootstrap"));
+        await control.StartAsync(launch, TestContext.Current.CancellationToken);
+        await Assert.ThrowsAsync<HerdrLaunchException>(() => control.PromptAsync(launch, "never sent", TestContext.Current.CancellationToken));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["--session", _, "agent", "prompt", ..]);
+    }
+
+    [Theory]
     [InlineData("agent_prompt_stalled", false)]
     [InlineData("timeout", false)]
     [InlineData(null, true)] // The CLI call itself exceeds the command deadline.
@@ -312,7 +343,8 @@ public class HerdrTerminalTests
             Assert.DoesNotContain(evidence, e => e is BackendEvidence.Result);
             // Herdr's own wait timeout/stall may hide a delivered prompt: keep observing, then uncertain.
             // A CLI deadline is not proof either way: delivery is unconfirmed, never resent.
-            Assert.Equal(new BackendEvidence.ProtocolError(processTimeout ? "interactive_delivery_not_confirmed" : "interactive_completion_unobserved"), evidence[^1]);
+            Assert.DoesNotContain(evidence, e => e is BackendEvidence.Ack);
+            Assert.Equal(new BackendEvidence.ProtocolError("interactive_completion_unobserved"), evidence[^1]);
         }
         finally { Directory.Delete(state, recursive: true); }
     }
@@ -448,11 +480,14 @@ public class HerdrTerminalTests
                 ["pane", "process-info", "--pane", "w1:p2"] => Ok("""{"result":{"process_info":{"pane_id":"w1:p2","shell_pid":""" + ShellPid + "}}}"),
                 ["session", "stop" or "delete", ..] => Ok("{}"),
                 ["agent", "start", ..] => Ok("{}"),
-                ["agent", "get", ..] => Ok("""{"result":{"agent":{"status":"idle"}}}"""),
+                ["agent", "read", ..] => Ok("› Ask Codex\n? for shortcuts\n❯ Try a task\nbypass permissions on\n──────\n──────\n/tmp/work"),
+                ["agent", "get", ..] => Ok("{\"result\":{\"agent\":{\"status\":\"" + (AgentStatuses.TryDequeue(out var status) ? status : "idle") + "\"}}}"),
                 ["--session", _, "agent", "prompt", ..] => PromptResponse ?? Ok("""{"result":{"type":"agent_prompted"}}"""),
                 _ => Err("unexpected " + string.Join(' ', args)),
             });
         }
+
+        public Queue<string> AgentStatuses { get; init; } = new();
 
         string Label() => Calls.Where(c => c.Args is ["workspace", "create", ..]).Select(c => c.Args[Array.IndexOf(c.Args, "--label") + 1]).LastOrDefault() ?? "";
 

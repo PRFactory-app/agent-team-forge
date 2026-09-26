@@ -143,7 +143,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 yield return new BackendEvidence.ProtocolError("interactive_delivery_not_confirmed");
                 yield break;
             }
-            yield return new BackendEvidence.Ack(request.Correlation);
+            var acknowledged = false;
             var session = request.ResumeSessionId;
             if (session is not null)
             {
@@ -163,6 +163,12 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                     yield break;
                 }
                 var output = transcripts.Read(launch, "atf-corr:" + request.Correlation, started);
+                if (output is not null && !acknowledged)
+                {
+                    // A native user record proves that the one submitted prompt landed.
+                    acknowledged = true;
+                    yield return new BackendEvidence.Ack(request.Correlation);
+                }
                 if (output is not null && request.Output is { } log)
                 {
                     for (var i = _loggedMessages; i < output.Progress.Count; i++)
@@ -197,7 +203,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 }
                 var progressed = output is not null && output.Progress.Count != seenMessages;
                 seenMessages = output?.Progress.Count ?? 0;
-                if (status is not (InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done) || progressed)
+                if (status is not (InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done) || progressed || output is { PendingBackgroundTasks: true })
                 {
                     quietSince = DateTimeOffset.UtcNow;
                 }
@@ -314,7 +320,8 @@ internal interface IInteractiveTranscriptReader
     string? FindPiSessionDirectory(string root, string sessionId);
 }
 
-internal sealed record InteractiveTranscript(string SessionId, string? Message, IReadOnlyList<string>? Messages = null, bool Completed = false)
+internal sealed record InteractiveTranscript(string SessionId, string? Message, IReadOnlyList<string>? Messages = null, bool Completed = false,
+    bool PendingBackgroundTasks = false)
 {
     public IReadOnlyList<string> Progress => Messages ?? [];
 }
