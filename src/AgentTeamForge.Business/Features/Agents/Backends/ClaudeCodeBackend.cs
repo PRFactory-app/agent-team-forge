@@ -34,6 +34,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
         {
             info.WorkingDirectory = cwd;
         }
+        OrphanedBackendProcess.Mark(info, request.Correlation);
 
         Process process;
         try

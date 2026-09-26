@@ -245,6 +245,26 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return (IReadOnlyList<string>)jobs;
     });
 
+    /// <summary>
+    /// Run markers whose backend processes may have outlived daemon death,
+    /// including runs that died before their PID was recorded.
+    /// </summary>
+    public IReadOnlyList<string> GetInterruptedRunCorrelations() => Read(connection =>
+    {
+        using var command = Command(connection, null, """
+            SELECT correlation FROM runs
+            WHERE state='started' OR (state='needs_reconciliation' AND reason_code='daemon_restart_uncertain')
+            """);
+        using var reader = command.ExecuteReader();
+        var correlations = new List<string>();
+        while (reader.Read())
+        {
+            correlations.Add(reader.GetString(0));
+        }
+
+        return (IReadOnlyList<string>)correlations;
+    });
+
     public JobRecord? GetJob(string jobId) => Read(connection => GetJob(connection, null, jobId));
 
     /// <summary>Newest first, scoped to one principal/team.</summary>
