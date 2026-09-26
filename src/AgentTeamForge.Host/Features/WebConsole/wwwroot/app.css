@@ -129,10 +129,12 @@ main { padding-top: 23px; }
 .chip.subtle { color: var(--muted); }
 .card-meta .reason { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .card-side { display: grid; justify-items: end; align-content: center; gap: 6px; align-self: stretch; }
+.beat { color: var(--muted); font: 10.5px var(--font-mono); text-align: right; }
 .elapsed { color: var(--secondary); font: 12px var(--font-mono); }
 .badge.green, .badge.done { border-color: var(--success-line); color: var(--success-text); background: var(--success-soft); }
 .badge.yellow { border-color: var(--warning-line); color: var(--warning-text); background: var(--warning-soft); }
 .badge.red { border-color: var(--danger-line); color: var(--danger-text); background: var(--danger-soft); }
+.card-last-activity { min-width: 0; padding-left: 23px; overflow: hidden; color: var(--faint); font: 10.5px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .badge.grey { color: var(--muted); }
 .card-expanded { display: grid; grid-column: 1 / -1; gap: 14px; min-width: 0; margin: 2px -14px -11px; padding: 14px; border-top: 1px solid var(--border); border-radius: 0 0 7px 7px; background: var(--raised); }
 .lead-card .card-expanded { margin: 0; padding: 14px 18px; }
@@ -147,9 +149,20 @@ main { padding-top: 23px; }
 .send-button { color: var(--on-accent); background: var(--accent); border-color: var(--accent); font-weight: 700; }
 .send-button:hover { color: var(--on-accent); background: var(--accent); }
 .composer-result { min-height: 1em; margin: 0; color: var(--secondary); font: 11px var(--font-mono); overflow-wrap: anywhere; }
-.card-result, .card-logs { min-width: 0; color: var(--secondary); }
-.card-result h4, .card-logs h4 { display: inline-block; margin: 0 10px 6px 0; color: var(--text); font-size: 12px; }
+.card-result, .card-activity, .card-logs { min-width: 0; color: var(--secondary); }
+.card-result h4, .card-activity h4 { display: inline-block; margin: 0 10px 6px 0; color: var(--text); font-size: 12px; }
 .result-meta { margin: 0 0 6px; color: var(--muted); font: 11px var(--font-mono); overflow-wrap: anywhere; }
+.activity-entries { display: grid; gap: 4px; max-height: 340px; overflow: auto; margin: 0; padding: 8px 10px; list-style: none; border: 1px solid var(--border); border-radius: 6px; background: var(--sunken); }
+.activity-entry { display: grid; grid-template-columns: auto 92px minmax(0, 1fr); gap: 8px; min-width: 0; font: 10.5px/1.65 var(--font-mono); }
+.activity-time { color: var(--faint); white-space: nowrap; }
+.activity-kind { color: var(--info); }
+.activity-text { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.kind-tool_call .activity-kind { color: var(--warning); }
+.kind-tool_result .activity-kind, .kind-status .activity-kind { color: var(--muted); }
+.kind-error .activity-kind, .kind-error .activity-text, .activity-error { color: var(--danger); }
+.kind-result .activity-kind { color: var(--success); }
+.activity-empty, .activity-omitted { color: var(--muted); font: 11px var(--font-mono); }
+.card-logs summary { cursor: pointer; color: var(--secondary); font-size: 12px; }
 .card-logs button { padding: 3px 7px; font-size: 11px; }
 .card-result pre { max-height: 220px; }
 .card-logs pre { max-height: 220px; }
@@ -167,6 +180,8 @@ pre { max-height: 50vh; margin: 7px 0; padding: 12px; overflow: auto; white-spac
 @media (max-width: 680px) {
   body { width: auto; margin: 10px; padding: 16px 14px 24px; }
   .window-bar { margin: -16px -14px 0; padding: 10px 14px; }
+  .activity-entry { grid-template-columns: auto minmax(0, 1fr); }
+  .activity-text { grid-column: 1 / -1; }
   .toolbar { flex-wrap: wrap; }
   .console-header { align-items: start; flex-direction: column; gap: 16px; }
   .section-heading { align-items: start; flex-direction: column; }

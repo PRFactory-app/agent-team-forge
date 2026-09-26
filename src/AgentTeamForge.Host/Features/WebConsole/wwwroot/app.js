@@ -11,6 +11,7 @@
   let nextCursor = null;
   const composers = new Map();
   const cardLogs = new Map();
+  const activities = new Map();
   const jobDetails = new Map();
   let timer = null;
 
@@ -254,21 +255,104 @@
   }
 
   function cardLogState(key) {
-    if (!cardLogs.has(key)) cardLogs.set(key, { text: '', offset: 0, decoder: new TextDecoder(), busy: false, node: null });
+    if (!cardLogs.has(key)) cardLogs.set(key, { open: false, text: '', offset: 0, decoder: new TextDecoder(), busy: false, node: null });
     return cardLogs.get(key);
   }
 
   function cardLog(container, key, jobId) {
     const state = cardLogState(key);
-    const section = element('section', 'card-logs');
-    const heading = element('h4', '', 'Transcript / logs');
+    const section = element('details', 'card-logs');
+    section.open = state.open;
+    const heading = element('summary', '', 'Raw logs');
     const refresh = element('button', '', 'Read new logs');
     refresh.type = 'button';
     refresh.addEventListener('click', () => loadCardLogs(key, jobId));
     const output = element('pre', '', state.text);
     state.node = output;
+    section.addEventListener('toggle', () => {
+      state.open = section.open;
+      if (section.open) loadCardLogs(key, jobId);
+    });
     section.append(heading, refresh, output);
     container.append(section);
+  }
+
+  function activityState(jobId) {
+    if (!activities.has(jobId)) activities.set(jobId, {
+      entries: [], cursor: 0, busy: false, complete: false, omitted: 0, nodes: new Set(), error: '',
+    });
+    return activities.get(jobId);
+  }
+
+  function activityPanel(container, jobId) {
+    const section = element('section', 'card-activity');
+    section.append(element('h4', '', 'Activity'));
+    const list = element('ol', 'activity-entries');
+    list.setAttribute('aria-label', 'Agent activity');
+    const state = activityState(jobId);
+    state.nodes.add(list);
+    renderActivity(state, list);
+    section.append(list);
+    container.append(section);
+  }
+
+  function renderActivity(state, list) {
+    list.replaceChildren();
+    if (state.omitted) list.append(element('li', 'activity-omitted', state.omitted + ' earlier entries omitted; raw logs remain available.'));
+    for (const entry of state.entries) {
+      const kind = ['assistant_text', 'tool_call', 'tool_result', 'status', 'error', 'result'].includes(entry.kind) ? entry.kind : 'status';
+      const item = element('li', 'activity-entry kind-' + kind);
+      const when = new Date(entry.ts);
+      if (Number.isFinite(when.getTime())) {
+        const time = element('time', 'activity-time', when.toLocaleTimeString());
+        time.dateTime = entry.ts;
+        item.append(time);
+      }
+      item.append(element('span', 'activity-kind', kind.replaceAll('_', ' ')), element('span', 'activity-text', entry.text));
+      list.append(item);
+    }
+    if (!state.entries.length) list.append(element('li', 'activity-empty', state.error || 'No activity yet.'));
+    else if (state.error) list.append(element('li', 'activity-error', state.error));
+  }
+
+  async function loadActivity(jobId, status) {
+    const state = activityState(jobId);
+    if (state.busy || state.complete) return;
+    state.busy = true;
+    try {
+      for (let page = 0; page < 10; page++) {
+        const before = state.cursor;
+        const r = await api('GET', '/api/jobs/' + encodeURIComponent(jobId) + '/activity?after_cursor=' + before + '&limit=20');
+        if (!r?.ok || !r.activity) {
+          state.error = 'Activity unavailable: ' + (r?.error || 'network');
+          break;
+        }
+        const entries = r.activity.entries || [];
+        const next = r.activity.next_cursor;
+        if (!Number.isSafeInteger(next) || next < before) {
+          state.error = 'Activity cursor unavailable.';
+          break;
+        }
+        state.error = '';
+        state.cursor = next;
+        state.entries.push(...entries);
+        if (state.entries.length > 500) {
+          const excess = state.entries.length - 500;
+          state.entries.splice(0, excess);
+          state.omitted += excess;
+        }
+        state.nodes = new Set([...state.nodes].filter(node => node.isConnected));
+        for (const node of state.nodes) renderActivity(state, node);
+        if (entries.length < 20 || next === before) {
+          if (status !== 'queued' && status !== 'running') state.complete = true;
+          break;
+        }
+      }
+    } finally {
+      state.busy = false;
+      state.nodes = new Set([...state.nodes].filter(node => node.isConnected));
+      for (const node of state.nodes) renderActivity(state, node);
+    }
   }
 
   function cardDetail(container, jobId) {
@@ -337,11 +421,15 @@
     composer(panel, key, targets, lead, stopTarget);
     const jobId = composerState(key).targetJobId || stopTarget?.job_id;
     if (jobId) {
+      const job = targets.find(j => j.job_id === jobId) || stopTarget;
       const refreshDetail = cardDetail(panel, jobId);
-      cardLog(panel, key + ':logs:' + jobId, jobId);
+      activityPanel(panel, jobId);
+      const logKey = key + ':logs:' + jobId;
+      cardLog(panel, logKey, jobId);
       panel.openCard = () => {
         refreshDetail();
-        loadCardLogs(key + ':logs:' + jobId, jobId);
+        loadActivity(jobId, job?.status);
+        if (cardLogState(logKey).open) loadCardLogs(logKey, jobId);
       };
     }
     card.append(panel);
@@ -477,15 +565,17 @@
         if (j.model) chips.append(element('span', 'chip', j.model));
         if (j.effort) chips.append(element('span', 'chip subtle', 'effort ' + j.effort));
         const state = element('span', 'badge ' + (j.status === 'completed' ? 'done' : j.light),
-          j.status === 'completed' ? 'done' : j.status.replaceAll('_', ' '));
+          j.status === 'completed' ? 'done' : j.status === 'parked' ? 'parked · awaiting reply' : j.status.replaceAll('_', ' '));
         const cardMeta = element('span', 'card-meta');
         cardMeta.append(element('span', '', 'accepted ' + age(j.accepted_at) + ' ago'));
-        if (j.updated_at) cardMeta.append(element('span', '', 'updated ' + age(j.updated_at) + ' ago'));
-        if (j.reason_code) cardMeta.append(element('span', 'reason', '› ' + j.reason_code));
-        row.append(chips);
-        open.append(row, cardMeta);
+        const preview = j.last_activity || j.reason_code;
+        row.append(chips, state);
+        open.append(row);
+        if (preview) open.append(element('span', 'card-last-activity', '› ' + preview));
+        open.append(cardMeta);
         const side = element('div', 'card-side');
-        side.append(element('span', 'elapsed', age(j.accepted_at)), state);
+        side.append(element('span', 'elapsed', age(j.accepted_at)));
+        if (j.updated_at) side.append(element('span', 'beat', 'updated ' + age(j.updated_at) + ' ago'));
         card.append(open, side);
         const panel = cardPanel(card, key, j.session_id ? [j] : [], false, j);
         open.setAttribute('aria-controls', panel.id);
