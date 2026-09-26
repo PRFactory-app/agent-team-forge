@@ -20,6 +20,7 @@ public static class JobsMcpBridge
           "backend":{"type":"string","enum":["claude","codex","pi","fake"],"description":"Agent CLI the daemon runs for this job."},
           "instruction":{"type":"string","description":"Task for the agent."},
           "cwd":{"type":"string","description":"Absolute working directory for the agent (optional)."},
+          "worktree":{"type":"boolean","description":"Create a private git worktree for this job from cwd's HEAD."},
           "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."}
         """;
 
@@ -135,6 +136,7 @@ public static class JobsMcpBridge
                 Instruction = String(args, "instruction"),
                 Backend = String(args, "backend"),
                 Cwd = String(args, "cwd"),
+                Worktree = args.TryGetValue("worktree", out var worktree) && worktree.ValueKind == JsonValueKind.True,
                 Behavior = testProfile ? String(args, "behavior") : null,
                 Hold = testProfile && args.TryGetValue("hold", out var hold) && hold.ValueKind == JsonValueKind.True,
             }, null),

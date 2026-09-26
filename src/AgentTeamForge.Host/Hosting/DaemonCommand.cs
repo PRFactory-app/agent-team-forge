@@ -74,6 +74,7 @@ public static class DaemonCommand
         }
 
         var store = new JobStore(database, checkpoints);
+        var prune = new PruneJob(new PruneJobs(database), state.Path);
         var wakeStore = new WakeStore(database);
         var quarantined = new RecoverOnStartup(store).Execute();
         Log($"recovery: quarantined {quarantined.Count} uncertain attempt(s)");
@@ -92,7 +93,7 @@ public static class DaemonCommand
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept),
             new ListJobs(store, profile.Bound),
-            new StopJob(store, profile.Bound, dispatcher.CancelRunning), checkpoints, dispatcher.Signal, wakeStore);
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning), checkpoints, dispatcher.Signal, wakeStore, prune);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
@@ -107,6 +108,7 @@ public static class DaemonCommand
         var serving = server.ServeAsync(listener, lifetime.Token);
         var dispatching = dispatcher.RunAsync(lifetime.Token);
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path), Log).RunAsync(lifetime.Token);
+        var pruning = profile.AutoPrune ? RunPruneAsync(prune, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
         await Task.WhenAny(serving, dispatching);
 
         // The dispatcher only returns on its own when halted or faulted; it closed
@@ -122,6 +124,7 @@ public static class DaemonCommand
 
         await serving;
         await waking;
+        await pruning;
         try
         {
             await dispatching;
@@ -147,4 +150,26 @@ public static class DaemonCommand
     }
 
     static void Log(string message) => Console.Error.WriteLine($"[atf-daemon] {message}");
+
+    static async Task RunPruneAsync(PruneJob prune, int days, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                var count = prune.Execute(days, dryRun: false);
+                if (count > 0)
+                {
+                    Log($"pruned {count} expired job(s)");
+                }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                Log($"prune failed: {ex.GetType().Name}");
+            }
+
+            try { await Task.Delay(TimeSpan.FromDays(1), cancellationToken); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
+        }
+    }
 }

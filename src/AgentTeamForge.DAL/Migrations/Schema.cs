@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 4;
+    public const int CurrentVersion = 5;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -82,8 +82,15 @@ static class Schema
         CREATE INDEX wake_jobs_target ON wake_jobs(target_key, read_at);
         """;
 
-    /// <summary>v4: cancelled job/run state. SQLite cannot extend a CHECK constraint, so both tables are rebuilt.</summary>
-    const string V4 = """
+    /// <summary>v4: opt-in per-job git worktree.</summary>
+    internal const string V4 = """
+        ALTER TABLE jobs ADD COLUMN worktree_path TEXT;
+        ALTER TABLE jobs ADD COLUMN worktree_branch TEXT;
+        ALTER TABLE jobs ADD COLUMN worktree_base TEXT;
+        """;
+
+    /// <summary>v5: cancelled job/run state. SQLite cannot extend a CHECK constraint, so both tables are rebuilt.</summary>
+    const string V5 = """
         CREATE TABLE jobs_new(
             job_id TEXT PRIMARY KEY, principal TEXT NOT NULL, team TEXT NOT NULL,
             target_agent TEXT NOT NULL, operation TEXT NOT NULL, idempotency_key TEXT NOT NULL,
@@ -92,6 +99,7 @@ static class Schema
             reason_code TEXT, result_text TEXT, accepted_at TEXT NOT NULL, updated_at TEXT NOT NULL,
             backend TEXT NOT NULL DEFAULT 'fake', cwd TEXT,
             parent_job_id TEXT REFERENCES jobs(job_id), session_id TEXT,
+            worktree_path TEXT, worktree_branch TEXT, worktree_base TEXT,
             UNIQUE(principal, team, operation, idempotency_key));
         INSERT INTO jobs_new SELECT * FROM jobs;
         CREATE TABLE runs_new(
@@ -107,7 +115,7 @@ static class Schema
         ALTER TABLE runs_new RENAME TO runs;
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4];
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused
@@ -137,8 +145,8 @@ static class Schema
             wal.ExecuteNonQuery();
         }
 
-        // v4 replaces tables referenced by foreign keys; enforcement resumes after commit.
-        if (stored < 4)
+        // v5 replaces tables referenced by foreign keys; enforcement resumes after commit.
+        if (stored < 5)
         {
             using var foreignKeys = connection.CreateCommand();
             foreignKeys.CommandText = "PRAGMA foreign_keys=OFF;";
@@ -158,7 +166,7 @@ static class Schema
         }
 
         tx.Commit();
-        if (stored < 4)
+        if (stored < 5)
         {
             using var foreignKeys = connection.CreateCommand();
             foreignKeys.CommandText = "PRAGMA foreign_keys=ON;";
