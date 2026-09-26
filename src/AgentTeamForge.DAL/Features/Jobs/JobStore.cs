@@ -94,7 +94,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         using var tx = connection.BeginTransaction(deferred: false);
         var jobId = QueryString(connection, tx, """
             SELECT i.job_id FROM dispatch_intents i JOIN jobs j ON j.job_id = i.job_id
-            WHERE i.state='unattempted' AND NOT EXISTS (
+            WHERE i.state='unattempted' AND j.status='queued' AND NOT EXISTS (
                 SELECT 1 FROM jobs p JOIN jobs k ON k.status='running'
                 WHERE p.job_id = j.parent_job_id
                   AND (k.job_id = p.job_id OR k.session_id = p.session_id OR EXISTS (
@@ -182,6 +182,44 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return Finish(run, terminalStatus, terminalStatus, reasonCode, null, terminalStatus, null);
     }
 
+    /// <summary>Atomically cancels queued or running work; terminal jobs are unchanged.</summary>
+    public CancelOutcome Cancel(string jobId, string principal, string team) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        var job = GetJob(connection, tx, jobId);
+        if (job is null || job.Principal != principal || job.Team != team)
+        {
+            return new CancelOutcome(null, false, false);
+        }
+
+        var running = job.Status == JobStatus.Running;
+        var changed = job.Status is JobStatus.Queued or JobStatus.Running;
+        if (changed)
+        {
+            var now = Now();
+            if (running)
+            {
+                Execute(connection, tx, """
+                    UPDATE runs SET state='cancelled', reason_code='stopped', finished_at=$now
+                    WHERE job_id=$id AND state='started';
+                    """, ("$id", jobId), ("$now", now));
+            }
+            else
+            {
+                Execute(connection, tx, "UPDATE dispatch_intents SET state='attempted' WHERE job_id=$id AND state='unattempted'", ("$id", jobId));
+            }
+
+            Execute(connection, tx, """
+                UPDATE jobs SET status='cancelled', reason_code='stopped', updated_at=$now WHERE job_id=$id;
+                INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'cancelled', $now);
+                """, ("$id", jobId), ("$now", now));
+            tx.Commit();
+            job = GetJob(connection, null, jobId)!;
+        }
+
+        return new CancelOutcome(job, running, changed);
+    });
+
     bool Finish(RunRef run, string runState, string jobStatus, string? reason, string? result, string eventKind, string? checkpoint) =>
         Write(connection =>
         {
@@ -263,7 +301,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     {
         using var command = Command(connection, null, """
             SELECT correlation FROM runs
-            WHERE state='started' OR (state='needs_reconciliation' AND reason_code='daemon_restart_uncertain')
+            WHERE state IN ('started','cancelled') OR (state='needs_reconciliation' AND reason_code='daemon_restart_uncertain')
             """);
         using var reader = command.ExecuteReader();
         var correlations = new List<string>();

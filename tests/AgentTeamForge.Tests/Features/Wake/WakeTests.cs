@@ -29,6 +29,22 @@ public sealed class WakeTests
     }
 
     [Fact]
+    public void Cancelled_job_counts_as_finished_and_can_be_marked_read()
+    {
+        using var fixture = new JobFixture();
+        var store = new WakeStore(fixture.Database);
+        var target = store.Register("codex:test", "codex", "thread", "", "/tmp");
+        var job = fixture.Accept().Execute(new SubmitJobRequest("stopped", "work", null, false) { WakeKey = target.Key, WakeGeneration = target.Generation }).Job!;
+        Assert.Empty(store.Pending());
+
+        new StopJob(fixture.Store, JobFixture.Operator, _ => { }).Execute(job.JobId);
+
+        Assert.Equal(1, Assert.Single(store.Pending()).Unread);
+        store.MarkRead(job.JobId, target.Key, target.Generation);
+        Assert.Empty(store.Pending());
+    }
+
+    [Fact]
     public async Task Coalesces_committed_jobs_and_only_reposts_after_read_or_renotify()
     {
         using var fixture = new JobFixture();
