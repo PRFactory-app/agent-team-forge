@@ -27,6 +27,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         if (!IsValid(request.IdempotencyKey, request.Instruction)
             || !FakeBehavior.All.Contains(behavior)
             || ((request.Hold || behavior != FakeBehavior.Complete) && !testProfile)
+            || !ValidLimits(request.TimeoutSeconds, request.QueueTtlSeconds)
             || !TryNormalizeCwd(request.Cwd, out var cwd))
         {
             return JobResult.Fail(JobErrors.InvalidRequest);
@@ -45,8 +46,15 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
 
         var options = $"behavior={behavior};hold={(request.Hold ? 1 : 0)};worktree={(request.Worktree ? 1 : 0)}";
         return Admit(Operation, request.IdempotencyKey, request.Instruction, options, backend,
-            cwd, null, request.WakeKey, request.WakeGeneration, request.Worktree, baseCommit);
+            cwd, null, request.WakeKey, request.WakeGeneration, request.Worktree, baseCommit,
+            timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds);
     }
+
+    /// <summary>Optional job timeout and queue TTL: whole seconds, at most one day.</summary>
+    internal static bool ValidLimits(int? timeoutSeconds, int? queueTtlSeconds) =>
+        timeoutSeconds is null or (>= 1 and <= MaxLimitSeconds) && queueTtlSeconds is null or (>= 1 and <= MaxLimitSeconds);
+
+    const int MaxLimitSeconds = 86_400;
 
     internal bool IsValid(string? key, string? instruction) =>
         !string.IsNullOrWhiteSpace(key) && key.Length <= limits.MaxIdempotencyKeyChars
@@ -55,7 +63,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
     /// <summary>Durable acceptance shared by submit and follow-up; one admission-gated transaction.</summary>
     internal JobResult Admit(string operation, string key, string instruction, string options, string backend, string? cwd, string? parentJobId,
         string? wakeKey = null, long? wakeGeneration = null, bool createWorktree = false, string? worktreeBase = null,
-        string? worktreePath = null, string? worktreeBranch = null)
+        string? worktreePath = null, string? worktreeBranch = null, int? timeoutSeconds = null, int? queueTtlSeconds = null)
     {
         if (!admission.TryEnter())
         {
@@ -64,9 +72,17 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
 
         try
         {
-            var job = new NewJob(principal.Principal, principal.Team, principal.Agent, operation, key,
-                Fingerprint(principal.Agent, instruction, options, backend, cwd ?? string.Empty, parentJobId ?? string.Empty), instruction, options)
+            string[] fields = [principal.Agent, instruction, options, backend, cwd ?? string.Empty, parentJobId ?? string.Empty];
+            if (timeoutSeconds is not null || queueTtlSeconds is not null)
             {
+                // Only when set, so fingerprints of jobs accepted before these limits existed are unchanged.
+                fields = [.. fields, $"timeout={timeoutSeconds};queue_ttl={queueTtlSeconds}"];
+            }
+
+            var job = new NewJob(principal.Principal, principal.Team, principal.Agent, operation, key, Fingerprint(fields), instruction, options)
+            {
+                TimeoutSeconds = timeoutSeconds,
+                QueueDeadline = queueTtlSeconds is int ttl ? DateTimeOffset.UtcNow.AddSeconds(ttl) : null,
                 Backend = backend,
                 Cwd = cwd,
                 ParentJobId = parentJobId,

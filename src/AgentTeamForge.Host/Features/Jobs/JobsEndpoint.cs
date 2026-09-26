@@ -19,12 +19,16 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     Backend = request.Backend,
                     Cwd = request.Cwd,
                     Worktree = request.Worktree,
+                    TimeoutSeconds = request.TimeoutSeconds,
+                    QueueTtlSeconds = request.QueueTtlSeconds,
                     WakeKey = request.WakeKey,
                     WakeGeneration = request.WakeGeneration,
                 }));
             case IpcProtocol.JobFollowUp:
                 return Accepted(followUp.Execute(new FollowUpRequest(request.JobId ?? string.Empty, request.Instruction ?? string.Empty, request.IdempotencyKey ?? string.Empty)
                 {
+                    TimeoutSeconds = request.TimeoutSeconds,
+                    QueueTtlSeconds = request.QueueTtlSeconds,
                     WakeKey = request.WakeKey,
                     WakeGeneration = request.WakeGeneration,
                 }));
