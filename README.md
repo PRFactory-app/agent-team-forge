@@ -40,18 +40,20 @@ ATF="$(pwd)/src/AgentTeamForge.Host/bin/Release/net11.0/atf"
 "$ATF" start
 ```
 
-Use `--mode herdr` to record an interactive Herdr choice. Omit `--apply` to print
-the Claude Code and Codex MCP registration commands for review. `setup` creates
-private state under `$XDG_STATE_HOME/agentteamforge`, or
-`~/.local/state/agentteamforge`; `--state-dir DIR` overrides it. `start` prints
-the daemon PID and is safe to repeat. `atf stop` prints the `kill -TERM` command
-for the running daemon. This checkpoint still dispatches the fake backend; the
-selected mode is persisted for subsequent real-agent implementation.
+Omit `--apply` to print the Claude Code and Codex MCP registration commands for
+review. A fresh setup creates a real-agent profile and private state under
+`$XDG_STATE_HOME/agentteamforge`, or `~/.local/state/agentteamforge`;
+`--state-dir DIR` overrides it. Install the Claude Code and Codex CLIs before
+using `--apply`, and log in to each backend CLI you plan to run. `start` prints
+the daemon PID and is safe to repeat. The daemon dispatches up to eight jobs
+concurrently by default. `--mode herdr` is saved but `start` refuses it until
+Herdr launch support lands; native wake behavior is covered in the
+[Linux quickstart](docs/quickstart.md).
 
 ## Run the bounded checkpoint
 
 See the [Linux quickstart](docs/quickstart.md) for build and publish commands,
-MCP registration, job commands, and the current setup command boundary.
+MCP registration, parallel job dispatch, and native wake behavior.
 
 From the repository root, with the pinned .NET SDK and Linux native build
 prerequisites already available:
@@ -86,8 +88,9 @@ and use `submit_job(backend, instruction, cwd?, idempotency_key)`, `get_job`,
 `follow_up(job_id, instruction, idempotency_key)` (resumes the finished job's native
 session on the same backend/cwd) and `list_jobs`. CLI equivalents:
 `atf client submit|get|follow-up|list`. `scripts/demo-real.sh [claude|codex|pi]` is the
-opt-in end-to-end check (spends tokens); `fake` is a plumbing dry run. Jobs run one at
-a time and agents run headless with bypassed permissions.
+opt-in end-to-end check (spends tokens); `fake` is a plumbing dry run. The daemon
+runs up to eight jobs concurrently by default; agents run headless with bypassed
+permissions.
 
 ## Reading order
 

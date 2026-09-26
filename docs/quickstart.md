@@ -1,18 +1,20 @@
 # Linux quickstart
 
-This guide covers the Linux x64 command line and local MCP bridge.
-
-**Command availability:** the `setup`, `start`, and `stop` commands below match the reviewed `review/mvp-setup` branch. They are not in this documentation branch's base commit, `d67726b`; `main` still uses `init` and `daemon` for setup and process control. Until that change is merged, use `atf init --state-dir DIR`, then run `atf daemon --state-dir DIR` in the foreground; Ctrl-C or SIGTERM ends it. The job CLI and MCP tools below are on `main`.
+Headless launch is available; Herdr is saved but `atf start` still refuses it.
 
 ## Build or publish
 
-From the repository root, use the pinned SDK in `.tools/dotnet11`:
+From the repository root, resolve the shared pinned SDK in `.tools/dotnet11`:
 
 ~~~bash
-.tools/dotnet11/dotnet build AgentTeamForge.slnx -c Release
+COMMON="$(git rev-parse --path-format=absolute --git-common-dir)"
+DOTNET="$(realpath "$COMMON/../.tools/dotnet11/dotnet")"
+export DOTNET_ROOT="$(dirname "$DOTNET")"
+
+"$DOTNET" build AgentTeamForge.slnx -c Release
 
 # Publish a Linux x64 Native AOT apphost for the steps below.
-.tools/dotnet11/dotnet publish src/AgentTeamForge.Host/AgentTeamForge.Host.csproj \
+"$DOTNET" publish src/AgentTeamForge.Host/AgentTeamForge.Host.csproj \
   -c Release -r linux-x64 --self-contained true \
   -p:PublishAot=true -o artifacts/quickstart
 export PATH="$PWD/artifacts/quickstart:$PATH"
@@ -23,9 +25,10 @@ Linux compiler and linker prerequisites.
 
 ## Set up and run
 
-The reviewed setup command requires `--mode`; `--state-dir DIR` is optional.
-Headless setup creates the private state directory and registers the MCP server
-in both Claude Code and Codex when their CLI programs are available:
+Setup requires `--mode`; `--state-dir DIR` is optional. A fresh headless setup
+creates a real-agent profile and registers the MCP server in both Claude Code
+and Codex. Install those two CLIs before using `--apply`; install and log in to
+the backend CLI you plan to submit jobs to:
 
 ~~~bash
 atf setup --mode headless --apply
@@ -42,11 +45,12 @@ atf setup --mode headless --state-dir "$STATE" --apply
 atf start --state-dir "$STATE"
 ~~~
 
-`atf start` prints the daemon PID. In the reviewed implementation,
-`atf stop` checks that state directory and prints a `kill -TERM PID` command;
-run the printed command to stop the daemon. It does not send the signal itself.
-With the default state location, run `atf stop`; add `--state-dir "$STATE"`
-for an override.
+`atf start` prints the daemon PID and is safe to repeat. The daemon runs up to
+8 jobs concurrently by default; follow-ups on the same native session stay
+serialized. `atf stop` checks the selected state directory and prints a
+`kill -TERM PID` command; run the printed command to stop the daemon. It does
+not send the signal itself. With the default state location, run `atf stop`;
+add `--state-dir "$STATE"` for an override.
 
 ## Register Claude Code and Codex manually
 
@@ -92,15 +96,24 @@ CLI submit accepts `--backend claude|codex|pi|fake`, `--instruction`,
 needs `--key` and `--instruction`. List accepts optional `--status`,
 `--limit` (1–50, default 20), and `--cursor`.
 
+## Native wake
+
+When detectable, the MCP bridge registers its Claude Code, Codex, or Pi host
+session and sends a notice-only wake after completion. Read results with
+`get_job` or `atf client get`; CLI calls and generic MCP clients get no wake.
+Pi also needs the bundled extension and the same state directory:
+
+~~~bash
+ATF_STATE_DIR="$HOME/.local/state/agentteamforge" pi -e "$(realpath extensions/pi-wake)"
+~~~
+
 ## State, database, and logs
 
 The owner-private state directory contains the profile, operator credential,
 launch-mode setting, daemon lock and socket. SQLite job state is
-`<state-dir>/jobs.db`. The reviewed `atf start` appends daemon output to
-`<state-dir>/daemon.log`. On current `main`, foreground `atf daemon` writes
-diagnostics to its terminal unless you redirect them.
+`<state-dir>/jobs.db`. `atf start` appends daemon output to
+`<state-dir>/daemon.log`.
 
-**Coming:** Herdr launch mode and the MCP `stop_job` tool. The reviewed setup
-branch can record `--mode herdr`, but the daemon does not launch through Herdr.
-Stopping a job individually is not available; `atf stop` concerns the whole
-daemon.
+**Coming:** Herdr agent launch and the MCP `stop_job` tool. `atf setup
+--mode herdr` saves the choice, but `atf start` refuses that mode. Stopping a
+job individually is not available; `atf stop` concerns the whole daemon.
