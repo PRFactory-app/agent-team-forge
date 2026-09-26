@@ -49,7 +49,8 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             throw new BackendNotStartedException("claude could not be started", ex);
         }
 
-        return new ClaudeRun(process, request.Correlation, sessionId, Encoding.UTF8.GetBytes(request.Instruction), request.Output);
+        return new ClaudeRun(process, request.Correlation, sessionId, Encoding.UTF8.GetBytes(request.Instruction),
+            request.ResumeSessionId is null, request.Output);
     }
 
     internal static List<string> Arguments(BackendRequest request, string sessionId)
@@ -59,7 +60,8 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
         return arguments;
     }
 
-    sealed class ClaudeRun(Process process, string correlation, string sessionId, byte[] instruction, Action<string, ReadOnlyMemory<byte>>? output) : IBackendRun
+    sealed class ClaudeRun(Process process, string correlation, string sessionId, byte[] instruction, bool newSession,
+        Action<string, ReadOnlyMemory<byte>>? output) : IBackendRun
     {
         readonly Process _process = process;
         readonly Stream _stdout = new CapturingReadStream(process.StandardOutput.BaseStream, "stdout", output);
@@ -127,6 +129,35 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             catch (InvalidOperationException)
             {
             }
+        }
+
+        public void InterruptTurn()
+        {
+            if (newSession)
+            {
+                // --session-id is known before Claude initializes its transcript.
+                // A resume sent before that file exists exits without a result.
+                var root = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR")
+                    ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
+                var projects = Path.Combine(root, "projects");
+                var deadline = DateTime.UtcNow.AddSeconds(10);
+                while (DateTime.UtcNow < deadline && !_process.HasExited)
+                {
+                    try
+                    {
+                        if (Directory.Exists(projects) && Directory.EnumerateFiles(projects, sessionId + ".jsonl", SearchOption.AllDirectories)
+                            .Any(path => new FileInfo(path).Length > 0))
+                        {
+                            break;
+                        }
+                    }
+                    catch (IOException) { }
+                    catch (UnauthorizedAccessException) { }
+                    Thread.Sleep(100);
+                }
+            }
+
+            TerminateOwnedChild();
         }
 
         public async ValueTask DisposeAsync()
