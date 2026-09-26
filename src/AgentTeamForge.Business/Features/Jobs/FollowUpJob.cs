@@ -44,6 +44,11 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             return JobResult.Fail(JobErrors.ParentNotReady);
         }
 
+        if (request.Interrupt && parent.Status == JobStatus.Running && cancelRunning is null)
+        {
+            return JobResult.Fail(JobErrors.DaemonUnhealthy);
+        }
+
         return accept.Admit(Operation, request.IdempotencyKey, request.Instruction,
             "behavior=complete;hold=0" + (request.Interrupt ? ";interrupt=1" : ""),
             parent.Backend, parent.Cwd, parent.JobId, request.WakeKey, request.WakeGeneration, worktreeBase: parent.WorktreeBase,

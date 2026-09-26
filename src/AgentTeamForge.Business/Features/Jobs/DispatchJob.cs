@@ -80,6 +80,19 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
+    /// <summary>Stops the current turn while preserving an interactive agent's live tab.</summary>
+    public void InterruptRunning(string jobId)
+    {
+        if (_running.TryGetValue(jobId, out var active))
+        {
+            // Own the stop effect before cancellation wakes RunAttemptAsync's
+            // catch path, which otherwise wins and kills an interactive TUI.
+            active.TerminateOnce(TryInterrupt);
+            try { active.Stop.Cancel(); }
+            catch (ObjectDisposedException) { }
+        }
+    }
+
     /// <summary>Commits a daemon-owned cancellation, then interrupts the running attempt.</summary>
     void CancelOwned(string jobId, string reason)
     {
@@ -457,6 +470,16 @@ public sealed class DispatchJob : IDisposable
         catch (Exception ex)
         {
             log($"owned child termination failed: {ex.GetType().Name}");
+        }
+    }
+
+    void TryInterrupt(IBackendRun? backendRun)
+    {
+        try { backendRun?.InterruptTurn(); }
+        catch (Exception ex)
+        {
+            log($"owned turn interruption failed: {ex.GetType().Name}; stopping owned backend");
+            TryTerminate(backendRun);
         }
     }
 

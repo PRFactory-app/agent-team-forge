@@ -88,8 +88,14 @@ fixed output directory. Only Linux x64 has recorded checkpoint evidence.
 or `--test-profile` keeps fake only); `atf daemon --state-dir DIR` runs them.
 Register the MCP bridge with `claude mcp add atf -- /path/to/atf mcp --state-dir DIR`
 and use `submit_job(backend, instruction, cwd?, idempotency_key)`, `get_job`,
-`follow_up(job_id, instruction, idempotency_key)` (resumes the finished job's native
-session on the same backend/cwd) and `list_jobs`. CLI equivalents:
+`follow_up(job_id, instruction, idempotency_key)` (resumes the job's native
+session on the same backend/cwd) and `list_jobs`. A running parent returns
+`parent_not_ready` by default. Set `interrupt: true` in MCP or `--interrupt` on
+`atf client follow-up` to cancel its current turn with reason `interrupted` and
+run the new prompt in the same session. For a finished parent, the flag acts like
+a normal follow-up. In headless mode the current process ends before resume; in
+Herdr mode Escape interrupts the live TUI turn and the next prompt goes to its
+existing tab. CLI equivalents:
 `atf client submit|get|follow-up|list`. Add `worktree: true` to `submit_job` or
 `--worktree` to `atf client submit` with a git `cwd` to run in a separate checkout
 under the daemon state directory. The job view and list show its path and branch;

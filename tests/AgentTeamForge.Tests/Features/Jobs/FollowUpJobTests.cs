@@ -60,7 +60,7 @@ public sealed class FollowUpJobTests
         var attempt = dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
         await Bounded.Until(() => f.Store.GetJob(parent.JobId)!.SessionId == "same-session", "session evidence");
 
-        var followUp = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept(), dispatcher.CancelRunning);
+        var followUp = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept(), dispatcher.InterruptRunning);
         Assert.Equal(JobErrors.ParentNotReady,
             followUp.Execute(new FollowUpRequest(parent.JobId, "wait", "not-interrupting")).Error);
         Assert.Equal(JobStatus.Running, f.Store.GetJob(parent.JobId)!.Status);
@@ -98,7 +98,7 @@ public sealed class FollowUpJobTests
         using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
         var attempt = Task.Run(() => dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None), TestContext.Current.CancellationToken);
         await Bounded.Until(() => f.Store.GetJob(parent.JobId)!.SessionId == "race-session", "session evidence");
-        var followUp = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept(), dispatcher.CancelRunning);
+        var followUp = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept(), dispatcher.InterruptRunning);
         var pending = Task.Run(() => followUp.Execute(new FollowUpRequest(parent.JobId, "after", "child") { Interrupt = true }), TestContext.Current.CancellationToken);
         finish.Set();
         var child = await pending;

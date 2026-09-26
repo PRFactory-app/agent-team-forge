@@ -51,4 +51,7 @@ public interface IBackendRun : IAsyncDisposable
 
     /// <summary>Terminates the process tree of the child this run started, via its held handle.</summary>
     void TerminateOwnedChild();
+
+    /// <summary>Interrupts this turn. Headless runs terminate; interactive runs may keep their agent alive.</summary>
+    void InterruptTurn() => TerminateOwnedChild();
 }
