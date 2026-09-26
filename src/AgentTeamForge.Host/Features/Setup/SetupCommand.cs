@@ -2,8 +2,8 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Host.Hosting;
-using Microsoft.Win32.SafeHandles;
 
 namespace AgentTeamForge.Host.Features.Setup;
 
@@ -155,13 +155,12 @@ public static class SetupCommand
             return 1;
         }
 
-        var fd = Native.PidfdOpen(pid.Value, 0);
-        if (fd < 0)
+        using var process = Pidfd.Open(pid.Value);
+        if (process is null)
         {
             return StoppedDuringCheck(state);
         }
 
-        using var process = new SafeFileHandle(fd, ownsHandle: true);
         if (!IsOurDaemon(pid.Value, state.Path))
         {
             if (LockIsFree(state))
@@ -174,7 +173,7 @@ public static class SetupCommand
             return 1;
         }
 
-        if (Native.PidfdSendSignal(fd, Native.SigTerm, 0, 0) != 0)
+        if (!Pidfd.Signal(process, Native.SigTerm))
         {
             return StoppedDuringCheck(state);
         }

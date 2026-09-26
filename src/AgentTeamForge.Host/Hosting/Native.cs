@@ -39,13 +39,6 @@ static partial class Native
     [LibraryImport("libc")]
     public static partial uint geteuid();
 
-    // A pidfd keeps the verified process identity stable if its numeric PID is reused.
-    [LibraryImport("libc", EntryPoint = "pidfd_open", SetLastError = true)]
-    public static partial int PidfdOpen(int pid, uint flags);
-
-    [LibraryImport("libc", EntryPoint = "pidfd_send_signal", SetLastError = true)]
-    public static partial int PidfdSendSignal(int pidfd, int signal, nint info, uint flags);
-
     [LibraryImport("libc", EntryPoint = "open", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int Open(string path, int flags);
 

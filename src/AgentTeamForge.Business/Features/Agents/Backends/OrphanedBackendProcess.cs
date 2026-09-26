@@ -1,18 +1,13 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using System.Text;
-using Microsoft.Win32.SafeHandles;
 
 namespace AgentTeamForge.Business.Features.Agents.Backends;
 
 /// <summary>Linux restart cleanup for backend processes started by an earlier daemon.</summary>
-public static partial class OrphanedBackendProcess
+public static class OrphanedBackendProcess
 {
     const string Marker = "ATF_RUN_CORRELATION";
     const int SigKill = 9;
-    // Same numbers on x64 and arm64 (unified syscall table since Linux 5.3).
-    const long SysPidfdSendSignal = 424;
-    const long SysPidfdOpen = 434;
 
     public static void Mark(ProcessStartInfo info, string correlation) => info.Environment[Marker] = correlation;
 
@@ -46,7 +41,7 @@ public static partial class OrphanedBackendProcess
 
     static bool TryKill(int pid, List<byte[]> markers)
     {
-        using var pidfd = PidfdOpen(pid);
+        using var pidfd = Pidfd.Open(pid);
         if (pidfd is null)
         {
             return false;
@@ -69,7 +64,7 @@ public static partial class OrphanedBackendProcess
             return false;
         }
 
-        return PidfdSendSignal(pidfd, SigKill, 0, 0) == 0;
+        return Pidfd.Signal(pidfd, SigKill);
     }
 
     static bool HasEntry(ReadOnlySpan<byte> environment, ReadOnlySpan<byte> entry)
@@ -94,33 +89,4 @@ public static partial class OrphanedBackendProcess
 
         return false;
     }
-
-    static SafeFileHandle? PidfdOpen(int pid)
-    {
-        var fd = SyscallPidfdOpen(SysPidfdOpen, pid, 0);
-        return fd < 0 ? null : new SafeFileHandle(fd, ownsHandle: true);
-    }
-
-    static long PidfdSendSignal(SafeFileHandle pidfd, int signal, nint info, uint flags)
-    {
-        var added = false;
-        try
-        {
-            pidfd.DangerousAddRef(ref added);
-            return SyscallPidfdSendSignal(SysPidfdSendSignal, (int)pidfd.DangerousGetHandle(), signal, info, flags);
-        }
-        finally
-        {
-            if (added)
-            {
-                pidfd.DangerousRelease();
-            }
-        }
-    }
-
-    [LibraryImport("libc", EntryPoint = "syscall")]
-    private static partial nint SyscallPidfdOpen(long number, int pid, uint flags);
-
-    [LibraryImport("libc", EntryPoint = "syscall")]
-    private static partial long SyscallPidfdSendSignal(long number, int pidfd, int signal, nint info, uint flags);
 }
