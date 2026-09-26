@@ -70,6 +70,8 @@ public sealed class WakeTests
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
         Assert.Single(poster.Attempts);
         Assert.Contains("2 completed job(s)", poster.Attempts[0].Notice);
+        Assert.Contains("list_jobs", poster.Attempts[0].Notice);
+        Assert.Contains("get_job", poster.Attempts[0].Notice);
         time += TimeSpan.FromSeconds(10);
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
         Assert.Single(poster.Attempts);
