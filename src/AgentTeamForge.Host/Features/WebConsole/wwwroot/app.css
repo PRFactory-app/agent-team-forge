@@ -48,7 +48,7 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html { min-height: 100%; background: var(--bg); }
-body { max-width: 1160px; min-height: calc(100vh - 48px); margin: 24px auto; padding: 24px 24px 32px; border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-lg); background: var(--surface); color: var(--text); font: 13.5px/1.6 var(--font-sans); }
+body { max-width: 1160px; margin: 24px auto; padding: 24px 24px 32px; border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-lg); background: var(--surface); color: var(--text); font: 13.5px/1.6 var(--font-sans); }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text); background: var(--raised); padding: 6px 10px; }
 button:hover { border-color: var(--accent); }
@@ -112,7 +112,7 @@ main { padding-top: 23px; }
 .agent-node::before { content: ''; position: absolute; left: -25px; top: 23px; width: 24px; border-top: 1px solid var(--border-strong); }
 .agent-node:hover { background: var(--raised); }
 .agent-node.selected { border-color: var(--accent); box-shadow: var(--shadow-focus); }
-.card-main { display: grid; gap: 7px; min-width: 0; width: 100%; padding: 0; border: 0; border-radius: 0; background: transparent; color: inherit; text-align: left; }
+.card-main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; min-width: 0; width: 100%; padding: 0; border: 0; border-radius: 0; background: transparent; color: inherit; text-align: left; }
 .card-main:hover { border: 0; }
 .card-identity::after { content: '▸'; margin-left: auto; color: var(--muted); }
 .card-main[aria-expanded="true"] .card-identity::after { content: '▾'; }
@@ -165,7 +165,7 @@ pre { max-height: 50vh; margin: 7px 0; padding: 12px; overflow: auto; white-spac
 .agent-node.settled .node-name { color: var(--secondary); font-size: 12.5px; font-weight: 500; }
 @media (prefers-reduced-motion: reduce) { .lead-state.green .dot, .card-identity .green .dot { animation: none; } }
 @media (max-width: 680px) {
-  body { margin: 10px; padding: 16px 14px 24px; min-height: calc(100vh - 20px); }
+  body { margin: 10px; padding: 16px 14px 24px; }
   .window-bar { margin: -16px -14px 0; padding: 10px 14px; }
   .toolbar { flex-wrap: wrap; }
   .console-header { align-items: start; flex-direction: column; gap: 16px; }
