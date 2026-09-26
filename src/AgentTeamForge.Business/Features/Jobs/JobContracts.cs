@@ -21,6 +21,9 @@ public sealed record SubmitJobRequest(string IdempotencyKey, string Instruction,
     /// <summary>Backend name from <see cref="Agents.Backends.BackendCatalog"/>; null means fake.</summary>
     public string? Backend { get; init; }
 
+    public string? Model { get; init; }
+    public string? Effort { get; init; }
+
     /// <summary>Absolute existing directory the agent runs in; null uses the daemon default.</summary>
     public string? Cwd { get; init; }
 

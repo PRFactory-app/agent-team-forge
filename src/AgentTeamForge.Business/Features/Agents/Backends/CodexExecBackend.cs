@@ -62,6 +62,10 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
             {
                 args.AddRange(["-m", model]);
             }
+            if (part.Split('=', 2) is ["effort", { Length: > 0 } effort])
+            {
+                args.AddRange(["-c", "model_reasoning_effort=\"" + effort + "\""]);
+            }
         }
 
         if (request.ResumeSessionId is { } id)
