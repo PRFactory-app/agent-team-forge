@@ -182,7 +182,13 @@ echo "installed atf $version: $bin"
 if [ -n "$upgrade" ]; then
   echo 'previous versions kept; existing mode and client registrations are preserved; restart clients to use the new version'
 else
-  printf 'run "%s" setup to choose a launch mode and register installed clients\n' "$bin"
+  quoted_bin=$(printf '%s' "$bin" | sed "s/'/'\\\\''/g")
+  printf "Run: '%s' setup\n" "$quoted_bin"
+  echo 'Reload installed clients after setup; the daemon starts on first use.'
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) echo 'Optional: add "$HOME/.local/bin" to PATH for the shorter atf command.' ;;
+  esac
 fi
 }
 main "$@"

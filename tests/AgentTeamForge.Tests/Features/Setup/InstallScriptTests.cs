@@ -54,6 +54,16 @@ public sealed class InstallScriptTests
     }
 
     [Fact]
+    public void CompletionPrintsQuotedAbsoluteSetupCommand()
+    {
+        using var temp = new TempStateDir();
+        var home = temp.File("my ' home");
+        var (exit, output, _) = RunWith(home, ["--archive", Bundle(temp, "0.0.1")]);
+        Assert.Equal(0, exit);
+        Assert.Contains($"Run: '{home.Replace("'", "'\\''", StringComparison.Ordinal)}/.local/bin/atf' setup", output);
+    }
+
+    [Fact]
     public void SameVersionRerunVerifiesFilesAndDoesNotStopDaemon()
     {
         using var temp = new TempStateDir();

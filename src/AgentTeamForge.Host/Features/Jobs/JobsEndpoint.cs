@@ -251,5 +251,6 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
 
     static IpcResponse MapExternal(ExternalResult result) => new(result.Ok, result.Error,
         result.Ok ? "ok" : null, WakeGeneration: result.WakeGeneration, Ticket: result.Ticket,
-        Member: result.Member, Inbox: result.Inbox, AlreadyLeft: result.AlreadyLeft, LeftName: result.Name);
+        Member: result.Member, Inbox: result.Inbox, AlreadyLeft: result.AlreadyLeft, LeftName: result.Name,
+        ErrorDetail: result.ErrorDetail);
 }
