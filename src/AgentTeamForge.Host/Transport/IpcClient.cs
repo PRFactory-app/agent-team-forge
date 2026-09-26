@@ -1,5 +1,4 @@
 using System.Net.Sockets;
-using System.IO.Pipes;
 using System.Text;
 using AgentTeamForge.Business;
 using AgentTeamForge.Host.Hosting;
@@ -58,10 +57,8 @@ public sealed class IpcClient
                 {
                     return new IpcResponse(false, IpcProtocol.DaemonUnavailable);
                 }
-                await using var pipe = new NamedPipeClientStream(".", _state.Socket, PipeDirection.InOut,
-                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                await using var pipe = await WindowsPipe.ConnectAsync(_state.Socket, deadline.Token);
                 using var abort = deadline.Token.Register(pipe.Dispose);
-                await pipe.ConnectAsync(deadline.Token);
                 return await ExchangeAsync(pipe);
             }
             using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
@@ -90,6 +87,10 @@ public sealed class IpcClient
         catch (Exception ex) when (requestWriteStarted && ex is IOException or SocketException or ObjectDisposedException or OperationCanceledException or FrameException)
         {
             return new IpcResponse(false, IpcProtocol.OutcomeUnknown);
+        }
+        catch (UnauthorizedAccessException) when (OperatingSystem.IsWindows())
+        {
+            return new IpcResponse(false, requestWriteStarted ? IpcProtocol.OutcomeUnknown : WindowsPipe.AccessDeniedMessage);
         }
         catch (FrameException ex)
         {

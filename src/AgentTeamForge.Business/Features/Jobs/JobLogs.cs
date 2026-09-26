@@ -32,6 +32,12 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
             }
 
             using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            // A daemon killed while creating the log can leave a short header.
+            // The job remains inspectable; the next append initializes the file.
+            if (file.Length < PrefixBytes)
+            {
+                return new JobOutput("", "", offset, offset, offset, false);
+            }
             var start = ReadStart(file);
             var end = start + file.Length - PrefixBytes;
             var truncated = offset < start;
@@ -208,8 +214,9 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
 
             var path = Path.Combine(directory, jobId + ".log");
             using var file = new FileStream(path, PrivateFiles.Options(FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read));
-            if (file.Length == 0)
+            if (file.Length < PrefixBytes)
             {
+                file.SetLength(0);
                 file.Write(Prefix(0));
             }
 

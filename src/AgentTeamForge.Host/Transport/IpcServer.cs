@@ -1,5 +1,4 @@
 using System.Net.Sockets;
-using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Text;
 using AgentTeamForge.Business;
@@ -87,8 +86,7 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
 
         while (!daemonLifetime.IsCancellationRequested)
         {
-            var pipe = new NamedPipeServerStream(socketPath, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances,
-                PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            var pipe = WindowsPipe.CreateServer(socketPath);
             try { await pipe.WaitForConnectionAsync(daemonLifetime); }
             catch (OperationCanceledException) { pipe.Dispose(); return; }
             if (!_slots.Wait(0, CancellationToken.None)) { pipe.Dispose(); continue; }
@@ -140,7 +138,7 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
             // a vanished client cannot cancel a committed job.
             var response = request.ProtocolVersion != IpcProtocol.Version
                 ? new IpcResponse(false, IpcProtocol.UnsupportedVersion)
-                : handle(request);
+                : HandleRequest(request);
             try
             {
                 await Frames.WriteAsync(stream, response, IpcJson.Default.IpcResponse, daemonLifetime);
@@ -170,6 +168,20 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
             // E.g. a storage or injected failure: report no acceptance, keep serving.
             log($"request failed: {ex.GetType().Name}");
             await TryWriteAsync(stream, new IpcResponse(false, IpcProtocol.InternalError));
+        }
+    }
+
+    // A handler's own IOException (e.g. file access) must not look like a dropped client.
+    IpcResponse HandleRequest(IpcRequest request)
+    {
+        try
+        {
+            return handle(request);
+        }
+        catch (Exception ex) when (ex is not (OutOfMemoryException or OperationCanceledException))
+        {
+            log($"request failed: {ex.GetType().Name}");
+            return new IpcResponse(false, IpcProtocol.InternalError);
         }
     }
 

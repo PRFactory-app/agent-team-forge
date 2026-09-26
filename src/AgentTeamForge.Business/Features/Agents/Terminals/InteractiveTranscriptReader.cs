@@ -1,5 +1,6 @@
-using System.Text;
+using System.Collections.Concurrent;
 using System.Text.Json;
+using AgentTeamForge.DAL.Files;
 using AgentTeamForge.Business.Features.Agents.Backends;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
@@ -94,7 +95,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
     {
         try
         {
-            foreach (var line in File.ReadLines(path).Take(10))
+            foreach (var line in LiveFiles.ReadLines(path).Take(10))
             {
                 using var json = JsonDocument.Parse(line);
                 var root = json.RootElement;
@@ -112,8 +113,23 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                 }
             }
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { WarnUnreadable(path, e); }
+        catch (JsonException) { }
         return null;
+    }
+
+    static readonly ConcurrentDictionary<string, DateTime> Warned = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>An unreadable transcript silently stalls a job, so say so in the daemon log (once per file per 5 min).</summary>
+    static void WarnUnreadable(string path, Exception e)
+    {
+        var now = DateTime.UtcNow;
+        if (Warned.TryGetValue(path, out var last) && now - last < TimeSpan.FromMinutes(5))
+        {
+            return;
+        }
+        Warned[path] = now;
+        Console.Error.WriteLine($"[atf-daemon] transcript unreadable: {path}: {e.GetType().Name}: {e.Message}");
     }
 
     static InteractiveTranscript? Parse(string path, InteractiveAgentKind kind, string marker)
@@ -137,7 +153,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             var backgroundTools = new HashSet<string>();
             var backgroundTasks = new HashSet<string>();
             var knownTasks = new HashSet<string>();
-            foreach (var line in File.ReadLines(path, Encoding.UTF8))
+            foreach (var line in LiveFiles.ReadLines(path))
             {
                 JsonDocument json;
                 try { json = JsonDocument.Parse(line); }
@@ -205,7 +221,11 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             return markerSeen ? new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress, completed,
                 !ended && (backgroundTools.Count > 0 || backgroundTasks.Count > 0)) : null;
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { return null; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            WarnUnreadable(path, e);
+            return null;
+        }
     }
 
     static void TrackBackgroundTasks(JsonElement root, HashSet<string> tools, HashSet<string> tasks, HashSet<string> knownTasks)
