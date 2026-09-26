@@ -19,7 +19,11 @@
 #        DOTNET=/path/to/dotnet selects the SDK (default: <repo>/.tools/dotnet11/dotnet)
 # Exit: 0 pass, 1 scenario failed/timed out, 2 blocked (SDK/binary missing).
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# Resolve caller-relative overrides before changing to the repository root.
+if [[ "${DOTNET:-}" == */* ]]; then DOTNET="$(realpath "$DOTNET" 2>/dev/null || echo "$DOTNET")"; fi
+if [[ -n "${ATF_DEMO_BIN:-}" ]]; then ATF_DEMO_BIN="$(realpath "$ATF_DEMO_BIN" 2>/dev/null || echo "$ATF_DEMO_BIN")"; fi
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
 
 SCENARIO="AgentTeamForge.Tests.Scenarios.ClientLifetimeScenarios.Killed_bridge_does_not_stop_work_and_a_fresh_bridge_gets_the_result"
 TEST_TIMEOUT="${ATF_DEMO_TEST_TIMEOUT:-180}"
@@ -39,12 +43,11 @@ actual="$("$DOTNET" --version 2>/dev/null || true)"
 binary_env=()
 if [[ -n "${ATF_DEMO_BIN:-}" ]]; then
   [[ -x "$ATF_DEMO_BIN" ]] || { echo "BLOCKED: not executable: $ATF_DEMO_BIN" >&2; exit 2; }
-  binary_env=(ATF_HOST_BINARY="$(realpath "$ATF_DEMO_BIN")")
+  binary_env=(ATF_HOST_BINARY="$ATF_DEMO_BIN")
 fi
 
-RUN_DIR="$PWD/.run/demo-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-mkdir -p "$RUN_DIR"
-chmod 700 "$RUN_DIR"
+mkdir -p .run
+RUN_DIR="$(mktemp -d "$ROOT/.run/demo-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
 list_tmp_state() { find /tmp -maxdepth 1 -name 'atf-*' -user "$(id -u)" 2>/dev/null | sort; }
 list_tmp_state > "$RUN_DIR/tmp-before.txt"
 
@@ -72,10 +75,10 @@ leftovers="$(comm -13 "$RUN_DIR/tmp-before.txt" "$RUN_DIR/tmp-after.txt")"
 trx="$RUN_DIR/demo.trx"
 counters="$(grep -o '<Counters [^>]*>' "$trx" 2>/dev/null || true)"
 attr() { sed -n "s/.* $1=\"\([^\"]*\)\".*/\1/p" <<<"$counters"; }
-total="$(attr total)"; passed="$(attr passed)"
+total="$(attr total)"; passed="$(attr passed)"; failed="$(attr failed)"
 duration="$(grep -o 'duration="[^"]*"' "$trx" 2>/dev/null | head -1 | cut -d'"' -f2 || true)"
 
-if [[ "$status" == 0 && "$total" == 1 && "$passed" == 1 ]]; then
+if [[ "$status" == 0 && "$total" == 1 && "$passed" == 1 && "$failed" == 0 ]]; then
   cat <<EOF
 == PASS  ${SCENARIO##*.} (${duration:-?})
    [ok] MCP bridge #1: initialize, tools/list, job_submit key=demo-1 (fake child held) -> accepted

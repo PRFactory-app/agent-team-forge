@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 # Gate runner for the pinned .NET 11 SDK. Exits 2 (BLOCKED) if the pinned SDK
 # is not the one `dotnet` resolves; never retargets or installs anything.
-# Use DOTNET=/path/to/isolated/dotnet to select a project-local SDK.
+# Use DOTNET=/path/to/isolated/dotnet to select a project-local SDK; otherwise
+# <repo>/.tools/dotnet11/dotnet (found via the Git common dir, so linked
+# worktrees share it) is preferred over `dotnet` on PATH.
+# The AOT binary is published to a new, unique directory under artifacts/.
 set -euo pipefail
-cd "$(dirname "$0")/.."
-DOTNET="${DOTNET:-dotnet}"
-if [[ "$DOTNET" == */* ]]; then export DOTNET_ROOT="$(cd "$(dirname "$DOTNET")" && pwd)"; fi
+if [[ -n "${DOTNET:-}" && "$DOTNET" == */* ]]; then DOTNET="$(realpath "$DOTNET")"; fi
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+if [[ -z "${DOTNET:-}" ]]; then
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  local_sdk="${common:+$common/../.tools/dotnet11/dotnet}"
+  if [[ -n "$local_sdk" && -x "$local_sdk" ]]; then DOTNET="$(realpath "$local_sdk")"; else DOTNET=dotnet; fi
+fi
+if [[ "$DOTNET" == */* ]]; then export DOTNET_ROOT="$(dirname "$DOTNET")"; fi
 PIN="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' global.json)"
 RID="${RID:-linux-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')}"
 
@@ -16,14 +25,17 @@ if [[ "$actual" != "$PIN" ]]; then
 fi
 
 step() { echo "== $*"; }
-step "sdk $actual rid $RID"
+step "sdk $actual rid $RID dotnet $DOTNET"
 step restore;  "$DOTNET" restore AgentTeamForge.slnx
 step format;   "$DOTNET" format AgentTeamForge.slnx --verify-no-changes --no-restore
 step build;    "$DOTNET" build AgentTeamForge.slnx -c Release --no-restore -warnaserror
 step test;     "$DOTNET" test AgentTeamForge.slnx -c Release --no-build
 step publish-aot
+mkdir -p artifacts
+PUBLISH_DIR="$(mktemp -d "$ROOT/artifacts/$RID-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
 "$DOTNET" publish src/AgentTeamForge.Host/AgentTeamForge.Host.csproj -c Release -r "$RID" \
-  --self-contained true -p:PublishAot=true -p:TreatWarningsAsErrors=true -o "artifacts/$RID"
+  --self-contained true -p:PublishAot=true -p:TreatWarningsAsErrors=true -o "$PUBLISH_DIR"
+step "published $PUBLISH_DIR/atf"
 step published-smoke
-DOTNET="$DOTNET" ./scripts/published-smoke.sh "artifacts/$RID/atf"
-step "all gates passed"
+DOTNET="$DOTNET" "$ROOT/scripts/published-smoke.sh" "$PUBLISH_DIR/atf"
+step "all gates passed; published binary: $PUBLISH_DIR/atf"
