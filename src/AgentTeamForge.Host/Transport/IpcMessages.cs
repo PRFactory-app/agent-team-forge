@@ -17,9 +17,12 @@ public sealed record IpcRequest
     public string? JobId { get; init; }
     public string? Backend { get; init; }
     public string? Cwd { get; init; }
+    public string? Status { get; init; }
+    public int? Limit { get; init; }
+    public string? Cursor { get; init; }
 }
 
-public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, IReadOnlyList<JobView>? Jobs = null);
+public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null);
 
 public static class IpcProtocol
 {
@@ -45,4 +48,5 @@ public static class IpcProtocol
 [JsonSerializable(typeof(IpcRequest))]
 [JsonSerializable(typeof(IpcResponse))]
 [JsonSerializable(typeof(JobView))]
+[JsonSerializable(typeof(JobListPage))]
 public sealed partial class IpcJson : JsonSerializerContext;

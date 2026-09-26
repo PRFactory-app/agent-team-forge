@@ -31,9 +31,9 @@ public sealed class BackendCatalog
         var catalog = new BackendCatalog().Register(Fake, () => fake);
         if (includeRealAgents)
         {
-            // TODO(integrator): catalog.Register(Claude, () => new ClaudeCodeBackend());
-            // TODO(integrator): catalog.Register(Codex, () => new CodexExecBackend());
-            // TODO(integrator): catalog.Register(Pi, () => new PiBackend());
+            catalog.Register(Claude, () => new ClaudeCodeBackend());
+            catalog.Register(Codex, () => new CodexExecBackend());
+            catalog.Register(Pi, () => new PiBackend());
         }
 
         return catalog;
