@@ -7,7 +7,7 @@ namespace AgentTeamForge.Host.Features.Jobs;
 
 /// <summary>Thin IPC mapping for the job operations; all rules live in Business.</summary>
 public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, DurabilityCheckpoints checkpoints, Action onAccepted,
-    WakeStore? wakeStore = null)
+    WakeStore? wakeStore = null, PruneJob? prune = null)
 {
     public IpcResponse Handle(IpcRequest request)
     {
@@ -38,6 +38,13 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             case IpcProtocol.JobList:
                 var listed = list.Execute(new ListJobsRequest(request.Status, request.Limit, request.Cursor));
                 return listed.Error is null ? new IpcResponse(true, Outcome: "listed", Page: listed.Page) : new IpcResponse(false, listed.Error);
+            case IpcProtocol.JobPrune:
+                if (prune is null || request.OlderThanDays is not (>= 1 and <= 36500))
+                {
+                    return new IpcResponse(false, JobErrors.InvalidRequest);
+                }
+                return new IpcResponse(true, Outcome: request.DryRun ? "dry_run" : "pruned",
+                    PrunedJobs: prune.Execute(request.OlderThanDays.Value, request.DryRun));
             case IpcProtocol.WakeRegister:
                 if (wakeStore is null || string.IsNullOrWhiteSpace(request.WakeKey) || request.WakeKey.Length > 256
                     || request.WakeKind is not ("claude" or "codex" or "pi") || string.IsNullOrWhiteSpace(request.WakeAddress)

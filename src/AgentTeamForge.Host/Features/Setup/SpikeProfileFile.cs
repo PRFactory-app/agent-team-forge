@@ -21,6 +21,8 @@ public sealed record SpikeProfileFile
     public int? QueueLimit { get; init; }
     public int? MaxFakeRuntimeSeconds { get; init; }
     public int? MaxConcurrentJobs { get; init; }
+    public bool AutoPrune { get; init; } = true;
+    public int PruneOlderThanDays { get; init; } = 30;
 
     public const int MaxQueueLimit = 1_000;
     public const int MaxConcurrencyLimit = 64;
@@ -60,7 +62,8 @@ public sealed record SpikeProfileFile
         }
 
         if (!LimitsAreValid(profile.QueueLimit, profile.MaxFakeRuntimeSeconds)
-            || profile.MaxConcurrentJobs is not (null or (>= 1 and <= MaxConcurrencyLimit)))
+            || profile.MaxConcurrentJobs is not (null or (>= 1 and <= MaxConcurrencyLimit))
+            || profile.PruneOlderThanDays is < 1 or > 36500)
         {
             // Refused before the daemon binds or reports readiness.
             throw new StateDirectoryException("profile_invalid_limits");
