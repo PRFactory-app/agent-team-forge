@@ -137,6 +137,24 @@ public class HerdrTerminalTests
         Assert.DoesNotContain(fake.Calls, c => c.Args is ["tab", "create", ..] or ["session", "stop" or "delete", ..]);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Agent_start_failure_is_no_effect_only_with_verified_cleanup(bool cleanupFails)
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, AgentStartFails = true, PaneCloseFails = cleanupFails };
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", state.Path, null, null, state.File("herdr/bootstrap"))
+        { JobId = "job-failed", HerdrPlacement = "herdr-session:default" };
+        var error = await Record.ExceptionAsync(() =>
+            new HerdrAgentControl(Terminal(fake)).StartAsync(launch, CancellationToken.None));
+        if (cleanupFails) { Assert.IsType<HerdrLaunchException>(error); }
+        else { Assert.IsType<BackendNotStartedException>(error); }
+        Assert.Contains("agent_not_ready", error!.Message);
+        Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
+        Assert.Equal(cleanupFails, File.Exists(HerdrOwnedSessions.PathFor(launch)));
+    }
+
     [Fact]
     public async Task SharedPlacement_RestartStopUsesDurablePaneRecord()
     {
@@ -501,6 +519,8 @@ public class HerdrTerminalTests
     /// <summary>Scripted Herdr CLI and /proc view; records every command and never runs a process.</summary>
     private sealed class FakeHerdr : IHerdrProcessRunner
     {
+        public bool AgentStartFails { get; init; }
+        public bool PaneCloseFails { get; init; }
         public const string TakenName = "atf-test-taken";
 
         public SpawnFault Fault { get; init; }
@@ -572,11 +592,11 @@ public class HerdrTerminalTests
                 ["workspace", "list"] => Ok(new JsonObject { ["result"] = new JsonObject { ["workspaces"] = new JsonArray(new JsonObject { ["workspace_id"] = "w1", ["label"] = Label(), }) } }.ToJsonString()),
                 ["tab", "create", ..] => Ok("""{"result":{"root_pane":{"pane_id":"w1:p2","tab_id":"w1:t2","terminal_id":"term_a"},"tab":{"tab_id":"w1:t2"}}}"""),
                 ["tab", "get", "w1:t2"] => Ok(new JsonObject { ["result"] = new JsonObject { ["tab"] = new JsonObject { ["tab_id"] = "w1:t2", ["workspace_id"] = TabReplaced ? "other" : "w1" } } }.ToJsonString()),
-                ["pane", "close", "w1:p2"] => Ok("{}"),
+                ["pane", "close", "w1:p2"] => PaneCloseFails ? Err("close_failed") : Ok("{}"),
                 ["pane", "get", "w1:p2"] => _paneGone ? Err("pane_not_found") : Ok(new JsonObject { ["result"] = new JsonObject { ["pane"] = new JsonObject { ["pane_id"] = "w1:p2", ["tab_id"] = "w1:t2", ["terminal_id"] = _terminal } } }.ToJsonString()),
                 ["pane", "process-info", "--pane", "w1:p2"] => Ok("""{"result":{"process_info":{"pane_id":"w1:p2","shell_pid":""" + ShellPid + "}}}"),
                 ["session", "stop" or "delete", ..] => Ok("{}"),
-                ["agent", "start", ..] => Ok("{}"),
+                ["agent", "start", ..] => AgentStartFails ? Err("agent_not_ready") : Ok("{}"),
                 ["agent", "read", ..] => Ok("› Ask Codex\n? for shortcuts\n❯ Try a task\nbypass permissions on\n──────\n──────\n/tmp/work"),
                 ["agent", "get", ..] => Ok("{\"result\":{\"agent\":{\"status\":\"" + (AgentStatuses.TryDequeue(out var status) ? status : "idle") + "\"}}}"),
                 ["--session", _, "agent", "prompt", ..] => PromptResponse ?? Ok("""{"result":{"type":"agent_prompted"}}"""),

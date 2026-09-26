@@ -10,33 +10,85 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 
 /// <summary>
 /// Dispatcher fault containment (review B1) and the full-effect deadline
-/// (review B2): unexpected failures quarantine and halt, and a stalled start
+/// (review B2): backend failures stay local while dispatcher faults halt, and a stalled start
 /// or delivery is bounded by the same maximum runtime as evidence reading.
 /// </summary>
 public sealed class DispatchFaultTests
 {
     static readonly SpikeLimits Short = new() { MaxFakeRuntime = TimeSpan.FromMilliseconds(300) };
 
-    [Fact]
-    public async Task Unexpected_backend_failure_quarantines_the_attempt_and_halts_claims()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Launch_failure_is_contained_and_next_job_dispatches(bool noEffects)
     {
-        // One slot, so the second job is provably not claimed after the halt.
         using var f = new JobFixture(new SpikeLimits { MaxConcurrentJobs = 1 });
-        var backend = new StallingBackend { StartThrows = new InvalidOperationException("pipe exploded") };
-        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
         var first = f.Submit("k1");
         var second = f.Submit("k2");
+        var backend = new ScriptedBackend(r => [new BackendEvidence.Result(r.Correlation, "done")])
+        {
+            OnStart = r =>
+            {
+                if (r.JobId == first.JobId)
+                {
+                    if (noEffects) { throw new BackendNotStartedException("agent_not_ready"); }
+                    throw new InvalidOperationException("partial launch");
+                }
+            }
+        };
+        var logs = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, logs.Enqueue);
         using var lifetime = new CancellationTokenSource(Bounded.ScenarioDeadline);
+        var dispatching = dispatcher.RunAsync(lifetime.Token);
+        try
+        {
+            await Bounded.Until(() => f.Store.GetJob(second.JobId)!.Status == JobStatus.Completed, "next job completed");
+            var job = f.Store.GetJob(first.JobId)!;
+            Assert.Equal(noEffects ? JobStatus.Failed : JobStatus.NeedsReconciliation, job.Status);
+            Assert.Equal(noEffects ? "backend_not_started" : "launch_failed", job.ReasonCode);
+            Assert.Contains(noEffects ? "agent_not_ready" : "partial launch", job.ResultText);
+            Assert.Contains(logs, line => line.Contains(noEffects ? "agent_not_ready" : "partial launch"));
+            Assert.Equal(!noEffects, f.Store.IsSessionFenced(first.JobId));
+            Assert.Null(dispatcher.HaltReason);
+            Assert.Equal("accepted", f.Accept().Execute(new SubmitJobRequest("k3", "x", null, true)).Outcome);
+            Assert.Single(f.Store.GetRuns(first.JobId));
+        }
+        finally
+        {
+            await lifetime.CancelAsync();
+            await dispatching;
+        }
+    }
 
+    [Fact]
+    public async Task Dispatcher_invariant_failure_still_halts()
+    {
+        using var f = new JobFixture(new SpikeLimits { MaxConcurrentJobs = 1 });
+        var first = f.Submit("k1");
+        var second = f.Submit("k2");
+        var checkpoints = new DurabilityCheckpoints(_ => throw new InvalidOperationException("dispatcher invariant"));
+        using var dispatcher = new DispatchJob(f.Store, new ScriptedBackend(_ => []), f.Limits, checkpoints, f.Admission, _ => { });
+        using var lifetime = new CancellationTokenSource(Bounded.ScenarioDeadline);
         await dispatcher.RunAsync(lifetime.Token);
-
-        Assert.False(lifetime.IsCancellationRequested, "dispatcher must stop on its own, not hang until the lifetime ends");
+        Assert.False(lifetime.IsCancellationRequested);
         Assert.Equal("dispatcher_fault", dispatcher.HaltReason);
-        var job = f.Store.GetJob(first.JobId)!;
-        Assert.Equal(JobStatus.NeedsReconciliation, job.Status);
-        Assert.Equal("dispatcher_fault", job.ReasonCode);
+        Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(first.JobId)!.Status);
         Assert.Equal(JobStatus.Queued, f.Store.GetJob(second.JobId)!.Status);
-        Assert.Equal(1, f.Store.CountUnattemptedIntents());
+    }
+
+    [Fact]
+    public async Task Unavailable_store_still_halts_admission()
+    {
+        using var f = new JobFixture();
+        f.Submit("k1");
+        File.Delete(f.DatabasePath);
+        using var dispatcher = new DispatchJob(f.Store, new ScriptedBackend(_ => []), f.Limits,
+            DurabilityCheckpoints.None, f.Admission, _ => { });
+        using var lifetime = new CancellationTokenSource(Bounded.ScenarioDeadline);
+        await dispatcher.RunAsync(lifetime.Token);
+        Assert.False(lifetime.IsCancellationRequested);
+        Assert.Equal("dispatcher_fault", dispatcher.HaltReason);
+        Assert.Equal(JobErrors.DaemonUnhealthy, f.Accept().Execute(new SubmitJobRequest("k2", "x", null, false)).Error);
     }
 
     [Fact]

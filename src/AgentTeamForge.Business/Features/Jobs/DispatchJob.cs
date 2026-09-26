@@ -328,7 +328,13 @@ public sealed class DispatchJob : IDisposable
             }
             catch (StorageException ex)
             {
-                log($"dispatch claim failed: {ex.Failure}");
+                log($"dispatch claim failed: {ex.Failure}: {ex.Message}");
+                if (ex.Failure != StorageFailure.Busy)
+                {
+                    slots.Release();
+                    Halt("dispatcher_fault");
+                    return;
+                }
                 claim = null;
             }
             catch (OperationCanceledException) when (stopping.IsCancellationRequested)
@@ -437,14 +443,7 @@ public sealed class DispatchJob : IDisposable
             var starting = Task.Run(() => backend.Start(request), CancellationToken.None);
             try
             {
-                backendRun = await starting.WaitAsync(deadline.Token);
-            }
-            catch (BackendNotStartedException)
-            {
-                // Proven no effect: the only case allowed to end as failed.
-                End(run, JobStatus.Failed, "backend_not_started");
-                if (store.GetJob(run.JobId)?.Status == JobStatus.Cancelled) { store.ReconcileStoppedJob(run.JobId); }
-                return;
+                backendRun = await BackendCall(() => starting.WaitAsync(deadline.Token), "launch_failed");
             }
             catch (OperationCanceledException)
             {
@@ -462,30 +461,48 @@ public sealed class DispatchJob : IDisposable
             Volatile.Write(ref active.BackendRun, backendRun);
             deadline.Token.ThrowIfCancellationRequested();
             TryRecord(run, backendRun.ProcessId, acked: false);
-            await backendRun.DeliverAsync(deadline.Token).WaitAsync(deadline.Token);
-            await foreach (var evidence in backendRun.ReadEvidenceAsync(deadline.Token))
+            await BackendCall(async () =>
             {
-                switch (evidence)
+                await backendRun.DeliverAsync(deadline.Token).WaitAsync(deadline.Token);
+                return true;
+            }, "backend_failed");
+            var evidenceReader = await BackendCall(
+                () => Task.FromResult(backendRun.ReadEvidenceAsync(deadline.Token).GetAsyncEnumerator(deadline.Token)), "backend_failed");
+            try
+            {
+                while (await BackendCall(() => evidenceReader.MoveNextAsync().AsTask(), "backend_failed"))
                 {
-                    case BackendEvidence.Ack ack when ack.Correlation == claim.Correlation:
-                        TryRecord(run, null, acked: true);
-                        break;
-                    case BackendEvidence.Session session when session.Correlation == claim.Correlation:
-                        TryRecordSession(run, session.SessionId);
-                        break;
-                    case BackendEvidence.Result result when result.Correlation == claim.Correlation:
-                        Complete(run, result.Output);
-                        return;
-                    case BackendEvidence.Ack or BackendEvidence.Result or BackendEvidence.Session:
-                        log($"ignored stale/mismatched backend evidence for {run.RunId}");
-                        break;
-                    case BackendEvidence.ProtocolError error:
-                        End(run, error.Code == JobErrors.SessionExpired ? JobStatus.Failed : JobStatus.NeedsReconciliation, error.Code);
-                        return;
-                    case BackendEvidence.EndOfOutput:
-                        End(run, JobStatus.NeedsReconciliation, "backend_eof");
-                        return;
+                    var evidence = evidenceReader.Current;
+                    switch (evidence)
+                    {
+                        case BackendEvidence.Ack ack when ack.Correlation == claim.Correlation:
+                            TryRecord(run, null, acked: true);
+                            break;
+                        case BackendEvidence.Session session when session.Correlation == claim.Correlation:
+                            TryRecordSession(run, session.SessionId);
+                            break;
+                        case BackendEvidence.Result result when result.Correlation == claim.Correlation:
+                            Complete(run, result.Output);
+                            return;
+                        case BackendEvidence.Ack or BackendEvidence.Result or BackendEvidence.Session:
+                            log($"ignored stale/mismatched backend evidence for {run.RunId}");
+                            break;
+                        case BackendEvidence.ProtocolError error:
+                            End(run, error.Code == JobErrors.SessionExpired ? JobStatus.Failed : JobStatus.NeedsReconciliation, error.Code);
+                            return;
+                        case BackendEvidence.EndOfOutput:
+                            End(run, JobStatus.NeedsReconciliation, "backend_eof");
+                            return;
+                    }
                 }
+            }
+            finally
+            {
+                await BackendCall(async () =>
+                {
+                    await evidenceReader.DisposeAsync();
+                    return true;
+                }, "backend_failed");
             }
 
             End(run, JobStatus.NeedsReconciliation, "backend_eof");
@@ -509,6 +526,21 @@ public sealed class DispatchJob : IDisposable
             // Once-only, so a concurrent interrupt keeps its live interactive tab.
             active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
             End(run, JobStatus.NeedsReconciliation, "backend_timeout");
+        }
+        catch (BackendCallException ex)
+        {
+            var noEffects = ex.InnerException is BackendNotStartedException && backendRun is null;
+            var reason = noEffects ? "backend_not_started" : ex.Reason;
+            var message = ex.InnerException!.Message;
+            if (ex.InnerException.InnerException is not null) { message += ": " + ex.InnerException.GetBaseException().Message; }
+            log($"backend failure for {run.RunId}: {reason}: {message}");
+            active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
+            End(run, noEffects ? JobStatus.Failed : JobStatus.NeedsReconciliation, reason,
+                message);
+            if (noEffects && store.GetJob(run.JobId)?.Status == JobStatus.Cancelled)
+            {
+                store.ReconcileStoppedJob(run.JobId);
+            }
         }
         catch (Exception) when (stopRequested.IsCancellationRequested)
         {
@@ -555,6 +587,22 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
+    // Only exceptions crossing a backend boundary are job-scoped. Store and
+    // dispatcher failures outside these calls retain the daemon-wide halt path.
+    static async Task<T> BackendCall<T>(Func<Task<T>> call, string reason)
+    {
+        try { return await call(); }
+        catch (Exception ex) when (ex is not (OperationCanceledException or StorageException or InjectedFailureException))
+        {
+            throw new BackendCallException(reason, ex);
+        }
+    }
+
+    sealed class BackendCallException(string reason, Exception inner) : Exception(inner.Message, inner)
+    {
+        public string Reason { get; } = reason;
+    }
+
     /// <summary>Resolves the job's backend and, for a follow-up, the parent's native session.</summary>
     bool TryPrepare(JobRecord job, [NotNullWhen(true)] out IJobBackend? backend, out string? resumeSessionId, out string notStarted)
     {
@@ -566,14 +614,7 @@ public sealed class DispatchJob : IDisposable
             return backend is not null;
         }
 
-        try
-        {
-            resumeSessionId = store.GetJob(job.ParentJobId)?.SessionId;
-        }
-        catch (StorageException)
-        {
-            resumeSessionId = null;
-        }
+        resumeSessionId = store.GetJob(job.ParentJobId)?.SessionId;
 
         notStarted = "parent_session_missing";
         return resumeSessionId is not null;
@@ -688,11 +729,11 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
-    void End(RunRef run, string status, string reason)
+    void End(RunRef run, string status, string reason, string? message = null)
     {
         try
         {
-            store.EndUnsuccessfully(run, status, reason);
+            store.EndUnsuccessfully(run, status, reason, message);
         }
         catch (Exception ex)
         {

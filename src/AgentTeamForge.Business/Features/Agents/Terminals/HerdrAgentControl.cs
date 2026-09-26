@@ -18,9 +18,18 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         await File.WriteAllTextAsync(launch.BootstrapPath, launch.AgentName, cancellationToken);
         File.SetUnixFileMode(launch.BootstrapPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 
-        var session = launch.HerdrPlacement is { } placement && placement.StartsWith("herdr-session:", StringComparison.Ordinal)
-            ? await terminal.ExistingSessionAsync(placement[14..], cancellationToken)
-            : await terminal.StartSessionAsync(cancellationToken);
+        OwnedHerdrSession session;
+        try
+        {
+            session = launch.HerdrPlacement is { } placement && placement.StartsWith("herdr-session:", StringComparison.Ordinal)
+                ? await terminal.ExistingSessionAsync(placement[14..], cancellationToken)
+                : await terminal.StartSessionAsync(cancellationToken);
+        }
+        catch (InteractiveTerminalUnavailableException ex)
+        {
+            // Provider preflight runs before any session or tab creation.
+            throw new BackendNotStartedException(ex.Message, ex);
+        }
         // Record immediately: a later tab/start failure is still an owned session.
         try
         {
@@ -35,18 +44,21 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
             args.AddRange(AgentArguments(launch));
             await terminal.RunOwnedAsync(session, cancellationToken, [.. args]);
         }
-        catch
+        catch (Exception ex)
         {
+            var cleaned = false;
             try
             {
                 if (!session.Shared || session.TabId is not null)
                 {
                     await terminal.StopOwnedSessionAsync(session, CancellationToken.None);
+                    cleaned = true;
                     HerdrOwnedSessions.Delete(launch);
                 }
             }
             catch (HerdrLaunchException) { /* The original fault remains uncertain; never touch another session. */ }
             _runs.TryRemove(launch.AgentName, out _);
+            if (cleaned) { throw new BackendNotStartedException("interactive launch failed; owned session stopped: " + ex.Message, ex); }
             throw;
         }
     }

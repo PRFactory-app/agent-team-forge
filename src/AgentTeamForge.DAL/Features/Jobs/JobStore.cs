@@ -271,14 +271,14 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     /// <summary>
     /// Fenced non-success end of an attempted run. Never recreates a dispatch intent.
     /// </summary>
-    public bool EndUnsuccessfully(RunRef run, string terminalStatus, string reasonCode)
+    public bool EndUnsuccessfully(RunRef run, string terminalStatus, string reasonCode, string? message = null)
     {
         if (terminalStatus is not (JobStatus.Failed or JobStatus.NeedsReconciliation))
         {
             throw new ArgumentOutOfRangeException(nameof(terminalStatus));
         }
 
-        return Finish(run, terminalStatus, terminalStatus, reasonCode, null, terminalStatus, null);
+        return Finish(run, terminalStatus, terminalStatus, reasonCode, message, terminalStatus, null);
     }
 
     /// <summary>Atomically cancels queued or running work; terminal jobs are unchanged.</summary>

@@ -27,14 +27,14 @@ public abstract record BackendEvidence
     public sealed record EndOfOutput : BackendEvidence;
 }
 
-/// <summary>Thrown only when the backend provably never started (no effect possible).</summary>
+/// <summary>Thrown only when the backend provably never started or its owned launch effects were fully cleaned up.</summary>
 public sealed class BackendNotStartedException(string message, Exception? inner = null) : Exception(message, inner);
 
 public interface IJobBackend
 {
     /// <summary>
     /// Starts the backend without delivering the request. Throws
-    /// <see cref="BackendNotStartedException"/> only if nothing started. OS
+    /// <see cref="BackendNotStartedException"/> only if nothing started or owned launch effects were fully cleaned up. OS
     /// process start is not cancellable; the caller bounds how long it waits
     /// and terminates a run that returns after its deadline.
     /// </summary>
