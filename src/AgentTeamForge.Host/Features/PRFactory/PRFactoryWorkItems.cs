@@ -2,7 +2,6 @@ using System.Text.Json;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Business.Features.External;
 using AgentTeamForge.DAL.Features.Jobs;
-using AgentTeamForge.DAL.Features.External;
 
 namespace AgentTeamForge.Host.Features.PRFactory;
 
@@ -231,13 +230,21 @@ public sealed class PRFactoryWorkItems(
                 teams.RecordExternal(server, item.Id, name, ticket.Name, teamId, ticket.Token, ticket.ExpiresAt);
                 external = teams.External(server, item.Id, name)!;
             }
+            if (!external.Closed && actor.RenewExpiredTicket(external.TeamId, external.ActualName) is { } renewed)
+            {
+                // An unjoined ticket expired; the fresh one appears in the private status snapshot.
+                teams.RenewExternal(server, item.Id, name, renewed.Token, renewed.ExpiresAt);
+            }
             if (!external.TicketUploaded && !external.Closed)
             {
-                var ticket = new JoinTicket(external.TeamId, external.ActualName, external.TicketToken, external.TicketExpires);
+                // The ticket is a bearer secret; everyone in the tenant can read the agent stream,
+                // so publish only a notice. The owner reads the prompt via `atf prfactory status`.
                 var response = await client.UploadStreamAsync(item.Id, new PRFactoryStreamBatch(item.LeaseToken,
                     $"join:{item.Id:N}:{name}",
                     [new("member", teamId, name, "external", "Waiting", item.RepositoryId, "lead")],
-                    [new(name, 1, DateTimeOffset.UtcNow, "Record", ticket.JoinPrompt, "join-ticket")]), ct);
+                    [new(name, 1, DateTimeOffset.UtcNow, "Record",
+                        $"External member {name} is waiting to join. On the connected machine run `atf prfactory status` for the private join prompt.",
+                        "join-notice")]), ct);
                 if (!response.AcceptedThroughSeq.TryGetValue(name, out var seq) || seq < 1)
                 {
                     throw new HttpRequestException("PRFactory did not acknowledge join ticket line");
@@ -269,12 +276,12 @@ public sealed class PRFactoryWorkItems(
                     else
                     {
                         var sent = actor.SendToMemberOnce(target.TeamId, target.ActualName, command.Text, "prfactory", command.CommandId.ToString("D"));
-                        if (sent.Error == "member_not_found")
+                        if (sent.Error == "member_not_found" && !actor.HasLeft(target.TeamId, target.ActualName))
                         {
                             continue; // Await the participant joining before acknowledging.
                         }
 
-                        receipt = new(sent.Ok, sent.Error);
+                        receipt = new(sent.Ok, sent.Error == "member_not_found" ? "member_left" : sent.Error);
                     }
                 }
                 else if (command.Kind.Equals("KillAgent", StringComparison.OrdinalIgnoreCase))

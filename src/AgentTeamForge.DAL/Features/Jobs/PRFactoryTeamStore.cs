@@ -119,6 +119,19 @@ public sealed class PRFactoryTeamStore(JobDatabase database)
         command.ExecuteNonQuery();
     }
 
+    public void RenewExternal(string server, Guid id, string member, string token, DateTimeOffset expires)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE prfactory_external SET ticket_token=$token,ticket_expires=$expires WHERE server=$server AND work_item_id=$id AND member=$member";
+        command.Parameters.AddWithValue("$server", server);
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        command.Parameters.AddWithValue("$member", member);
+        command.Parameters.AddWithValue("$token", token);
+        command.Parameters.AddWithValue("$expires", expires.ToString("O"));
+        command.ExecuteNonQuery();
+    }
+
     public void MarkTicketUploaded(string server, Guid id, string member) => UpdateExternal(server, id, member, "ticket_uploaded=1");
     public void SetReplySeq(string server, Guid id, string member, long seq) => UpdateExternal(server, id, member, "reply_seq=$seq", seq);
     public void MarkExternalClosed(string server, Guid id) => UpdateExternal(server, id, null, "closed=1");

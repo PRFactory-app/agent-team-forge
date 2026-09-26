@@ -19,6 +19,7 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
     static readonly Regex SafeName = new("^[A-Za-z0-9_-]{1,64}$", RegexOptions.CultureInvariant);
     static readonly Regex Token = new("^[a-f0-9]{64}$", RegexOptions.CultureInvariant);
     const int MaxText = 65536;
+    static readonly TimeSpan TicketTtl = TimeSpan.FromMinutes(10);
     string? MemberSecret(string? token)
     {
         if (token is null)
@@ -49,9 +50,15 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
             return new("invalid_request");
         }
 
-        var ticket = members.CreateTicket(teamId, name, note ?? "", now(), TimeSpan.FromMinutes(10));
+        var ticket = members.CreateTicket(teamId, name, note ?? "", now(), TicketTtl);
         return ticket is null ? new("invalid_team_or_name") : new(Ticket: ticket);
     }
+
+    /// <summary>Re-issue a ticket nobody used before it expired; null while it is valid, used or revoked.</summary>
+    public JoinTicket? RenewExpiredTicket(string teamId, string name) =>
+        members.RenewExpiredTicket(teamId, name, now(), TicketTtl);
+
+    public bool HasLeft(string teamId, string name) => members.HasLeft(teamId, name);
 
     public ExternalResult CreateTicket(string? sessionId, string? workspace, string? name, string? note)
     {

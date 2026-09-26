@@ -116,6 +116,36 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return new JoinTicket(teamId, reserved, ticket, expires);
     }
 
+    /// <summary>Replace an expired, never-used ticket for the same reserved member name.</summary>
+    public JoinTicket? RenewExpiredTicket(string teamId, string name, DateTimeOffset now, TimeSpan ttl)
+    {
+        using var db = database.OpenConnection();
+        using var command = db.CreateCommand();
+        var ticket = Secret();
+        var expires = now + ttl;
+        command.CommandText = """
+            UPDATE external_members SET ticket_hash=$hash,ticket_expires=$expires
+            WHERE team_id=$team AND name=$name AND ticket_used_at IS NULL AND left_at IS NULL AND ticket_expires<=$now
+            AND EXISTS (SELECT 1 FROM external_teams t WHERE t.team_id=$team AND t.closed_at IS NULL)
+            """;
+        command.Parameters.AddWithValue("$team", teamId);
+        command.Parameters.AddWithValue("$name", name);
+        command.Parameters.AddWithValue("$hash", Hash(ticket));
+        command.Parameters.AddWithValue("$expires", expires.ToString("O"));
+        command.Parameters.AddWithValue("$now", now.ToString("O"));
+        return command.ExecuteNonQuery() == 1 ? new JoinTicket(teamId, name, ticket, expires) : null;
+    }
+
+    public bool HasLeft(string teamId, string name)
+    {
+        using var db = database.OpenConnection();
+        using var command = db.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM external_members WHERE team_id=$team AND name=$name AND left_at IS NOT NULL";
+        command.Parameters.AddWithValue("$team", teamId);
+        command.Parameters.AddWithValue("$name", name);
+        return (long)command.ExecuteScalar()! > 0;
+    }
+
     public JoinedMember? Join(string teamId, string ticket, DateTimeOffset now)
     {
         using var db = database.OpenConnection();

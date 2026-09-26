@@ -42,11 +42,11 @@ public sealed class ExternalJoinTests
         await Adapter(database).TickAsync(null, CancellationToken.None);
         var store = new PRFactoryTeamStore(database);
         var external = store.External("https://example.test", server.Item.Id, "visitor")!;
-        Assert.Contains("join_team", Assert.Single(server.Lines).Text);
-        Assert.Contains("join_team", server.Lines[0].Text);
+        // The tenant-visible stream gets a notice; the bearer ticket stays in the private snapshot.
+        Assert.DoesNotContain(external.TicketToken, Assert.Single(server.Lines).Text);
         var state = StateDirectory.Open(dir.Path);
         PRFactoryConnection.PublishJoinTickets(state, store, "https://example.test");
-        Assert.Contains("join_team", Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(dir.File("prfactory-joins.json"))));
+        Assert.Contains(external.TicketToken, Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(dir.File("prfactory-joins.json"))));
         Assert.Equal(1, submitCount);
         var actor = new ExternalTeam(new ExternalMemberStore(database), new WakeStore(database));
         var command = new PRFactoryCommand(Guid.NewGuid(), "SendMessage", "visitor", "Please review this ticket");
@@ -62,7 +62,7 @@ public sealed class ExternalJoinTests
         Assert.Equal("Please review this ticket", Assert.Single(actor.Read(token, null, null).Inbox!.Messages).Text);
         server.Acknowledged.Remove(command.CommandId); // Simulate command redelivery after a lost ack.
         await Adapter(database).TickAsync(null, CancellationToken.None);
-        Assert.Single(actor.Read(token, 0, null).Inbox!.Messages);
+        Assert.Empty(actor.Read(token, null, null).Inbox!.Messages); // No duplicate inbox row.
 
         Assert.True(actor.Send(token, "My review").Ok);
         await Adapter(database).TickAsync(null, CancellationToken.None);
@@ -82,6 +82,47 @@ public sealed class ExternalJoinTests
         Assert.Contains(kill.CommandId, server.Acknowledged);
         Assert.Equal("membership_revoked", actor.Read(token, null, null).Error);
         Assert.True(new PRFactoryTeamStore(reopened).External("https://example.test", server.Item.Id, "visitor")!.Closed);
+    }
+
+    [Fact]
+    public async Task Expired_unjoined_ticket_is_reissued_and_the_old_one_stops_working()
+    {
+        using var dir = new TempStateDir();
+        var database = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var server = new FakeServer();
+        var now = DateTimeOffset.UtcNow;
+        var actor = new ExternalTeam(new ExternalMemberStore(database), new WakeStore(database), () => now);
+        var lead = new JobRecord("lead-job", "prfactory", "connector", "connector-lead", "lead-job", "prompt", "",
+            JobStatus.Running, null, null, 0, "codex", null, null, null);
+        var adapter = new PRFactoryWorkItems("https://example.test",
+            [new RepositoryMapping(server.Item.RepositoryId, dir.Path, ["visitor"])], new PRFactoryTeamStore(database),
+            new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
+            _ => JobResult.Ok(new JobView("lead-job", JobStatus.Running, null, null, 0), "accepted"), _ => lead, () => { },
+            externalTeam: actor);
+        var store = new PRFactoryTeamStore(database);
+
+        await adapter.TickAsync(null, CancellationToken.None);
+        var first = store.External("https://example.test", server.Item.Id, "visitor")!;
+        await adapter.TickAsync(null, CancellationToken.None);
+        Assert.Equal(first.TicketToken, store.External("https://example.test", server.Item.Id, "visitor")!.TicketToken);
+
+        now += TimeSpan.FromMinutes(11);
+        await adapter.TickAsync(null, CancellationToken.None);
+        var renewed = store.External("https://example.test", server.Item.Id, "visitor")!;
+        Assert.NotEqual(first.TicketToken, renewed.TicketToken);
+        Assert.Equal(first.ActualName, renewed.ActualName);
+        Assert.True(renewed.TicketExpires > now);
+        Assert.Single(server.Lines); // The notice is not re-published; the private snapshot carries the ticket.
+        PRFactoryConnection.PublishJoinTickets(StateDirectory.Open(dir.Path), store, "https://example.test");
+        var snapshot = Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(dir.File("prfactory-joins.json")));
+        Assert.Contains(renewed.TicketToken, snapshot);
+        Assert.DoesNotContain(first.TicketToken, snapshot);
+
+        Assert.Equal("invalid_or_expired_token", actor.Join(first.TeamId, first.TicketToken).Error);
+        Assert.Equal("visitor", actor.Join(renewed.TeamId, renewed.TicketToken).Member!.Name);
+        now += TimeSpan.FromMinutes(11);
+        await adapter.TickAsync(null, CancellationToken.None);
+        Assert.Equal(renewed.TicketToken, store.External("https://example.test", server.Item.Id, "visitor")!.TicketToken);
     }
 
     sealed class FakeServer
