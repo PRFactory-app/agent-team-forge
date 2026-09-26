@@ -159,6 +159,10 @@ public sealed class ExternalJoinTests
         }
 
         await adapter.TickAsync(null, CancellationToken.None);
+        // Revoked first; a reply racing the close is drained on the next tick.
+        Assert.Equal("claimed", store.Get("https://example.test", server.Item.Id)!.State);
+        Assert.False(actor.Send(token, "Too late").Ok);
+        await adapter.TickAsync(null, CancellationToken.None);
         Assert.Equal("completed", store.Get("https://example.test", server.Item.Id)!.State);
         Assert.Equal("Final review", Assert.Single(server.Lines, l => l.RecordKind == "external-reply").Text);
         Assert.True(server.Calls.IndexOf("external-reply") < server.Calls.IndexOf("complete"));
@@ -236,8 +240,57 @@ public sealed class ExternalJoinTests
         Assert.Equal("claimed", store.Get("https://example.test", server.Item.Id)!.State);
     }
 
+    [Fact]
+    public async Task Lost_lease_closes_unjoined_external_team_and_stops_retrying()
+    {
+        using var dir = new TempStateDir();
+        var database = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var server = new FakeServer();
+        var actor = new ExternalTeam(new ExternalMemberStore(database), new WakeStore(database));
+        var store = new PRFactoryTeamStore(database);
+        var lead = new JobRecord("lead-job", "prfactory", "connector", "connector-lead", "lead-job", "prompt", "",
+            JobStatus.Running, null, null, 0, "codex", null, null, null);
+        var adapter = new PRFactoryWorkItems("https://example.test",
+            [new RepositoryMapping(server.Item.RepositoryId, dir.Path, ["visitor"])], store,
+            new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
+            _ => JobResult.Ok(new JobView("lead-job", JobStatus.Running, null, null, 0), "accepted"), _ => lead, () => { },
+            externalTeam: actor);
+
+        await adapter.TickAsync(null, CancellationToken.None);
+        var external = store.External("https://example.test", server.Item.Id, "visitor")!;
+        server.LeaseLost = true;
+        await adapter.TickAsync(null, CancellationToken.None);
+
+        Assert.Equal("failed", store.Get("https://example.test", server.Item.Id)!.State);
+        Assert.Empty(store.Pending("https://example.test"));
+        Assert.Null(actor.Join(external.TeamId, external.TicketToken).Member);
+        Assert.True(store.External("https://example.test", server.Item.Id, "visitor")!.Closed);
+    }
+
+    [Fact]
+    public void Revoking_a_member_clears_its_pending_inbox_wake()
+    {
+        using var dir = new TempStateDir();
+        var database = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var actor = new ExternalTeam(new ExternalMemberStore(database), new WakeStore(database));
+        var teamId = actor.CreateActorTeam("owner")!;
+        var ticket = actor.CreateTicketForTeam(teamId, "visitor", "test").Ticket!;
+        var token = actor.Join(teamId, ticket.Token).Member!.MemberToken;
+        Assert.True(actor.SendToMemberOnce(teamId, ticket.Name, "unread", "prfactory", "c1").Ok);
+
+        Assert.True(actor.RevokeMember(teamId, ticket.Name));
+
+        using var db = database.OpenConnection();
+        using var command = db.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM external_messages WHERE recipient<>'lead' AND (read_at IS NULL OR wake_key IS NOT NULL)";
+        Assert.Equal(0L, (long)command.ExecuteScalar()!);
+        Assert.Equal("membership_revoked", actor.Read(token, null, null).Error);
+        Assert.True(actor.RevokeMember(teamId, ticket.Name));
+    }
+
     sealed class FakeServer
     {
+        public bool LeaseLost { get; set; }
         public PRFactoryWorkItem Item { get; } = new()
         {
             Id = Guid.NewGuid(),
@@ -293,6 +346,10 @@ public sealed class ExternalJoinTests
             }
             if (path.EndsWith("/agent-commands", StringComparison.Ordinal))
             {
+                if (LeaseLost)
+                {
+                    return new HttpResponseMessage(HttpStatusCode.Conflict);
+                }
                 return Json(JsonSerializer.Serialize(new PRFactoryCommandDrainResponse([.. Commands.Where(c => !Acknowledged.Contains(c.CommandId))]), PRFactoryWorkItemJson.Default.PRFactoryCommandDrainResponse));
             }
 

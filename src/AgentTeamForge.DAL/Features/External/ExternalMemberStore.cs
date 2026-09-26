@@ -272,9 +272,9 @@ public sealed class ExternalMemberStore(JobDatabase database)
         using var command = db.CreateCommand();
         command.Transaction = tx;
         command.CommandText = """
-            UPDATE external_members SET active=0,left_at=$now,token_hash=NULL,wake_key=NULL
+            UPDATE external_members SET active=0,left_at=$now,wake_key=NULL
             WHERE team_id=$team AND name=$name AND left_at IS NULL;
-            UPDATE external_messages SET wake_key=NULL WHERE read_at IS NULL
+            UPDATE external_messages SET wake_key=NULL,read_at=$now WHERE read_at IS NULL
             AND recipient=(SELECT member_id FROM external_members WHERE team_id=$team AND name=$name);
             SELECT count(*) FROM external_members WHERE team_id=$team AND name=$name AND left_at IS NOT NULL;
             """;

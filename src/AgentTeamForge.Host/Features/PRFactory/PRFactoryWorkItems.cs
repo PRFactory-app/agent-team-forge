@@ -110,7 +110,24 @@ public sealed class PRFactoryWorkItems(
             return;
         }
 
-        var externalRepliesDrained = externalNames.Length == 0 || await AdvanceExternalAsync(item, externalNames, ct);
+        bool externalRepliesDrained;
+        try
+        {
+            externalRepliesDrained = externalNames.Length == 0 || await AdvanceExternalAsync(item, externalNames, ct);
+        }
+        catch (PRFactoryLeaseLostException)
+        {
+            // Server cancel or reap: stop renewing join tickets and drop the item instead of retrying forever.
+            var externals = teams.ExternalMembers(server, item.Id);
+            if (externals.Count > 0)
+            {
+                externalTeam!.CloseTeam(externals[0].TeamId);
+                teams.MarkExternalClosed(server, item.Id);
+            }
+            teams.Finish(server, item.Id, "failed");
+            log?.Invoke($"PRFactory work item {item.Id:D} lease lost; external team closed");
+            return;
+        }
 
         var active = 0;
         var allJobs = new List<JobRecord> { lead };
@@ -170,6 +187,17 @@ public sealed class PRFactoryWorkItems(
         if (externalNames.Length > 0)
         {
             var externals = teams.ExternalMembers(server, item.Id);
+            var open = externals.Where(e => !e.Closed).ToList();
+            if (open.Count > 0)
+            {
+                // Revoke first so no reply can land after the drain; the next tick uploads the rest and closes.
+                foreach (var external in open)
+                {
+                    externalTeam!.RevokeMember(external.TeamId, external.ActualName);
+                    teams.MarkExternalClosed(server, item.Id, external.Member);
+                }
+                return;
+            }
             externalTeam!.CloseTeam(externals[0].TeamId);
             teams.MarkExternalClosed(server, item.Id);
         }
