@@ -19,9 +19,10 @@ internal static class InteractiveAgentCommand
                 break;
             case InteractiveAgentKind.Codex:
                 // The cwd key belongs in the TOML value: Codex splits CLI override paths on dots.
-                // Escape backslashes in Windows paths as TOML basic-string characters.
+                // TOML literal strings keep Windows backslashes verbatim and avoid double quotes,
+                // which Windows PowerShell 5.1 mangles when it starts a .cmd shim.
                 args.AddRange(["--dangerously-bypass-approvals-and-sandbox", "-C", launch.WorkingDirectory,
-                    "-c", "projects={" + TomlKey(launch.WorkingDirectory) + "={trust_level=\"trusted\"}}"]);
+                    "-c", "projects={" + TomlKey(launch.WorkingDirectory) + "={trust_level='trusted'}}"]);
                 break;
             case InteractiveAgentKind.Pi:
                 args.AddRange([piShortApprove ? "-a" : "--approve", "--session-dir", launch.PiSessionDirectory!,
@@ -59,6 +60,10 @@ internal static class InteractiveAgentCommand
 
     static string TomlKey(string value)
     {
+        if (!value.Any(c => c is '\'' or < ' ' or '\u007f'))
+        {
+            return "'" + value + "'";
+        }
         var key = new StringBuilder("\"");
         foreach (var c in value)
         {

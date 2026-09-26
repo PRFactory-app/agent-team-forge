@@ -275,7 +275,7 @@ internal sealed class WtTabControl : IWtTabControl
         if (args[0].EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
         {
             lines.RemoveRange(lines.Count - 8, 7);
-            lines.Insert(lines.Count - 1, "& " + string.Join(' ', args.Select(Quote)));
+            lines.Insert(lines.Count - 1, "& " + Quote(args[0]) + " " + string.Join(' ', args.Skip(1).Select(WindowsCliLaunch.ShimArgument).Select(Quote)));
         }
         // PowerShell 5.1 needs a UTF-8 BOM. Joining lines explicitly preserves
         // literal newlines within a quoted prompt (no text-mode LF conversion).
@@ -297,7 +297,8 @@ internal sealed class WtTabControl : IWtTabControl
         if (launch.Kind == InteractiveAgentKind.Codex && OperatingSystem.IsWindows())
         {
             // Hooks only feed the Windows tab state marker; elsewhere they would replace user hooks.
-            args.AddRange(CodexHookArguments(HookLauncher(launch)));
+            // Keep them before a trailing `resume <id>` subcommand.
+            args.InsertRange(launch.ResumeSessionId is null ? args.Count : args.Count - 2, CodexHookArguments(HookLauncher(launch)));
         }
         if (launch.Kind == InteractiveAgentKind.Claude)
         {
