@@ -59,3 +59,48 @@ longer existed on immediate read-only inspection. No cleanup was performed.
 These checks establish this combined fake-core checkpoint on Linux only.
 Legacy interactive tests, real backends, Windows/macOS behavior, and publication
 gates were not run or approved by this integration.
+
+## Tooling fix integration after independent re-review
+
+The Claude-authored caller-cwd fix `68a5e6b` was independently approved by
+Codex in `review/canonical-tooling` at `74f0f53`. The fix branch merged into
+`integration/canonical-wave` at `b547d99`; the review branch merged at
+`9d8d783`. Both merges were conflict-free. The review records the resolved
+blocking finding and the scratch-merge gate evidence.
+
+I reran all combined gates from this integration worktree on Linux
+7.2.5-3-omarchy x86_64 with the isolated
+`/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet`
+(`11.0.100-rc.1.26425.128`). `verify.sh`, `check-caller-cwd.sh`, and the
+published demo were invoked from `/tmp`; the demo used caller-relative `DOTNET`
+and `ATF_DEMO_BIN` paths.
+
+```bash
+# From the canonical-wave worktree:
+git diff --check 2d6d0c9..HEAD
+bash -n scripts/verify.sh scripts/published-smoke.sh scripts/demo.sh scripts/check-caller-cwd.sh
+# From /tmp:
+DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet /home/mikael/code/github/agent-team-forge/.worktrees/canonical-wave/scripts/check-caller-cwd.sh
+DOTNET=/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet /home/mikael/code/github/agent-team-forge/.worktrees/canonical-wave/scripts/verify.sh
+# Still from /tmp, using caller-relative SDK and binary paths:
+DOTNET=../home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet ATF_DEMO_BIN=../home/mikael/code/github/agent-team-forge/.worktrees/canonical-wave/artifacts/linux-x64-20260926T145755Z-0IzbQH/atf /home/mikael/code/github/agent-team-forge/.worktrees/canonical-wave/scripts/demo.sh
+```
+
+| Gate | Actual result |
+| --- | --- |
+| `git diff --check`; `bash -n` | Passed |
+| Caller-cwd decoy regression | 5/5 passed; missing caller paths rejected |
+| Restore and format check | Passed |
+| Release build `-warnaserror` | Passed, 0 warnings and 0 errors |
+| Full tests | 61/61 passed, 0 failed, 0 skipped |
+| Linux x64 Native AOT publish | Passed; native `atf`, 9,788,576 bytes |
+| Published-binary process scenarios | 19/19 passed, 0 failed, 0 skipped |
+| Published-binary demo | 1/1 passed; no new state dirs reported |
+
+The new AOT binary is in ignored directory
+`artifacts/linux-x64-20260926T145755Z-0IzbQH/` (SHA-256
+`b79406d24060b3f13ef23f2a7d5fda18b7e2e61008467e1a50833d020c022893`).
+The scenario manifest is in ignored
+`evidence/published-20260926T145807Z-mNsOnP/`; demo TRX and logs are in
+`.run/demo-20260926T145817Z-hDN7yh/`. `shellcheck` was unavailable. This
+requalification covers the Linux fake-core checkpoint only.
