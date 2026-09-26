@@ -60,7 +60,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         // The committed row as written, without a post-commit read: a read failure
         // here would otherwise be reported as a storage error for an accepted job.
         return new AcceptOutcome(AcceptKind.Accepted, new JobRecord(jobId, job.Principal, job.Team, job.TargetAgent,
-            job.IdempotencyKey, job.Instruction, job.Options, JobStatus.Queued, null, null, 0));
+            job.IdempotencyKey, job.Instruction, job.Options, JobStatus.Queued, null, null, 0,
+            job.Backend, job.Cwd, job.ParentJobId, null));
     });
 
     /// <summary>

@@ -35,7 +35,7 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
         }
 
         // Resuming a session that is still in a turn would race the running agent.
-        if (parent.SessionId is null || parent.Status is JobStatus.Queued or JobStatus.Running)
+        if (parent.SessionId is null || parent.Status != JobStatus.Completed)
         {
             return JobResult.Fail(JobErrors.ParentNotReady);
         }
