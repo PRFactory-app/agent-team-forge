@@ -35,3 +35,13 @@ via `ATF_LIVE_CHILD_CLAUDE=1`, `ATF_HOST_BINARY`, and `ATF_LIVE_CLAUDE_BIN` (the
 directory containing the real Claude executable); credentials can be supplied
 through the standard Claude authentication environment. It does not copy or use
 the owner's client configuration directories.
+
+Review follow-up (2026-09-26): live delivery **verified** on Linux. The opt-in
+test passed against the published binary with an isolated HOME/state and
+`CLAUDE_CODE_OAUTH_TOKEN` from a temporary credential copy; the parent's
+`read_messages` returned the child's report. Use a short `ATF_TEST_TMP_ROOT`
+(state paths hit `state_dir_path_too_long`). Separately checked with Claude
+2.1.283: a `--mcp-config` server named `agentteamforge` wins over a same-named
+user-scope registration, so the owner's global entry is not used or modified.
+Open for Windows headless: stripping `CLAUDE_CODE_*` also drops settings such as
+`CLAUDE_CODE_GIT_BASH_PATH`.
