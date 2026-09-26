@@ -38,6 +38,15 @@ public sealed class MacTabControlTests
     }
 
     [Fact]
+    public void WrapperQuotesResolvedArgumentsAndResume()
+    {
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", "/tmp/repo", "native-1", null, "/tmp/atf.launch.sh")
+            .WithSelection("model=gpt-6-sol;effort=xhigh");
+        var wrapper = MacTabControl.WrapperText(launch, "task", "/tmp/atf.pid", "/tmp/atf");
+        Assert.Contains("'-m' 'gpt-6-sol' '-c' 'model_reasoning_effort=\"xhigh\"' 'resume' 'native-1'", wrapper);
+    }
+
+    [Fact]
     public void UnixCodexLaunchKeepsUserHooks()
     {
         if (OperatingSystem.IsWindows())

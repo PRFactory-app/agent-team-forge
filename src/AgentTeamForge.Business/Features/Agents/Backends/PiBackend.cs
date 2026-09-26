@@ -72,11 +72,11 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
             {
                 args.AddRange(["--model", model.Contains('/') ? model : "openai-codex/" + model]);
             }
-            else if (pair is ["thinking", { Length: > 0 } thinking])
+            else if (pair is ["thinking", { Length: > 0 } thinking] && PiThinking.Valid(thinking))
             {
                 args.AddRange(["--thinking", thinking]);
             }
-            else if (pair is ["effort", { Length: > 0 } effort])
+            else if (pair is ["effort", { Length: > 0 } effort] && PiThinking.Valid(effort))
             {
                 args.AddRange(["--thinking", effort]);
             }

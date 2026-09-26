@@ -44,7 +44,8 @@ mkdir -p "$WORK"
 # Unix socket paths are short: the private state dir lives under /tmp (not deleted).
 STATE="$(mktemp -d /tmp/atf-demo-XXXXXX)/state"
 
-"$ATF_BIN" init --state-dir "$STATE" > /dev/null
+"$ATF_BIN" setup --mode headless --state-dir "$STATE" > "$RUN_DIR/setup.log" 2>&1 \
+  || { echo "FAIL: setup; see $RUN_DIR/setup.log" >&2; exit 1; }
 "$ATF_BIN" daemon --state-dir "$STATE" 2> "$RUN_DIR/daemon.log" &
 DAEMON=$!
 trap 'kill "$DAEMON" 2>/dev/null || true; wait "$DAEMON" 2>/dev/null || true' EXIT

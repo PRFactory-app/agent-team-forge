@@ -42,7 +42,8 @@ public sealed class WtInteractiveBackend : IJobBackend
         var agentName = "atf" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(10));
         var piDirectory = _kind == InteractiveAgentKind.Pi ? PiDirectory(request) : null;
         var launch = new InteractiveLaunch(_kind, agentName, cwd, request.ResumeSessionId, piDirectory,
-            Path.Combine(_stateRoot, _tabDirectory, agentName + (_tabDirectory == "wt" ? ".launch.ps1" : ".launch.sh")));
+            Path.Combine(_stateRoot, _tabDirectory, agentName + (_tabDirectory == "wt" ? ".launch.ps1" : ".launch.sh")))
+            .WithSelection(request.Options);
         if (OperatingSystem.IsWindows())
         {
             // Reject unsafe .cmd shim arguments or hook paths here, where not-started is provable.

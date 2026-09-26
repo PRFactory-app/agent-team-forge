@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
+using AgentTeamForge.Business.Features.Agents.Backends;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
@@ -159,7 +160,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
             {
                 case InteractiveAgentKind.Claude: args.AddRange(["--effort", effort]); break;
                 case InteractiveAgentKind.Codex: args.AddRange(["-c", "model_reasoning_effort=\"" + effort + "\""]); break;
-                case InteractiveAgentKind.Pi: args.AddRange(["--thinking", effort]); break;
+                case InteractiveAgentKind.Pi when PiThinking.Valid(effort): args.AddRange(["--thinking", effort]); break;
             }
         }
         if (launch.ResumeSessionId is { } id)

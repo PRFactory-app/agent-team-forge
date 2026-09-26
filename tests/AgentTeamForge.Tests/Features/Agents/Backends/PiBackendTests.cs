@@ -80,6 +80,15 @@ public sealed class PiBackendTests : IDisposable
         Assert.DoesNotContain("--session-id", argv);
     }
 
+    [Theory]
+    [InlineData("effort=ultra")]
+    [InlineData("thinking=invalid")]
+    public void UnknownThinkingLevelIsOmitted(string options)
+    {
+        var args = PiBackend.BuildArguments(Request("task", options));
+        Assert.DoesNotContain("--thinking", args);
+    }
+
     [Fact]
     public async Task Assistant_error_is_a_protocol_error()
     {

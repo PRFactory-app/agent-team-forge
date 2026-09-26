@@ -80,6 +80,24 @@ public sealed class WtInteractiveBackendTests
         Assert.EndsWith("exit 0\r\n", wrapper);
     }
 
+    [Theory]
+    [InlineData(InteractiveAgentKind.Claude, "model=opus;effort=high", "--model", "opus", "--effort", "high")]
+    [InlineData(InteractiveAgentKind.Codex, "model=gpt-6-sol;effort=xhigh", "-m", "gpt-6-sol", "-c", "model_reasoning_effort=\"xhigh\"")]
+    [InlineData(InteractiveAgentKind.Pi, "model=gpt-6-luna;effort=max", "--model", "openai-codex/gpt-6-luna", "--thinking", "max")]
+    public async Task TabLaunchAndResumeCarryResolvedSelection(InteractiveAgentKind kind, string options,
+        string modelFlag, string model, string effortFlag, string effort)
+    {
+        var tabs = new FakeTabs();
+        var backend = new WtInteractiveBackend(tabs, new FakeReader(null), kind, Path.GetTempPath());
+        await using var run = backend.Start(new BackendRequest("job", "corr", "task", options)
+        { WorkingDirectory = Path.GetTempPath(), ResumeSessionId = "native-1" });
+        await run.DeliverAsync(CancellationToken.None);
+        var args = WtTabControl.AgentArguments(tabs.Launch!, "task");
+        Assert.Equal([modelFlag, model], args.SkipWhile(arg => arg != modelFlag).Take(2));
+        Assert.Equal([effortFlag, effort], args.SkipWhile(arg => arg != effortFlag).Take(2));
+        Assert.Contains(kind switch { InteractiveAgentKind.Claude => "--resume", InteractiveAgentKind.Codex => "resume", _ => "--continue" }, args);
+    }
+
     [Fact]
     public void WindowsHookAndShimArgumentsKeepThePromptOutOfCmd()
     {
@@ -221,6 +239,7 @@ public sealed class WtInteractiveBackendTests
         public bool FailLaunch { get; init; }
         public bool Stopped { get; private set; }
         public string Prompt { get; private set; } = "";
+        public InteractiveLaunch? Launch { get; private set; }
         public void Preflight(InteractiveAgentKind kind) => Preflighted = true;
         public Task StartAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken)
         {
@@ -230,6 +249,7 @@ public sealed class WtInteractiveBackendTests
             }
 
             Prompt = prompt;
+            Launch = launch;
             return Task.CompletedTask;
         }
         public bool IsAlive(InteractiveLaunch launch) => !Stopped;
@@ -240,7 +260,7 @@ public sealed class WtInteractiveBackendTests
     sealed class FakeReader(InteractiveTranscript? transcript) : IInteractiveTranscriptReader
     {
         public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started) => transcript;
-        public string? FindPiSessionDirectory(string root, string sessionId) => null;
+        public string? FindPiSessionDirectory(string root, string sessionId) => Path.Combine(root, sessionId);
     }
 
     sealed class SequenceReader(params InteractiveTranscript[] snapshots) : IInteractiveTranscriptReader

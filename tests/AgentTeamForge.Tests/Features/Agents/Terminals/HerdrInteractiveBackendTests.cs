@@ -114,6 +114,32 @@ public sealed class HerdrInteractiveBackendTests
         Assert.Contains("second", control.Prompt);
     }
 
+    [Fact]
+    public async Task ChangedFollowUpSelectionResumesInANewTab()
+    {
+        var control = new FakeControl { Status = InteractiveAgentStatus.Working };
+        var backend = new HerdrInteractiveBackend(control,
+            new FakeReader(new InteractiveTranscript("native-1", null)), InteractiveAgentKind.Codex, Path.GetTempPath());
+        var first = backend.Start(new BackendRequest("parent", "corr-parent", "first", "model=gpt-6-luna;effort=high")
+        { WorkingDirectory = Path.GetTempPath() });
+        await first.DeliverAsync(CancellationToken.None);
+        await using (var evidence = first.ReadEvidenceAsync(TestContext.Current.CancellationToken).GetAsyncEnumerator(TestContext.Current.CancellationToken))
+        {
+            Assert.True(await evidence.MoveNextAsync());
+            Assert.True(await evidence.MoveNextAsync());
+        }
+        first.InterruptTurn();
+        await first.DisposeAsync();
+
+        await using var second = backend.Start(new BackendRequest("child", "corr-child", "second", "model=gpt-6-sol;effort=medium")
+        { WorkingDirectory = Path.GetTempPath(), ResumeSessionId = "native-1" });
+        Assert.True(control.Stopped);
+        Assert.Equal(2, control.Starts);
+        Assert.Equal("gpt-6-sol", control.Launch?.Model);
+        Assert.Equal("medium", control.Launch?.Effort);
+        Assert.Equal("native-1", control.Launch?.ResumeSessionId);
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]
@@ -283,6 +309,21 @@ public sealed class HerdrInteractiveBackendTests
         Assert.Contains("--continue", args);
         Assert.DoesNotContain("--session-id", args);
         Assert.Contains("/tmp/pi-one", args);
+    }
+
+    [Theory]
+    [InlineData(InteractiveAgentKind.Claude, "model=opus;effort=high", "--model", "opus", "--effort", "high")]
+    [InlineData(InteractiveAgentKind.Codex, "model=gpt-6-sol;effort=xhigh", "-m", "gpt-6-sol", "-c", "model_reasoning_effort=\"xhigh\"")]
+    [InlineData(InteractiveAgentKind.Pi, "model=gpt-6-luna;effort=max", "--model", "openai-codex/gpt-6-luna", "--thinking", "max")]
+    public void LaunchAndResumeCarryResolvedSelection(InteractiveAgentKind kind, string options,
+        string modelFlag, string model, string effortFlag, string effort)
+    {
+        var launch = new InteractiveLaunch(kind, "atftest", "/tmp", "native-1", "/tmp/pi-one", "/tmp/bootstrap")
+            .WithSelection(options);
+        var args = HerdrAgentControl.AgentArguments(launch);
+        Assert.Equal([modelFlag, model], args.SkipWhile(arg => arg != modelFlag).Take(2));
+        Assert.Equal([effortFlag, effort], args.SkipWhile(arg => arg != effortFlag).Take(2));
+        Assert.Contains(kind switch { InteractiveAgentKind.Claude => "--resume", InteractiveAgentKind.Codex => "resume", _ => "--continue" }, args);
     }
 
     [Fact]
