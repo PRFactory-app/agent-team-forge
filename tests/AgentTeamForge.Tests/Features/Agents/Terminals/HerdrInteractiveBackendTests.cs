@@ -108,7 +108,10 @@ public sealed class HerdrInteractiveBackendTests
         var control = new FakeControl { Status = InteractiveAgentStatus.Working };
         var backend = new HerdrInteractiveBackend(control,
             new FakeReader(new InteractiveTranscript("native-1", null)), InteractiveAgentKind.Codex, Path.GetTempPath());
-        var first = backend.Start(new BackendRequest("parent", "corr-parent", "first", "") { WorkingDirectory = Path.GetTempPath() });
+        var parentPhases = new List<string>();
+        var childPhases = new List<string>();
+        var first = backend.Start(new BackendRequest("parent", "corr-parent", "first", "")
+        { WorkingDirectory = Path.GetTempPath(), StartupProgress = parentPhases.Add });
         await first.DeliverAsync(CancellationToken.None);
         await using (var evidence = first.ReadEvidenceAsync(TestContext.Current.CancellationToken).GetAsyncEnumerator(TestContext.Current.CancellationToken))
         {
@@ -124,11 +127,13 @@ public sealed class HerdrInteractiveBackendTests
 
         var original = control.Launch;
         await using var second = backend.Start(new BackendRequest("child", "corr-child", "second", "")
-        { WorkingDirectory = Path.GetTempPath(), ResumeSessionId = "native-1" });
+        { WorkingDirectory = Path.GetTempPath(), ResumeSessionId = "native-1", StartupProgress = childPhases.Add });
         await second.DeliverAsync(CancellationToken.None);
         Assert.Equal(1, control.Starts);
         Assert.Same(original, control.Launch);
         Assert.Contains("second", control.Prompt);
+        Assert.Equal(["ready", "submitted"], parentPhases);
+        Assert.Equal(["ready", "submitted"], childPhases);
     }
 
     [Fact]
@@ -677,6 +682,8 @@ public sealed class HerdrInteractiveBackendTests
             {
                 throw new HerdrLaunchException("herdr agent prompt exited 1: agent_blocked");
             }
+            launch.StartupProgress?.Invoke("ready");
+            launch.StartupProgress?.Invoke("submitted");
             Prompt = prompt;
             Prompts++;
             return Task.CompletedTask;

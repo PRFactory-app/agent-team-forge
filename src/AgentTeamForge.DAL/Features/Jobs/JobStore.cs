@@ -237,10 +237,10 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     {
         using var tx = connection.BeginTransaction(deferred: false);
         Execute(connection, tx, """
-            UPDATE runs SET backend_pid=coalesce($pid, backend_pid), acked=max(acked, $acked)
+            UPDATE runs SET backend_pid=coalesce($pid, backend_pid), acked=max(acked, $acked), acknowledged_at=CASE WHEN $acked=1 THEN coalesce(acknowledged_at, $at) ELSE acknowledged_at END
             WHERE run_id=$run AND job_id=$id AND generation=$gen AND correlation=$corr AND state='started'
             """,
-            ("$pid", pid), ("$acked", acked ? 1 : 0), ("$run", run.RunId), ("$id", run.JobId),
+            ("$at", DateTimeOffset.UtcNow.ToString("O")), ("$pid", pid), ("$acked", acked ? 1 : 0), ("$run", run.RunId), ("$id", run.JobId),
             ("$gen", run.Generation), ("$corr", run.Correlation));
         tx.Commit();
         return 0;
@@ -513,16 +513,33 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return (IReadOnlyList<EventRecord>)events;
     });
 
+    public void RecordStartup(RunRef run, string phase) => Write(connection =>
+    {
+        var column = phase switch { "ready" => "ready_at", "submitted" => "submitted_at", _ => throw new ArgumentOutOfRangeException(nameof(phase)) };
+        using var tx = connection.BeginTransaction(deferred: false);
+        Execute(connection, tx, $"UPDATE runs SET {column}=coalesce({column}, $at) WHERE run_id=$run AND job_id=$id AND generation=$gen AND correlation=$corr AND state='started'",
+            ("$at", DateTimeOffset.UtcNow.ToString("O")), ("$run", run.RunId), ("$id", run.JobId), ("$gen", run.Generation), ("$corr", run.Correlation));
+        tx.Commit();
+        return 0;
+    });
+
     public IReadOnlyList<RunRecord> GetRuns(string jobId) => Read(connection =>
     {
         using var command = Command(connection, null,
-            "SELECT run_id, generation, correlation, state, acked, backend_pid, reason_code FROM runs WHERE job_id=$id ORDER BY generation", ("$id", jobId));
+            "SELECT run_id, generation, correlation, state, acked, backend_pid, reason_code, started_at, ready_at, submitted_at, acknowledged_at, finished_at FROM runs WHERE job_id=$id ORDER BY generation", ("$id", jobId));
         using var reader = command.ExecuteReader();
         var runs = new List<RunRecord>();
         while (reader.Read())
         {
             runs.Add(new RunRecord(reader.GetString(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3),
-                reader.GetInt64(4) != 0, reader.IsDBNull(5) ? null : reader.GetInt32(5), reader.IsDBNull(6) ? null : reader.GetString(6)));
+                reader.GetInt64(4) != 0, reader.IsDBNull(5) ? null : reader.GetInt32(5), reader.IsDBNull(6) ? null : reader.GetString(6))
+            {
+                StartedAt = reader.GetString(7),
+                ReadyAt = reader.IsDBNull(8) ? null : reader.GetString(8),
+                SubmittedAt = reader.IsDBNull(9) ? null : reader.GetString(9),
+                AcknowledgedAt = reader.IsDBNull(10) ? null : reader.GetString(10),
+                FinishedAt = reader.IsDBNull(11) ? null : reader.GetString(11),
+            });
         }
 
         return (IReadOnlyList<RunRecord>)runs;

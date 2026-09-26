@@ -44,6 +44,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
         var hasMore = rows.Count > limit;
         var jobs = rows.Take(limit).Select(r => new JobSummary(r.JobId, r.Status, r.ReasonCode, r.Attempts, r.AcceptedAt, r.UpdatedAt)
         {
+            Startup = StartupProgress.Read(store, r.JobId, r.Status, r.Backend, r.ReasonCode),
             WorktreePath = r.WorktreePath,
             WorktreeBranch = r.WorktreeBranch,
             Backend = r.Backend,
@@ -74,6 +75,7 @@ public sealed record ListJobsRequest(string? Status = null, int? Limit = null, s
 /// <summary>Inspection view of a job; use job_get for its result.</summary>
 public sealed record JobSummary(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)
 {
+    public StartupProgress? Startup { get; init; }
     public string? Backend { get; init; }
     public string? Cwd { get; init; }
     public string? Model { get; init; }

@@ -1,3 +1,7 @@
+using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Sqlite;
+using AgentTeamForge.Tests.Support;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using System.Diagnostics;
 using System.Text.Json.Nodes;
@@ -369,14 +373,68 @@ public class HerdrTerminalTests
         using var state = new AgentTeamForge.Tests.Support.TempStateDir();
         var fake = new FakeHerdr { BootstrapFromTab = true, AgentStatuses = new Queue<string>(["unknown", "idle", "working", "done"]) };
         var control = new HerdrAgentControl(Terminal(fake));
-        var launch = new InteractiveLaunch(kind, "atftest", state.Path, null, state.Path, Path.Combine(state.Path, "bootstrap"));
+        var phases = new List<string>();
+        var launch = new InteractiveLaunch(kind, "atftest", state.Path, "resumed-native", state.Path, Path.Combine(state.Path, "bootstrap"))
+        { StartupProgress = phase => phases.Add(phase) };
         await control.StartAsync(launch, TestContext.Current.CancellationToken);
         await control.PromptAsync(launch, "one prompt", TestContext.Current.CancellationToken);
+        Assert.Equal(["ready", "submitted"], phases);
         Assert.Equal(kind == InteractiveAgentKind.Claude,
             fake.Calls.Single(c => c.Args is ["tab", "create", ..]).Args.Contains("CLAUDE_CODE_SANDBOXED=1"));
         var promptIndex = fake.Calls.FindIndex(c => c.Args is ["--session", _, "agent", "prompt", ..]);
         Assert.True(fake.Calls.Take(promptIndex).Count(c => c.Args is ["agent", "get", ..]) >= 8);
         Assert.Single(fake.Calls, c => c.Args is ["--session", _, "agent", "prompt", ..]);
+    }
+
+    [Theory]
+    [InlineData(InteractiveAgentKind.Claude, "Choose the text style that looks best with your terminal", "agent_first_run_required")]
+    [InlineData(InteractiveAgentKind.Claude, "Choose the theme\nDark mode", "agent_first_run_required")]
+    [InlineData(InteractiveAgentKind.Claude, "Try the new fullscreen renderer?", "agent_first_run_required")]
+    [InlineData(InteractiveAgentKind.Claude, "Select login method", "agent_login_required")]
+    [InlineData(InteractiveAgentKind.Claude, "Not logged in · Please run /login", "agent_login_required")]
+    [InlineData(InteractiveAgentKind.Claude, "Claude account with subscription\nAnthropic Console account", "agent_login_required")]
+    [InlineData(InteractiveAgentKind.Claude, "Yes, I trust this folder", "agent_workspace_trust_required")]
+    [InlineData(InteractiveAgentKind.Codex, "Sign in with ChatGPT\nUse an API key", "agent_login_required")]
+    [InlineData(InteractiveAgentKind.Codex, "Do you trust the contents of this directory", "agent_workspace_trust_required")]
+    public async Task Recognized_startup_blocker_fails_without_delivery_or_fence(InteractiveAgentKind kind, string screen, string reason)
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr { BootstrapFromTab = true, Screen = screen };
+        var backend = new HerdrInteractiveBackend(new HerdrAgentControl(Terminal(fake)), new InteractiveTranscriptReader(_ => state.Path), kind, state.Path);
+        var job = f.Submit("blocked");
+        var claim = f.Store.BeginNextAttempt()!;
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        var clock = Stopwatch.StartNew();
+        await dispatcher.RunAttemptAsync(claim, TestContext.Current.CancellationToken);
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(5));
+        Assert.Equal(JobStatus.Failed, f.Store.GetJob(job.JobId)!.Status);
+        Assert.Equal(reason, f.Store.GetJob(job.JobId)!.ReasonCode);
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["--session", _, "agent", "prompt", ..]);
+        Assert.Contains(fake.Calls, c => c.Args is ["session", "stop", ..]);
+        Assert.Null(f.Store.GetRuns(job.JobId).Single().SubmittedAt);
+    }
+
+    [Fact]
+    public async Task Unknown_screen_keeps_waiting_without_submitting()
+    {
+        using var state = new TempStateDir();
+        var fake = new FakeHerdr { BootstrapFromTab = true, Screen = "Loading something unfamiliar" };
+        using var f = new JobFixture();
+        var backend = new HerdrInteractiveBackend(new HerdrAgentControl(Terminal(fake), TimeSpan.FromMilliseconds(300)),
+            new InteractiveTranscriptReader(_ => state.Path), InteractiveAgentKind.Codex, state.Path,
+            startupTimeout: TimeSpan.FromMilliseconds(300));
+        var job = f.Submit("unknown");
+        var claim = f.Store.BeginNextAttempt()!;
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        await dispatcher.RunAttemptAsync(claim, TestContext.Current.CancellationToken);
+        Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(job.JobId)!.Status);
+        Assert.Equal("interactive_delivery_not_confirmed", f.Store.GetJob(job.JobId)!.ReasonCode);
+        Assert.True(f.Store.IsSessionFenced(job.JobId));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["--session", _, "agent", "prompt", ..]);
+        Assert.Null(HerdrAgentControl.StartupBlocker(InteractiveAgentKind.Pi, "Select login method"));
+        Assert.Null(HerdrAgentControl.StartupBlocker(InteractiveAgentKind.Claude, "Choose the text style\n❯\nbypass permissions on"));
     }
 
     [Fact]
@@ -597,12 +655,14 @@ public class HerdrTerminalTests
                 ["pane", "process-info", "--pane", "w1:p2"] => Ok("""{"result":{"process_info":{"pane_id":"w1:p2","shell_pid":""" + ShellPid + "}}}"),
                 ["session", "stop" or "delete", ..] => Ok("{}"),
                 ["agent", "start", ..] => AgentStartFails ? Err("agent_not_ready") : Ok("{}"),
-                ["agent", "read", ..] => Ok("› Ask Codex\n? for shortcuts\n❯ Try a task\nbypass permissions on\n──────\n──────\n/tmp/work"),
+                ["agent", "read", ..] => Ok(Screen ?? "› Ask Codex\n? for shortcuts\n❯ Try a task\nbypass permissions on\n──────\n──────\n/tmp/work"),
                 ["agent", "get", ..] => Ok("{\"result\":{\"agent\":{\"status\":\"" + (AgentStatuses.TryDequeue(out var status) ? status : "idle") + "\"}}}"),
                 ["--session", _, "agent", "prompt", ..] => PromptResponse ?? Ok("""{"result":{"type":"agent_prompted"}}"""),
                 _ => Err("unexpected " + string.Join(' ', args)),
             });
         }
+
+        public string? Screen { get; init; }
 
         public Queue<string> AgentStatuses { get; init; } = new();
 

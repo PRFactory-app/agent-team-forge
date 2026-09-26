@@ -13,3 +13,8 @@ internal static class InteractiveStartup
         }
     }
 }
+
+internal sealed class AgentStartupBlockedException(string reason, string hint) : Exception(hint)
+{
+    public string Reason { get; } = reason;
+}

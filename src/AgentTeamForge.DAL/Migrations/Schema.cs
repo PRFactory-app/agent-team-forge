@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 13;
+    public const int CurrentVersion = 14;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -237,7 +237,13 @@ static class Schema
         UPDATE jobs SET session_fenced=1 WHERE status='needs_reconciliation';
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13];
+    internal const string V14 = """
+        ALTER TABLE runs ADD COLUMN ready_at TEXT;
+        ALTER TABLE runs ADD COLUMN submitted_at TEXT;
+        ALTER TABLE runs ADD COLUMN acknowledged_at TEXT;
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

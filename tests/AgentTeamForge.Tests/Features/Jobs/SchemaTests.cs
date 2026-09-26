@@ -125,6 +125,10 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                ALTER TABLE runs DROP COLUMN ready_at;
+                ALTER TABLE runs DROP COLUMN submitted_at;
+                ALTER TABLE runs DROP COLUMN acknowledged_at;
+                DELETE FROM schema_migrations WHERE version=14;
                 ALTER TABLE jobs DROP COLUMN session_fenced;
                 DELETE FROM schema_migrations WHERE version=13;
                 DELETE FROM schema_migrations WHERE version=12;
@@ -181,6 +185,10 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                ALTER TABLE runs DROP COLUMN ready_at;
+                ALTER TABLE runs DROP COLUMN submitted_at;
+                ALTER TABLE runs DROP COLUMN acknowledged_at;
+                DELETE FROM schema_migrations WHERE version=14;
                 ALTER TABLE jobs DROP COLUMN session_fenced;
                 DELETE FROM schema_migrations WHERE version=13;
                 ALTER TABLE prfactory_teams DROP COLUMN acceptance_state;

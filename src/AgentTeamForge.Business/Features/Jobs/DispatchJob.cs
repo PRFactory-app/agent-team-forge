@@ -435,6 +435,11 @@ public sealed class DispatchJob : IDisposable
 
             var request = new BackendRequest(claim.Job.JobId, claim.Correlation, claim.Job.Instruction, claim.Job.Options)
             {
+                StartupProgress = phase =>
+                {
+                    try { store.RecordStartup(run, phase); }
+                    catch (StorageException) { /* Diagnostic only. */ }
+                },
                 ResumeSessionId = resumeSessionId,
                 WorkingDirectory = JobWorktree.WorkingDirectory(claim.Job),
                 Output = jobLogs?.BeginRun(claim.Job.JobId, claim.RunId, claim.Job.Backend),
@@ -529,8 +534,9 @@ public sealed class DispatchJob : IDisposable
         }
         catch (BackendCallException ex)
         {
-            var noEffects = ex.InnerException is BackendNotStartedException && backendRun is null;
-            var reason = noEffects ? "backend_not_started" : ex.Reason;
+            var blocked = ex.InnerException as AgentStartupBlockedException;
+            var noEffects = blocked is not null || ex.InnerException is BackendNotStartedException && backendRun is null;
+            var reason = blocked?.Reason ?? (noEffects ? "backend_not_started" : ex.Reason);
             var message = ex.InnerException!.Message;
             if (ex.InnerException.InnerException is not null) { message += ": " + ex.InnerException.GetBaseException().Message; }
             log($"backend failure for {run.RunId}: {reason}: {message}");

@@ -49,7 +49,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             var (model, effort) = InteractiveLaunch.Selection(request.Options);
             if (live.Model == model && live.Effort == effort)
             {
-                return new Run(_control, _transcripts, request, live, started, _settleTimeout, _startupTimeout, RememberSession);
+                return new Run(_control, _transcripts, request, live with { StartupProgress = request.StartupProgress }, started, _settleTimeout, _startupTimeout, RememberSession);
             }
             _control.StopOwned(live);
         }
@@ -58,7 +58,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         var piDirectory = _kind == InteractiveAgentKind.Pi ? PiDirectory(request) : null;
         var launch = new InteractiveLaunch(_kind, agentName, cwd, request.ResumeSessionId, piDirectory,
             Path.Combine(_stateRoot, "herdr", agentName + ".bootstrap"))
-        { JobId = request.JobId, HerdrPlacement = AgentTeamForge.Business.Features.Jobs.JobOptions.Read(request.Options, "herdr_placement") }.WithSelection(request.Options);
+        { StartupProgress = request.StartupProgress, JobId = request.JobId, HerdrPlacement = AgentTeamForge.Business.Features.Jobs.JobOptions.Read(request.Options, "herdr_placement") }.WithSelection(request.Options);
         try
         {
             // Dispatch calls Start on a worker. A failure after session creation is uncertain;
@@ -127,6 +127,11 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             {
                 await control.PromptAsync(launch, prompt, cancellationToken);
                 _promptReturned = true;
+            }
+            catch (AgentStartupBlockedException)
+            {
+                TerminateOwnedChild();
+                throw;
             }
             catch (HerdrLaunchException)
             {
@@ -305,6 +310,7 @@ internal sealed record InteractiveLaunch(InteractiveAgentKind Kind, string Agent
 {
     // Kept with the owned pane by RetainedSessions, including fresh-launch follow-ups.
     public NativeTranscriptBinding? NativeTranscript { get; set; }
+    public Action<string>? StartupProgress { get; init; }
     public string? JobId { get; init; }
     public string? Model { get; init; }
     public string? Effort { get; init; }

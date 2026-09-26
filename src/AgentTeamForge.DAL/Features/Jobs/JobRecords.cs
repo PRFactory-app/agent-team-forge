@@ -86,7 +86,14 @@ public sealed record CancelOutcome(JobRecord? Job, bool WasRunning, bool Changed
 
 public sealed record EventRecord(long Seq, string JobId, string? RunId, string Kind);
 
-public sealed record RunRecord(string RunId, long Generation, string Correlation, string State, bool Acked, int? BackendPid, string? ReasonCode);
+public sealed record RunRecord(string RunId, long Generation, string Correlation, string State, bool Acked, int? BackendPid, string? ReasonCode)
+{
+    public string? FinishedAt { get; init; }
+    public string? StartedAt { get; init; }
+    public string? ReadyAt { get; init; }
+    public string? SubmittedAt { get; init; }
+    public string? AcknowledgedAt { get; init; }
+}
 
 /// <summary>Read-only inspection row: committed state only, no instruction or result payload.</summary>
 public sealed record JobSummaryRecord(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)

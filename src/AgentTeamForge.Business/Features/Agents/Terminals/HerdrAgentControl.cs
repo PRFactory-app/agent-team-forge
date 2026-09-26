@@ -5,7 +5,7 @@ using AgentTeamForge.Business.Features.Agents.Backends;
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
 /// <summary>Herdr's native agent commands keep input and lifecycle tied to the owned pane.</summary>
-internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentControl
+internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readinessTimeout = null) : IHerdrAgentControl
 {
     // stop_job terminates from another thread while the dispatcher is still polling.
     readonly ConcurrentDictionary<string, (OwnedHerdrSession Session, HerdrTabBinding Binding)> _runs = [];
@@ -72,13 +72,15 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         }
         // Agent detection can precede the first rendered input editor. Require a
         // settled ready state before sending any bytes, including on resumed panes.
-        var deadline = DateTimeOffset.UtcNow.Add(InteractiveStartup.Timeout);
+        var deadline = DateTimeOffset.UtcNow.Add(readinessTimeout ?? InteractiveStartup.Timeout);
         DateTimeOffset? readySince = null;
         while (true)
         {
             var status = await StatusAsync(launch, cancellationToken);
+            var screen = await terminal.ReadAgentAsync(session, binding.PaneId, cancellationToken);
+            if (StartupBlocker(launch.Kind, screen) is { } blocker) { throw blocker; }
             if (status is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done
-                && HasInputEditor(launch.Kind, await terminal.ReadAgentAsync(session, binding.PaneId, cancellationToken)))
+                && HasInputEditor(launch.Kind, screen))
             {
                 readySince ??= DateTimeOffset.UtcNow;
                 if (DateTimeOffset.UtcNow - readySince >= TimeSpan.FromSeconds(1)) { break; }
@@ -90,8 +92,10 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
             }
             await Task.Delay(250, cancellationToken);
         }
+        launch.StartupProgress?.Invoke("ready");
         try
         {
+            launch.StartupProgress?.Invoke("submitted");
             // Herdr requires an observed state change after submission. Without --wait,
             // an immediate response can report success while the TUI has not processed it.
             var response = await terminal.RunOwnedAsync(session, cancellationToken, "--session", session.SessionName,
@@ -162,6 +166,44 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
     internal static bool IsUnsettledPrompt(HerdrLaunchException e) =>
         e.Message.Contains("timeout", StringComparison.Ordinal) || e.Message.Contains("timed out", StringComparison.Ordinal)
         || e.Message.Contains("agent_prompt_stalled", StringComparison.Ordinal);
+
+    internal static AgentStartupBlockedException? StartupBlocker(InteractiveAgentKind kind, string screen)
+    {
+        bool Has(string text) => screen.Contains(text, StringComparison.OrdinalIgnoreCase);
+        // A ready editor can contain historical output quoting setup screens. Only
+        // the explicit logged-out status is a blocker even with a rendered editor.
+        if (HasInputEditor(kind, screen) && !(kind == InteractiveAgentKind.Claude && Has("Not logged in") && Has("Please run /login")))
+        {
+            return null;
+        }
+        var command = kind == InteractiveAgentKind.Claude ? "claude" : "codex";
+        if (kind == InteractiveAgentKind.Claude)
+        {
+            if (Has("Please run /login") && Has("Not logged in") || Has("Select login method")
+                || Has("Claude account with subscription") && Has("Anthropic Console account"))
+            {
+                return new("agent_login_required", "Claude may require login; run `claude` once in a terminal to log in.");
+            }
+            if (Has("Choose the text style") || Has("Choose the theme") && Has("Dark mode")
+                || Has("Try the new full-screen renderer?")
+                || Has("Try the new fullscreen renderer?"))
+            {
+                return new("agent_first_run_required", "Claude may require first-run setup; run `claude` once in a terminal to finish setup.");
+            }
+        }
+        if (kind == InteractiveAgentKind.Codex && (Has("Sign in with ChatGPT") && Has("API key")
+            || Has("Welcome to Codex") && Has("Sign in")))
+        {
+            return new("agent_login_required", "Codex may require login; run `codex` once in a terminal to log in.");
+        }
+        if (kind is InteractiveAgentKind.Claude or InteractiveAgentKind.Codex
+            && (Has("Do you trust the files in this folder") || Has("Yes, I trust this folder")
+                || Has("Do you trust the contents of this directory")))
+        {
+            return new("agent_workspace_trust_required", $"Workspace trust may require attention; run `{command}` once in a terminal in this workspace.");
+        }
+        return null;
+    }
 
     internal static bool HasInputEditor(InteractiveAgentKind kind, string screen)
     {

@@ -2,6 +2,7 @@ namespace AgentTeamForge.Business.Features.Agents.Backends;
 
 public sealed record BackendRequest(string JobId, string Correlation, string Instruction, string Options)
 {
+    public Action<string>? StartupProgress { get; init; }
     public string? ManagedMcpConfig { get; init; }
     /// <summary>Native session to resume for a follow-up; null starts a new session.</summary>
     public string? ResumeSessionId { get; init; }

@@ -977,6 +977,10 @@
         const preview = j.last_activity || j.reason_code;
         row.append(chips, state);
         open.append(row);
+        if (j.startup) {
+          open.append(element('span', 'card-activity', 'Startup: ' + j.startup.phase + ' · ' + j.startup.elapsed_seconds + 's'));
+          if (j.startup.hint) open.append(element('span', 'card-activity', j.startup.hint));
+        }
         if (preview) open.append(element('span', 'card-activity', '› ' + preview));
         open.append(cardMeta);
         const side = element('div', 'card-side');

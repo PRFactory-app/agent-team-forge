@@ -79,6 +79,7 @@ public static class JobErrors
 /// <summary>The public view of a job. Never a raw storage record.</summary>
 public sealed record JobView(string JobId, string Status, string? Result, string? ReasonCode, int Attempts)
 {
+    public StartupProgress? Startup { get; init; }
     public string? Backend { get; init; }
     public string? Model { get; init; }
     public string? Effort { get; init; }

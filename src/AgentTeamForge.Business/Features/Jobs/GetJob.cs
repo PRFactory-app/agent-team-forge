@@ -26,7 +26,7 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal)
         // Another principal's job is indistinguishable from an unknown ID.
         return job is null || job.Principal != principal.Principal || job.Team != principal.Team
             ? JobResult.Fail(JobErrors.NotFound)
-            : JobResult.Ok(ToView(job), "found");
+            : JobResult.Ok(View(job), "found");
     }
 
     /// <summary>Most recent jobs of the bound principal, without result text (keeps frames small).</summary>
@@ -35,13 +35,15 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal)
         try
         {
             var jobs = store.ListJobs(principal.Principal, principal.Team, Math.Clamp(limit, 1, 200));
-            return new JobResult(null, "listed", null) { Jobs = [.. jobs.Select(j => ToView(j) with { Result = null })] };
+            return new JobResult(null, "listed", null) { Jobs = [.. jobs.Select(j => View(j) with { Result = null })] };
         }
         catch (StorageException ex)
         {
             return JobResult.Fail(JobErrors.FromStorage(ex));
         }
     }
+
+    JobView View(JobRecord job) => ToView(job) with { Startup = StartupProgress.Read(store, job.JobId, job.Status, job.Backend, job.ReasonCode) };
 
     internal static JobView ToView(JobRecord job) => new(job.JobId, job.Status, job.ResultText, job.ReasonCode, job.Attempts)
     {
