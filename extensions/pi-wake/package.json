@@ -19,7 +19,7 @@
     "format:write": "prettier --write \"index.ts\" \"src/**/*.ts\" \"test/**/*.ts\""
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.80.10",
+    "@earendil-works/pi-coding-agent": "0.87.1",
     "@types/node": "20.14.10",
     "@typescript-eslint/eslint-plugin": "7.16.1",
     "@typescript-eslint/parser": "7.16.1",
