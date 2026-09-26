@@ -8,6 +8,7 @@ tr.selected { background: #eef; }
 td button { font: inherit; border: 0; background: none; color: #03c; text-decoration: underline; cursor: pointer; padding: 0; }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; }
 dd { margin: 0; overflow-wrap: anywhere; }
+.chip { display: inline-block; padding: 1px 6px; border: 1px solid #999; border-radius: 10px; white-space: nowrap; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid #ccc; padding: 8px; max-height: 50vh; overflow: auto; }
 textarea { width: 100%; box-sizing: border-box; font: inherit; }
 .note { color: #666; }
