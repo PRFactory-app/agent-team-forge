@@ -9,7 +9,8 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// parent's backend and cwd. An interrupt cancels a running parent in the same
 /// transaction that accepts the new turn.
 /// </summary>
-public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, AcceptJob accept, Action<string>? cancelRunning = null)
+public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, AcceptJob accept, Action<string>? cancelRunning = null,
+    Func<int, byte[]>? readProcessEnvironment = null)
 {
     public const string Operation = "job_follow_up";
 
@@ -63,7 +64,8 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
                 var peerRuns = store.GetRuns(peerId);
                 if (peer.Status is JobStatus.NeedsReconciliation or JobStatus.Cancelled && peerRuns.Count > 0
                     && peerRuns[^1].BackendPid is not null && peerRuns.All(r => r.State != "started")
-                    && !OrphanedBackendProcess.HasMarkedProcess([.. peerRuns.Select(r => r.Correlation)]))
+                    && !OrphanedBackendProcess.HasMarkedProcess([.. peerRuns.Select(r => r.Correlation)],
+                        [.. peerRuns.Where(r => r.BackendPid.HasValue).Select(r => r.BackendPid!.Value)], readProcessEnvironment))
                 {
                     store.ReconcileStoppedJob(peerId);
                 }
@@ -79,7 +81,8 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             if (runs.Any(r => r.State == "started")
                 || (parent.Status is JobStatus.Failed or JobStatus.NeedsReconciliation
                     && (runs.Count == 0
-                        || OrphanedBackendProcess.HasMarkedProcess([.. runs.Select(r => r.Correlation)]))))
+                        || OrphanedBackendProcess.HasMarkedProcess([.. runs.Select(r => r.Correlation)],
+                            [.. runs.Where(r => r.BackendPid.HasValue).Select(r => r.BackendPid!.Value)], readProcessEnvironment))))
             {
                 return JobResult.Fail(JobErrors.ParentNotReady);
             }
