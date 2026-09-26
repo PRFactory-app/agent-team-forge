@@ -204,6 +204,25 @@ public sealed class HerdrInteractiveBackendTests
     }
 
     [Fact]
+    public void Restart_logs_and_keeps_unprovable_Herdr_record_without_blocking_startup()
+    {
+        using var f = new JobFixture();
+        using var state = new TempStateDir();
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null,
+            Path.Combine(state.Path, "herdr", "atftest.bootstrap"));
+        Directory.CreateDirectory(Path.GetDirectoryName(launch.BootstrapPath)!);
+        HerdrOwnedSessions.Save(launch, new OwnedHerdrSession("atf-test", "/tmp/atf-test.sock", 123, 456, "owner", "workspace"));
+        var logs = new List<string>();
+
+        var recovered = new RecoverOnStartup(f.Store, () => HerdrOwnedSessions.Recover(state.Path,
+            _ => throw new HerdrLaunchException("teardown refused: running server is not the recorded process"), logs.Add)).Execute();
+
+        Assert.Empty(recovered);
+        Assert.Contains(logs, l => l.Contains("teardown refused"));
+        Assert.True(File.Exists(HerdrOwnedSessions.PathFor(launch))); // Retried on the next start.
+    }
+
+    [Fact]
     public void Restart_closes_recorded_Herdr_session_before_claiming_interrupted_follow_up()
     {
         using var f = new JobFixture();
@@ -227,7 +246,7 @@ public sealed class HerdrInteractiveBackendTests
             Assert.Equal(JobStatus.Queued, f.Store.GetJob(child.JobId)!.Status);
             stopped = true;
             return Task.CompletedTask;
-        })).Execute();
+        }, _ => { })).Execute();
 
         Assert.True(stopped);
         Assert.Empty(recovered);
