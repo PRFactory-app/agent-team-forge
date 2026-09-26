@@ -95,6 +95,8 @@ public sealed record RunRecord(string RunId, long Generation, string Correlation
 public sealed record JobSummaryRecord(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)
 {
     public string? Backend { get; init; }
+    public string? SessionId { get; init; }
+    public string? ParentJobId { get; init; }
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }
 }

@@ -3,9 +3,10 @@
  * notice-only JSONL doorbell; this Pi session injects it through sendMessage.
  * The lifecycle and injection API follow the reference extension.
  */
-import { statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createLifecycle } from "./src/lifecycle";
 import { sleep } from "./src/util";
@@ -14,7 +15,17 @@ export { createLifecycle } from "./src/lifecycle";
 export { WakeMachine } from "./src/state-machine";
 
 export default function activate(pi: ExtensionAPI): void {
-  const stateDir = process.env.ATF_STATE_DIR;
+  let stateDir = process.env.ATF_STATE_DIR;
+  if (!stateDir) {
+    try {
+      const setting = JSON.parse(
+        requireStateSetting(),
+      ) as { stateDir?: string };
+      stateDir = setting.stateDir;
+    } catch {
+      /* No configured state directory yet. */
+    }
+  }
   if (!stateDir) return;
   const spool = path.join(stateDir, `pi-wake-${process.pid}.jsonl`);
   let offset = 0;
@@ -71,4 +82,8 @@ export default function activate(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async () => {
     await lifecycle.shutdown();
   });
+}
+
+function requireStateSetting(): string {
+  return readFileSync(path.join(os.homedir(), ".pi", "agent", "agentteamforge.json"), "utf8");
 }

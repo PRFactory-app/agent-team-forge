@@ -387,6 +387,10 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
     public JobRecord? GetJob(string jobId) => Read(connection => GetJob(connection, null, jobId));
 
+    /// <summary>Used after an interrupt to catch a queued child stopped before Esc finished.</summary>
+    public bool HasQueuedFollowUp(string parentJobId) => Read(connection =>
+        Scalar(connection, null, "SELECT count(*) FROM jobs WHERE parent_job_id=$id AND status='queued'", ("$id", parentJobId)) > 0);
+
     /// <summary>Newest first, scoped to one principal/team.</summary>
     public IReadOnlyList<JobRecord> ListJobs(string principal, string team, int limit) => Read(connection =>
     {
@@ -442,7 +446,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         string? leadSessionId = null, string? workspace = null) => Read(connection =>
     {
         using var command = Command(connection, null, """
-            SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at, j.worktree_path, j.worktree_branch, j.backend
+            SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at, j.worktree_path, j.worktree_branch,
+                   j.backend, j.session_id, j.parent_job_id
             FROM jobs j
             WHERE j.principal=$p AND j.team=$t
               AND ($lead IS NULL OR j.lead_session_id=$lead OR ($workspace IS NOT NULL AND j.lead_session_id IN (SELECT session_id FROM lead_sessions WHERE workspace=$workspace)))
@@ -464,6 +469,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 WorktreePath = NullableString(reader, 6),
                 WorktreeBranch = NullableString(reader, 7),
                 Backend = reader.GetString(8),
+                SessionId = NullableString(reader, 9),
+                ParentJobId = NullableString(reader, 10),
             });
         }
 

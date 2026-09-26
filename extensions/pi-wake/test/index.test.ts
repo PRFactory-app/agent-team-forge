@@ -1,13 +1,16 @@
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import activate from "../index";
 
 const previous = process.env.ATF_STATE_DIR;
+const previousHome = process.env.HOME;
 afterEach(() => {
   if (previous === undefined) delete process.env.ATF_STATE_DIR;
   else process.env.ATF_STATE_DIR = previous;
+  if (previousHome === undefined) delete process.env.HOME;
+  else process.env.HOME = previousHome;
 });
 
 describe("AgentTeamForge Pi adapter", () => {
@@ -47,6 +50,30 @@ describe("AgentTeamForge Pi adapter", () => {
     } finally {
       await handlers.session_shutdown();
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the state directory saved by setup", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "atf-pi-home-"));
+    const dir = path.join(home, "state");
+    await mkdir(path.join(home, ".pi", "agent"), { recursive: true });
+    await mkdir(dir);
+    await writeFile(path.join(home, ".pi", "agent", "agentteamforge.json"), JSON.stringify({ stateDir: dir }));
+    process.env.HOME = home;
+    delete process.env.ATF_STATE_DIR;
+    const handlers: Record<string, () => Promise<void> | void> = {};
+    const sends: string[] = [];
+    activate({
+      on: (name: string, handler: () => Promise<void> | void) => { handlers[name] = handler; },
+      sendMessage: (message: { content: string }) => { sends.push(message.content); },
+    } as never);
+    try {
+      await handlers.session_start();
+      await appendFile(path.join(dir, `pi-wake-${process.pid}.jsonl`), JSON.stringify({ notice: "wake" }) + "\n");
+      await vi.waitFor(() => expect(sends).toEqual(["wake"]), { timeout: 3000 });
+    } finally {
+      await handlers.session_shutdown();
+      await rm(home, { recursive: true, force: true });
     }
   });
 });
