@@ -110,9 +110,23 @@ public sealed class PRFactoryWorkItems(
             return;
         }
 
-        if (externalNames.Length > 0)
+        bool externalRepliesDrained;
+        try
         {
-            await AdvanceExternalAsync(item, externalNames, ct);
+            externalRepliesDrained = externalNames.Length == 0 || await AdvanceExternalAsync(item, externalNames, ct);
+        }
+        catch (PRFactoryLeaseLostException)
+        {
+            // Server cancel or reap: stop renewing join tickets and drop the item instead of retrying forever.
+            var externals = teams.ExternalMembers(server, item.Id);
+            if (externals.Count > 0)
+            {
+                externalTeam!.CloseTeam(externals[0].TeamId);
+                teams.MarkExternalClosed(server, item.Id);
+            }
+            teams.Finish(server, item.Id, "failed");
+            log?.Invoke($"PRFactory work item {item.Id:D} lease lost; external team closed");
+            return;
         }
 
         var active = 0;
@@ -161,14 +175,35 @@ public sealed class PRFactoryWorkItems(
                 active++;
             }
         }
-        if (allJobs.Count != managedMembers.Length + 1 || allJobs.Any(j => j.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation)
-            || teams.ExternalMembers(server, item.Id).Any(e => !e.Closed))
+        var waitForManaged = managedMembers.Length > 0 || externalNames.Length == 0;
+        if (allJobs.Count != managedMembers.Length + 1 || !externalRepliesDrained
+            || (waitForManaged
+                ? allJobs.Any(j => j.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation)
+                : teams.ExternalMembers(server, item.Id).Any(e => !e.Closed)))
         {
             return;
         }
 
+        if (externalNames.Length > 0)
+        {
+            var externals = teams.ExternalMembers(server, item.Id);
+            var open = externals.Where(e => !e.Closed).ToList();
+            if (open.Count > 0)
+            {
+                // Revoke first so no reply can land after the drain; the next tick uploads the rest and closes.
+                foreach (var external in open)
+                {
+                    externalTeam!.RevokeMember(external.TeamId, external.ActualName);
+                    teams.MarkExternalClosed(server, item.Id, external.Member);
+                }
+                return;
+            }
+            externalTeam!.CloseTeam(externals[0].TeamId);
+            teams.MarkExternalClosed(server, item.Id);
+        }
         var failed = allJobs.FirstOrDefault(j => j.Status != JobStatus.Completed);
-        await FinishAsync(team, item, failed is null, failed?.ReasonCode ?? "job failed", repo.Directory, ct, lead.ResultText);
+        await FinishAsync(team, item, failed is null || !waitForManaged && lead.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation,
+            failed?.ReasonCode ?? "job failed", repo.Directory, ct, lead.ResultText);
     }
 
     JobRecord? SubmitMember(PRFactoryWorkItem item, string member,
@@ -212,7 +247,7 @@ public sealed class PRFactoryWorkItems(
         return getJob(jobId);
     }
 
-    async Task AdvanceExternalAsync(PRFactoryWorkItem item, string[] names, CancellationToken ct)
+    async Task<bool> AdvanceExternalAsync(PRFactoryWorkItem item, string[] names, CancellationToken ct)
     {
         var actor = externalTeam!;
         var owner = "prfactory:" + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
@@ -286,9 +321,12 @@ public sealed class PRFactoryWorkItems(
                 }
                 else if (command.Kind.Equals("KillAgent", StringComparison.OrdinalIgnoreCase))
                 {
-                    actor.CloseTeam(teamId);
-                    teams.MarkExternalClosed(server, item.Id);
-                    receipt = new(true, null);
+                    var target = teams.External(server, item.Id, command.TargetAgentName)!;
+                    receipt = new(actor.RevokeMember(target.TeamId, target.ActualName), null);
+                    if (receipt.Accepted)
+                    {
+                        teams.MarkExternalClosed(server, item.Id, target.Member);
+                    }
                 }
                 else
                 {
@@ -305,24 +343,26 @@ public sealed class PRFactoryWorkItems(
         }
 
         var externals = teams.ExternalMembers(server, item.Id);
-        if (externals.Count == 0 || externals.All(e => e.Closed))
+        foreach (var external in externals.Where(e => !e.Closed && actor.HasLeft(e.TeamId, e.ActualName)))
         {
-            return;
+            teams.MarkExternalClosed(server, item.Id, external.Member);
         }
 
         var cursor = externals.Min(e => e.ReplySeq);
-        var inbox = actor.ReadTeam(teamId, cursor, 50).Inbox
-            ?? throw new InvalidDataException("PRFactory actor team is unavailable");
+        var inbox = actor.ReadTeam(teamId, cursor, 50).Inbox;
+        if (inbox is null && externals.All(e => e.Closed))
+        {
+            return true; // The team closed after its last upload; retry remote completion.
+        }
+        if (inbox is null)
+        {
+            throw new InvalidDataException("PRFactory actor team is unavailable");
+        }
         var lines = inbox.Messages
             .Where(m => externals.Any(e => e.ActualName == m.From))
             .Select(m => new PRFactoryStreamLine(externals.First(e => e.ActualName == m.From).Member,
                 m.Seq + 1, DateTimeOffset.Parse(m.CreatedAt), "Record", m.Text, "external-reply"))
             .ToList();
-        if (lines.Count == 0 && inbox.Messages.Count == 0)
-        {
-            return;
-        }
-
         if (lines.Count > 0)
         {
             var response = await client.UploadStreamAsync(item.Id, new PRFactoryStreamBatch(item.LeaseToken,
@@ -336,6 +376,7 @@ public sealed class PRFactoryWorkItems(
         {
             teams.SetReplySeq(server, item.Id, external.Member, inbox.NextSeq);
         }
+        return !inbox.HasMore;
     }
 
     async Task FinishAsync(PRFactoryTeamRecord team, PRFactoryWorkItem item, bool success, string error,

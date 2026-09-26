@@ -54,13 +54,13 @@ public sealed record IpcRequest
     public string? CodexThreadId { get; init; }
 }
 
-public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, AgentTeamForge.DAL.Features.External.JoinTicket? Ticket = null, AgentTeamForge.DAL.Features.External.JoinedMember? Member = null, AgentTeamForge.DAL.Features.External.ExternalInbox? Inbox = null, JobActivityPage? Activity = null, bool? AlreadyLeft = null)
+public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, AgentTeamForge.DAL.Features.External.JoinTicket? Ticket = null, AgentTeamForge.DAL.Features.External.JoinedMember? Member = null, AgentTeamForge.DAL.Features.External.ExternalInbox? Inbox = null, JobActivityPage? Activity = null, bool? AlreadyLeft = null, string? LeftName = null)
 {
     // Flat aliases keep the external MCP replies usable by win-agent-teams skills.
     public bool Success => Ok;
     public string? Reason => Error;
     public string? SessionId => Ticket?.SessionId ?? Member?.SessionId;
-    public string? Name => Ticket?.Name ?? Member?.Name;
+    public string? Name => Ticket?.Name ?? Member?.Name ?? LeftName;
     public string? Token => Ticket?.Token;
     public string? JoinPrompt => Ticket?.JoinPrompt;
     public DateTimeOffset? ExpiresAt => Ticket?.ExpiresAt;

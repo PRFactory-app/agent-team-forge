@@ -8,7 +8,7 @@ using AgentTeamForge.DAL.Features.Wake;
 namespace AgentTeamForge.Business.Features.External;
 
 public sealed record ExternalResult(string? Error = null, JoinTicket? Ticket = null, JoinedMember? Member = null,
-    ExternalInbox? Inbox = null, long? WakeGeneration = null, bool? AlreadyLeft = null)
+    ExternalInbox? Inbox = null, long? WakeGeneration = null, bool? AlreadyLeft = null, string? Name = null)
 {
     public bool Ok => Error is null;
 }
@@ -86,8 +86,10 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
             return new("invalid_or_expired_token");
         }
 
-        var member = members.Join(sessionId, ticket, now());
-        return member is null ? new("invalid_or_expired_token") : new(Member: member);
+        var (member, left) = members.Join(sessionId, ticket, now());
+        return left ? new("membership_revoked") : member is null
+            ? new("invalid_or_expired_token")
+            : new(Member: member with { MemberToken = $"wam1:{sessionId}:{member.MemberToken}" });
     }
 
     public ExternalResult Send(string? token, string? text)
@@ -203,6 +205,8 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
 
     public bool CloseTeam(string teamId) => members.CloseTeam(teamId, now());
 
+    public bool RevokeMember(string teamId, string name) => members.RevokeMember(teamId, name, now());
+
     public ExternalResult Leave(string? token)
     {
         var secret = MemberSecret(token);
@@ -213,8 +217,8 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
 
         return members.Leave(secret, now()) switch
         {
-            1 => new(AlreadyLeft: false),
-            2 => new(AlreadyLeft: true),
+            (1, var name) => new(AlreadyLeft: false, Name: name),
+            (2, var name) => new(AlreadyLeft: true, Name: name),
             _ => new("membership_revoked")
         };
     }

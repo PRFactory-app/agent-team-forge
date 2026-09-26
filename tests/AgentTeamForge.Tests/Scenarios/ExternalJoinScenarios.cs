@@ -59,7 +59,7 @@ public sealed class ExternalJoinScenarios
         var joinText = Assert.IsType<TextContentBlock>(Assert.Single(joinCall.Content)).Text;
         using (var joinJson = JsonDocument.Parse(joinText))
         {
-            Assert.True(joinJson.RootElement.TryGetProperty("member_token", out _));
+            Assert.StartsWith($"wam1:{ticket.SessionId}:", joinJson.RootElement.GetProperty("member_token").GetString());
         }
         var joined = JsonSerializer.Deserialize(joinText, IpcJson.Default.IpcResponse)!.Member!;
         Assert.Equal(joined, (await SpikeRig.CallAsync(member, "join_team", new()
@@ -79,7 +79,7 @@ public sealed class ExternalJoinScenarios
         Assert.Contains("external_read", File.ReadAllText(wakeLog));
         Assert.Equal("work", Assert.Single((await SpikeRig.CallAsync(member, "external_read", new()
         {
-            ["member_token"] = $"wam1:{ticket.SessionId}:{joined.MemberToken}"
+            ["member_token"] = joined.MemberToken
         })).Inbox!.Messages).Text);
         Assert.True((await SpikeRig.CallAsync(member, "external_send", new()
         {
@@ -104,8 +104,12 @@ public sealed class ExternalJoinScenarios
             Assert.True(message.GetProperty("truncated").GetBoolean());
             Assert.Equal(4, message.GetProperty("full_len").GetInt32());
         }
-        Assert.False((await SpikeRig.CallAsync(member, "leave_team", new() { ["member_token"] = joined.MemberToken })).AlreadyLeft);
-        Assert.True((await SpikeRig.CallAsync(member, "leave_team", new() { ["member_token"] = joined.MemberToken })).AlreadyLeft);
+        var left = await SpikeRig.CallAsync(member, "leave_team", new() { ["member_token"] = joined.MemberToken });
+        Assert.False(left.AlreadyLeft);
+        Assert.Equal(joined.Name, left.Name);
+        var leftAgain = await SpikeRig.CallAsync(member, "leave_team", new() { ["member_token"] = joined.MemberToken });
+        Assert.True(leftAgain.AlreadyLeft);
+        Assert.Equal(joined.Name, leftAgain.Name);
         Assert.Equal("membership_revoked", (await SpikeRig.CallAsync(member, "external_read", new()
         {
             ["member_token"] = joined.MemberToken
