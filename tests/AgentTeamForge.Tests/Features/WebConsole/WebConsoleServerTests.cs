@@ -209,4 +209,35 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
             r => Assert.Equal((IpcProtocol.JobStop, "j1"), (r.Op, r.JobId)),
             r => Assert.Equal((IpcProtocol.JobOutput, "j1", 5L), (r.Op, r.JobId, r.Offset)));
     }
+
+    [Fact]
+    public async Task History_filter_and_cursor_are_forwarded()
+    {
+        var (status, _) = await Send(Api(HttpMethod.Get,
+            "/api/jobs?status=needs_reconciliation&cursor=job_012345"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        var call = Assert.Single(_forwarded);
+        Assert.Equal((IpcProtocol.JobList, "needs_reconciliation", "job_012345"),
+            (call.Op, call.Status, call.Cursor));
+    }
+
+    [Fact]
+    public async Task Interrupt_follow_up_forwards_the_flag_once()
+    {
+        var (status, _) = await Send(FollowUp("""{"instruction":"redirect","idempotency_key":"interrupt-1","interrupt":true}"""));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        var call = Assert.Single(_forwarded);
+        Assert.Equal((IpcProtocol.JobFollowUp, "j1", true), (call.Op, call.JobId, call.Interrupt));
+    }
+
+    [Fact]
+    public async Task Output_read_is_bounded_by_the_route()
+    {
+        await Send(Api(HttpMethod.Get, "/api/jobs/j1/output?offset=11&max_bytes=999999"));
+
+        var call = Assert.Single(_forwarded);
+        Assert.Equal((IpcProtocol.JobOutput, 11L, 65536), (call.Op, call.Offset, call.MaxBytes));
+    }
 }

@@ -22,11 +22,22 @@
 
 <main id="console" hidden>
   <section>
-    <h2>Jobs <button id="refresh" type="button">Refresh</button></h2>
+    <h2>History <button id="refresh" type="button">Refresh</button></h2>
+    <label for="status-filter">Status</label>
+    <select id="status-filter">
+      <option value="">All</option>
+      <option value="queued">Queued</option>
+      <option value="running">Running</option>
+      <option value="completed">Completed</option>
+      <option value="failed">Failed</option>
+      <option value="cancelled">Cancelled</option>
+      <option value="needs_reconciliation">Needs reconciliation</option>
+    </select>
     <table>
-      <thead><tr><th>Job</th><th>Status</th><th>Backend</th><th>Session</th><th>Parent</th><th>Attempts</th></tr></thead>
+      <thead><tr><th>Job</th><th>Status</th><th>Backend</th><th>Session</th><th>Parent</th><th>Attempts</th><th>Action</th></tr></thead>
       <tbody id="jobs"></tbody>
     </table>
+    <p><button id="page-prev" type="button" disabled>Previous</button> <span id="page-number">Page 1</span> <button id="page-next" type="button" disabled>Next</button></p>
   </section>
 
   <section id="detail" hidden>
@@ -46,6 +57,7 @@
     <h3>Follow-up</h3>
     <form id="follow-form" autocomplete="off">
       <textarea id="follow-text" rows="4" maxlength="8192" required></textarea>
+      <label><input id="follow-interrupt" type="checkbox"> Interrupt running job</label>
       <button id="follow-send" type="submit">Send follow-up</button>
       <button id="follow-retry" type="button" hidden>Retry with same key</button>
       <button id="follow-discard" type="button" hidden>Discard pending attempt</button>
@@ -53,20 +65,10 @@
     <p id="follow-state"></p>
 
     <h3>Logs</h3>
-    <!-- TODO(codex): incremental tail via next_offset, stdout/stderr split if the IPC grows one. -->
-    <button id="logs-refresh" type="button">Reload logs</button>
+    <button id="logs-refresh" type="button">Read new logs</button>
     <pre id="d-logs"></pre>
 
-    <h3>Interrupt</h3>
-    <!-- TODO(codex): stub. Needs an interrupt IPC op (stop active attempt + follow-up); see feature/interrupt-followup. -->
-    <form id="interrupt-form" autocomplete="off">
-      <textarea id="interrupt-text" rows="2" maxlength="8192" disabled></textarea>
-      <button type="submit" disabled>Interrupt and redirect</button>
-      <span class="note">Not wired yet.</span>
-    </form>
-
     <h3>Stop</h3>
-    <!-- TODO(codex): confirm dialog, show outcome/reason_code inline. -->
     <button id="stop-job" type="button">Stop job</button>
     <p id="stop-state"></p>
   </section>

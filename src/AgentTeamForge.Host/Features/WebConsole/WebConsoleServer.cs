@@ -14,7 +14,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace AgentTeamForge.Host.Features.WebConsole;
 
 /// <summary>Browser follow-up body. The key comes from the page and is reused only by an explicit operator retry.</summary>
-public sealed record WebFollowUpBody(string? Instruction, string? IdempotencyKey);
+public sealed record WebFollowUpBody(string? Instruction, string? IdempotencyKey, bool Interrupt = false);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 [JsonSerializable(typeof(WebFollowUpBody))]
@@ -148,9 +148,13 @@ public sealed class WebConsoleServer : IAsyncDisposable
         var segments = path["/api/".Length..].Split('/');
         var ipc = (request.Method, segments) switch
         {
-            ("GET", ["jobs"]) => new IpcRequest { Op = IpcProtocol.JobList },
+            ("GET", ["jobs"]) => new IpcRequest
+            {
+                Op = IpcProtocol.JobList,
+                Status = request.Query["status"].Count == 0 ? null : request.Query["status"].ToString(),
+                Cursor = request.Query["cursor"].Count == 0 ? null : request.Query["cursor"].ToString(),
+            },
             ("GET", ["jobs", var id]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobGet, JobId = id },
-            // TODO(codex): page through output in the UI using next_offset; clamp max_bytes server-side if needed.
             ("GET", ["jobs", var id, "output"]) when ValidId(id) => new IpcRequest
             {
                 Op = IpcProtocol.JobOutput,
@@ -160,8 +164,6 @@ public sealed class WebConsoleServer : IAsyncDisposable
             },
             ("POST", ["jobs", var id, "follow-up"]) when ValidId(id) => await ReadFollowUpAsync(ctx, id),
             ("POST", ["jobs", var id, "stop"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStop, JobId = id },
-            // TODO(codex): "interrupt" = stop the active attempt then follow up with a new instruction
-            // (see feature/interrupt-followup); no dedicated IPC op yet, so the route is not mapped.
             _ => null,
         };
         if (ipc is null)
@@ -219,7 +221,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
             return null;
         }
 
-        return new IpcRequest { Op = IpcProtocol.JobFollowUp, JobId = jobId, Instruction = instruction, IdempotencyKey = key };
+        return new IpcRequest { Op = IpcProtocol.JobFollowUp, JobId = jobId, Instruction = instruction, IdempotencyKey = key, Interrupt = body.Interrupt };
     }
 
     static bool ValidId(string id) => id.Length is > 0 and <= 128 && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');

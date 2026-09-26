@@ -151,6 +151,20 @@ public sealed class ListJobsTests
     }
 
     [Fact]
+    public void History_includes_session_backend_and_parent_for_completed_jobs()
+    {
+        using var f = new JobFixture();
+        var parent = f.Submit("parent");
+        var claim = f.Store.BeginNextAttempt()!;
+        Assert.True(f.Store.RecordSession(Run(claim), "session-1"));
+        Assert.True(f.Store.Complete(Run(claim), "done"));
+
+        var row = Assert.Single(f.List().Execute(new ListJobsRequest(Status: JobStatus.Completed)).Page!.Jobs);
+        Assert.Equal((parent.JobId, "fake", "session-1", (string?)null),
+            (row.JobId, row.Backend, row.SessionId, row.ParentJobId));
+    }
+
+    [Fact]
     public void Listing_has_no_mutation_dispatch_or_acknowledgment_effect()
     {
         using var f = new JobFixture();

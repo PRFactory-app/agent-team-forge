@@ -1,4 +1,6 @@
-# Web console MVP — Linux runnable checkpoint
+# Web console MVP — initial checkpoint
+
+This records the original skeleton. Current behavior and usage are in [Web console](../web-console.md).
 
 Status: **narrow runnable checkpoint**, Linux only, fake backend tested. Written
 by Claude Opus; opposite-family (Codex) code review is still required before merge.

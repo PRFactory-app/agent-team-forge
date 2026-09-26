@@ -41,6 +41,9 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal)
         {
             WorktreePath = r.WorktreePath,
             WorktreeBranch = r.WorktreeBranch,
+            Backend = r.Backend,
+            SessionId = r.SessionId,
+            ParentJobId = r.ParentJobId,
         }).ToList();
         return new JobListResult(new JobListPage(jobs, limit, hasMore, hasMore ? jobs[^1].JobId : null), null);
     }
@@ -52,6 +55,9 @@ public sealed record ListJobsRequest(string? Status = null, int? Limit = null, s
 /// <summary>Inspection view of a job; use job_get for its result.</summary>
 public sealed record JobSummary(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)
 {
+    public string? Backend { get; init; }
+    public string? SessionId { get; init; }
+    public string? ParentJobId { get; init; }
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }
 }
