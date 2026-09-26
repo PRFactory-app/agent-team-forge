@@ -82,6 +82,23 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
+    /// <summary>Commits a daemon-owned cancellation, then interrupts the running attempt.</summary>
+    void CancelOwned(string jobId, string reason)
+    {
+        try
+        {
+            if (store.CancelOwned(jobId, reason).WasRunning)
+            {
+                CancelRunning(jobId);
+            }
+        }
+        catch (StorageException ex)
+        {
+            // Left running; the runtime deadline still bounds the attempt.
+            log($"{reason} cancel failed for {jobId}: {ex.Failure}");
+        }
+    }
+
     /// <summary>Keep a new submission out of the claim loop until its reply is sent.</summary>
     public IDisposable PauseClaims()
     {
@@ -107,6 +124,7 @@ public sealed class DispatchJob : IDisposable
         using var stopping = CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, _halted.Token);
         using var slots = new SemaphoreSlim(limits.MaxConcurrentJobs);
         var inFlight = new List<Task>();
+        var sweeping = SweepQueueAsync(stopping.Token);
         try
         {
             await ClaimLoopAsync(slots, inFlight, stopping.Token);
@@ -121,11 +139,42 @@ public sealed class DispatchJob : IDisposable
             try
             {
                 // Attempts observe the stopping token; wait so none outlives the dispatcher.
-                await Task.WhenAll(inFlight);
+                await Task.WhenAll([.. inFlight, sweeping]);
             }
             finally
             {
                 admission.Close(HaltReason ?? "daemon_stopping");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Cancels queued jobs whose queue TTL passed, even while every slot is busy.
+    /// The claim query also skips them, so an expired job never starts.
+    /// </summary>
+    async Task SweepQueueAsync(CancellationToken stopping)
+    {
+        while (!stopping.IsCancellationRequested)
+        {
+            try
+            {
+                foreach (var jobId in store.ExpireQueued())
+                {
+                    log($"queue ttl expired for {jobId}");
+                }
+            }
+            catch (StorageException ex)
+            {
+                log($"queue ttl sweep failed: {ex.Failure}");
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), stopping);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
             }
         }
     }
@@ -237,6 +286,10 @@ public sealed class DispatchJob : IDisposable
             deadline.CancelAfter(limits.MaxFakeRuntime);
             checkpoints.Hit(DurabilityCheckpoints.AttemptAfterCommit);
 
+            // A job timeout ends the attempt through the same cancel path as a stop.
+            using var jobTimeout = claim.Job.TimeoutSeconds is int seconds ? new CancellationTokenSource(TimeSpan.FromSeconds(seconds)) : null;
+            using var onTimeout = jobTimeout?.Token.Register(() => CancelOwned(run.JobId, "timeout"));
+
             // A stop may have committed after claim but before this task was scheduled.
             if (store.GetJob(run.JobId)?.Status == JobStatus.Cancelled)
             {
@@ -325,7 +378,8 @@ public sealed class DispatchJob : IDisposable
         }
         catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested)
         {
-            // Daemon shutdown: leave the attempt started; restart recovery quarantines it.
+            // Leave the attempt started for restart recovery, but stop its owned process/session.
+            active.TerminateOnce(TryTerminate);
         }
         catch (OperationCanceledException)
         {

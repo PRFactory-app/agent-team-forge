@@ -34,6 +34,8 @@ public static class ClientCommand
                 Backend = options.GetValueOrDefault("backend"),
                 Cwd = options.TryGetValue("cwd", out var cwd) ? Path.GetFullPath(cwd) : null,
                 Worktree = options.ContainsKey("worktree"),
+                TimeoutSeconds = Seconds(options, "timeout"),
+                QueueTtlSeconds = Seconds(options, "queue-ttl"),
             },
             "follow-up" => new IpcRequest
             {
@@ -41,6 +43,8 @@ public static class ClientCommand
                 JobId = options.GetValueOrDefault("job"),
                 IdempotencyKey = options.GetValueOrDefault("key"),
                 Instruction = options.GetValueOrDefault("instruction"),
+                TimeoutSeconds = Seconds(options, "timeout"),
+                QueueTtlSeconds = Seconds(options, "queue-ttl"),
             },
             "get" => new IpcRequest { Op = IpcProtocol.JobGet, JobId = options.GetValueOrDefault("job") },
             "stop" => new IpcRequest { Op = IpcProtocol.JobStop, JobId = options.GetValueOrDefault("job") },
@@ -57,7 +61,7 @@ public static class ClientCommand
         if (request is null)
         {
             Console.Error.WriteLine("usage: atf client <submit|follow-up|get|stop|list|logs> --state-dir DIR "
-                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--worktree] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT] | stop ID | [--status S] [--limit N] [--cursor C]]");
+                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--worktree] [--timeout S] [--queue-ttl S] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT [--timeout S] [--queue-ttl S]] | stop ID | [--status S] [--limit N] [--cursor C]]");
             return 64;
         }
 
@@ -65,6 +69,12 @@ public static class ClientCommand
         Console.Out.WriteLine(JsonSerializer.Serialize(response, IpcJson.Default.IpcResponse));
         return response.Ok ? 0 : 1;
     }
+
+    /// <summary>An unparsable value is sent as 0 so the daemon rejects it rather than ignoring it.</summary>
+    static int? Seconds(IReadOnlyDictionary<string, string> options, string name) =>
+        options.TryGetValue(name, out var value)
+            ? int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var seconds) ? seconds : 0
+            : null;
 
     static async Task<int> LogsAsync(StateDirectory state, string jobId, bool follow)
     {

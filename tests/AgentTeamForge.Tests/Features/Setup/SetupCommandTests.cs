@@ -1,6 +1,7 @@
 using AgentTeamForge.Host.Features.Setup;
 using AgentTeamForge.Host.Hosting;
 using AgentTeamForge.Tests.Support;
+using System.Text.Json;
 
 namespace AgentTeamForge.Tests.Features.Setup;
 
@@ -27,6 +28,9 @@ public sealed class SetupCommandTests
             ["apply"] = "true",
         };
         var registered = new HashSet<string>();
+        var claudeSettings = temp.File("claude/settings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(claudeSettings)!);
+        File.WriteAllText(claudeSettings, """{"theme":"dark","crossSessionInbound":"refuse"}""");
         var adds = 0;
         int Runner(string tool, IReadOnlyList<string> args)
         {
@@ -44,10 +48,15 @@ public sealed class SetupCommandTests
             return 0;
         }
 
-        Assert.Equal(0, SetupCommand.Run(options, Runner, "/tmp/atf"));
-        Assert.Equal(0, SetupCommand.Run(options, Runner, "/tmp/atf"));
+        Assert.Equal(0, SetupCommand.Run(options, Runner, "/tmp/atf", claudeSettings));
+        var firstSettings = File.ReadAllText(claudeSettings);
+        Assert.Equal(0, SetupCommand.Run(options, Runner, "/tmp/atf", claudeSettings));
         Assert.Equal(2, adds);
         Assert.Contains("headless", File.ReadAllText(Path.Combine(options["state-dir"], "launch-mode.json")));
+        Assert.Equal(firstSettings, File.ReadAllText(claudeSettings));
+        using var settings = JsonDocument.Parse(firstSettings);
+        Assert.Equal("dark", settings.RootElement.GetProperty("theme").GetString());
+        Assert.Equal("accept", settings.RootElement.GetProperty("crossSessionInbound").GetString());
     }
 
     [Fact]

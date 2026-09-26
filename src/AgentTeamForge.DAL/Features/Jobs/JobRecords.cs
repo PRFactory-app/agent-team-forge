@@ -31,6 +31,12 @@ public sealed record NewJob(
     public string? WorktreeBase { get; init; }
     public bool CreateWorktree { get; init; }
 
+    /// <summary>Running time allowed once an attempt starts; null means no job timeout.</summary>
+    public int? TimeoutSeconds { get; init; }
+
+    /// <summary>Queued time allowed from the acceptance commit; null means no queue TTL.</summary>
+    public int? QueueTtlSeconds { get; init; }
+
     public string? WakeTargetKey { get; init; }
 
     public long? WakeGeneration { get; init; }
@@ -56,6 +62,7 @@ public sealed record JobRecord(
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }
     public string? WorktreeBase { get; init; }
+    public int? TimeoutSeconds { get; init; }
 }
 
 public enum AcceptKind
