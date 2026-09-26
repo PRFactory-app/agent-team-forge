@@ -9,8 +9,8 @@ During setup, the user must choose how agents are launched:
 - **Interactive on macOS:** an equivalent **visible terminal tab**.
 - **Headless:** available only through an explicit setup choice.
 
-The user specified Herdr for Linux. Windows Terminal is the proposed first
-Windows provider. Terminal.app and iTerm2 are macOS candidates; the first
+The user specified Herdr for Linux. Windows Terminal (`atf setup --mode wt`)
+is the first Windows provider: ported from win-agent-teams, untested on Windows. Terminal.app and iTerm2 are macOS candidates; the first
 supported provider will be selected through an M0 spike, not an assumption that
 their APIs are equivalent.
 

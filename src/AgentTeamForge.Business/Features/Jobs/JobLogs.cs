@@ -92,7 +92,7 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
                 Mode = FileMode.OpenOrCreate,
                 Access = FileAccess.ReadWrite,
                 Share = FileShare.Read,
-                UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
+                UnixCreateMode = OperatingSystem.IsWindows() ? null : UnixFileMode.UserRead | UnixFileMode.UserWrite,
             });
             if (file.Length == 0)
             {

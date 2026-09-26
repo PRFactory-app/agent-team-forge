@@ -19,8 +19,11 @@ public static class HerdrOwnedSessions
 
     internal static void Delete(InteractiveLaunch launch) => File.Delete(PathFor(launch));
 
-    /// <summary>Runs before claims. A failed ownership check leaves the daemon stopped, not a second live tab.</summary>
-    public static void Recover(string stateRoot, Func<OwnedHerdrSession, Task> stop)
+    /// <summary>
+    /// Runs before claims. A record whose ownership cannot be proven (or a Herdr fault) is
+    /// logged and kept for the next start; the session is never touched and startup continues.
+    /// </summary>
+    public static void Recover(string stateRoot, Func<OwnedHerdrSession, Task> stop, Action<string> log)
     {
         var directory = System.IO.Path.Combine(stateRoot, "herdr");
         if (!Directory.Exists(directory))
@@ -29,10 +32,17 @@ public static class HerdrOwnedSessions
         }
         foreach (var path in Directory.EnumerateFiles(directory, "*.owned.json"))
         {
-            var session = JsonSerializer.Deserialize(File.ReadAllText(path), HerdrSessionJson.Default.OwnedHerdrSession)
-                ?? throw new HerdrLaunchException($"invalid Herdr ownership record: {path}");
-            stop(session).GetAwaiter().GetResult(); // StopOwnedSessionAsync re-proves PID, start time and owner label.
-            File.Delete(path);
+            try
+            {
+                var session = JsonSerializer.Deserialize(File.ReadAllText(path), HerdrSessionJson.Default.OwnedHerdrSession)
+                    ?? throw new HerdrLaunchException("invalid Herdr ownership record");
+                stop(session).GetAwaiter().GetResult(); // Re-proves PID, start time and owner label; absent sessions return.
+                File.Delete(path);
+            }
+            catch (Exception e)
+            {
+                log($"warning: Herdr session recovery skipped for {path}: {e.Message}");
+            }
         }
     }
 }

@@ -36,7 +36,14 @@ public sealed class LeadSessionStore(JobDatabase database)
         command.ExecuteNonQuery();
         tx.Commit();
         var sessionDir = Path.Combine(Path.GetDirectoryName(database.Path)!, "lead-sessions", id);
-        Directory.CreateDirectory(sessionDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(sessionDir);
+        }
+        else
+        {
+            Directory.CreateDirectory(sessionDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
         return Info(id, workspace)!;
     }
 

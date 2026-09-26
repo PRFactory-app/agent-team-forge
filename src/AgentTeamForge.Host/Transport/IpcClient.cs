@@ -1,4 +1,5 @@
 using System.Net.Sockets;
+using System.IO.Pipes;
 using System.Text;
 using AgentTeamForge.Business;
 using AgentTeamForge.Host.Hosting;
@@ -47,27 +48,39 @@ public sealed class IpcClient
         var credential = Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(_state.CredentialFile)).Trim();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(_budget);
-        using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-        // Closing the socket at the deadline also unblocks any operation that ignores the token.
-        using var abort = deadline.Token.Register(socket.Dispose);
         var requestWriteStarted = false;
         try
         {
+            if (OperatingSystem.IsWindows())
+            {
+                await using var pipe = new NamedPipeClientStream(".", _state.Socket, PipeDirection.InOut,
+                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                using var abort = deadline.Token.Register(pipe.Dispose);
+                await pipe.ConnectAsync(deadline.Token);
+                return await ExchangeAsync(pipe);
+            }
+            using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            using var socketAbort = deadline.Token.Register(socket.Dispose);
             await socket.ConnectAsync(new UnixDomainSocketEndPoint(_state.Socket), deadline.Token);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
-            await Frames.WriteAsync(stream, new IpcRequest { ProtocolVersion = IpcProtocol.Version, Op = IpcProtocol.Hello, Credential = credential },
-                IpcJson.Default.IpcRequest, deadline.Token);
-            var hello = await Frames.ReadAsync(stream, IpcJson.Default.IpcResponse, _limits.MaxFrameBytes, Timeout.InfiniteTimeSpan, deadline.Token);
-            if (hello is null || !hello.Ok)
-            {
-                return hello ?? new IpcResponse(false, IpcProtocol.DaemonUnavailable);
-            }
+            return await ExchangeAsync(stream);
 
-            requestWriteStarted = true;
-            await Frames.WriteAsync(stream, request with { ProtocolVersion = request.ProtocolVersion == 0 ? IpcProtocol.Version : request.ProtocolVersion },
-                IpcJson.Default.IpcRequest, deadline.Token);
-            return await Frames.ReadAsync(stream, IpcJson.Default.IpcResponse, _limits.MaxFrameBytes, Timeout.InfiniteTimeSpan, deadline.Token)
-                ?? new IpcResponse(false, IpcProtocol.OutcomeUnknown);
+            async Task<IpcResponse> ExchangeAsync(Stream connection)
+            {
+                await Frames.WriteAsync(connection, new IpcRequest { ProtocolVersion = IpcProtocol.Version, Op = IpcProtocol.Hello, Credential = credential },
+                    IpcJson.Default.IpcRequest, deadline.Token);
+                var hello = await Frames.ReadAsync(connection, IpcJson.Default.IpcResponse, _limits.MaxFrameBytes, Timeout.InfiniteTimeSpan, deadline.Token);
+                if (hello is null || !hello.Ok)
+                {
+                    return hello ?? new IpcResponse(false, IpcProtocol.DaemonUnavailable);
+                }
+
+                requestWriteStarted = true;
+                await Frames.WriteAsync(connection, request with { ProtocolVersion = request.ProtocolVersion == 0 ? IpcProtocol.Version : request.ProtocolVersion },
+                    IpcJson.Default.IpcRequest, deadline.Token);
+                return await Frames.ReadAsync(connection, IpcJson.Default.IpcResponse, _limits.MaxFrameBytes, Timeout.InfiniteTimeSpan, deadline.Token)
+                    ?? new IpcResponse(false, IpcProtocol.OutcomeUnknown);
+            }
         }
         catch (Exception ex) when (requestWriteStarted && ex is IOException or SocketException or ObjectDisposedException or OperationCanceledException or FrameException)
         {
