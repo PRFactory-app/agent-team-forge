@@ -33,8 +33,23 @@ public static class InitCommand
             return 2;
         }
 
-        Directory.CreateDirectory(stateDir, StateDirectory.PrivateDir);
-        File.SetUnixFileMode(stateDir, StateDirectory.PrivateDir);
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(stateDir);
+        }
+        else
+        {
+            Directory.CreateDirectory(stateDir, StateDirectory.PrivateDir);
+        }
+        if (OperatingSystem.IsWindows())
+        {
+            WindowsPrivatePaths.Protect(stateDir);
+        }
+        else
+        {
+            File.SetUnixFileMode(stateDir, StateDirectory.PrivateDir);
+        }
+
         var state = StateDirectory.Open(stateDir);
 
         var profile = new SpikeProfileFile
@@ -55,7 +70,11 @@ public static class InitCommand
         }
 
         JobDatabase.Create(state.Database, profile.Limits.BusyTimeout);
-        File.SetUnixFileMode(state.Database, StateDirectory.PrivateFile);
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(state.Database, StateDirectory.PrivateFile);
+        }
+
         Console.Out.WriteLine(state.Path);
         return 0;
     }
@@ -66,7 +85,7 @@ public static class InitCommand
         {
             Mode = FileMode.CreateNew,
             Access = FileAccess.Write,
-            UnixCreateMode = StateDirectory.PrivateFile,
+            UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
         });
         stream.Write(content);
         stream.Flush(flushToDisk: true);

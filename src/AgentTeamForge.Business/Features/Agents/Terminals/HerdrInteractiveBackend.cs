@@ -228,7 +228,7 @@ internal interface IInteractiveTranscriptReader
     string? FindPiSessionDirectory(string root, string sessionId);
 }
 
-internal sealed record InteractiveTranscript(string SessionId, string? Message, IReadOnlyList<string>? Messages = null)
+internal sealed record InteractiveTranscript(string SessionId, string? Message, IReadOnlyList<string>? Messages = null, bool Completed = false)
 {
     public IReadOnlyList<string> Progress => Messages ?? [];
 }

@@ -1,5 +1,7 @@
 # Linux quickstart
 
+Windows Terminal (`wt`) mode: **ported, untested on Windows**. Windows validation remains on a Windows machine.
+
 ## Build or publish
 
 From the repository root, resolve the shared pinned SDK in `.tools/dotnet11`:

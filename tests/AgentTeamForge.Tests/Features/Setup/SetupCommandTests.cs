@@ -18,6 +18,20 @@ public sealed class SetupCommandTests
     }
 
     [Fact]
+    public void WtModeIsRejectedOnLinuxBeforeCreatingState()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var temp = new TempStateDir();
+        var dir = temp.File("state");
+        Assert.Equal(64, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "wt", ["state-dir"] = dir }));
+        Assert.False(Directory.Exists(dir));
+    }
+
+    [Fact]
     public void ApplyRegistersEachHostOnlyOnce()
     {
         using var temp = new TempStateDir();

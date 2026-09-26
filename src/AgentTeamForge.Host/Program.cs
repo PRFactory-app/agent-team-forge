@@ -53,7 +53,7 @@ catch (StateDirectoryException ex)
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: atf setup --mode headless|herdr [--state-dir DIR] [--apply] | start|stop [--state-dir DIR] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
+    Console.Error.WriteLine("usage: atf setup --mode headless|herdr|wt [--state-dir DIR] [--apply] | start|stop [--state-dir DIR] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
     return 64;
 }
 

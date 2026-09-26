@@ -1,4 +1,5 @@
 using System.Net.Sockets;
+using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Text;
 using AgentTeamForge.Business;
@@ -7,8 +8,9 @@ using AgentTeamForge.Host.Hosting;
 namespace AgentTeamForge.Host.Transport;
 
 /// <summary>
-/// Owner-private Unix socket. Each connection: peer-UID check, one hello frame
-/// with the operator credential, then one request frame and one response.
+/// Owner-private Unix socket on Linux, same-user named pipe on Windows. Each
+/// connection: OS peer restriction, one hello frame with the operator credential,
+/// then one request frame and one response.
 /// Handlers run against the daemon lifetime, not the client's connection.
 /// </summary>
 public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincipal principal, SpikeLimits limits,
@@ -23,6 +25,11 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
     /// <summary>Caller must already hold the daemon lock; only then is a stale socket unlinked.</summary>
     public Socket Bind()
     {
+        if (OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("Unix socket binding is Linux-only");
+        }
+
         if (File.Exists(socketPath))
         {
             File.Delete(socketPath);
@@ -70,12 +77,40 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
         }
     }
 
+    /// <summary>Windows transport: same-user pipe plus the existing credential hello.</summary>
+    public async Task ServeWindowsAsync(CancellationToken daemonLifetime)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("named pipe transport requires Windows");
+        }
+
+        while (!daemonLifetime.IsCancellationRequested)
+        {
+            var pipe = new NamedPipeServerStream(socketPath, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances,
+                PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            try { await pipe.WaitForConnectionAsync(daemonLifetime); }
+            catch (OperationCanceledException) { pipe.Dispose(); return; }
+            if (!_slots.Wait(0, CancellationToken.None)) { pipe.Dispose(); continue; }
+            _ = Task.Run(async () =>
+            {
+                try { await HandleStreamAsync(pipe, peerAuthorized: true, daemonLifetime); }
+                finally { pipe.Dispose(); _slots.Release(); }
+            }, CancellationToken.None);
+        }
+    }
+
     async Task HandleConnectionAsync(Socket client, CancellationToken daemonLifetime)
     {
         await using var stream = new NetworkStream(client, ownsSocket: false);
+        await HandleStreamAsync(stream, peerAuthorized: PeerUid(client) == Native.geteuid(), daemonLifetime);
+    }
+
+    async Task HandleStreamAsync(Stream stream, bool peerAuthorized, CancellationToken daemonLifetime)
+    {
         try
         {
-            if (PeerUid(client) != Native.geteuid())
+            if (!peerAuthorized)
             {
                 return;
             }

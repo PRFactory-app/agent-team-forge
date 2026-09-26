@@ -1,13 +1,14 @@
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 namespace AgentTeamForge.Host.Hosting;
 
 /// <summary>
-/// Owner-private runtime/state directory. Rejects symlinks and any group/other
-/// permission bits. The directory's owner UID is not read directly; the 0700
-/// check plus peer-UID checks on the socket stand in for it. Private files are
-/// owner-checked on their open descriptor (see <see cref="ReadPrivateFile"/>).
+/// Local runtime/state directory. Linux uses 0700, descriptor-checked private
+/// files, and peer UID checks. Windows init applies a current-user ACL to the
+/// new tree; the named pipe also restricts connections to that user.
 /// </summary>
 public sealed class StateDirectory
 {
@@ -29,7 +30,7 @@ public sealed class StateDirectory
 
     public string LockFile => Combine("daemon.lock");
 
-    public string Socket => Combine("daemon.sock");
+    public string Socket => OperatingSystem.IsWindows() ? WindowsPipeName(Path) : Combine("daemon.sock");
 
     public string CredentialFile => Combine("operator.key");
 
@@ -39,7 +40,7 @@ public sealed class StateDirectory
 
     public static StateDirectory Open(string path)
     {
-        var full = System.IO.Path.GetFullPath(path);
+        var full = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(path));
         var info = new DirectoryInfo(full);
         if (!info.Exists)
         {
@@ -51,13 +52,13 @@ public sealed class StateDirectory
             throw new StateDirectoryException("state_dir_symlink");
         }
 
-        if (info.UnixFileMode != PrivateDir)
+        if (!OperatingSystem.IsWindows() && info.UnixFileMode != PrivateDir)
         {
             throw new StateDirectoryException("state_dir_not_private");
         }
 
         var state = new StateDirectory(full);
-        if (state.Socket.Length > 100)
+        if (!OperatingSystem.IsWindows() && state.Socket.Length > 100)
         {
             throw new StateDirectoryException("state_dir_path_too_long");
         }
@@ -72,10 +73,32 @@ public sealed class StateDirectory
     /// path swap after the checks cannot redirect the read. FIFOs, devices,
     /// directories, sockets, symlinks, foreign or group/other-accessible files and
     /// oversize files fail closed as <c>private_file_unsafe</c> without blocking.
-    /// Linux-only (statx, O_NOFOLLOW); exercised on linux-x64.
+    /// Linux uses statx and O_NOFOLLOW; exercised on linux-x64. The Windows
+    /// branch checks type, link and size, with native ACL validation still pending.
     /// </summary>
     public static byte[] ReadPrivateFile(string path)
     {
+        if (OperatingSystem.IsWindows())
+        {
+            var info = new FileInfo(path);
+            if (!info.Exists)
+            {
+                throw new StateDirectoryException("private_file_missing");
+            }
+
+            if (info.LinkTarget is not null || info.Length > MaxPrivateFileBytes)
+            {
+                throw new StateDirectoryException("private_file_unsafe");
+            }
+
+            var bytes = File.ReadAllBytes(path);
+            if (bytes.Length > MaxPrivateFileBytes)
+            {
+                throw new StateDirectoryException("private_file_unsafe");
+            }
+
+            return bytes;
+        }
         if (Native.OpenNoFollow is not { } noFollow)
         {
             throw new StateDirectoryException("private_file_unsafe");
@@ -123,6 +146,9 @@ public sealed class StateDirectory
     }
 
     string Combine(string name) => System.IO.Path.Combine(Path, name);
+
+    static string WindowsPipeName(string path) => "atf-" + Convert.ToHexStringLower(
+        SHA256.HashData(Encoding.UTF8.GetBytes(System.IO.Path.GetFullPath(path).ToUpperInvariant())))[..24];
 }
 
 public sealed class StateDirectoryException(string code) : Exception(code)

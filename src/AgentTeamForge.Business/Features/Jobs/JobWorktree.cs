@@ -38,8 +38,17 @@ public static class JobWorktree
 
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(job.WorktreePath)!,
+            var parent = Path.GetDirectoryName(job.WorktreePath)!;
+            if (OperatingSystem.IsWindows())
+            {
+                Directory.CreateDirectory(parent);
+            }
+            else
+            {
+                Directory.CreateDirectory(parent,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+
             return Git(job.Cwd, AddTimeout, "worktree", "add", "-b", job.WorktreeBranch, job.WorktreePath, job.WorktreeBase) is not null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
