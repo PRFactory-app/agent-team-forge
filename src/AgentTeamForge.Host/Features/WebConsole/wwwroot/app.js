@@ -418,7 +418,7 @@
     name.type = 'text';
     name.required = true;
     name.maxLength = 64;
-    name.pattern = '[A-Za-z0-9_-]+';
+    name.pattern = '[A-Za-z0-9_\\-]+';
     name.placeholder = 'desktop-agent';
     name.value = state.name;
     name.dataset.composerKey = 'ticket:' + leadId;
