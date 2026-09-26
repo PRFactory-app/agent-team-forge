@@ -1,5 +1,6 @@
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
+using AgentTeamForge.Business.Features.Jobs;
 
 namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 
@@ -24,6 +25,40 @@ public sealed class HerdrInteractiveBackendTests
             e => Assert.Equal(new BackendEvidence.Session("corr-1", "native-1"), e),
             e => Assert.Equal(new BackendEvidence.Result("corr-1", "finished"), e),
             e => Assert.IsType<BackendEvidence.EndOfOutput>(e));
+    }
+
+    [Fact]
+    public async Task StreamsNewTranscriptMessagesToJobLogWhileWorking()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "atf-herdr-log-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var logs = new JobLogs(root);
+            var control = new FakeControl { Statuses = new Queue<InteractiveAgentStatus>([InteractiveAgentStatus.Working, InteractiveAgentStatus.Done]) };
+            var reader = new SequenceReader(
+                new InteractiveTranscript("native-1", "planning", ["planning"]),
+                new InteractiveTranscript("native-1", "finished", ["planning", "finished"]));
+            var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Codex, root);
+            await using var run = backend.Start(new BackendRequest("job-1", "corr-1", "do work", "")
+            {
+                WorkingDirectory = root,
+                Output = logs.BeginRun("job-1", "run-1", "codex"),
+            });
+            await run.DeliverAsync(CancellationToken.None);
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await using var evidence = run.ReadEvidenceAsync(deadline.Token).GetAsyncEnumerator(TestContext.Current.CancellationToken);
+            Assert.True(await evidence.MoveNextAsync()); // Ack
+            Assert.True(await evidence.MoveNextAsync()); // Session from the working poll
+            Assert.Contains("planning\n", logs.Read("job-1").Text);
+            Assert.DoesNotContain("finished\n", logs.Read("job-1").Text);
+
+            while (await evidence.MoveNextAsync()) { }
+            var text = logs.Read("job-1").Text;
+            Assert.Equal(1, text.Split("planning\n", StringSplitOptions.None).Length - 1);
+            Assert.Equal(1, text.Split("finished\n", StringSplitOptions.None).Length - 1);
+        }
+        finally { Directory.Delete(root, recursive: true); }
     }
 
     [Fact]
@@ -83,7 +118,10 @@ public sealed class HerdrInteractiveBackendTests
             var reader = new InteractiveTranscriptReader();
             var launch = new InteractiveLaunch(InteractiveAgentKind.Pi, "atftest", root, null, dir, Path.Combine(root, "bootstrap"));
             Assert.Equal(dir, reader.FindPiSessionDirectory(Path.Combine(root, "pi-sessions"), "pi-native"));
-            Assert.Equal(new InteractiveTranscript("pi-native", "new answer"), reader.Read(launch, "atf-corr:new-turn", DateTimeOffset.UtcNow));
+            var transcript = reader.Read(launch, "atf-corr:new-turn", DateTimeOffset.UtcNow);
+            Assert.Equal("pi-native", transcript?.SessionId);
+            Assert.Equal("new answer", transcript?.Message);
+            Assert.Equal(["new answer"], transcript?.Progress);
             Assert.Null(reader.Read(launch, "atf-corr:other-turn", DateTimeOffset.UtcNow));
         }
         finally { Directory.Delete(root, recursive: true); }
@@ -201,6 +239,7 @@ public sealed class HerdrInteractiveBackendTests
         public bool FailPrompt { get; init; }
         public bool FailStatus { get; init; }
         public InteractiveAgentStatus Status { get; init; } = InteractiveAgentStatus.Done;
+        public Queue<InteractiveAgentStatus>? Statuses { get; init; }
         public bool Stopped { get; private set; }
 
         public Task PromptAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken)
@@ -214,7 +253,7 @@ public sealed class HerdrInteractiveBackendTests
         }
 
         public Task<InteractiveAgentStatus> StatusAsync(InteractiveLaunch launch, CancellationToken cancellationToken) =>
-            FailStatus ? throw new HerdrLaunchException("herdr agent get exited 1: io") : Task.FromResult(Status);
+            FailStatus ? throw new HerdrLaunchException("herdr agent get exited 1: io") : Task.FromResult(Statuses?.Count > 0 ? Statuses.Dequeue() : Status);
 
         public void StopOwned(InteractiveLaunch launch) => Stopped = true;
     }
@@ -223,6 +262,14 @@ public sealed class HerdrInteractiveBackendTests
     {
         public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started) => output;
         public string? FindPiSessionDirectory(string root, string sessionId) => "/tmp/pi-one";
+    }
+
+    sealed class SequenceReader(params InteractiveTranscript[] snapshots) : IInteractiveTranscriptReader
+    {
+        readonly Queue<InteractiveTranscript> _snapshots = new(snapshots);
+        public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started) =>
+            _snapshots.Count > 0 ? _snapshots.Dequeue() : snapshots[^1];
+        public string? FindPiSessionDirectory(string root, string sessionId) => null;
     }
 
     sealed class TracingControl(IHerdrAgentControl inner) : IHerdrAgentControl
