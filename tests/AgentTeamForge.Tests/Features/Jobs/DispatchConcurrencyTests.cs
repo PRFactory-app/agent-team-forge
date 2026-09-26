@@ -14,6 +14,30 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 public sealed class DispatchConcurrencyTests
 {
     [Fact]
+    public async Task Simultaneous_claims_start_each_job_once()
+    {
+        using var f = new JobFixture();
+        var jobs = Enumerable.Range(0, 16).Select(i => f.Submit($"claim-{i}").JobId).ToHashSet();
+        using var start = new ManualResetEventSlim();
+        var claims = Enumerable.Range(0, 16).Select(_ => Task.Run(() =>
+        {
+            start.Wait();
+            return f.NewStore().BeginNextAttempt();
+        })).ToArray();
+
+        start.Set();
+        var results = await Task.WhenAll(claims);
+        Assert.DoesNotContain(results, claim => claim is null);
+        Assert.True(jobs.SetEquals(results.Select(claim => claim!.Job.JobId)));
+        Assert.All(jobs, id =>
+        {
+            Assert.Equal(JobStatus.Running, f.Store.GetJob(id)!.Status);
+            Assert.Single(f.Store.GetRuns(id));
+        });
+        Assert.Null(f.Store.BeginNextAttempt());
+    }
+
+    [Fact]
     public async Task Jobs_run_concurrently_up_to_the_configured_cap()
     {
         using var f = new JobFixture(new SpikeLimits { MaxConcurrentJobs = 3 });
@@ -64,8 +88,17 @@ public sealed class DispatchConcurrencyTests
         Assert.Equal(JobStatus.Completed, f.Store.GetJob(first.JobId)!.Status);
         Assert.Equal($"sess-{parent.JobId}", backend.Started[second.JobId].ResumeSessionId);
 
+        var chained = followUp.Execute(new FollowUpRequest(first.JobId, "fourth", "c3")).Job!;
+        await Task.Delay(300, TestContext.Current.CancellationToken);
+        Assert.Equal(JobStatus.Queued, f.Store.GetJob(chained.JobId)!.Status);
+        Assert.False(backend.Running.ContainsKey(chained.JobId));
+
+        backend.Release(second.JobId);
+        await Bounded.Until(() => backend.Running.ContainsKey(chained.JobId), "chained follow-up starts after the sibling");
+        Assert.Equal($"sess-{parent.JobId}", backend.Started[chained.JobId].ResumeSessionId);
+
         backend.ReleaseAll();
-        await Bounded.Until(() => f.Store.GetJob(second.JobId)!.Status == JobStatus.Completed, "second done");
+        await Bounded.Until(() => f.Store.GetJob(chained.JobId)!.Status == JobStatus.Completed, "chain done");
         lifetime.Cancel();
         await loop;
     }

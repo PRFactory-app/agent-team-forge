@@ -20,6 +20,7 @@ public sealed class DispatchJob : IDisposable
 
     readonly SemaphoreSlim _signal = new(0);
     readonly CancellationTokenSource _halted = new();
+    readonly Lock _claimGate = new();
     readonly JobStore store;
     readonly BackendCatalog backends;
     readonly SpikeLimits limits;
@@ -117,7 +118,18 @@ public sealed class DispatchJob : IDisposable
             AttemptClaim? claim;
             try
             {
-                claim = store.BeginNextAttempt();
+                lock (_claimGate)
+                {
+                    // WaitAsync may grant a released slot even as halt cancels it.
+                    // Serialize this check and the durable claim with Halt.
+                    if (stopping.IsCancellationRequested || Halted)
+                    {
+                        slots.Release();
+                        return;
+                    }
+
+                    claim = store.BeginNextAttempt();
+                }
             }
             catch (StorageException ex)
             {
@@ -338,8 +350,12 @@ public sealed class DispatchJob : IDisposable
 
     void Halt(string reason)
     {
-        Interlocked.CompareExchange(ref _haltReason, reason, null);
-        admission.Close(HaltReason!);
+        lock (_claimGate)
+        {
+            Interlocked.CompareExchange(ref _haltReason, reason, null);
+            admission.Close(HaltReason!);
+        }
+
         _halted.Cancel();
     }
 
