@@ -10,7 +10,7 @@ public static class PrivateFiles
     public const UnixFileMode Directory = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
     public const UnixFileMode File = UnixFileMode.UserRead | UnixFileMode.UserWrite;
 
-    public static FileStreamOptions Options(FileMode mode, FileAccess access, FileShare share = FileShare.Read)
+    public static FileStreamOptions Options(FileMode mode, FileAccess access, FileShare share = FileShare.None)
     {
         var options = new FileStreamOptions { Mode = mode, Access = access, Share = share };
         if (!OperatingSystem.IsWindows())

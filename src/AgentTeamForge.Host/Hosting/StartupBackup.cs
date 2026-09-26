@@ -25,6 +25,10 @@ internal static class StartupBackup
             {
                 throw new IOException("backup directory is not private");
             }
+            if (OperatingSystem.IsWindows())
+            {
+                WindowsPrivatePaths.ValidateDirectory(backups);
+            }
 
             var marker = Path.Combine(backups, "boot-id");
             if (File.Exists(marker) && Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(marker)).Trim() == currentBoot)
@@ -37,10 +41,6 @@ internal static class StartupBackup
             try
             {
                 JobDatabase.Backup(state.Database, backup, busyTimeout);
-                if (!OperatingSystem.IsWindows())
-                {
-                    File.SetUnixFileMode(backup, StateDirectory.PrivateFile);
-                }
             }
             catch
             {
