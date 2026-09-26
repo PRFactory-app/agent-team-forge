@@ -21,7 +21,7 @@ done
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) rid=linux-x64; hash_tool=sha256sum; sums=SHA256SUMS;;
   Darwin-arm64) rid=osx-arm64; hash_tool=shasum; sums=SHA256SUMS-osx-arm64;;
-  *) fail 'only linux-x64 and osx-arm64 bundles are prepared';;
+  *) fail "unsupported platform $(uname -s)-$(uname -m); available Unix bundles: linux-x64, osx-arm64";;
 esac
 for tool in tar "$hash_tool" mktemp readlink; do command -v "$tool" >/dev/null 2>&1 || fail "missing $tool"; done
 sha_file() { if [ "$hash_tool" = shasum ]; then shasum -a 256 "$@"; else sha256sum "$@"; fi; }
@@ -60,6 +60,9 @@ if [ -n "$uninstall" ]; then
     [ -f "$state/profile.json" ] && [ -f "$state/operator.key" ] || fail 'state directory has no ATF profile and key'
   fi
   stop_current
+  if [ -x "$root/current/atf" ]; then
+    "$root/current/atf" uninstall --teardown-only --state-dir "$state" || fail 'client teardown failed; installation left unchanged'
+  fi
   if [ -L "$bin" ]; then rm -- "$bin"; fi
   if [ -L "$root/current" ]; then rm -- "$root/current"; fi
   if [ -d "$releases" ]; then
@@ -101,11 +104,13 @@ if [ -n "$archive" ]; then
   [ -f "$checksum" ] || fail "checksum not found: $checksum"
 else
   command -v curl >/dev/null 2>&1 || fail 'curl is required for downloads'
-  repo=https://github.com/PRFactory-app/agent-team-forge/releases
+  repo=${ATF_RELEASES_URL:-https://github.com/PRFactory-app/agent-team-forge/releases}
   if [ -z "$version" ]; then
-    latest=$(curl -fsSL -o /dev/null -w '%{url_effective}' "$repo/latest") || fail 'could not resolve latest release'
-    tag=${latest##*/}
-    case "$tag" in v*) version=${tag#v};; *) fail 'latest release tag must begin with v';; esac
+    latest=$(curl -sSL -o /dev/null -w '%{http_code} %{url_effective}' "$repo/latest") || fail 'network error resolving latest release'
+    status=${latest%% *}
+    case "$status" in 404) fail 'no release is published yet';; 200) ;; *) fail "latest release lookup failed (HTTP $status)";; esac
+    latest=${latest#* }
+    case "$latest" in "$repo/tag/v"*) version=${latest##*/}; version=${version#v};; *) fail 'no release is published yet';; esac
   fi
   release_url=${release_url:-$repo/download/v$version}
 fi
@@ -119,8 +124,12 @@ trap 'exit 130' HUP INT TERM
 if [ -z "$archive" ]; then
   archive=$scratch/$name
   checksum=$scratch/SHA256SUMS
-  curl -fsSL "$release_url/$name" -o "$archive" || fail 'archive download failed'
-  curl -fsSL "$release_url/$sums" -o "$checksum" || fail 'checksum download failed'
+  download() {
+    status=$(curl -sSL -w '%{http_code}' "$1" -o "$2") || fail "network error downloading $3"
+    case "$status" in 200) ;; 404) fail "missing release asset: $3 ($1)";; *) fail "download failed for $3 (HTTP $status)";; esac
+  }
+  download "$release_url/$name" "$archive" "$name"
+  download "$release_url/$sums" "$checksum" "$sums"
 fi
 expected=$(awk -v name="$name" '$2 == name && $1 ~ /^[0-9a-fA-F]+$/ {print $1}' "$checksum")
 [ "${#expected}" -eq 64 ] || fail "checksum entry missing for $name"
@@ -131,9 +140,18 @@ if [ -e "$bin" ] || [ -L "$bin" ]; then
   [ -L "$bin" ] && [ "$(readlink "$bin")" = "$owned_bin" ] || fail "refusing to replace unmanaged $bin"
 fi
 check_current
+upgrade=
+[ -L "$root/current" ] && upgrade=1
 mkdir -p "$releases" "$HOME/.local/bin"
 target=$releases/$version
-[ ! -e "$target" ] && [ ! -L "$target" ] || fail "version already installed: $version"
+if [ -e "$target" ] || [ -L "$target" ]; then
+  [ -L "$root/current" ] && [ "$current_version" = "$version" ] && [ -d "$target" ] && [ ! -L "$target" ] && [ -f "$target/.atf-files" ] || fail "version already installed but not active: $version"
+  [ -x "$target/atf" ] && [ "$("$target/atf" --version)" = "atf $version" ] || fail 'installed version failed verification'
+  (cd "$target" && sha_file -c .atf-files >/dev/null) || fail 'installed files failed verification'
+  [ -L "$bin" ] && [ "$(readlink "$bin")" = "$owned_bin" ] || fail 'stable atf link is missing'
+  echo "atf $version already installed and verified: $bin"
+  exit 0
+fi
 stage=$(mktemp -d "$releases/.stage.XXXXXX")
 if [ "$rid" = linux-x64 ]; then
   tar -xzf "$archive" -C "$stage" --no-same-owner --no-same-permissions
@@ -158,4 +176,8 @@ if [ ! -L "$bin" ]; then
   mv -f "$HOME/.local/bin/.atf.$$" "$bin"
 fi
 echo "installed atf $version: $bin"
-echo 'previous versions kept; run atf setup --mode headless|herdr|terminal --apply and restart clients; daemon starts on first agent use (or at login with setup --autostart --apply)'
+if [ -n "$upgrade" ]; then
+  echo 'previous versions kept; existing mode and client registrations are preserved; restart clients to use the new version'
+else
+  printf 'run "%s" setup to choose a launch mode and register installed clients\n' "$bin"
+fi
