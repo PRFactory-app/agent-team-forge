@@ -51,8 +51,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         var queueDeadline = job.QueueTtlSeconds is int ttl ? acceptedAt.AddSeconds(ttl).ToString("O") : null;
         Execute(connection, tx, """
             INSERT INTO jobs(job_id, principal, team, target_agent, operation, idempotency_key, fingerprint,
-                             instruction, options, backend, cwd, parent_job_id, worktree_path, worktree_branch, worktree_base, timeout_s, queue_deadline, status, accepted_at, updated_at)
-            VALUES ($id, $p, $t, $a, $o, $k, $f, $i, $opt, $b, $cwd, $parent, $wtpath, $wtbranch, $wtbase, $timeout, $deadline, 'queued', $now, $now);
+                             instruction, options, backend, cwd, parent_job_id, worktree_path, worktree_branch, worktree_base, timeout_s, queue_deadline, lead_session_id, status, accepted_at, updated_at)
+            VALUES ($id, $p, $t, $a, $o, $k, $f, $i, $opt, $b, $cwd, $parent, $wtpath, $wtbranch, $wtbase, $timeout, $deadline, $lead, 'queued', $now, $now);
             INSERT INTO dispatch_intents(job_id, state, created_at) VALUES ($id, 'unattempted', $now);
             INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'accepted', $now);
             """,
@@ -61,7 +61,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             ("$i", job.Instruction), ("$opt", job.Options), ("$b", job.Backend), ("$cwd", job.Cwd),
             ("$parent", job.ParentJobId), ("$wtpath", worktreePath), ("$wtbranch", worktreeBranch),
             ("$wtbase", job.WorktreeBase), ("$timeout", job.TimeoutSeconds),
-            ("$deadline", queueDeadline), ("$now", now));
+            ("$deadline", queueDeadline), ("$lead", job.LeadSessionId), ("$now", now));
         if (job.WakeTargetKey is not null && job.WakeGeneration is not null)
         {
             Execute(connection, tx, """
@@ -405,18 +405,19 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     /// keyset, not a snapshot). No `(principal, team, job_id)` index exists, so DB
     /// work still grows with the caller's total jobs; only the returned rows are capped.
     /// </summary>
-    public IReadOnlyList<JobSummaryRecord> ListJobs(string principal, string team, string? status, string? beforeJobId, int take) => Read(connection =>
+    public IReadOnlyList<JobSummaryRecord> ListJobs(string principal, string team, string? status, string? beforeJobId, int take, string? leadSessionId = null, string? workspace = null) => Read(connection =>
     {
         using var command = Command(connection, null, """
             SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at, j.worktree_path, j.worktree_branch
             FROM jobs j
             WHERE j.principal=$p AND j.team=$t
+              AND ($lead IS NULL OR j.lead_session_id=$lead OR ($workspace IS NOT NULL AND j.lead_session_id IN (SELECT session_id FROM lead_sessions WHERE workspace=$workspace)))
               AND ($status IS NULL OR j.status=$status)
               AND ($before IS NULL OR j.job_id < $before)
             ORDER BY j.job_id DESC
             LIMIT $take
             """,
-            ("$p", principal), ("$t", team), ("$status", status), ("$before", beforeJobId), ("$take", take));
+            ("$p", principal), ("$t", team), ("$lead", leadSessionId), ("$workspace", workspace), ("$status", status), ("$before", beforeJobId), ("$take", take));
         using var reader = command.ExecuteReader();
         var jobs = new List<JobSummaryRecord>();
         while (reader.Read())
@@ -431,6 +432,9 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
         return (IReadOnlyList<JobSummaryRecord>)jobs;
     });
+
+    public bool BelongsToLead(string jobId, string leadSessionId) => Read(connection =>
+        Scalar(connection, null, "SELECT count(*) FROM jobs WHERE job_id=$id AND lead_session_id=$lead", ("$id", jobId), ("$lead", leadSessionId)) == 1);
 
     public long CountUnattemptedIntents() => Read(connection => Scalar(connection, null, "SELECT count(*) FROM dispatch_intents WHERE state='unattempted'"));
 

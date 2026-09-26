@@ -105,7 +105,7 @@ public static class DaemonCommand
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept),
             new ListJobs(store, profile.Bound),
-            new StopJob(store, profile.Bound, dispatcher.CancelRunning), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs);
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store, new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database));
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,

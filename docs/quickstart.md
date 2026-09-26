@@ -59,7 +59,7 @@ codex mcp add agentteamforge -- "$ATF" mcp --state-dir "$STATE"
 
 ## Submit and inspect jobs
 
-MCP tools include `submit_job`, `get_job`, `get_job_output`, `follow_up`, `list_jobs`, `stop_job`, and `register_codex_wake`.
+MCP tools include `submit_job`, `get_job`, `get_job_output`, `follow_up`, `list_jobs`, `stop_job`, `session_info`, `resume_session`, and `register_codex_wake`.
 Use a fresh `idempotency_key` for each submit/follow-up and retain its `job_id`;
 follow-up resumes the finished job's native backend session.
 
@@ -70,6 +70,14 @@ follow_up(job_id="<completed_job_id>", instruction="Summarize the tests", idempo
 list_jobs(limit=20)
 stop_job(job_id="<running_job_id>")
 ~~~
+
+Each MCP lead has its own session and sees only its own jobs by default, even when
+several leads share a folder. Use `list_jobs(all_workspace=true)` to inspect
+other leads' jobs in that folder. After a restart, call `session_info()` to see
+the current session, its stable `lead_token`, and recoverable sessions for the
+folder. Call `resume_session(session_id="<prior_session_id>")` to adopt the prior
+jobs and move unread wake notices to the new bridge. A bridge whose parent and
+folder binding survives a restart reconnects to the same session automatically.
 
 CLI: `submit|get|follow-up|list|stop` return JSON; `logs` prints raw output. Reuse the returned `job_id` for later calls:
 

@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 6;
+    public const int CurrentVersion = 7;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -121,7 +121,20 @@ static class Schema
         ALTER TABLE jobs ADD COLUMN queue_deadline TEXT;
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6];
+    const string V7 = """
+        CREATE TABLE lead_sessions(
+            session_id TEXT PRIMARY KEY,
+            workspace TEXT NOT NULL,
+            binding_key TEXT NOT NULL,
+            lead_token TEXT NOT NULL,
+            wake_key TEXT,
+            updated_at TEXT NOT NULL);
+        CREATE INDEX lead_sessions_workspace ON lead_sessions(workspace, updated_at);
+        ALTER TABLE jobs ADD COLUMN lead_session_id TEXT;
+        CREATE INDEX jobs_lead_session ON jobs(lead_session_id, job_id);
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

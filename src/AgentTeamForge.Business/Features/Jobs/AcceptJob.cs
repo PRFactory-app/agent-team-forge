@@ -47,7 +47,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         var options = $"behavior={behavior};hold={(request.Hold ? 1 : 0)};worktree={(request.Worktree ? 1 : 0)}";
         return Admit(Operation, request.IdempotencyKey, request.Instruction, options, backend,
             cwd, null, request.WakeKey, request.WakeGeneration, request.Worktree, baseCommit,
-            timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds);
+            timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds, leadSessionId: request.LeadSessionId);
     }
 
     /// <summary>Optional job timeout and queue TTL: whole seconds, at most one day.</summary>
@@ -63,7 +63,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
     /// <summary>Durable acceptance shared by submit and follow-up; one admission-gated transaction.</summary>
     internal JobResult Admit(string operation, string key, string instruction, string options, string backend, string? cwd, string? parentJobId,
         string? wakeKey = null, long? wakeGeneration = null, bool createWorktree = false, string? worktreeBase = null,
-        string? worktreePath = null, string? worktreeBranch = null, int? timeoutSeconds = null, int? queueTtlSeconds = null)
+        string? worktreePath = null, string? worktreeBranch = null, int? timeoutSeconds = null, int? queueTtlSeconds = null, string? leadSessionId = null)
     {
         if (!admission.TryEnter())
         {
@@ -79,7 +79,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
                 fields = [.. fields, $"timeout={timeoutSeconds};queue_ttl={queueTtlSeconds}"];
             }
 
-            var job = new NewJob(principal.Principal, principal.Team, principal.Agent, operation, key, Fingerprint(fields), instruction, options)
+            var job = new NewJob(principal.Principal, principal.Team, principal.Agent, operation, leadSessionId is null ? key : leadSessionId + ":" + key, Fingerprint(fields), instruction, options)
             {
                 TimeoutSeconds = timeoutSeconds,
                 QueueTtlSeconds = queueTtlSeconds,
@@ -90,6 +90,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
                 WorktreeBase = worktreeBase,
                 WorktreePath = worktreePath,
                 WorktreeBranch = worktreeBranch,
+                LeadSessionId = leadSessionId,
                 WakeTargetKey = wakeKey,
                 WakeGeneration = wakeGeneration,
             };

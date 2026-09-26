@@ -45,6 +45,6 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
         return accept.Admit(Operation, request.IdempotencyKey, request.Instruction, "behavior=complete;hold=0",
             parent.Backend, parent.Cwd, parent.JobId, request.WakeKey, request.WakeGeneration, worktreeBase: parent.WorktreeBase,
             worktreePath: parent.WorktreePath, worktreeBranch: parent.WorktreeBranch,
-            timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds);
+            timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds, leadSessionId: request.LeadSessionId);
     }
 }

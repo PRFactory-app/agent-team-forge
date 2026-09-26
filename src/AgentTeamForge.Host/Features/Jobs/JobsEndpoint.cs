@@ -1,5 +1,7 @@
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Wake;
+using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Features.Sessions;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Host.Transport;
 
@@ -7,10 +9,55 @@ namespace AgentTeamForge.Host.Features.Jobs;
 
 /// <summary>Thin IPC mapping for the job operations; all rules live in Business.</summary>
 public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, StopJob stop, DurabilityCheckpoints checkpoints, Action onAccepted,
-    WakeStore? wakeStore = null, PruneJob? prune = null, JobLogs? logs = null)
+    WakeStore? wakeStore = null, PruneJob? prune = null, JobLogs? logs = null, JobStore? jobStore = null, LeadSessionStore? sessions = null)
 {
     public IpcResponse Handle(IpcRequest request)
     {
+        if (request.Op == IpcProtocol.SessionStart)
+        {
+            if (sessions is null || !ValidWorkspace(request))
+            {
+                return new IpcResponse(false, JobErrors.InvalidRequest);
+            }
+            return new IpcResponse(true, Outcome: "session", Session: sessions.Start(request.Workspace!, request.BindingKey!));
+        }
+        if (request.Op == IpcProtocol.SessionResume)
+        {
+            if (sessions is null || !ValidWorkspace(request) || request.LeadSessionId is null)
+            {
+                return new IpcResponse(false, JobErrors.InvalidRequest);
+            }
+            var resumed = sessions.Resume(request.LeadSessionId, request.Workspace!, request.BindingKey!);
+            return resumed is null ? new IpcResponse(false, JobErrors.NotFound) : new IpcResponse(true, Outcome: "resumed", Session: resumed);
+        }
+        if (request.Op == IpcProtocol.SessionInfo)
+        {
+            if (sessions is null || request.LeadSessionId is null || request.Workspace is null)
+            {
+                return new IpcResponse(false, JobErrors.InvalidRequest);
+            }
+            var info = sessions.Info(request.LeadSessionId, request.Workspace);
+            return info is null ? new IpcResponse(false, JobErrors.NotFound) : new IpcResponse(true, Outcome: "session", Session: info);
+        }
+        if (request.Op == IpcProtocol.SessionBindWake)
+        {
+            if (sessions is null || request.LeadSessionId is null || request.Workspace is null || request.WakeKey is null || request.WakeGeneration is null
+                || !sessions.Exists(request.LeadSessionId, request.Workspace))
+            {
+                return new IpcResponse(false, JobErrors.InvalidRequest);
+            }
+            sessions.BindWake(request.LeadSessionId, request.WakeKey, request.WakeGeneration.Value);
+            return new IpcResponse(true, Outcome: "bound");
+        }
+        if (request.LeadSessionId is not null && (sessions is null || request.Workspace is null || !sessions.Exists(request.LeadSessionId, request.Workspace)))
+        {
+            return new IpcResponse(false, JobErrors.InvalidRequest);
+        }
+        if (request.LeadSessionId is not null && request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobStop or IpcProtocol.JobFollowUp
+            && (jobStore is null || request.JobId is null || !jobStore.BelongsToLead(request.JobId, request.LeadSessionId)))
+        {
+            return new IpcResponse(false, JobErrors.NotFound);
+        }
         switch (request.Op)
         {
             case IpcProtocol.JobSubmit:
@@ -21,6 +68,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     Worktree = request.Worktree,
                     TimeoutSeconds = request.TimeoutSeconds,
                     QueueTtlSeconds = request.QueueTtlSeconds,
+                    LeadSessionId = request.LeadSessionId,
                     WakeKey = request.WakeKey,
                     WakeGeneration = request.WakeGeneration,
                 }));
@@ -29,6 +77,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 {
                     TimeoutSeconds = request.TimeoutSeconds,
                     QueueTtlSeconds = request.QueueTtlSeconds,
+                    LeadSessionId = request.LeadSessionId,
                     WakeKey = request.WakeKey,
                     WakeGeneration = request.WakeGeneration,
                 }));
@@ -53,7 +102,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 }
                 return new IpcResponse(true, Outcome: "output", Output: logs.Read(request.JobId!, request.Offset ?? 0, request.MaxBytes ?? JobLogs.MaxReadBytes));
             case IpcProtocol.JobList:
-                var listed = list.Execute(new ListJobsRequest(request.Status, request.Limit, request.Cursor));
+                var listed = list.Execute(new ListJobsRequest(request.Status, request.Limit, request.Cursor) { LeadSessionId = request.LeadSessionId, AllWorkspace = request.AllWorkspace, Workspace = request.Workspace });
                 return listed.Error is null ? new IpcResponse(true, Outcome: "listed", Page: listed.Page) : new IpcResponse(false, listed.Error);
             case IpcProtocol.JobPrune:
                 if (prune is null || request.OlderThanDays is not (>= 1 and <= 36500))
@@ -77,6 +126,9 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 return new IpcResponse(false, IpcProtocol.UnknownOp);
         }
     }
+
+    static bool ValidWorkspace(IpcRequest request) => request.Workspace is { Length: > 0 and <= 4096 } workspace
+        && Path.IsPathFullyQualified(workspace) && request.BindingKey is { Length: > 0 and <= 4096 };
 
     IpcResponse Accepted(JobResult result)
     {
