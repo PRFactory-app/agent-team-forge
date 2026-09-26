@@ -141,7 +141,7 @@ main { padding-top: 23px; }
 .composer { display: grid; gap: 8px; min-width: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--sunken); }
 .composer-target { color: var(--secondary); font: 11px var(--font-mono); }
 .composer-target label { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.composer-picker { max-width: 100%; min-width: 240px; padding: 4px 7px; font-size: 11px; }
+.composer-picker { max-width: 100%; min-width: min(240px, 100%); padding: 4px 7px; font-size: 11px; }
 .composer-input { min-height: 52px; width: 100%; font: 12px/1.5 var(--font-mono); }
 .composer-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
 .interrupt-label { display: inline-flex; align-items: center; gap: 5px; margin-right: auto; color: var(--secondary); font: 11px var(--font-mono); }
