@@ -39,6 +39,14 @@ public static class JobsMcpBridge
         {"type":"object","properties":{"job_id":{"type":"string"}},"required":["job_id"]}
         """;
 
+    const string OutputSchema = """
+        {"type":"object","properties":{
+          "job_id":{"type":"string"},
+          "offset":{"type":"integer","minimum":0,"description":"Absolute byte offset; default 0."},
+          "max_bytes":{"type":"integer","minimum":1,"maximum":65536,"description":"Maximum bytes; default 65536."}},
+         "required":["job_id"]}
+        """;
+
     const string FollowUpSchema = """
         {"type":"object","properties":{
           "job_id":{"type":"string","description":"Finished job whose native agent session is resumed."},
@@ -82,6 +90,7 @@ public static class JobsMcpBridge
         {
             new() { Name = "submit_job", Description = "Durably submit a task to an agent (claude, codex or pi) run by the AgentTeamForge daemon. Returns the job; poll get_job for the result.", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "get_job", Description = "Read a job's status, result output and native session_id.", InputSchema = Parse(GetSchema) },
+            new() { Name = "get_job_output", Description = "Read live stdout/stderr log bytes from a job, starting at an absolute offset. Use next_offset to continue.", InputSchema = Parse(OutputSchema) },
             new() { Name = "follow_up", Description = "Send a follow-up instruction into a finished job's native agent session (same backend and cwd). Returns the new job.", InputSchema = Parse(FollowUpSchema) },
             new() { Name = "list_jobs", Description = "List jobs, newest first, one bounded page at a time.", InputSchema = Parse(ListSchema) },
             new() { Name = "job_submit", Description = "Durably submit a job to the AgentTeamForge daemon (spike).", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
@@ -140,6 +149,7 @@ public static class JobsMcpBridge
                 Hold = testProfile && args.TryGetValue("hold", out var hold) && hold.ValueKind == JsonValueKind.True,
             }, null),
             "job_get" or "get_job" => (new IpcRequest { Op = IpcProtocol.JobGet, JobId = String(args, "job_id") }, null),
+            "get_job_output" => (new IpcRequest { Op = IpcProtocol.JobOutput, JobId = String(args, "job_id"), Offset = Long(args, "offset"), MaxBytes = Integer(args, "max_bytes") }, null),
             "follow_up" => (new IpcRequest
             {
                 Op = IpcProtocol.JobFollowUp,
@@ -184,6 +194,10 @@ public static class JobsMcpBridge
     static int? Integer(IDictionary<string, JsonElement> args, string name) =>
         !args.TryGetValue(name, out var value) ? null
         : value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var n) ? n : 0;
+
+    static long? Long(IDictionary<string, JsonElement> args, string name) =>
+        !args.TryGetValue(name, out var value) ? null
+        : value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var n) ? n : -1;
 
     static JsonElement Parse(string json)
     {
