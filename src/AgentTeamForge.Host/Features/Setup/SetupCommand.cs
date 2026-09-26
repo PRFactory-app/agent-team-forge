@@ -96,8 +96,8 @@ public static class SetupCommand
             return LoginAutostart.Apply(home, binary, dir, enable: autostart == "true", commandRunner);
         }
 
-        var unsafeBinary = UnsafeRegistrationPath(executable);
-        var unsafeState = UnsafeRegistrationPath(dir);
+        var unsafeBinary = UnsafeRegistrationPath(executable, home);
+        var unsafeState = UnsafeRegistrationPath(dir, home);
         if (!options.ContainsKey("force") && (unsafeBinary is not null || unsafeState is not null))
         {
             Console.Error.WriteLine($"error: setup would write global client registrations using an unsafe {(unsafeBinary is not null ? "binary" : "state directory")} path: {unsafeBinary ?? unsafeState}");
@@ -174,9 +174,10 @@ public static class SetupCommand
             $"herdr --version failed: {ClientSetup.BoundedError(output)}";
     }
 
-    static string? UnsafeRegistrationPath(string path)
+    static string? UnsafeRegistrationPath(string path, string home)
     {
         var full = Path.GetFullPath(path);
+        var homeFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(home));
         var temp = Path.GetFullPath(Path.GetTempPath());
         if (Within(full, "/tmp") || Within(full, temp))
         {
@@ -187,7 +188,8 @@ public static class SetupCommand
         {
             return $"{full} is inside .worktrees or artifacts";
         }
-        for (var parent = Path.GetDirectoryName(full); parent is not null; parent = Path.GetDirectoryName(parent))
+        // Stop at HOME: a dotfiles repository in HOME must not flag every normal install.
+        for (var parent = Path.GetDirectoryName(full); parent is not null && !Within(homeFull, parent); parent = Path.GetDirectoryName(parent))
         {
             if (File.Exists(Path.Combine(parent, ".git")) || Directory.Exists(Path.Combine(parent, ".git")))
             {
