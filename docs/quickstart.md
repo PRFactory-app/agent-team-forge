@@ -81,6 +81,38 @@ claude mcp add --scope user agentteamforge -- "$ATF" mcp --state-dir "$STATE"
 codex mcp add agentteamforge -- "$ATF" mcp --state-dir "$STATE"
 ~~~
 
+## Join a Claude lead from Codex Desktop
+
+The Claude Code lead uses its normal `agentteamforge` MCP entry. Add a second,
+restricted MCP entry for the manually started Codex Desktop session, using the
+same ATF daemon state directory and an absolute `atf` apphost path:
+
+~~~bash
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agentteamforge"
+ATF="$(realpath "$(command -v atf)")"
+codex mcp add --env ATF_EXTERNAL_ONLY=1 agentteamforge-external -- \
+  "$ATF" mcp --state-dir "$STATE"
+~~~
+
+Restart or reload Codex Desktop so it sees `agentteamforge-external`. That entry
+offers only `join_team`, `external_read`, `external_send`, `external_set_wake`,
+and `leave_team`; it does not create a lead session. In the Claude lead, call
+`create_join_ticket(name="codex-desktop")` and paste its `join_prompt` into the
+Codex Desktop conversation. Codex calls `join_team(session_id=..., token=...)`
+once and saves the returned `member_token`. The ticket expires after ten minutes
+and cannot be reused.
+
+For Codex queue notices, read the current Desktop conversation's
+`CODEX_THREAD_ID` and absolute `CODEX_HOME` in that session, then call
+`external_set_wake(member_token=..., codex_thread_id=..., codex_home=...)`.
+The lead sends work with `send_message(to="codex-desktop", text="...")`.
+Codex receives a notice to call `external_read(member_token=...)`, then replies
+with `external_send(member_token=..., text="...")`. The lead calls
+`read_messages()` for the reply. The queue notice is best effort, so
+`external_read` remains the fallback. `follow_up_agent` in win-agent-teams
+does not resume an external member; `send_message` is its pull-inbox path.
+Call `leave_team(member_token=...)` only when leaving permanently.
+
 ## Submit and inspect jobs
 
 MCP tools include `submit_job`, `get_job`, `get_job_output`, `follow_up`, `list_jobs`, `stop_job`, `session_info`, `resume_session`, and `register_codex_wake`.

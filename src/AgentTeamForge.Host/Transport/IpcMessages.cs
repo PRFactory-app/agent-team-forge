@@ -40,9 +40,33 @@ public sealed record IpcRequest
     public string? WakeAddress { get; init; }
     public string? WakeSecret { get; init; }
     public string? WakeHome { get; init; }
+    public string? MemberName { get; init; }
+    public string? MemberToken { get; init; }
+    public string? TicketToken { get; init; }
+    public string? Note { get; init; }
+    public string? Text { get; init; }
+    public long? SinceSeq { get; init; }
+    public string? FromAgent { get; init; }
+    public bool Full { get; init; }
+    public int? MaxChars { get; init; }
+    public string? CodexThreadId { get; init; }
 }
 
-public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, JobActivityPage? Activity = null);
+public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, AgentTeamForge.DAL.Features.External.JoinTicket? Ticket = null, AgentTeamForge.DAL.Features.External.JoinedMember? Member = null, AgentTeamForge.DAL.Features.External.ExternalInbox? Inbox = null, JobActivityPage? Activity = null)
+{
+    // Flat aliases keep the external MCP replies usable by win-agent-teams skills.
+    public bool Success => Ok;
+    public string? Reason => Error;
+    public string? SessionId => Ticket?.SessionId ?? Member?.SessionId;
+    public string? Name => Ticket?.Name ?? Member?.Name;
+    public string? Token => Ticket?.Token;
+    public string? JoinPrompt => Ticket?.JoinPrompt;
+    public DateTimeOffset? ExpiresAt => Ticket?.ExpiresAt;
+    public string? MemberToken => Member?.MemberToken;
+    public IReadOnlyList<AgentTeamForge.DAL.Features.External.ExternalMessage>? Messages => Inbox?.Messages;
+    public long? Seq => Inbox?.NextSeq;
+    public bool? HasMore => Inbox?.HasMore;
+}
 
 public static class IpcProtocol
 {
@@ -61,6 +85,15 @@ public static class IpcProtocol
     public const string SessionInfo = "session_info";
     public const string SessionResume = "session_resume";
     public const string SessionBindWake = "session_bind_wake";
+    public const string SessionClose = "session_close";
+    public const string ExternalTicket = "external_ticket";
+    public const string ExternalJoin = "external_join";
+    public const string ExternalSend = "external_send";
+    public const string ExternalRead = "external_read";
+    public const string ExternalSetWake = "external_set_wake";
+    public const string ExternalLeave = "external_leave";
+    public const string ExternalLeadSend = "external_lead_send";
+    public const string ExternalLeadRead = "external_lead_read";
 
     public const string UnsupportedVersion = "unsupported_version";
     public const string Unauthenticated = "unauthenticated";
@@ -81,4 +114,7 @@ public static class IpcProtocol
 [JsonSerializable(typeof(JobOutput))]
 [JsonSerializable(typeof(JobActivityPage))]
 [JsonSerializable(typeof(AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo))]
+[JsonSerializable(typeof(AgentTeamForge.DAL.Features.External.JoinTicket))]
+[JsonSerializable(typeof(AgentTeamForge.DAL.Features.External.JoinedMember))]
+[JsonSerializable(typeof(AgentTeamForge.DAL.Features.External.ExternalInbox))]
 public sealed partial class IpcJson : JsonSerializerContext;

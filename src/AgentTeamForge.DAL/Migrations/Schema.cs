@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 8;
+    public const int CurrentVersion = 9;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -148,7 +148,46 @@ static class Schema
             FOREIGN KEY(server, work_item_id) REFERENCES prfactory_teams(server, work_item_id));
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8];
+    /// <summary>v9: durable external teams, members and messages.</summary>
+    const string V9 = """
+        ALTER TABLE lead_sessions ADD COLUMN closed_at TEXT;
+        ALTER TABLE wake_targets ADD COLUMN external_notified_seq INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE wake_targets ADD COLUMN last_external_success TEXT;
+        CREATE TABLE external_teams(
+            team_id TEXT PRIMARY KEY,
+            owner_key TEXT NOT NULL UNIQUE,
+            lead_session_id TEXT UNIQUE REFERENCES lead_sessions(session_id),
+            wake_key TEXT,
+            created_at TEXT NOT NULL,
+            closed_at TEXT);
+        CREATE TABLE external_members(
+            member_id TEXT PRIMARY KEY,
+            team_id TEXT NOT NULL REFERENCES external_teams(team_id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            note TEXT NOT NULL,
+            ticket_hash TEXT NOT NULL UNIQUE,
+            ticket_expires TEXT NOT NULL,
+            ticket_used_at TEXT,
+            token_hash TEXT UNIQUE,
+            active INTEGER NOT NULL DEFAULT 0,
+            wake_key TEXT,
+            created_at TEXT NOT NULL,
+            left_at TEXT,
+            UNIQUE(team_id,name));
+        CREATE TABLE external_messages(
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id TEXT NOT NULL REFERENCES external_teams(team_id) ON DELETE CASCADE,
+            sender TEXT NOT NULL,
+            recipient TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            read_at TEXT,
+            wake_key TEXT);
+        CREATE INDEX external_messages_inbox ON external_messages(team_id,recipient,seq);
+        CREATE INDEX external_messages_wake ON external_messages(wake_key,read_at,seq);
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

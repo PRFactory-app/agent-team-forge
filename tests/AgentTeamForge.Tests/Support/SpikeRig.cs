@@ -51,13 +51,24 @@ public sealed class SpikeRig : IDisposable
     }
 
     public async Task<Process> StartDaemonAsync(params string[] extra)
+        => await StartDaemonWithEnvironmentAsync(null, extra);
+
+    public async Task<Process> StartDaemonWithEnvironmentAsync(IReadOnlyDictionary<string, string>? environment, params string[] extra)
     {
         lock (_daemonLog)
         {
             _daemonLog.Clear();
         }
 
-        var process = _processes.Start(Info(["daemon", "--state-dir", StateDir, .. extra], redirectInput: false));
+        var info = Info(["daemon", "--state-dir", StateDir, .. extra], redirectInput: false);
+        if (environment is not null)
+        {
+            foreach (var (key, value) in environment)
+            {
+                info.Environment[key] = value;
+            }
+        }
+        var process = _processes.Start(info);
         process.ErrorDataReceived += (_, e) =>
         {
             if (e.Data is not null)
@@ -75,12 +86,16 @@ public sealed class SpikeRig : IDisposable
         return process;
     }
 
-    public async Task<(Process Process, McpClient Client)> StartBridgeAsync(string? leadParentId = null)
+    public async Task<(Process Process, McpClient Client)> StartBridgeAsync(string? leadParentId = null, bool externalOnly = false)
     {
         var info = Info(["mcp", "--state-dir", StateDir], redirectInput: true);
         if (leadParentId is not null)
         {
             info.Environment["WIN_AGENT_TEAMS_PARENT_ID"] = leadParentId;
+        }
+        if (externalOnly)
+        {
+            info.Environment["ATF_EXTERNAL_ONLY"] = "1";
         }
         var process = _processes.Start(info);
         process.ErrorDataReceived += (_, _) => { };
