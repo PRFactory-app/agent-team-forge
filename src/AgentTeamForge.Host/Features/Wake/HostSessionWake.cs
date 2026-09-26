@@ -1,4 +1,5 @@
 using System.Text;
+using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.Host.Hosting;
 using AgentTeamForge.Host.Transport;
 
@@ -15,14 +16,7 @@ public static class HostSessionWake
         {
             var home = Environment.GetEnvironmentVariable("CODEX_HOME")
                 ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
-            return new IpcRequest
-            {
-                Op = IpcProtocol.WakeRegister,
-                WakeKey = "codex:" + thread,
-                WakeKind = "codex",
-                WakeAddress = thread,
-                WakeHome = home
-            };
+            return ForCodexThread(thread, home);
         }
 
         if (!OperatingSystem.IsLinux())
@@ -71,6 +65,57 @@ public static class HostSessionWake
             };
         }
         return null;
+    }
+
+    /// <summary>Same-user, self-reported thread ID as in the reference; Codex does not always pass it to MCP servers.</summary>
+    public static IpcRequest? ForCodexThread(string? thread, string? home)
+    {
+        if (!Guid.TryParseExact(thread, "D", out var id) || id.ToString("D") != thread
+            || string.IsNullOrWhiteSpace(home) || !Path.IsPathFullyQualified(home))
+        {
+            return null;
+        }
+
+        var target = new AgentTeamForge.DAL.Features.Wake.WakeRegistration("codex:" + thread, 0, "codex", thread, "", home);
+        if (!CodexQueueWake.VerifyCodexThread(target))
+        {
+            return null;
+        }
+
+        return new IpcRequest
+        {
+            Op = IpcProtocol.WakeRegister,
+            WakeKey = target.Key,
+            WakeKind = "codex",
+            WakeAddress = thread,
+            WakeHome = home
+        };
+    }
+
+    /// <summary>Read Codex's home from its process, never from a model-supplied tool argument.</summary>
+    internal static string? CodexHome(int hostPid, string procRoot = "/proc")
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return Environment.GetEnvironmentVariable("CODEX_HOME")
+                ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        }
+
+        try
+        {
+            var raw = Encoding.UTF8.GetString(File.ReadAllBytes(Path.Combine(procRoot,
+                hostPid.ToString(System.Globalization.CultureInfo.InvariantCulture), "environ")));
+            var variables = raw.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+            var home = variables.FirstOrDefault(value => value.StartsWith("CODEX_HOME=", StringComparison.Ordinal));
+            if (home is not null)
+            {
+                return home["CODEX_HOME=".Length..];
+            }
+            var userHome = variables.FirstOrDefault(value => value.StartsWith("HOME=", StringComparison.Ordinal));
+            return userHome is null ? null : Path.Combine(userHome["HOME=".Length..], ".codex");
+        }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
     }
 
     internal static (int Pid, string Kind)? NearestHost(int? start = null, string procRoot = "/proc")

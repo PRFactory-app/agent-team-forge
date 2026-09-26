@@ -86,6 +86,14 @@ session on the same backend/cwd) and `list_jobs`. CLI equivalents:
 opt-in end-to-end check (spends tokens); `fake` is a plumbing dry run. Jobs run one at
 a time and agents run headless with bypassed permissions.
 
+For native notices in a Codex lead, read `CODEX_THREAD_ID` with a shell tool and
+call `register_codex_wake(thread_id)` before submitting jobs. For a Claude Code
+lead in bypass mode, launch it with `claude --settings /path/to/settings.json`;
+that file must contain
+`{"crossSessionInbound":"accept"}` so its inbox delivers the notice. For Pi,
+load `extensions/pi-wake` with `ATF_STATE_DIR` set to the daemon's state
+directory; see [Pi wake setup](extensions/pi-wake/README.md).
+
 ## Reading order
 
 | Document | Contents |
