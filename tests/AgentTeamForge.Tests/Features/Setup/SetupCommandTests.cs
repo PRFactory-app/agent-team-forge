@@ -66,7 +66,7 @@ public sealed class SetupCommandTests
     }
 
     [Fact]
-    public async Task HerdrModeDoesNotStartHeadlessBackends()
+    public async Task HerdrModePersistsAndAllowsDaemonStart()
     {
         using var temp = new TempStateDir();
         var dir = temp.File("state");
@@ -74,8 +74,11 @@ public sealed class SetupCommandTests
             (_, _) => throw new InvalidOperationException(), "/tmp/atf"));
 
         var state = StateDirectory.Open(dir);
-        Assert.Equal(78, await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = dir }, "/missing/atf"));
-        Assert.Equal(78, await DaemonCommand.RunAsync(state, null, null));
+        Assert.Equal("herdr", SetupCommand.ConfiguredMode(state));
+        using var daemonLock = DaemonLock.TryAcquire(state.LockFile);
+        Assert.NotNull(daemonLock);
+        daemonLock.WriteOwnerPid();
+        Assert.Equal(0, await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = dir }, "/missing/atf"));
         Assert.False(File.Exists(state.Socket));
     }
 
