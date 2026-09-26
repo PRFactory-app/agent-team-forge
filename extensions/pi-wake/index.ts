@@ -3,7 +3,7 @@
  * notice-only JSONL doorbell; this Pi session injects it through sendMessage.
  * The lifecycle and injection API follow the reference extension.
  */
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -28,6 +28,16 @@ export default function activate(pi: ExtensionAPI): void {
   }
   if (!stateDir) return;
   const spool = path.join(stateDir, `pi-wake-${process.pid}.jsonl`);
+  const marker = path.join(stateDir, `pi-state-${process.pid}.json`);
+  function mark(state: "running" | "waiting", event: string): void {
+    try {
+      const temporary = `${marker}.${process.pid}.tmp`;
+      writeFileSync(temporary, JSON.stringify({ state, event, ts: Date.now() / 1000 }), "utf8");
+      renameSync(temporary, marker);
+    } catch {
+      /* State evidence must not interrupt the agent. */
+    }
+  }
   let offset = 0;
   const lifecycle = createLifecycle({
     createController: () => new AbortController(),
@@ -77,8 +87,12 @@ export default function activate(pi: ExtensionAPI): void {
     },
   });
   pi.on("session_start", async () => {
+    mark("running", "session_start");
     await lifecycle.start();
   });
+  pi.on("turn_start", () => mark("running", "turn_start"));
+  pi.on("tool_call", () => mark("running", "tool_call"));
+  pi.on("agent_settled", () => mark("waiting", "agent_settled"));
   pi.on("session_shutdown", async () => {
     await lifecycle.shutdown();
   });

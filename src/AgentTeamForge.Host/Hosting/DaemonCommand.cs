@@ -99,6 +99,10 @@ public static class DaemonCommand
         }
         var quarantined = new RecoverOnStartup(store, RecoverHerdr).Execute();
         Log($"recovery: quarantined {quarantined.Count} uncertain attempt(s)");
+        if (launchMode == "wt")
+        {
+            Log($"recovery: settled {WtInteractiveBackend.RecoverOwned(state.Path)} owned Windows tab(s)");
+        }
 
         var backendEnv = new Dictionary<string, string>();
         if (profile.TestProfile)

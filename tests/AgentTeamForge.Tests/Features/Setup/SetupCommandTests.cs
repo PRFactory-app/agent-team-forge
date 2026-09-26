@@ -8,6 +8,13 @@ namespace AgentTeamForge.Tests.Features.Setup;
 public sealed class SetupCommandTests
 {
     [Fact]
+    public void WindowsDrivePathIsALocalPiExtensionSource()
+    {
+        Assert.True(ClientSetup.IsLocalPackageSource(@"C:\Program Files\AgentTeamForge\extensions\pi-wake"));
+        Assert.False(ClientSetup.IsLocalPackageSource("npm:pi-mcp-adapter"));
+    }
+
+    [Fact]
     public void StableBinaryFollowsCurrentReleaseLink()
     {
         using var temp = new TempStateDir();

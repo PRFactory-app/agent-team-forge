@@ -37,6 +37,7 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
         {
             info.ArgumentList.Add(argument);
         }
+        WindowsCliLaunch.Configure(info, "codex", executable == "codex");
 
         Process process;
         try

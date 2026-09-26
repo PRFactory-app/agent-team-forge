@@ -8,6 +8,7 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 /// <summary>Runs an interactive agent in an owned Windows Terminal tab.</summary>
 public sealed class WtInteractiveBackend : IJobBackend
 {
+    public static int RecoverOwned(string stateRoot) => WtTabControl.RecoverOwned(stateRoot);
     readonly IWtTabControl _tabs;
     readonly IInteractiveTranscriptReader _transcripts;
     readonly InteractiveAgentKind _kind;

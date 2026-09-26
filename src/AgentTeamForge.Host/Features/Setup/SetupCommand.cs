@@ -276,6 +276,8 @@ public static class SetupCommand
         try
         {
             using var process = Process.GetProcessById(pid.Value);
+            // Settle owned agents first so their PowerShell wrappers close their tabs.
+            _ = WtInteractiveBackend.RecoverOwned(state.Path);
             process.Kill();
             process.WaitForExit(5000);
             Console.Out.WriteLine($"Stopped daemon {pid.Value}.");

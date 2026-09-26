@@ -1,6 +1,8 @@
 # Linux quickstart
 
-Windows Terminal (`wt`) mode: **ported, untested on Windows**. Windows validation remains on a Windows machine.
+Windows Terminal (`wt`) mode and its console retry, owned-tab cleanup, Windows
+hooks, Pi wake extension, shim launch, and private-file ACL checks are **ported,
+untested on Windows**. Windows validation remains on a Windows machine.
 
 ## Build or publish
 
