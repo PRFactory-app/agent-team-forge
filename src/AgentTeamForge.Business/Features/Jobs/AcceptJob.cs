@@ -10,7 +10,7 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// accepts it (or resolves the same key) before any acknowledgment. Nothing is
 /// read or written once the admission gate is closed.
 /// </summary>
-public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLimits limits, bool testProfile, AdmissionGate admission, Action onAccepted)
+public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLimits limits, bool testProfile, AdmissionGate admission)
 {
     public const string Operation = "job_submit";
 
@@ -59,7 +59,6 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         switch (outcome.Kind)
         {
             case AcceptKind.Accepted:
-                onAccepted();
                 return JobResult.Ok(GetJob.ToView(outcome.Job!), "accepted");
             case AcceptKind.Existing:
                 return JobResult.Ok(GetJob.ToView(outcome.Job!), "existing");

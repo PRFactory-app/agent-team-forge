@@ -5,7 +5,7 @@ using AgentTeamForge.Host.Transport;
 namespace AgentTeamForge.Host.Features.Jobs;
 
 /// <summary>Thin IPC mapping for job_submit/job_get; all rules live in Business.</summary>
-public sealed class JobsEndpoint(AcceptJob accept, GetJob get, DurabilityCheckpoints checkpoints)
+public sealed class JobsEndpoint(AcceptJob accept, GetJob get, DurabilityCheckpoints checkpoints, Action onAccepted)
 {
     public IpcResponse Handle(IpcRequest request)
     {
@@ -23,6 +23,19 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, DurabilityCheckpo
                 return Map(get.Execute(request.JobId ?? string.Empty));
             default:
                 return new IpcResponse(false, IpcProtocol.UnknownOp);
+        }
+    }
+
+    /// <summary>
+    /// Wakes dispatch only after the accepted reply was written (or its write
+    /// failed), so the post-commit crash boundary and the reply itself cannot
+    /// race a claim of the job they describe.
+    /// </summary>
+    public void AfterReply(IpcResponse response)
+    {
+        if (response.Outcome == "accepted")
+        {
+            onAccepted();
         }
     }
 
