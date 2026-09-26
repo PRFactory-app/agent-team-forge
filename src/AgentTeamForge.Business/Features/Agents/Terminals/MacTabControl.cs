@@ -150,8 +150,11 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
         var args = WtTabControl.AgentArguments(launch, prompt);
         var command = string.Join(' ', new[] { FindExecutable(args[0]) ?? args[0] }.Concat(args.Skip(1)).Select(ShellQuote));
         var trust = InteractiveAgentCommand.WorkspaceTrustEnvironment(launch.Kind);
+        var identityNames = string.Join(' ', LaunchEnvironment.IdentityNames);
+        var identityPrefixes = string.Join('|', LaunchEnvironment.IdentityPrefixes);
         return "#!/bin/sh\nset -eu\n" +
-            "unset CLAUDECODE CLAUDE_PID CODEX_THREAD_ID CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN\n" +
+            "unset " + identityNames + "\n" +
+            "for name in $(env | cut -d= -f1 | grep -E '^(" + identityPrefixes + ")' || :); do unset \"$name\"; done\n" +
             (trust is { } env ? "export " + env.Name + "=" + ShellQuote(env.Value) + "\n" : "") +
             (launch.Kind == InteractiveAgentKind.Codex ? "export CODEX_HOME=" + ShellQuote(codexHome ?? CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory)) + "\n" : "") +
             "cd " + ShellQuote(launch.WorkingDirectory) + "\n" +

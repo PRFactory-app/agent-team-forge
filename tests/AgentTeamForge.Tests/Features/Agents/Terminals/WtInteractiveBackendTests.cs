@@ -161,6 +161,10 @@ public sealed class WtInteractiveBackendTests
         var wrapper = Encoding.UTF8.GetString(WtTabControl.WrapperBytes(launch, "task", "C:\\state\\tab.pid"));
         Assert.True(wrapper.IndexOf("$env:CLAUDE_CODE_SANDBOXED = '1'", StringComparison.Ordinal) >
             wrapper.IndexOf("Remove-Item -LiteralPath", StringComparison.Ordinal));
+        Assert.Contains("'CLAUDE_CODE_SESSION_ID'", wrapper);
+        Assert.Contains("$_.Name.StartsWith('CLAUDE_CODE_MESSAGING_'", wrapper);
+        Assert.DoesNotContain("-match '^(CLAUDE_CODE_", wrapper);
+        Assert.DoesNotContain("'CLAUDE_CODE_GIT_BASH_PATH'", wrapper);
         Assert.Contains("$start.Arguments = ", wrapper);
     }
 

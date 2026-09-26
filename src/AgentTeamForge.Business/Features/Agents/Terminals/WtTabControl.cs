@@ -250,12 +250,16 @@ internal sealed class WtTabControl : IWtTabControl
     internal static byte[] WrapperBytes(InteractiveLaunch launch, string prompt, string sidecar, string? codexHome = null)
     {
         var args = AgentArguments(launch, prompt);
+        var identityNames = string.Join(',', LaunchEnvironment.IdentityNames.Select(Quote));
+        var identityPrefixes = string.Join(" -or ", LaunchEnvironment.IdentityPrefixes.Select(prefix =>
+            "$_.Name.StartsWith(" + Quote(prefix) + ", [System.StringComparison]::OrdinalIgnoreCase)"));
         var lines = new List<string>
         {
             "$ErrorActionPreference = 'Stop'",
             // A tab attached to an existing WT window inherits that window's environment.
             // Remove the caller's agent/session identity before starting a child agent.
-            "Get-ChildItem Env: | Where-Object { $_.Name -match '^(CLAUDE_CODE_|CLAUDE_TEAMS_|WIN_AGENT_TEAMS_|AGENT_)' -or $_.Name -in @('CLAUDECODE','CLAUDE_PID','CODEX_THREAD_ID') } | ForEach-Object { Remove-Item -LiteralPath ('Env:' + $_.Name) }",
+            "Get-ChildItem Env: | Where-Object { $_.Name -in @(" + identityNames + ") -or " + identityPrefixes
+                + " } | ForEach-Object { Remove-Item -LiteralPath ('Env:' + $_.Name) }",
             "Set-Location -LiteralPath " + Quote(launch.WorkingDirectory),
             "($PID.ToString() + '|' + (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks) | Out-File -FilePath " + Quote(sidecar) + " -Encoding ascii",
             // Windows PowerShell 5.1 does not escape embedded double quotes when it
