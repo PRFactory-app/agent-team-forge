@@ -11,7 +11,7 @@ namespace AgentTeamForge.Host.Features.Jobs;
 /// <summary>Thin IPC mapping for the job operations; all rules live in Business.</summary>
 public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, StopJob stop, DurabilityCheckpoints checkpoints, Action onAccepted,
     WakeStore? wakeStore = null, PruneJob? prune = null, JobLogs? logs = null, JobStore? jobStore = null, LeadSessionStore? sessions = null, ExternalTeam? external = null,
-    StopAgent? stopAgent = null)
+    StopAgent? stopAgent = null, IReadOnlyCollection<string>? configuredBackends = null)
 {
     public IpcResponse Handle(IpcRequest request)
     {
@@ -90,6 +90,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         }
         switch (request.Op)
         {
+            case IpcProtocol.JobCapabilities:
+                return new IpcResponse(true, Outcome: "capabilities", Backends: configuredBackends ?? []);
             case IpcProtocol.ExternalTicket:
                 return external is null ? new IpcResponse(false, JobErrors.InvalidRequest)
                     : MapExternal(external.CreateTicket(request.LeadSessionId, request.Workspace, request.MemberName, request.Note));
@@ -104,6 +106,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 return Accepted(accept.Execute(new SubmitJobRequest(request.IdempotencyKey ?? string.Empty, request.Instruction ?? string.Empty, request.Behavior, request.Hold)
                 {
                     Backend = request.Backend,
+                    Model = request.Model,
+                    Effort = request.Effort,
                     Cwd = request.Cwd,
                     Worktree = request.Worktree,
                     TimeoutSeconds = request.TimeoutSeconds,

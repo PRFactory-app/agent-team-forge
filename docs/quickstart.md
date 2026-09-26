@@ -96,6 +96,13 @@ The lead-session card lets you choose which of its member agents to message;
 the lead session itself is an MCP binding, not a managed agent. Message delivery
 and job activity appear in the cards.
 
+Use **New agent** above the overview to submit a prompt to a configured Claude
+Code, Codex, or Pi backend. Enter an existing absolute working directory and,
+optionally, a model, effort, and lead session. The daemon validates the directory
+and option values before accepting the job. Expand a lead card to generate a
+ten-minute join ticket for a Claude Desktop or Codex Desktop external member;
+copy the displayed `join_team` instructions into that member's conversation.
+
 To change the port, run `atf setup --mode headless --web-port 8766` (or use your
 configured launch mode), then restart the daemon. If the port is occupied, the
 daemon logs that the web console is unavailable and continues serving jobs.

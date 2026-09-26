@@ -32,7 +32,7 @@
 
 <main id="console" hidden>
   <section>
-    <div class="section-heading"><h2>Overview</h2><div class="toolbar"><label for="status-filter">Status</label><select id="status-filter">
+    <div class="section-heading"><h2>Overview</h2><div class="toolbar"><button id="new-agent-toggle" type="button" aria-expanded="false" aria-controls="new-agent-form">New agent</button><label for="status-filter">Status</label><select id="status-filter">
       <option value="">All</option>
       <option value="queued">Queued</option>
       <option value="running">Running</option>
@@ -41,6 +41,19 @@
       <option value="cancelled">Cancelled</option>
       <option value="needs_reconciliation">Needs reconciliation</option>
     </select><button id="refresh" type="button">Refresh</button></div></div>
+    <form id="new-agent-form" class="new-agent-form" autocomplete="off" hidden>
+      <h3>New agent</h3>
+      <p class="note">The working directory must be an existing absolute directory on this machine.</p>
+      <div class="new-agent-fields">
+        <label>Backend <select id="new-agent-backend" required></select></label>
+        <label>Model <input id="new-agent-model" type="text" maxlength="128" placeholder="Optional model slug"></label>
+        <label>Effort <input id="new-agent-effort" type="text" maxlength="128" placeholder="Optional effort"></label>
+        <label>Working directory <input id="new-agent-cwd" type="text" maxlength="4096" placeholder="/absolute/existing/directory" required></label>
+        <label>Lead session <select id="new-agent-lead"><option value="">No lead session</option></select></label>
+      </div>
+      <label>Prompt <textarea id="new-agent-prompt" rows="4" maxlength="8192" required></textarea></label>
+      <div class="new-agent-actions"><button id="new-agent-submit" type="submit">Submit job</button><button id="new-agent-retry" type="button" hidden>Retry same submission</button><button id="new-agent-discard" type="button" hidden>Discard attempt</button><span id="new-agent-result" role="status"></span></div>
+    </form>
     <p class="note">Counts and elapsed time cover this page of history. Updates every 5 seconds.</p>
     <div id="jobs"></div>
     <nav class="pager" aria-label="History pages"><button id="page-prev" type="button" disabled>Previous</button> <span id="page-number">Page 1</span> <button id="page-next" type="button" disabled>Next</button></nav>

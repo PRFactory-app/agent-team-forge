@@ -13,7 +13,12 @@
   const cardLogs = new Map();
   const activities = new Map();
   const jobDetails = new Map();
+  const knownLeads = new Map();
+  let leadOptionsKey = '';
+  const tickets = new Map();
+  const newAgent = { pending: null, sending: false };
   let timer = null;
+  let ticketTimer = null;
 
   function setStatus(text, cls) {
     const s = $('status');
@@ -54,6 +59,12 @@
     token = null;
     sessionStorage.removeItem(tokenKey);
     clearInterval(timer);
+    clearInterval(ticketTimer);
+    tickets.clear();
+    knownLeads.clear();
+    leadOptionsKey = '';
+    newAgent.pending = null;
+    newAgent.sending = false;
     $('console').hidden = true;
     $('login').hidden = false;
     setStatus(message, 'error');
@@ -99,6 +110,96 @@
       result: '', resultClass: '', deliveryJobId: null, resultNode: null,
     });
     return composers.get(key);
+  }
+
+  async function loadConfig() {
+    const r = await api('GET', '/api/config');
+    const select = $('new-agent-backend');
+    select.replaceChildren();
+    for (const backend of (r?.backends || []).filter(name => ['claude', 'codex', 'pi'].includes(name))) {
+      const option = element('option', '', ({ claude: 'Claude Code', codex: 'Codex', pi: 'Pi' })[backend]);
+      option.value = backend;
+      select.append(option);
+    }
+    if (!select.options.length) {
+      select.append(element('option', '', 'No configured agent backends'));
+      select.disabled = true;
+      $('new-agent-submit').disabled = true;
+    }
+    newAgentControls();
+  }
+
+  function syncLeadOptions() {
+    const key = JSON.stringify([...knownLeads]);
+    if (key === leadOptionsKey) return;
+    leadOptionsKey = key;
+    const select = $('new-agent-lead');
+    const selected = select.value;
+    select.replaceChildren();
+    const none = element('option', '', 'No lead session');
+    none.value = '';
+    select.append(none);
+    for (const [id, workspace] of knownLeads) {
+      const option = element('option', '', id.slice(0, 8) + ' · ' + workspace);
+      option.value = id;
+      select.append(option);
+    }
+    select.value = knownLeads.has(selected) ? selected : '';
+  }
+
+  function newAgentControls() {
+    const busy = newAgent.sending || !!newAgent.pending;
+    for (const control of $('new-agent-form').querySelectorAll('input, select, textarea')) control.disabled = busy;
+    $('new-agent-backend').disabled = busy || !$('new-agent-backend').options.length
+      || !['claude', 'codex', 'pi'].includes($('new-agent-backend').value);
+    $('new-agent-submit').disabled = busy || $('new-agent-backend').disabled;
+    $('new-agent-retry').hidden = !newAgent.pending || newAgent.sending;
+    $('new-agent-discard').hidden = !newAgent.pending || newAgent.sending;
+  }
+
+  async function submitNewAgent() {
+    if (newAgent.sending) return;
+    if (!newAgent.pending) {
+      const leadId = $('new-agent-lead').value || null;
+      newAgent.pending = {
+        backend: $('new-agent-backend').value,
+        model: $('new-agent-model').value.trim() || null,
+        effort: $('new-agent-effort').value.trim() || null,
+        cwd: $('new-agent-cwd').value.trim(),
+        lead_session_id: leadId,
+        workspace: leadId ? knownLeads.get(leadId) : null,
+        instruction: $('new-agent-prompt').value,
+        idempotency_key: crypto.randomUUID(),
+      };
+    }
+    newAgent.sending = true;
+    newAgentControls();
+    const result = $('new-agent-result');
+    result.textContent = 'Submitting…';
+    result.className = '';
+    const r = await api('POST', '/api/jobs', newAgent.pending);
+    newAgent.sending = false;
+    if (!token) return;
+    if (!r || r.lost || r.error === 'outcome_unknown') {
+      result.textContent = 'Outcome unknown. Retry with the same key or discard this attempt.';
+      result.className = 'warn';
+    } else if (r.ok) {
+      result.textContent = 'Accepted · job ' + (r.job?.job_id || 'unknown');
+      result.className = '';
+      newAgent.pending = null;
+      $('new-agent-prompt').value = '';
+      await loadJobs();
+    } else if (r.error === 'daemon_unavailable' || r.error === 'web_busy') {
+      result.textContent = 'Not submitted (' + r.error + '). Retry with the same key or discard.';
+      result.className = 'warn';
+    } else {
+      result.textContent = r.error === 'invalid_request' || r.error === 'web_bad_request'
+        ? 'Rejected: use an existing absolute directory and safe model/effort values (letters, digits, . _ / : + - @).'
+        : 'Rejected: ' + r.error;
+      result.className = 'error';
+      newAgent.pending = null;
+    }
+    newAgentControls();
   }
 
   function composer(container, key, targets, lead = false, stopTarget = null) {
@@ -252,6 +353,108 @@
         state.resultNode.className = 'composer-result ' + state.resultClass;
       }
     }
+  }
+
+  function ticketState(leadId) {
+    if (!tickets.has(leadId)) tickets.set(leadId, { name: '', busy: false, result: '', ticket: null });
+    return tickets.get(leadId);
+  }
+
+  function ticketCountdown(leadId) {
+    const ticket = ticketState(leadId).ticket;
+    const seconds = ticket ? Math.max(0, Math.ceil((Date.parse(ticket.expires_at) - Date.now()) / 1000)) : 0;
+    return seconds ? 'Expires in ' + Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0') : 'Expired';
+  }
+
+  function updateTicketCountdowns() {
+    for (const node of document.querySelectorAll('.ticket-expiry')) node.textContent = ticketCountdown(node.dataset.leadId);
+  }
+
+  function copyable(container, label, value) {
+    const field = element('div', 'ticket-copy');
+    const input = element('textarea');
+    input.readOnly = true;
+    input.setAttribute('aria-label', label);
+    input.rows = label === 'Ticket' ? 2 : 4;
+    input.value = value;
+    const copy = element('button', '', 'Copy');
+    copy.type = 'button';
+    copy.setAttribute('aria-label', 'Copy ' + label);
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(input.value);
+        copy.textContent = 'Copied';
+      } catch {
+        input.select();
+        copy.textContent = 'Select text to copy';
+      }
+    });
+    field.append(element('span', '', label), input, copy);
+    container.append(field);
+  }
+
+  function renderTicket(container, leadId) {
+    container.replaceChildren();
+    const ticket = ticketState(leadId).ticket;
+    if (!ticket) return;
+    const expiry = element('p', 'ticket-expiry', ticketCountdown(leadId));
+    expiry.dataset.leadId = leadId;
+    container.append(expiry);
+    copyable(container, 'Ticket', ticket.token);
+    const call = 'join_team(session_id="' + ticket.session_id + '", token="' + ticket.token + '")';
+    copyable(container, 'Claude Desktop · external-member MCP entry',
+      'Join my AgentTeamForge team as ' + ticket.name + '. Call ' + call
+      + '. Save member_token from the reply. Use external_read(member_token=...) to read work and external_send(member_token=..., text=...) to reply.');
+    copyable(container, 'Codex Desktop · external-member MCP entry', ticket.join_prompt || call);
+  }
+
+  function joinTicketForm(container, leadId, workspace) {
+    const state = ticketState(leadId);
+    const form = element('form', 'join-ticket-form');
+    form.autocomplete = 'off';
+    form.append(element('h4', '', 'Invite a desktop agent'));
+    const nameLabel = element('label', '', 'Member name ');
+    const name = element('input');
+    name.type = 'text';
+    name.required = true;
+    name.maxLength = 64;
+    name.pattern = '[A-Za-z0-9_-]+';
+    name.placeholder = 'desktop-agent';
+    name.value = state.name;
+    name.dataset.composerKey = 'ticket:' + leadId;
+    name.dataset.composerRole = 'ticket-name';
+    name.disabled = state.busy;
+    name.addEventListener('input', () => { state.name = name.value; });
+    nameLabel.append(name);
+    const generate = element('button', '', state.busy ? 'Generating…' : 'Generate join ticket');
+    generate.type = 'submit';
+    generate.disabled = state.busy;
+    const result = element('span', '', state.result);
+    result.setAttribute('role', 'status');
+    form.append(nameLabel, generate, result);
+    const output = element('div', 'ticket-output');
+    renderTicket(output, leadId);
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      if (state.busy || !name.value.trim()) return;
+      state.busy = true;
+      name.disabled = generate.disabled = true;
+      result.textContent = 'Generating…';
+      const r = await api('POST', '/api/leads/' + encodeURIComponent(leadId) + '/join-ticket',
+        { name: name.value.trim(), workspace });
+      state.busy = false;
+      if (!token) return;
+      name.disabled = generate.disabled = false;
+      if (r?.ok && r.ticket) {
+        state.ticket = r.ticket;
+        state.result = 'Ticket ready for ' + r.ticket.name;
+        renderTicket(output, leadId);
+      } else {
+        state.result = 'Ticket unavailable: ' + (r?.error || 'network');
+      }
+      result.textContent = state.result;
+    });
+    container.append(form, output);
   }
 
   function cardLogState(key) {
@@ -413,12 +616,13 @@
     }
   }
 
-  function cardPanel(card, key, targets, lead = false, stopTarget = null) {
+  function cardPanel(card, key, targets, lead = false, stopTarget = null, leadSession = null) {
     const panel = element('div', 'card-expanded');
     panel.dataset.expandKey = key;
     panel.id = 'panel-' + key.replaceAll(/[^a-zA-Z0-9-]/g, '-');
     panel.hidden = expandedKey !== key;
     composer(panel, key, targets, lead, stopTarget);
+    if (leadSession?.workspace) joinTicketForm(panel, leadSession.id, leadSession.workspace);
     const jobId = composerState(key).targetJobId || stopTarget?.job_id;
     if (jobId) {
       const job = targets.find(j => j.job_id === jobId) || stopTarget;
@@ -462,7 +666,10 @@
     $('console').hidden = false;
     setStatus('connecting');
     clearInterval(timer);
+    clearInterval(ticketTimer);
     timer = setInterval(loadJobs, 5000);
+    ticketTimer = setInterval(updateTicketCountdowns, 1000);
+    loadConfig();
     loadJobs();
   }
 
@@ -497,9 +704,11 @@
       const color = Object.hasOwn(counts, j.light) ? j.light : 'red';
       counts[color]++;
       const lead = j.lead_session_id || 'No lead session';
+      if (j.lead_session_id && j.lead_workspace) knownLeads.set(j.lead_session_id, j.lead_workspace);
       if (!groups.has(lead)) groups.set(lead, []);
       groups.get(lead).push(j);
     }
+    syncLeadOptions();
     const lights = $('lights');
     lights.replaceChildren();
     for (const [color, label] of [['green', 'Running'], ['yellow', 'Waiting'], ['red', 'Attention'], ['grey', 'Done / stopped']]) {
@@ -542,7 +751,9 @@
       leadToggle.append(leadDot, leadBody, element('span', 'lead-count', groupJobs.length + (groupJobs.length === 1 ? ' job' : ' jobs')));
       leadCard.append(leadToggle);
       const leadTargets = groupJobs.filter(j => j.session_id);
-      const leadPanel = cardPanel(leadCard, leadKey, leadTargets, true);
+      const leadWorkspace = groupJobs.find(j => j.lead_workspace)?.lead_workspace;
+      const leadPanel = cardPanel(leadCard, leadKey, leadTargets, true, null,
+        lead === 'No lead session' ? null : { id: lead, workspace: leadWorkspace });
       leadToggle.setAttribute('aria-controls', leadPanel.id);
       section.append(leadCard);
       const tree = element('div', 'agent-tree');
@@ -637,6 +848,19 @@
       connect($('token').value);
     });
     if (sessionStorage.getItem(tokenKey)) connect(sessionStorage.getItem(tokenKey));
+    $('new-agent-toggle').addEventListener('click', () => {
+      const form = $('new-agent-form');
+      form.hidden = !form.hidden;
+      $('new-agent-toggle').setAttribute('aria-expanded', String(!form.hidden));
+      if (!form.hidden) $('new-agent-cwd').focus();
+    });
+    $('new-agent-form').addEventListener('submit', e => { e.preventDefault(); submitNewAgent(); });
+    $('new-agent-retry').addEventListener('click', submitNewAgent);
+    $('new-agent-discard').addEventListener('click', () => {
+      newAgent.pending = null;
+      $('new-agent-result').textContent = 'Submission attempt discarded.';
+      newAgentControls();
+    });
     $('refresh').addEventListener('click', loadJobs);
     $('status-filter').addEventListener('change', () => {
       pageCursors = [null];
