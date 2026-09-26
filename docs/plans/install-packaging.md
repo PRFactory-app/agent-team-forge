@@ -16,7 +16,7 @@ below; replace `headless` with `herdr` for interactive terminals after installin
 Herdr. Never silently switch modes.
 
 ```sh
-curl -fsSL https://github.com/mikaelliljedahl/agent-team-forge/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/PRFactory-app/agent-team-forge/releases/latest/download/install.sh | sh
 "$HOME/.local/bin/atf" setup --mode headless --apply
 "$HOME/.local/bin/atf" start
 ```

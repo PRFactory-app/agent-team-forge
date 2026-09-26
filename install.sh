@@ -96,7 +96,7 @@ if [ -n "$archive" ]; then
   [ -f "$checksum" ] || fail "checksum not found: $checksum"
 else
   command -v curl >/dev/null 2>&1 || fail 'curl is required for downloads'
-  repo=https://github.com/mikaelliljedahl/agent-team-forge/releases
+  repo=https://github.com/PRFactory-app/agent-team-forge/releases
   if [ -z "$version" ]; then
     latest=$(curl -fsSL -o /dev/null -w '%{url_effective}' "$repo/latest") || fail 'could not resolve latest release'
     tag=${latest##*/}
@@ -107,8 +107,10 @@ fi
 case "$version" in ''|*[!0-9A-Za-z.+-]*) fail 'invalid version';; esac
 case "$version" in [0-9]*) ;; *) fail 'version must start with a digit';; esac
 name=atf-$version-linux-x64.tar.gz
+stage=
 scratch=$(mktemp -d)
-trap 'rm -rf -- "$scratch"' EXIT HUP INT TERM
+trap 'rm -rf -- "$scratch" ${stage:+"$stage"}' EXIT
+trap 'exit 130' HUP INT TERM
 if [ -z "$archive" ]; then
   archive=$scratch/$name
   checksum=$scratch/SHA256SUMS
@@ -128,13 +130,13 @@ mkdir -p "$releases" "$HOME/.local/bin"
 target=$releases/$version
 [ ! -e "$target" ] && [ ! -L "$target" ] || fail "version already installed: $version"
 stage=$(mktemp -d "$releases/.stage.XXXXXX")
-trap 'rm -rf -- "$scratch" "$stage"' EXIT HUP INT TERM
 tar -xzf "$archive" -C "$stage" --no-same-owner --no-same-permissions
 [ -x "$stage/atf" ] && [ -f "$stage/install.sh" ] || fail 'archive missing atf or install.sh'
 [ "$("$stage/atf" --version)" = "atf $version" ] || fail 'archive version mismatch'
 (cd "$stage" && find . -type f ! -name .atf-files | sort | while IFS= read -r path; do sha256sum "$path"; done) > "$stage/.atf-files"
 stop_current
 mv "$stage" "$target"
+stage=
 ln -s "releases/$version" "$root/.current.$$"
 mv -Tf "$root/.current.$$" "$root/current"
 if [ ! -L "$bin" ]; then
