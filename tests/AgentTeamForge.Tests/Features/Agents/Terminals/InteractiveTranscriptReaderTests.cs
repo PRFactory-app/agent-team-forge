@@ -197,6 +197,22 @@ public sealed class InteractiveTranscriptReaderTests
         Assert.Equal(Path.Combine(cwd, "rel-claude"), ClaudeConfigRoot.Resolve(name => env.GetValueOrDefault(name), cwd));
     }
 
+    [Fact]
+    public void CodexReaderKeepsDaemonAnchoredHomeAfterEnvironmentChanges()
+    {
+        using var state = new TempStateDir();
+        var relativeHome = Path.GetRelativePath(Environment.CurrentDirectory, Path.Combine(state.Path, "first"));
+        var env = new Dictionary<string, string?> { ["HOME"] = state.Path, ["CODEX_HOME"] = relativeHome };
+        var reader = new InteractiveTranscriptReader(name => env.GetValueOrDefault(name));
+        var dir = Directory.CreateDirectory(Path.Combine(state.Path, "first", "sessions"));
+        var file = Path.Combine(dir.FullName, "rollout-test.jsonl");
+        File.WriteAllLines(file, [CodexMeta, CodexUser(Marker), CodexAssistant("bound"), CodexComplete]);
+        env["CODEX_HOME"] = Path.Combine(state.Path, "other");
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "agent", state.Path, null, null, state.File("bootstrap"));
+
+        Assert.Equal("bound", reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.Message);
+    }
+
     static (InteractiveTranscriptReader Reader, InteractiveLaunch Launch, string File) Setup(string root, InteractiveAgentKind kind)
     {
         var cwd = Directory.CreateDirectory(Path.Combine(root, "work")).FullName;

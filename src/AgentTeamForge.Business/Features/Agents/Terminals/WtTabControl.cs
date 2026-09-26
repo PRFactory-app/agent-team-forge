@@ -11,6 +11,7 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 internal sealed class WtTabControl : IWtTabControl
 {
     readonly ConcurrentDictionary<string, OwnedTab> _tabs = [];
+    readonly string _codexHome = CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
 
     public void Preflight(InteractiveAgentKind kind)
     {
@@ -28,7 +29,8 @@ internal sealed class WtTabControl : IWtTabControl
         }
         else
         {
-            _ = WindowsAgentBinary(kind == InteractiveAgentKind.Claude ? "claude" : "codex");
+            var binary = WindowsAgentBinary(kind == InteractiveAgentKind.Claude ? "claude" : "codex");
+            EnsureInteractiveCodexNative(kind, binary);
         }
     }
 
@@ -54,7 +56,7 @@ internal sealed class WtTabControl : IWtTabControl
             await File.WriteAllTextAsync(HookScript(launch), CodexHookScript(launch), Encoding.UTF8, cancellationToken);
             await File.WriteAllTextAsync(HookLauncher(launch), CodexHookLauncher(launch), Encoding.ASCII, cancellationToken);
         }
-        await File.WriteAllBytesAsync(wrapper, WrapperBytes(launch, prompt, sidecar), cancellationToken);
+        await File.WriteAllBytesAsync(wrapper, WrapperBytes(launch, prompt, sidecar, _codexHome), cancellationToken);
 
         if (FindExecutable("wt.exe") is null)
         {
@@ -245,7 +247,7 @@ internal sealed class WtTabControl : IWtTabControl
         return count;
     }
 
-    internal static byte[] WrapperBytes(InteractiveLaunch launch, string prompt, string sidecar)
+    internal static byte[] WrapperBytes(InteractiveLaunch launch, string prompt, string sidecar, string? codexHome = null)
     {
         var args = AgentArguments(launch, prompt);
         var identityNames = string.Join(',', LaunchEnvironment.IdentityNames.Select(Quote));
@@ -276,6 +278,10 @@ internal sealed class WtTabControl : IWtTabControl
         {
             lines.Insert(2, "$env:" + trust.Name + " = " + Quote(trust.Value));
         }
+        if (launch.Kind == InteractiveAgentKind.Codex)
+        {
+            lines.Insert(2, "$env:CODEX_HOME = " + Quote(codexHome ?? CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory)));
+        }
         if (args[0].EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
         {
             lines.RemoveRange(lines.Count - 8, 7);
@@ -297,6 +303,7 @@ internal sealed class WtTabControl : IWtTabControl
             _ => throw new ArgumentOutOfRangeException(nameof(launch)),
         };
         var args = new List<string>(executable);
+        EnsureInteractiveCodexNative(launch.Kind, args[0]);
         args.AddRange(InteractiveAgentCommand.Arguments(launch, piShortApprove: true));
         if (launch.Kind == InteractiveAgentKind.Codex && OperatingSystem.IsWindows())
         {
@@ -319,6 +326,14 @@ internal sealed class WtTabControl : IWtTabControl
             || launch.Kind == InteractiveAgentKind.Codex && prompt.StartsWith('-', StringComparison.Ordinal)
             ? "\n" + prompt : prompt);
         return args;
+    }
+
+    internal static void EnsureInteractiveCodexNative(InteractiveAgentKind kind, string binary)
+    {
+        if (kind == InteractiveAgentKind.Codex && binary.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new BackendNotStartedException("interactive Codex requires native codex.exe; install the native Codex CLI instead of the .cmd shim");
+        }
     }
 
     static string Quote(string value) => PowerShellText.Quote(value);

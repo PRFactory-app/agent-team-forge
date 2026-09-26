@@ -22,7 +22,7 @@ internal static class InteractiveAgentCommand
                 // TOML literal strings keep Windows backslashes verbatim and avoid double quotes,
                 // which Windows PowerShell 5.1 mangles when it starts a .cmd shim.
                 args.AddRange(["--dangerously-bypass-approvals-and-sandbox", "-C", launch.WorkingDirectory,
-                    "-c", "projects={" + TomlKey(launch.WorkingDirectory) + "={trust_level='trusted'}}"]);
+                    "-c", "projects={" + TomlKey(CodexPaths.TrustKey(launch.WorkingDirectory)) + "={trust_level='trusted'}}"]);
                 break;
             case InteractiveAgentKind.Pi:
                 args.AddRange([piShortApprove ? "-a" : "--approve", "--session-dir", launch.PiSessionDirectory!,

@@ -197,6 +197,12 @@ For isolation, set `worktree: true` on MCP `submit_job`, or add `--worktree`
 to CLI submit with `--cwd` inside a Git checkout. The job view and list show
 the worktree path and branch; follow-ups reuse that checkout.
 
+Accepted interactive Codex jobs trust their checkout for that invocation, including
+an explicit user-level `untrusted` entry for the same directory. The daemon does
+not write this trust into `config.toml`. On Windows, interactive Codex needs the
+native `codex.exe`; a `.cmd` shim cannot safely carry the trust override through
+PowerShell and `cmd.exe` for every working-directory path.
+
 To bound a job's run time, pass `timeout_s` (1–86400) to MCP `submit_job` or
 `follow_up`, or `--timeout S` to CLI submit/follow-up; the job is cancelled
 with reason `timeout` that many seconds after it starts running. `queue_ttl_s` /
