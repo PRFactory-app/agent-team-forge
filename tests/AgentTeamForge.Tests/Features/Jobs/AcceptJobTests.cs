@@ -1,5 +1,6 @@
 using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Tests.Support;
 
@@ -7,6 +8,29 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 
 public sealed class AcceptJobTests
 {
+    [Fact]
+    public void Store_acceptance_union_carries_jobs_only_for_success_cases()
+    {
+        using var f = new JobFixture(new SpikeLimits { QueueLimit = 1 });
+        var request = new NewJob(JobFixture.Operator.Principal, JobFixture.Operator.Team, JobFixture.Operator.Agent,
+            AcceptJob.Operation, "key", "fingerprint", "work", "options");
+
+        if (f.Store.AcceptOrGet(request, 1) is not Accepted accepted)
+        {
+            throw new InvalidOperationException("expected acceptance");
+        }
+
+        Assert.Equal("key", accepted.Job.IdempotencyKey);
+        if (f.Store.AcceptOrGet(request, 1) is not Existing existing)
+        {
+            throw new InvalidOperationException("expected existing job");
+        }
+
+        Assert.Equal(accepted.Job.JobId, existing.Job.JobId);
+        Assert.True(f.Store.AcceptOrGet(request with { Fingerprint = "different" }, 1) is Conflict);
+        Assert.True(f.Store.AcceptOrGet(request with { IdempotencyKey = "another" }, 1) is QueueFull);
+    }
+
     [Fact]
     public void Same_key_and_meaning_resolves_to_the_same_job_with_one_intent()
     {

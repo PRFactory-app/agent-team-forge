@@ -204,7 +204,7 @@ public sealed class FollowUpJobTests
         var interrupt = new NewJob(JobFixture.Operator.Principal, JobFixture.Operator.Team, JobFixture.Operator.Agent,
             FollowUpJob.Operation, "i", "fp", "next", "options")
         { ParentJobId = parent.JobId, InterruptParent = true };
-        Assert.Equal(AcceptKind.ParentNotReady, f.Store.AcceptOrGet(interrupt, 10).Kind);
+        Assert.True(f.Store.AcceptOrGet(interrupt, 10) is ParentNotReady);
     }
 
     [Fact]

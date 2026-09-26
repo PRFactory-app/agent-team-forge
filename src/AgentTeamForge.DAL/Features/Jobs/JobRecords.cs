@@ -68,17 +68,14 @@ public sealed record JobRecord(
     public int? TimeoutSeconds { get; init; }
 }
 
-public enum AcceptKind
-{
-    Accepted,
-    Existing,
-    Conflict,
-    QueueFull,
-    ParentNotReady,
-    ParentNotFound,
-}
+public sealed record Accepted(JobRecord Job, string? InterruptedJobId = null);
+public sealed record Existing(JobRecord Job);
+public sealed record Conflict;
+public sealed record QueueFull;
+public sealed record ParentNotReady;
+public sealed record ParentNotFound;
 
-public sealed record AcceptOutcome(AcceptKind Kind, JobRecord? Job, string? InterruptedJobId = null);
+public readonly union AcceptOutcome(Accepted, Existing, Conflict, QueueFull, ParentNotReady, ParentNotFound);
 
 /// <summary>A committed attempt-start: generation and correlation exist before any backend effect.</summary>
 public sealed record AttemptClaim(JobRecord Job, string RunId, long Generation, string Correlation);

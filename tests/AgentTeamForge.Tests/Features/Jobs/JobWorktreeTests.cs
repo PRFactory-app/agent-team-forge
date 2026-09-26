@@ -113,6 +113,88 @@ public sealed class JobWorktreeTests
         Assert.Equal(0, f.Store.CountUnattemptedIntents());
     }
 
+    [Fact]
+    public async Task Git_deadline_includes_a_descendant_that_holds_stdout_after_git_exits()
+    {
+        using var source = new TempStateDir();
+        Git(source.Path, "init");
+        Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+        var pidFile = Path.Combine(source.Path, "child.pid");
+        Executable(Path.Combine(source.Path, ".git", "hooks", "pre-commit"), $"exec 1>/proc/$PPID/fd/1\nsleep 10 &\necho $! > '{pidFile}'\necho ready");
+        var watch = Stopwatch.StartNew();
+        try
+        {
+            var result = await JobWorktree.GitAsync(source.Path, TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken,
+                "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "second");
+            Assert.Null(result);
+            Assert.True(File.Exists(pidFile));
+            Assert.Equal("second", Git(source.Path, "log", "-1", "--format=%s"));
+            Assert.True(watch.Elapsed >= TimeSpan.FromMilliseconds(150), $"git drain returned before its deadline: {watch.Elapsed}");
+            Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"git drain took {watch.Elapsed}");
+        }
+        finally
+        {
+            if (File.Exists(pidFile) && int.TryParse(File.ReadAllText(pidFile).Trim(), out var pid))
+            {
+                try
+                {
+                    using var child = Process.GetProcessById(pid);
+                    if (!child.HasExited)
+                    {
+                        child.Kill();
+                        child.WaitForExit(5_000);
+                    }
+                }
+                catch (ArgumentException)
+                {
+                    // The test-owned child already exited.
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Git_cancellation_stops_a_running_command_and_its_descendant()
+    {
+        using var source = new TempStateDir();
+        Git(source.Path, "init");
+        var script = Script(source.Path, "sleep 10 &\nwait");
+        using var cancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var watch = Stopwatch.StartNew();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => JobWorktree.GitAsync(source.Path, TimeSpan.FromSeconds(5), cancel.Token,
+            "-c", $"alias.atf-probe=!{script}", "atf-probe"));
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"git cancellation took {watch.Elapsed}");
+    }
+
+    [Fact]
+    public async Task Git_drains_large_output_without_retaining_it_all()
+    {
+        using var source = new TempStateDir();
+        Git(source.Path, "init");
+        var data = Path.Combine(source.Path, "output");
+        File.WriteAllText(data, new string('x', 2 * 1024 * 1024));
+        var script = Script(source.Path, $"cat '{data}'");
+
+        var output = await JobWorktree.GitAsync(source.Path, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken,
+            "-c", $"alias.atf-probe=!{script}", "atf-probe");
+
+        Assert.NotNull(output);
+        Assert.Equal(1024 * 1024, output.Length);
+    }
+
+    static string Script(string directory, string body)
+    {
+        var path = Path.Combine(directory, "git-probe.sh");
+        Executable(path, body);
+        return path;
+    }
+
+    static void Executable(string path, string body)
+    {
+        File.WriteAllText(path, "#!/bin/sh\n" + body + "\n");
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+    }
+
     static async Task Dispatch(JobFixture f, BackendCatalog catalog)
     {
         using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });

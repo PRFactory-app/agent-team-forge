@@ -1,5 +1,6 @@
 using AgentTeamForge.DAL.Files;
 using System.Diagnostics;
+using System.Text;
 using AgentTeamForge.DAL.Features.Jobs;
 
 namespace AgentTeamForge.Business.Features.Jobs;
@@ -11,6 +12,7 @@ public static class JobWorktree
 
     // Checkout of a large repository (and LFS/post-checkout hooks) can take minutes.
     static readonly TimeSpan AddTimeout = TimeSpan.FromMinutes(10);
+    const int MaxGitOutputBytes = 1024 * 1024;
 
     public static string? Head(string cwd)
     {
@@ -64,10 +66,15 @@ public static class JobWorktree
     }
 
     /// <summary>Trimmed stdout (possibly empty) on exit code 0; otherwise null.</summary>
-    static string? Git(string cwd, TimeSpan timeout, params string[] args)
+    static string? Git(string cwd, TimeSpan timeout, params string[] args) =>
+        GitAsync(cwd, timeout, CancellationToken.None, args).GetAwaiter().GetResult();
+
+    internal static async Task<string?> GitAsync(string cwd, TimeSpan timeout, CancellationToken cancellationToken, params string[] args)
     {
         try
         {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deadline.CancelAfter(timeout);
             var info = new ProcessStartInfo("git")
             {
                 RedirectStandardOutput = true,
@@ -88,19 +95,47 @@ public static class JobWorktree
                 return null;
             }
 
-            // Drain stdout concurrently: a chatty hook must not block git on a full pipe.
-            var output = process.StandardOutput.ReadToEndAsync();
-            if (!process.WaitForExit(timeout))
+            // A hook descendant may retain stdout after git exits. Exit and drain share
+            // one deadline; output beyond the cap is discarded while draining continues.
+            var output = DrainAsync(process.StandardOutput.BaseStream, deadline.Token);
+            try
             {
-                process.Kill(entireProcessTree: true);
+                await Task.WhenAll(process.WaitForExitAsync(deadline.Token), output);
+            }
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Git has exited; the drain's cancellation still bounds the call.
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
                 return null;
             }
 
-            return process.ExitCode == 0 ? output.GetAwaiter().GetResult().Trim() : null;
+            return process.ExitCode == 0 ? (await output).Trim() : null;
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
         {
             return null;
         }
+    }
+
+    static async Task<string> DrainAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        using var kept = new MemoryStream();
+        var buffer = new byte[16 * 1024];
+        int n;
+        while ((n = await stream.ReadAsync(buffer, cancellationToken)) > 0)
+        {
+            var room = (int)Math.Min(n, MaxGitOutputBytes - kept.Length);
+            kept.Write(buffer, 0, room);
+        }
+
+        return Encoding.UTF8.GetString(kept.GetBuffer(), 0, (int)kept.Length);
     }
 }

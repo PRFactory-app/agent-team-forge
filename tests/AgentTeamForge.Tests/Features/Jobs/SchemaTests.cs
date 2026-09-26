@@ -112,7 +112,11 @@ public sealed class SchemaTests
         var database = JobDatabase.Create(path, TimeSpan.FromSeconds(1));
         var store = new JobStore(database, DurabilityCheckpoints.None);
         var accepted = store.AcceptOrGet(new NewJob("principal", "team", "agent", "job_submit", "key", "original-fingerprint", "instruction", "options"), 10);
-        var jobId = accepted.Job!.JobId;
+        if (accepted is not Accepted acceptedCase)
+        {
+            throw new InvalidOperationException("expected acceptance");
+        }
+        var jobId = acceptedCase.Job.JobId;
         var claim = store.BeginNextAttempt()!;
         Assert.True(store.Complete(new RunRef(jobId, claim.RunId, claim.Generation, claim.Correlation), "kept"));
 
@@ -157,7 +161,7 @@ public sealed class SchemaTests
         Assert.Equal((JobStatus.Completed, "kept", null),
             (migrated.GetJob(jobId)!.Status, migrated.GetJob(jobId)!.ResultText, migrated.GetJob(jobId)!.TimeoutSeconds));
         Assert.Equal("completed", Assert.Single(migrated.GetRuns(jobId)).State);
-        Assert.Equal(AcceptKind.Existing, migrated.AcceptOrGet(new NewJob("principal", "team", "agent", "job_submit", "key", "original-fingerprint", "instruction", "options"), 10).Kind);
+        Assert.True(migrated.AcceptOrGet(new NewJob("principal", "team", "agent", "job_submit", "key", "original-fingerprint", "instruction", "options"), 10) is Existing);
         using var check = new SqliteConnection($"Data Source={path};Pooling=False");
         check.Open();
         using var query = check.CreateCommand();
