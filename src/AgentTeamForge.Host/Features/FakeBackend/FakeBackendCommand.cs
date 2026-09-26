@@ -54,6 +54,8 @@ public static class FakeBackendCommand
 
         var stdout = Console.OpenStandardOutput();
         Emit(stdout, new FakeOutputLine("ack", request.Correlation, null));
+        // A follow-up echoes the resumed session, proving the daemon passed it through.
+        Emit(stdout, new FakeOutputLine("session", request.Correlation, request.ResumeSessionId ?? "fake-session-" + request.JobId));
         if (barrierDir is not null)
         {
             File.WriteAllText(Path.Combine(barrierDir, $"acked-{request.JobId}"), request.Correlation);

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<meta name="description" content="AgentTeamForge whole-project status as a relative-wave Gantt chart: eight epics, an early-checkpoint track, 65 work packages and 27 features. No phase is complete.">
+<meta name="description" content="AgentTeamForge Linux MVP status: mainline capabilities, ordered work lanes, dependencies, and current risks.">
 <title>AgentTeamForge Project Status</title>
 <style>
 :root{--bg:#f4f6f9;--paper:#fff;--ink:#17263a;--muted:#55657a;--line:#d3dce7;--link:#1a4f86;
@@ -86,235 +86,98 @@ footer{font-size:.8rem;color:var(--muted);padding-bottom:2rem}
  .g td.now[data-w]::before,.g td[data-w^="W0"]::before{color:var(--ink);text-decoration:underline 3px var(--nowline)}
  .ftbl thead{display:none}.ftbl tr{display:block;border-top:1px solid var(--line);padding:.3rem 0}.ftbl td{display:block;border:0;padding:.1rem .2rem}}
 @media print{.scroll{overflow:visible}details{break-inside:avoid}}
+/* The ordered lane board keeps the existing colours and stacked mobile table pattern. */
+table.g{min-width:760px}
+.g col.c1{width:10rem}.g col.c2{width:25rem}
+.g td{overflow-wrap:anywhere}
+code{overflow-wrap:anywhere}
+.headline{border-left-color:var(--ok)}
+@media (max-width:760px){table.g{min-width:0}.g td[data-w]::before{content:attr(data-w)}}
 </style>
 </head>
 <body>
-<a class="skip" href="#gantt">Skip to Gantt chart</a>
+<a class="skip" href="#lanes">Skip to MVP lane board</a>
 <header>
-<p class="meta">AgentTeamForge · whole-project status · captured 26 September 2026</p>
-<h1>Project status: no phase is complete</h1>
-<p class="meta">Source snapshot: integration branch <code>765fe1d</code> (fake core <code>81a11b2</code> + job inspection). Branch snapshot, not live telemetry. Relative waves only — no dates, durations or completion percentages.</p>
-<p class="headline">Built today: one bounded, reviewed Linux fake-backend core experiment. Not built yet: the product phases P02–P08, real managed agents and every non-Linux platform.</p>
-<nav aria-label="Report sections"><a href="#built">Built / not built</a><a href="#gantt">Gantt</a><a href="#gates">Gates &amp; blockers</a><a href="#epics">Epics &amp; 65 packages</a><a href="#features">27 features</a><a href="#evidence">Evidence</a><a href="#sources">Sources</a></nav>
+<p class="meta">AgentTeamForge · Linux MVP status · captured 26 September 2026, 17:26 CEST</p>
+<h1>Linux MVP: three headless backends and durable jobs run on main</h1>
+<p class="meta">Source snapshot: <code>main</code> at <code>a03a35e</code>, plus named feature and review branches. Branch work is marked in progress until merged. This is a recorded snapshot, not live telemetry.</p>
+<p class="headline">Today on Linux, the .NET 11 daemon, durable jobs and MCP control run Claude Code, Codex and Pi headlessly on main. Published-binary demos passed for all three with native-session follow-up. Next: integrate explicit setup, parallel dispatch, native wake and interactive Herdr. Windows and macOS follow the Linux MVP.</p>
+<nav aria-label="Report sections"><a href="#main">Done on main</a><a href="#lanes">MVP lanes</a><a href="#parked">Parked scope</a><a href="#risks">Blockers &amp; risks</a><a href="#decisions">Owner decisions</a><a href="#roadmap">Long-term roadmap</a></nav>
 </header>
 <main>
-<section id="built" aria-labelledby="built-h">
-<h2 id="built-h" class="skip">Built today and not built yet</h2>
-<div class="split">
-<div><h3><span class="tag neutral">Built today (mixed status)</span></h3><ul>
-<li><strong>Linux fake-core checkpoint</strong> — .NET 11 RC1 three-project solution, durable SQLite acceptance, private IPC, thin MCP, bridge-death/fresh-client demo. Reviewed and integrated at <code>81a11b2</code> (fake child process, not a real agent).</li>
-<li><strong>Read-only job inspection</strong> — reviewed and merged at <code>765fe1d</code>; its full test gate <strong>failed 73/74</strong>, so promotion to <code>main</code> is held.</li>
-<li><strong>Exploratory legacy spikes</strong> — protocol probes and bounded primitive fixes (P01/P03 feasibility), not product adapters.</li>
-<li><strong>Design documents</strong> — draft phase plans P01–P08, F27 web-console design (reviewed) and static mockup.</li>
-</ul></div>
-<div><h3><span class="tag" style="border:1px dashed var(--plan-ink)">Not built yet</span></h3><ul>
-<li>Any accepted phase: <strong>P01–P08 have no exit gate passed</strong>.</li>
-<li>The full durable core (P02) beyond the fake experiment.</li>
-<li>Managed Claude Code, Codex or Pi adapters; real interactive agent runs.</li>
-<li>Teams, messages, native session wake, workspaces, setup, packages.</li>
-<li>Runtime operator web console (F27).</li>
-<li>Any Windows, macOS, spawned-Pi or native-wake qualification.</li>
-</ul></div>
-</div>
+<section id="main" aria-labelledby="main-h">
+<h2 id="main-h">Done on main</h2>
+<ul>
+<li><strong>Canonical Linux fake core promoted</strong> at <code>d7d24ae</code>: durable SQLite acceptance, daemon, private IPC, thin MCP bridge and published-binary fake-child demo.</li>
+<li><strong>P2 private reads and D2 Herdr launch characterization</strong> are included in that promoted checkpoint. D2 is offline, test-only characterization, not interactive mode.</li>
+<li><strong>Queue conformance, D3 Claude hook characterization and promotion docs</strong> landed at <code>f174f8a</code>. These are bounded offline tests and documentation.</li>
+<li><strong>P1 job inspection and paging plus the AGENTS.md simplicity policy</strong> landed by <code>898f05b</code>.</li>
+<li><strong>Headless Codex exec backend and shared <code>IJobBackend</code> delta</strong> landed at <code>9aa67a7</code>. The real-agent job workflow is integrated by the next mainline commit.</li>
+</ul>
+<p><strong>Headless MVP jobs and all three approved backends</strong> reached main at <code>a03a35e</code>, including backend/session/follow-up state and <code>submit_job</code>, <code>get_job</code>, <code>follow_up</code>, <code>list_jobs</code>. The <a href="spikes/mvp-jobs-review.md">MVP integration record</a> reports 139 passed tests (3 opt-in real-backend tests skipped), 26/26 published scenarios, the fake-core demo, and one successful published-binary native-session follow-up demo for each backend.</p>
+<p class="small">The earlier <a href="spikes/canonical-wave-integration.md">canonical integration record</a> reports <strong>112/112</strong> managed tests, <strong>25/25</strong> published scenarios and a <strong>1/1</strong> fake-core demo before the MVP jobs integration. No mainline gate here qualifies unmerged lanes.</p>
 </section>
 
-<section id="gantt" aria-labelledby="gantt-h">
-<h2 id="gantt-h">Gantt: epics across relative waves</h2>
-<ul class="legend" aria-label="Legend">
-<li><span class="sw plan"></span> Planned / not started (draft design only)</li>
+<section id="lanes" aria-labelledby="lanes-h">
+<h2 id="lanes-h">Linux MVP lane board</h2>
+<p class="small">Rows follow the intended integration order. “After” names a dependency; concurrent work can proceed on separate branches. Status is written in each row as well as shown by colour.</p>
+<ul class="legend" aria-label="Status legend">
+<li><span class="sw ok"></span> Done or review approved</li>
+<li><span class="sw part"></span> In review</li>
 <li><span class="sw act"></span> In progress</li>
-<li><span class="sw part"></span> Partial: bounded experiment inside the phase</li>
-<li><span class="sw expl"></span> Exploratory spike only (not product code)</li>
-<li><span class="sw ok"></span> Bounded checkpoint reviewed &amp; integrated (never a whole phase)</li>
-<li><span class="blk">⚑ blocker</span> Named blocker (see gates)</li>
-<li><span class="sw" style="background:var(--now);box-shadow:inset 0 3px 0 var(--nowline)"></span> Current wave</li>
+<li><span class="sw plan"></span> Queued or deferred</li>
+<li><span class="sw expl"></span> Blocked for qualification</li>
 </ul>
-<div class="scroll" tabindex="0" role="region" aria-label="Gantt chart, scrolls horizontally">
+<div class="scroll" tabindex="0" role="region" aria-label="Ordered MVP lane board, scrolls horizontally on wide table layouts">
 <table class="g">
-<caption>Columns are ordered waves W0–W9, not calendar time. Each row states its status in text; colour is supplementary.</caption>
-<colgroup><col class="c0"><col><col><col><col><col><col><col><col><col><col></colgroup>
-<thead><tr><th scope="col">Epic · status · plan</th><th scope="col" class="now"><b>W0 · Now</b>Repair, review, fake checkpoint</th><th scope="col"><b>W1 · Next</b>Real Linux/Codex proof</th><th scope="col"><b>W2</b>P01 freeze</th><th scope="col"><b>W3</b>P02 build</th><th scope="col"><b>W4</b>P03 build</th><th scope="col"><b>W5</b>P04 build</th><th scope="col"><b>W6</b>P05 build</th><th scope="col"><b>W7</b>P06 build</th><th scope="col"><b>W8</b>P07 qualify</th><th scope="col"><b>W9</b>P08 release</th></tr></thead><tbody>
-<tr class="sub"><th colspan="11" scope="rowgroup">Full-product epics</th></tr>
-<tr><th scope="row"><a href="#p01"><strong>P01 Foundation &amp; scope freeze</strong></a><span class="st">In progress — not accepted</span><span class="pl">Plan: draft; freeze in progress</span></th><td colspan="3" style="background:linear-gradient(to right,var(--now) 33.3333%,transparent 0)" data-w="W0–W2"><span class="bar act">In progress: feasibility &amp; planning <span class="blk" title="Blocker">⚑ blocker</span></span></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td></tr>
-<tr><th scope="row"><a href="#p02"><strong>P02 Durable local core</strong></a><span class="st">Not built as a phase — one bounded fake experiment only</span><span class="pl">Plan: draft, not accepted</span></th><td colspan="1" class="now" data-w="W0"><span class="bar part">Bounded fake core <span class="blk" title="Blocker">⚑ blocker</span></span></td><td class="gap"></td><td class="gap"></td><td colspan="1" data-w="W3"><span class="bar plan">Full P02 not started</span></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td></tr>
-<tr><th scope="row"><a href="#p03"><strong>P03 Managed real agents</strong></a><span class="st">Not started — exploratory protocol spikes only</span><span class="pl">Plan: draft, not accepted</span></th><td colspan="2" style="background:linear-gradient(to right,var(--now) 50.0000%,transparent 0)" data-w="W0–W1"><span class="bar expl">Exploratory spikes only <span class="blk" title="Blocker">⚑ blocker</span></span></td><td class="gap"></td><td class="gap"></td><td colspan="1" data-w="W4"><span class="bar plan">Adapters not started</span></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td></tr>
-<tr><th scope="row"><a href="#p04"><strong>P04 Local team orchestration</strong></a><span class="st">Not started</span><span class="pl">Plan: draft, not accepted</span></th><td class="gap now"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td colspan="1" data-w="W5"><span class="bar plan">Not started</span></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td></tr>
-<tr><th scope="row"><a href="#p05"><strong>P05 Platform &amp; operator experience</strong></a><span class="st">Not started</span><span class="pl">Plan: draft, not accepted</span></th><td class="gap now"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td colspan="1" data-w="W6"><span class="bar plan">Not started</span></td><td class="gap"></td><td class="gap"></td><td class="gap"></td></tr>
-<tr><th scope="row"><a href="#p06"><strong>P06 Cooperative sessions &amp; integrations</strong></a><span class="st">Not started</span><span class="pl">Plan: draft, not accepted</span></th><td class="gap now"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td colspan="1" data-w="W7"><span class="bar plan">Not started</span></td><td class="gap"></td><td class="gap"></td></tr>
-<tr><th scope="row"><a href="#p07"><strong>P07 Integrated system qualification</strong></a><span class="st">Not started</span><span class="pl">Plan: draft, not accepted</span></th><td class="gap now"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td colspan="1" data-w="W8"><span class="bar plan">Not started</span></td><td class="gap"></td></tr>
-<tr><th scope="row"><a href="#p08"><strong>P08 Public release &amp; operations</strong></a><span class="st">Not started</span><span class="pl">Plan: draft, not accepted</span></th><td class="gap now"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td colspan="1" data-w="W9"><span class="bar plan">Not started <span class="blk" title="Blocker">⚑ blocker</span></span></td></tr>
-<tr class="sub"><th colspan="11" scope="rowgroup">Early checkpoint track (labelled demonstrations, not phase exits)</th></tr>
-<tr class="track"><th scope="row"><strong>M0 fake-core checkpoint</strong><span class="st">Done (bounded; Linux fake backend)</span></th><td colspan="1" class="now" data-w="W0"><span class="bar ok">Reviewed &amp; integrated 81a11b2</span></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td></tr>
-<tr class="track"><th scope="row"><strong>Job inspection + main promotion</strong><span class="st">In progress — promotion held</span></th><td colspan="1" class="now" data-w="W0"><span class="bar act">Merged 765fe1d; gate 73/74 <span class="blk" title="Blocker">⚑ blocker</span></span></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td></tr>
-<tr class="track"><th scope="row"><strong>Real Linux/Codex/Herdr demo</strong><span class="st">Not started — needs native protocol proof</span></th><td class="gap now"></td><td colspan="1" data-w="W1"><span class="bar plan">Not started <span class="blk" title="Blocker">⚑ blocker</span></span></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td></tr>
-<tr class="track"><th scope="row"><strong>F27 operator web console</strong><span class="st">Design only — runtime not built</span></th><td colspan="1" class="now" data-w="W0"><span class="bar part">Design reviewed + static mockup</span></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td class="gap"></td><td colspan="1" data-w="W6"><span class="bar plan">Runtime not started</span></td><td class="gap"></td><td class="gap"></td><td class="gap"></td></tr>
+<caption>Ordered track from backends through job control, setup and Linux operator experience to later platform qualification.</caption>
+<colgroup><col class="c0"><col class="c1"><col class="c2"><col></colgroup>
+<thead><tr><th scope="col">Order · lane</th><th scope="col">Status now</th><th scope="col">After / next integration step</th><th scope="col">Branch evidence</th></tr></thead>
+<tbody>
+<tr><th scope="row"><strong>1 · Headless backends</strong><span class="st">Claude Code, Codex, Pi</span></th><td data-w="Status now"><span class="bar ok">Done on main: all three approved</span></td><td data-w="After / next step">Feeds lane 2. Claude Code, Codex and Pi are merged and registered in the real-agent profile.</td><td data-w="Evidence"><code>review/mvp-claude-backend</code> <code>faafffb</code>; Codex <code>9aa67a7</code> on main; <code>review/mvp-pi-backend</code> <code>0ccda75</code>.</td></tr>
+<tr><th scope="row"><strong>2 · Jobs and agents</strong><span class="st">Session, follow-up, MCP control</span></th><td data-w="Status now"><span class="bar ok">Done on main</span></td><td data-w="After / next step">After 1: backend/session/follow-up and <code>submit_job</code>, <code>get_job</code>, <code>follow_up</code>, <code>list_jobs</code> are integrated. Published-binary demos passed for all three backends.</td><td data-w="Evidence"><code>feature/mvp-jobs-agents</code> <code>37b0e02</code>; main <code>a03a35e</code>.</td></tr>
+<tr><th scope="row"><strong>3 · Setup and lifecycle</strong><span class="st"><code>atf setup --mode headless|herdr</code>, start, stop</span></th><td data-w="Status now"><span class="bar plan">Review approved; queued for integration</span></td><td data-w="After / next step">Integrate with 2, preserving the explicit launch-mode choice and daemon lifecycle.</td><td data-w="Evidence"><code>review/mvp-setup</code> <code>2b4caee</code> approved.</td></tr>
+<tr><th scope="row"><strong>4 · Parallel dispatch</strong><span class="st">Max 8; FIFO per session</span></th><td data-w="Status now"><span class="bar part">In review</span></td><td data-w="After / next step">After 2: merge and exercise bounded concurrency with per-session order.</td><td data-w="Evidence"><code>feature/parallel-dispatch</code> <code>8a1936f</code>.</td></tr>
+<tr><th scope="row"><strong>5 · Recovery test fix</strong><span class="st">Accepted-reply wake ordering</span></th><td data-w="Status now"><span class="bar part">In review / merge</span></td><td data-w="After / next step">Merge the flaky recovery test fix and rerun the combined gate.</td><td data-w="Evidence"><code>review/fix-flaky</code> <code>3f0de4a</code>.</td></tr>
+<tr><th scope="row"><strong>6 · Native wake</strong><span class="st">Port reference model</span></th><td data-w="Status now"><span class="bar act">In progress</span></td><td data-w="After / next step">After 2 for the job-completion hook: commit the message first, then send a notice-only native session wake.</td><td data-w="Evidence"><code>feature/native-wake</code> (Codex); <a href="https://github.com/mikaelliljedahl/agentic-coder-teams-mcp/pull/70">win-agent-teams PR #70</a>.</td></tr>
+<tr><th scope="row"><strong>7 · Interactive Herdr</strong><span class="st">D7 terminal, real agent TUI</span></th><td data-w="Status now"><span class="bar act">In progress</span></td><td data-w="After / next step">After 1–3: connect interactive Herdr mode to the approved D7 terminal and explicit setup choice.</td><td data-w="Evidence"><code>feature/herdr-mode</code> (Codex); D7 approved <code>56190de</code>.</td></tr>
+<tr><th scope="row"><strong>8 · Demo temp-dir cleanup</strong></th><td data-w="Status now"><span class="bar act">In progress</span></td><td data-w="After / next step">Clean up owned demo temporary directories after the Linux demo path is integrated.</td><td data-w="Evidence"><code>fix/demo-tmp-cleanup</code>.</td></tr>
+<tr><th scope="row"><strong>9 · Operator web console</strong><span class="st">Small text-only local surface</span></th><td data-w="Status now"><span class="bar act">In progress · S0a</span></td><td data-w="After / next step">Use the shared job status, output, follow-up and stop operations on authenticated loopback.</td><td data-w="Evidence">Astra’s <code>integration/web-console</code> lane.</td></tr>
+<tr><th scope="row"><strong>10 · Windows and macOS</strong><span class="st">Platform qualification</span></th><td data-w="Status now"><span class="bar expl">Deferred; VM blocked</span></td><td data-w="After / next step">After Linux MVP: finish each platform on its own machine. The Windows VM is currently down.</td><td data-w="Evidence">Owner’s Linux-first decision; no platform support claim yet.</td></tr>
 </tbody></table></div>
-<p class="hint">On narrow screens each epic is stacked with its bars and wave labels. Full text for every epic is in <a href="#epics">Epics</a>.</p>
+<p class="hint">At 375px width, each lane stacks its status, dependency and evidence below its name.</p>
 </section>
 
-<section id="gates" aria-labelledby="gates-h">
-<h2 id="gates-h">Dependencies, gates and blockers</h2>
-<p class="small">Formal phases run in order: each consumes its predecessor's accepted exit gates. Research, fixture preparation and reviews may overlap; failed gates cannot be skipped.</p>
-<ul class="gates">
-<li><strong>Now (W0):</strong> make the inspection concurrency test deterministic → independent Codex re-review → green full gate on one snapshot → then the fake-core tree may be promoted to <code>main</code>.</li>
-<li><strong>Next (W1):</strong> real Linux/Codex/Herdr demonstration needs verified visible-TUI/thread binding and a strict human-wins start contract. Native queue admission research answered idle-only admission, not human-wins.</li>
-<li><strong>P01 entry:</strong> Start of project (no predecessor). <span class="blk">⚑</span> Owner decisions; Windows/macOS lab access; Claude interrupt, spawned Pi and native-wake proofs.</li>
-<li><strong>P02 entry:</strong> P01 exit gates G01–G07 accepted. <span class="blk">⚑</span> Main promotion held: full test gate at 765fe1d failed 73/74 (nondeterministic inspection test).</li>
-<li><strong>P03 entry:</strong> P02 exit gates G01–G11 accepted. <span class="blk">⚑</span> Codex visible-TUI/thread binding and strict human-wins start contract unresolved.</li>
-<li><strong>P04 entry:</strong> P03 exit gates G01–G10 accepted.</li>
-<li><strong>P05 entry:</strong> P04 exit gates G01–G10 accepted.</li>
-<li><strong>P06 entry:</strong> P05 exit gates G01–G11 accepted.</li>
-<li><strong>P07 entry:</strong> P02–P06 exits accepted; immutable release candidate frozen.</li>
-<li><strong>P08 entry:</strong> P07 go/no-go accepted. <span class="blk">⚑</span> License and public destination undecided (owner decision).</li>
-<li><strong>Cross-cutting:</strong> Windows/macOS lab access, spawned-Pi control (including native Windows) and host-native wake must each be proven on the real platform; Linux tests and cross-builds do not close them.</li>
+<section id="parked" aria-labelledby="parked-h">
+<h2 id="parked-h">Parked or dropped from the MVP</h2>
+<p>Owner simplification parks W6/W7 authority and storage contracts, the D0 managed-seams contract, the native queue probe, and D1/D4 characterization. D8 app-server queue client is dropped from this MVP: review found three issues, and the Codex exec backend is used instead.</p>
+</section>
+
+<section id="risks" aria-labelledby="risks-h">
+<h2 id="risks-h">Blockers and risks</h2>
+<p><strong>No hard blocker for the Linux MVP is currently recorded.</strong> Track these limits:</p>
+<ul>
+<li>One observed Herdr server restart killed spawned agents; interactive mode needs recovery evidence.</li>
+<li>The Windows VM is down, blocking Windows qualification after the Linux MVP.</li>
+<li>License and public publication remain owner decisions.</li>
 </ul>
 </section>
 
-<section id="epics" aria-labelledby="epics-h">
-<h2 id="epics-h">Epics P01–P08 and their 65 work packages</h2>
-<p class="small">Expand an epic for its packages and exit gates. Package status is implementation status; every phase plan is still a draft.</p>
-<details id="p01"><summary>P01 Foundation &amp; scope freeze — <span class="st">In progress — not accepted</span></summary><div>
-<p>Feasibility and planning work is under way. Scope freeze, owner decisions and three-platform feasibility are open.</p><p><span class="blk">⚑ blocker</span> Owner decisions; Windows/macOS lab access; Claude interrupt, spawned Pi and native-wake proofs.</p><p class="small"><strong>Entry:</strong> Start of project (no predecessor). <strong>Exit:</strong> G01–G07: owner-approved requirements, safety closure, actual three-platform feasibility/AOT, Pi/join/native-wake proof and independent freeze. Outputs: versioned capabilities, threats, limits and contracts for P02.</p><ul class="wp">
-<li id="P01-W01"><code>P01-W01</code><span>Requirements, cells, threat model and evidence baseline</span><span class="s">In progress (drafts, unaccepted)</span></li>
-<li id="P01-W02"><code>P01-W02</code><span>Unsafe spike repair and native-control decisions</span><span class="s">Partial: bounded fixes reviewed; blockers open</span></li>
-<li id="P01-W03"><code>P01-W03</code><span>.NET 11, MCP, IPC, SQLite and AOT proof</span><span class="s">Partial: Linux fake .NET 11/AOT only</span></li>
-<li id="P01-W04"><code>P01-W04</code><span>Platform/provider and service-context feasibility</span><span class="s">Not started</span></li>
-<li id="P01-W05"><code>P01-W05</code><span>Pi, independent join, native wake and connector feasibility</span><span class="s">Not started</span></li>
-<li id="P01-W06"><code>P01-W06</code><span>Foundation evidence, owner freeze and handoff</span><span class="s">Not started</span></li>
-</ul><p class="small"><a href="planning/full-product/01-foundation.md">Full P01 plan</a> (draft)</p></div></details>
-<details id="p02"><summary>P02 Durable local core — <span class="st">Not built as a phase — one bounded fake experiment only</span></summary><div>
-<p>A Linux fake-backend core experiment is reviewed and integrated on the milestone integration branch. The full P02 runtime is not built.</p><p><span class="blk">⚑ blocker</span> Main promotion held: full test gate at 765fe1d failed 73/74 (nondeterministic inspection test).</p><p class="small"><strong>Entry:</strong> P01 exit gates G01–G07 accepted. <strong>Exit:</strong> G01–G11: transaction/idempotency, client survival, attempt uncertainty, authority, bounds, recovery/migration and actual published platform evidence. Outputs: one schema, authenticated use cases, claims and fake conformance fixtures for P03/P04.</p><ul class="wp">
-<li id="P02-W01"><code>P02-W01</code><span>Role-isolated durable acceptance</span><span class="s">Bounded fake subset only</span></li>
-<li id="P02-W02"><code>P02-W02</code><span>Retry-safe admission across scopes</span><span class="s">Bounded fake subset only</span></li>
-<li id="P02-W03"><code>P02-W03</code><span>Autonomous claimed dispatch</span><span class="s">Bounded fake subset only</span></li>
-<li id="P02-W04"><code>P02-W04</code><span>Crash quarantine and reconciliation</span><span class="s">Bounded fake subset only</span></li>
-<li id="P02-W05"><code>P02-W05</code><span>Distinct cancellation and bounded execution</span><span class="s">Fake-only deadline repair</span></li>
-<li id="P02-W06"><code>P02-W06</code><span>Durable event and consumer foundations</span><span class="s">Not started</span></li>
-<li id="P02-W07"><code>P02-W07</code><span>Storage maintenance and fail-closed operation</span><span class="s">Not started</span></li>
-<li id="P02-W08"><code>P02-W08</code><span>Published qualification and handoff</span><span class="s">Not started</span></li>
-</ul><p class="small"><a href="planning/full-product/02-durable-core.md">Full P02 plan</a> (draft)</p></div></details>
-<details id="p03"><summary>P03 Managed real agents — <span class="st">Not started — exploratory protocol spikes only</span></summary><div>
-<p>Legacy protocol spikes and bounded primitive fixes exist. No managed product adapter for Claude Code, Codex or Pi is built.</p><p><span class="blk">⚑ blocker</span> Codex visible-TUI/thread binding and strict human-wins start contract unresolved.</p><p class="small"><strong>Entry:</strong> P02 exit gates G01–G11 accepted. <strong>Exit:</strong> G01–G10: native origin/finality, live binding, human-wins, approvals, interrupt versus stop, replay and both modes on all required platforms. W04/G04 is only a Linux/Codex preview. Outputs: qualified execution capabilities for P04.</p><ul class="wp">
-<li id="P03-W01"><code>P03-W01</code><span>Fail-closed capability admission</span><span class="s">Not started</span></li>
-<li id="P03-W02"><code>P03-W02</code><span>Owned Codex interactive start</span><span class="s">Exploratory spike only</span></li>
-<li id="P03-W03"><code>P03-W03</code><span>Codex send, follow-up and result</span><span class="s">Exploratory spike only</span></li>
-<li id="P03-W04"><code>P03-W04</code><span>Labelled Linux/Codex E2E preview</span><span class="s">Not started</span></li>
-<li id="P03-W05"><code>P03-W05</code><span>Codex control and explicit headless mode</span><span class="s">Not started</span></li>
-<li id="P03-W06"><code>P03-W06</code><span>Claude start/send/result and controls</span><span class="s">Exploratory spike only</span></li>
-<li id="P03-W07"><code>P03-W07</code><span>First-class managed Pi</span><span class="s">Not started</span></li>
-<li id="P03-W08"><code>P03-W08</code><span>Outage replay and physical recovery</span><span class="s">Not started</span></li>
-<li id="P03-W09"><code>P03-W09</code><span>Selected-platform semantics and exit</span><span class="s">Not started</span></li>
-</ul><p class="small"><a href="planning/full-product/03-managed-agents.md">Full P03 plan</a> (draft)</p></div></details>
-<details id="p04"><summary>P04 Local team orchestration — <span class="st">Not started</span></summary><div>
-<p>Design documents only. No teams, queues, messages, native wake or workspace runtime.</p><p class="small"><strong>Entry:</strong> P03 exit gates G01–G10 accepted. <strong>Exit:</strong> G01–G10: cross-team isolation, bounded nesting/scheduling, receipt-based read/ack, approvals/budgets, workspace safety and native Claude/Codex wake. Outputs: stable shared operations/projections for P05 and F27.</p><ul class="wp">
-<li id="P04-W01"><code>P04-W01</code><span>Isolated teams, scoped grants, revoke and reconnect</span><span class="s">Not started</span></li>
-<li id="P04-W02"><code>P04-W02</code><span>Child delegation and finite ancestor budgets</span><span class="s">Not started</span></li>
-<li id="P04-W03"><code>P04-W03</code><span>Durable fair queues and accepted offline policy</span><span class="s">Not started</span></li>
-<li id="P04-W04"><code>P04-W04</code><span>Informational messages and canonical read/ack</span><span class="s">Not started</span></li>
-<li id="P04-W05"><code>P04-W05</code><span>Approvals, questions, deadlines and resource limits</span><span class="s">Not started</span></li>
-<li id="P04-W06"><code>P04-W06</code><span>Workspaces, human activity and bounded artifacts</span><span class="s">Not started</span></li>
-<li id="P04-W07"><code>P04-W07</code><span>Native Claude/Codex wake and durable catch-up</span><span class="s">Not started</span></li>
-<li id="P04-W08"><code>P04-W08</code><span>Complete CLI/MCP inspection and operations</span><span class="s">Not started</span></li>
-</ul><p class="small"><a href="planning/full-product/04-team-orchestration.md">Full P04 plan</a> (draft)</p></div></details>
-<details id="p05"><summary>P05 Platform &amp; operator experience — <span class="st">Not started</span></summary><div>
-<p>Design documents only, including the F27 web console design and static mockup. No installed setup, packages or runtime web console.</p><p class="small"><strong>Entry:</strong> P04 exit gates G01–G10 accepted. <strong>Exit:</strong> G01–G11 plus PI01–PI04: fresh-profile setup, real installed GUI/service contexts, complete CLI, trusted AOT packages, safe upgrade/rollback/uninstall and native Windows Pi. Outputs: release-like installed environments for P06/P07.</p><ul class="wp">
-<li id="P05-W01"><code>P05-W01</code><span>Explicit setup, versioned profile and context doctor</span><span class="s">Not started</span></li>
-<li id="P05-W02"><code>P05-W02</code><span>Linux user service and Herdr lifecycle</span><span class="s">Not started</span></li>
-<li id="P05-W03"><code>P05-W03</code><span>Windows per-user desktop and installed Pi lifecycle</span><span class="s">Not started</span></li>
-<li id="P05-W04"><code>P05-W04</code><span>macOS user/GUI launch and permissions</span><span class="s">Not started</span></li>
-<li id="P05-W05"><code>P05-W05</code><span>Complete operator CLI and safe MCP configuration</span><span class="s">Not started</span></li>
-<li id="P05-W06"><code>P05-W06</code><span>Provenance-verified native packages</span><span class="s">Not started</span></li>
-<li id="P05-W07"><code>P05-W07</code><span>Safe update, migration, health check and rollback</span><span class="s">Not started</span></li>
-<li id="P05-W08"><code>P05-W08</code><span>Retention-aware uninstall/reinstall</span><span class="s">Not started</span></li>
-<li id="P05-W09"><code>P05-W09</code><span>Fresh-user lifecycle UAT and platform handoff</span><span class="s">Not started</span></li>
-</ul><p class="small"><a href="planning/full-product/05-platform-experience.md">Full P05 plan</a> (draft)</p></div></details>
-<details id="p06"><summary>P06 Cooperative sessions &amp; integrations — <span class="st">Not started</span></summary><div>
-<p>Design documents only. No join, native Pi lead wake or connector runtime.</p><p class="small"><strong>Entry:</strong> P05 exit gates G01–G11 accepted. <strong>Exit:</strong> G01–G10: scoped join/ticket/revoke, native Pi lead wake, no dual remote execution, explicit export and connector off = no contact. Outputs: public conformance contract and full feature matrix for P07.</p><ul class="wp">
-<li id="P06-W01"><code>P06-W01</code><span>Inherited Pi and cooperative/lead capability freeze</span><span class="s">Not started</span></li>
-<li id="P06-W02"><code>P06-W02</code><span>Regression-qualify reused managed Pi</span><span class="s">Not started</span></li>
-<li id="P06-W03"><code>P06-W03</code><span>Consented independent join and managed rejoin</span><span class="s">Not started</span></li>
-<li id="P06-W04"><code>P06-W04</code><span>Native Pi lead-host and attachment wake</span><span class="s">Not started</span></li>
-<li id="P06-W05"><code>P06-W05</code><span>Public connector v1 and conformance peer</span><span class="s">Not started</span></li>
-<li id="P06-W06"><code>P06-W06</code><span>Remote ownership, offline, disable and revoke</span><span class="s">Not started</span></li>
-<li id="P06-W07"><code>P06-W07</code><span>Explicit result/artifact export and durable acknowledgment</span><span class="s">Not started</span></li>
-<li id="P06-W08"><code>P06-W08</code><span>Installed integration UAT and P07 handoff</span><span class="s">Not started</span></li>
-</ul><p class="small"><a href="planning/full-product/06-extension-integration.md">Full P06 plan</a> (draft)</p></div></details>
-<details id="p07"><summary>P07 Integrated system qualification — <span class="st">Not started</span></summary><div>
-<p>Design documents only. No release candidate exists to qualify.</p><p class="small"><strong>Entry:</strong> P02–P06 exits accepted; immutable release candidate frozen. <strong>Exit:</strong> G01–G10 plus PI01–PI04: immutable RC, security/supply chain, real platform matrix, recovery, maintenance, finite resource envelope, 24-hour fake soak per platform, comparable performance and operator acceptance. Outputs: qualified RC for P08.</p><ul class="wp">
-<li id="P07-W01"><code>P07-W01</code><span>RC/requirements and inherited-evidence freeze</span><span class="s">Not started</span></li>
-<li id="P07-W02"><code>P07-W02</code><span>Installed native candidate and supply chain</span><span class="s">Not started</span></li>
-<li id="P07-W03"><code>P07-W03</code><span>Adversarial authorization and extension controls</span><span class="s">Not started</span></li>
-<li id="P07-W04"><code>P07-W04</code><span>Failure, recovery, backup and rollback rehearsals</span><span class="s">Not started</span></li>
-<li id="P07-W05"><code>P07-W05</code><span>Resource bounds and comparable JIT/AOT measurements</span><span class="s">Not started</span></li>
-<li id="P07-W06"><code>P07-W06</code><span>Fresh-operator and native-host acceptance</span><span class="s">Not started</span></li>
-<li id="P07-W07"><code>P07-W07</code><span>Reviewed fixes, final evidence and go/no-go</span><span class="s">Not started</span></li>
-</ul><p class="small"><a href="planning/full-product/07-system-qualification.md">Full P07 plan</a> (draft)</p></div></details>
-<details id="p08"><summary>P08 Public release &amp; operations — <span class="st">Not started</span></summary><div>
-<p>Design documents only. No release artifacts.</p><p><span class="blk">⚑ blocker</span> License and public destination undecided (owner decision).</p><p class="small"><strong>Entry:</strong> P07 go/no-go accepted. <strong>Exit:</strong> G01–G11 plus PI01–PI03: rights/privacy, exact artifact identity, reproducible native packages, public onboarding, lifecycle drills, maintainership and explicit release decision. Outputs: supported release and owned maintenance.</p><ul class="wp">
-<li id="P08-W01"><code>P08-W01</code><span>Accept candidate and make owner decisions</span><span class="s">Not started</span></li>
-<li id="P08-W02"><code>P08-W02</code><span>Prepare a disclosure-safe public source boundary</span><span class="s">Not started</span></li>
-<li id="P08-W03"><code>P08-W03</code><span>Produce reproducible, attributable native packages</span><span class="s">Not started</span></li>
-<li id="P08-W04"><code>P08-W04</code><span>Stage artifacts and establish consumer verification</span><span class="s">Not started</span></li>
-<li id="P08-W05"><code>P08-W05</code><span>Prove public onboarding and examples from clean profiles</span><span class="s">Not started</span></li>
-<li id="P08-W06"><code>P08-W06</code><span>Rehearse upgrade, rollback, uninstall and restore</span><span class="s">Not started</span></li>
-<li id="P08-W07"><code>P08-W07</code><span>Exercise local operations and security response</span><span class="s">Not started</span></li>
-<li id="P08-W08"><code>P08-W08</code><span>Establish maintainable compatibility and patch policy</span><span class="s">Not started</span></li>
-<li id="P08-W09"><code>P08-W09</code><span>Run staged release, stop/go and public verification</span><span class="s">Not started</span></li>
-<li id="P08-W10"><code>P08-W10</code><span>Transfer maintainership and close release</span><span class="s">Not started</span></li>
-</ul><p class="small"><a href="planning/full-product/08-release-operations.md">Full P08 plan</a> (draft)</p></div></details>
-</section>
-
-<section id="features" aria-labelledby="features-h">
-<h2 id="features-h">27 product features</h2>
-<details><summary>Show F01–F27 with owning epics and current status</summary><div>
-<table class="ftbl"><thead><tr><th scope="col">ID</th><th scope="col">Feature</th><th scope="col">Epics</th><th scope="col">Status</th></tr></thead><tbody>
-<tr><td id="f01"><strong>F01</strong></td><td>A separately owned local daemon runs accepted jobs without an active lead/bridge.</td><td>P02</td><td>Bounded Linux fake-core subset integrated (81a11b2); no phase acceptance</td></tr>
-<tr><td id="f02"><strong>F02</strong></td><td>Durable SQLite acceptance, scoped idempotency, queued intent, pre-effect attempt generation, atomic results/events.</td><td>P02</td><td>Bounded Linux fake-core subset integrated (81a11b2); no phase acceptance</td></tr>
-<tr><td id="f03"><strong>F03</strong></td><td>Authenticated private IPC and thin MCP; CLI/operator and agent roles cannot self-escalate through payload IDs.</td><td>P02, P04</td><td>Bounded Linux fake-core subset integrated (81a11b2); no phase acceptance</td></tr>
-<tr><td id="f04"><strong>F04</strong></td><td>Versioned APIs/config/schema with bounded errors, resource limits, and fail-closed compatibility checks.</td><td>P02, P07</td><td>Bounded Linux fake-core subset integrated (81a11b2); no phase acceptance</td></tr>
-<tr><td id="f05"><strong>F05</strong></td><td>Managed Claude Code, Codex and Pi: launch, follow-up in the same conversation, status, authoritative results, approvals, turn interrupt, separate stop.</td><td>P03</td><td>Exploratory legacy spikes only; no product adapter</td></tr>
-<tr><td id="f06"><strong>F06</strong></td><td>Real interactive TUIs: Herdr on Linux, selected visible terminal provider on Windows and macOS; machine control and genuine human input.</td><td>P03, P05</td><td>Exploratory legacy spikes only; no product adapter</td></tr>
-<tr><td id="f07"><strong>F07</strong></td><td>Explicit headless execution choice with verified backend control and honest approval/cancel behavior.</td><td>P03, P05</td><td>Exploratory legacy spikes only; no product adapter</td></tr>
-<tr><td id="f08"><strong>F08</strong></td><td>Verified process/session/terminal ownership, safe targeted teardown, foreign/human pause and authorized reconciliation.</td><td>P03, P04</td><td>Exploratory legacy spikes only; no product adapter</td></tr>
-<tr><td id="f09"><strong>F09</strong></td><td>Client-crash survival, daemon recovery/quarantine, backend failure handling and replayable result evidence where claimed.</td><td>P02, P03, P07</td><td>Bounded Linux fake-core subset integrated (81a11b2); no phase acceptance</td></tr>
-<tr><td id="f10"><strong>F10</strong></td><td>Multiple teams, stable participants, parent/child and bounded nested delegation with explicit permissions and budgets.</td><td>P04</td><td>Not started</td></tr>
-<tr><td id="f11"><strong>F11</strong></td><td>Durable messages and events, consumer-bound read/ack, reconnect fencing, no skipped unread events or automatic model-action claims.</td><td>P04</td><td>Not started</td></tr>
-<tr><td id="f12"><strong>F12</strong></td><td>Native session wake is standard: authenticated host-native notice, coalescing, bounded retry and durable unread catch-up, following the public PR #70 mechanism.</td><td>P01 feasibility; P04, P06</td><td>Not started</td></tr>
-<tr><td id="f13"><strong>F13</strong></td><td>Scheduling, concurrency, queue/output/retention bounds, deadlines, approvals and usage reporting without fictitious hard spending caps.</td><td>P04</td><td>Not started</td></tr>
-<tr><td id="f14"><strong>F14</strong></td><td>Workspace/worktree isolation and ownership, artifact/result references, bounded logs and safe diagnostic export.</td><td>P04, P07</td><td>Not started</td></tr>
-<tr><td id="f15"><strong>F15</strong></td><td>Operator CLI: start/stop/status, team/job inspection, approvals/reconciliation, diagnostics and actionable errors.</td><td>P04, P05</td><td>Read-only job_list merged (765fe1d; gate 73/74); full CLI not built</td></tr>
-<tr><td id="f16"><strong>F16</strong></td><td>Setup/doctor persists explicit launch mode/provider and checks backend authentication in the actual service/desktop context.</td><td>P05</td><td>Not started</td></tr>
-<tr><td id="f17"><strong>F17</strong></td><td>Linux user service, verified Windows user/desktop launch model, macOS user/GUI launch model; no silent root/system or Session-0 GUI assumptions.</td><td>P05</td><td>Not started</td></tr>
-<tr><td id="f18"><strong>F18</strong></td><td>Packages, safe configuration merge, install/upgrade/rollback/uninstall, data retention choices and backend compatibility checks.</td><td>P05, P08</td><td>Not started</td></tr>
-<tr><td id="f19"><strong>F19</strong></td><td>First-class spawned Pi backend through the same job/authorization model, including native Windows execution, same-session follow-up, results, interrupt/stop and reconnect.</td><td>P03; P05 installed contexts</td><td>Not started</td></tr>
-<tr><td id="f20"><strong>F20</strong></td><td>Supported attached/join sessions with explicit consent, capability-scoped credentials, revocation and honest ownership limits.</td><td>P06</td><td>Not started</td></tr>
-<tr><td id="f21"><strong>F21</strong></td><td>Optional external orchestrator connector: documented generic contract, pairing/revocation, remote idempotency/ownership, offline policy and explicit export.</td><td>P06</td><td>Not started</td></tr>
-<tr><td id="f22"><strong>F22</strong></td><td>Backups/restores and migration/upgrade compatibility protect WAL state and in-flight ownership.</td><td>P02, P05, P07</td><td>Not started</td></tr>
-<tr><td id="f23"><strong>F23</strong></td><td>Threat-model-based security qualification, credential redaction, least privilege, safe paths/configuration and supply-chain checks.</td><td>P01, P07</td><td>Not started</td></tr>
-<tr><td id="f24"><strong>F24</strong></td><td>.NET 11 build, reproducible packaging and Native AOT validation with actual MCP/SQLite/process paths on every claimed RID.</td><td>P01, P02, P05, P07</td><td>Linux fake .NET 11 RC1/AOT only; no cross-platform claim</td></tr>
-<tr><td id="f25"><strong>F25</strong></td><td>Public contributor/user docs, license and third-party notices, sanitized examples, release artifacts and support matrix.</td><td>P08</td><td>Not started; license and public destination undecided</td></tr>
-<tr><td id="f26"><strong>F26</strong></td><td>Performance/resource evidence, upgrade regression checks, operational recovery/runbooks and maintained compatibility policy.</td><td>P07, P08</td><td>Not started</td></tr>
-<tr><td id="f27"><strong>F27</strong></td><td>Small text-only, cross-platform operator web console: agent status/output, human follow-up and confirmed whole-agent stop through the same authenticated application contracts.</td><td>P04 projections/control; P05 Host web surface; P07 qualification; P08 docs</td><td>Design reviewed + static mockup; runtime not built</td></tr>
-</tbody></table>
-<p class="small">Canonical definitions: <a href="product-scope.md">product scope</a>.</p></div></details>
-</section>
-
-<section id="evidence" aria-labelledby="evidence-h">
-<h2 id="evidence-h">Evidence behind “built today”</h2>
-<ul class="small">
-<li><code>81a11b2</code> (integration branch): reviewed core admission repair, IPC deadline fix and demo wrapper; 61/61 tests, 19/19 published Native AOT scenarios, 1/1 AOT demo — Linux fake backend only. See <a href="spikes/m0-fake-core-integration.md">fake-core integration record</a>.</li>
-<li><code>765fe1d</code> (integration branch): reviewed read-only inspection merged; format and build passed, full tests <strong>73/74</strong> (one ordering-sensitive test), 20/20 published AOT scenarios and the demo passed separately. Recorded as <code>docs/spikes/m0-promotion-check.md</code> on that branch: promotion to <code>main</code> held.</li>
-<li>No real agent, model, Herdr session, service, Windows, macOS or native-wake run is part of this evidence.</li>
-<li>Earlier review-state entries in <a href="implementation-status.md">implementation status</a> are historical and superseded by the records above.</li>
+<section id="decisions" aria-labelledby="decisions-h">
+<h2 id="decisions-h">Owner decisions</h2>
+<ul>
+<li>Linux MVP first; Windows and macOS last. Copy the working win-agent-teams spawn/resume and native-wake model; agents bypass permissions for unattended work.</li>
+<li>KISS and focused tests: the weaker Codex queue checkpoint is acceptable, and capped real native runs are allowed.</li>
+<li>The TypeScript Pi extension is acceptable. Minimal JavaScript is acceptable for the operator web console; this status page remains standalone and script-free.</li>
+<li>W6/W7 questions Q1–Q3 were answered yes; their larger contract work is parked for the MVP.</li>
 </ul>
 </section>
 
-<section id="sources" aria-labelledby="sources-h">
-<h2 id="sources-h">Sources and terms</h2>
-<p class="small"><a href="../AGENTS.md">Contributor policy</a> · <a href="../HANDOFF.md">Handoff</a> · <a href="roadmap.md">Roadmap</a> · <a href="product-scope.md">Product scope</a> · <a href="architecture.md">Architecture</a> · <a href="planning/full-product/README.md">Phase index</a> · <a href="planning/full-product/contracts.md">Cross-phase contracts</a> · <a href="poc.md">PoC</a> · <a href="terminal-modes.md">Terminal modes</a> · <a href="spikes/m0-integration-plan.md">M0 integration plan</a> · <a href="spikes/e2e-demo-plan.md">Real-demo plan</a> · <a href="research/native-downstream-delivery.md">Native delivery research</a> · <a href="ui/operator-console-plan.md">F27 plan</a> · <a href="ui/operator-console-mockup.html">F27 mockup</a></p>
-<p class="small"><strong>Wave (W0–W9):</strong> a report-level ordering of work, not a phase ID or date. <strong>M0:</strong> early exploratory checkpoint across P01–P03 concerns, not a ninth epic. <strong>Fake:</strong> deterministic C# child process instead of a real agent. <strong>Native:</strong> run on that operating system, not cross-built.</p>
+<section id="roadmap" aria-labelledby="roadmap-h">
+<h2 id="roadmap-h">Long-term roadmap (unchanged docs)</h2>
+<p>The broader phase and feature inventories remain in <a href="roadmap.md">the roadmap</a>, <a href="product-scope.md">product scope</a> and <a href="planning/full-product/README.md">full-product plans</a>. They are long-term references, not the current Linux MVP lane order.</p>
 </section>
 </main>
-<footer>Standalone offline page: no JavaScript, no network assets. Status claims follow recorded evidence only; a drafted plan is never counted as implementation.</footer>
+<footer>Recorded from Git history, branch tips and the canonical integration note on 26 September 2026. Status changes when work is reviewed and merged.</footer>
 </body>
 </html>

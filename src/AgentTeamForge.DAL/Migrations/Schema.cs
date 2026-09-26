@@ -5,9 +5,9 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
 
-    const string V1 = """
+    internal const string V1 = """
         CREATE TABLE schema_migrations(
             version INTEGER PRIMARY KEY,
             applied_at TEXT NOT NULL);
@@ -55,6 +55,16 @@ static class Schema
             created_at TEXT NOT NULL);
         """;
 
+    /// <summary>v2: per-job backend, working directory, follow-up parent and native session.</summary>
+    const string V2 = """
+        ALTER TABLE jobs ADD COLUMN backend TEXT NOT NULL DEFAULT 'fake';
+        ALTER TABLE jobs ADD COLUMN cwd TEXT;
+        ALTER TABLE jobs ADD COLUMN parent_job_id TEXT REFERENCES jobs(job_id);
+        ALTER TABLE jobs ADD COLUMN session_id TEXT;
+        """;
+
+    static readonly string[] Migrations = [V1, V2];
+
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused
     /// with the file untouched; an older known version is migrated in one transaction.
@@ -84,12 +94,17 @@ static class Schema
         }
 
         using var tx = connection.BeginTransaction(deferred: false);
-        using var command = connection.CreateCommand();
-        command.Transaction = tx;
-        command.CommandText = V1 + "\nINSERT INTO schema_migrations(version, applied_at) VALUES ($v, $at);";
-        command.Parameters.AddWithValue("$v", CurrentVersion);
-        command.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.ToString("O"));
-        command.ExecuteNonQuery();
+        var at = DateTimeOffset.UtcNow.ToString("O");
+        for (var version = stored + 1; version <= CurrentVersion; version++)
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = tx;
+            command.CommandText = Migrations[version - 1] + "\nINSERT INTO schema_migrations(version, applied_at) VALUES ($v, $at);";
+            command.Parameters.AddWithValue("$v", version);
+            command.Parameters.AddWithValue("$at", at);
+            command.ExecuteNonQuery();
+        }
+
         tx.Commit();
     }
 

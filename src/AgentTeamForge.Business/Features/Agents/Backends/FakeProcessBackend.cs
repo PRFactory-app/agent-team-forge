@@ -26,6 +26,7 @@ public sealed class FakeProcessBackend(string executable, IReadOnlyList<string> 
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            WorkingDirectory = request.WorkingDirectory ?? string.Empty,
         };
         foreach (var argument in arguments)
         {
@@ -52,7 +53,7 @@ public sealed class FakeProcessBackend(string executable, IReadOnlyList<string> 
             throw new BackendNotStartedException("fake backend could not be started", ex);
         }
 
-        var line = JsonSerializer.Serialize(new FakeRequestLine(request.JobId, request.Correlation, request.Instruction, behavior, hold), FakeWireJson.Default.FakeRequestLine);
+        var line = JsonSerializer.Serialize(new FakeRequestLine(request.JobId, request.Correlation, request.Instruction, behavior, hold, request.ResumeSessionId), FakeWireJson.Default.FakeRequestLine);
         return new FakeRun(process, Encoding.UTF8.GetBytes(line + "\n"), limits);
     }
 
@@ -149,6 +150,7 @@ public sealed class FakeProcessBackend(string executable, IReadOnlyList<string> 
             return message switch
             {
                 { Type: "ack", Correlation: { } c } => new BackendEvidence.Ack(c),
+                { Type: "session", Correlation: { } c, Output: { Length: > 0 and <= 256 } id } => new BackendEvidence.Session(c, id),
                 { Type: "result", Correlation: { } c, Output: { } o } when o.Length <= _limits.MaxResultChars => new BackendEvidence.Result(c, o),
                 _ => new BackendEvidence.ProtocolError("backend_malformed_output"),
             };

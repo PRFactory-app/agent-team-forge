@@ -19,6 +19,15 @@ public static class ClientCommand
                 Instruction = options.GetValueOrDefault("instruction"),
                 Behavior = options.GetValueOrDefault("behavior"),
                 Hold = options.ContainsKey("hold"),
+                Backend = options.GetValueOrDefault("backend"),
+                Cwd = options.TryGetValue("cwd", out var cwd) ? Path.GetFullPath(cwd) : null,
+            },
+            "follow-up" => new IpcRequest
+            {
+                Op = IpcProtocol.JobFollowUp,
+                JobId = options.GetValueOrDefault("job"),
+                IdempotencyKey = options.GetValueOrDefault("key"),
+                Instruction = options.GetValueOrDefault("instruction"),
             },
             "get" => new IpcRequest { Op = IpcProtocol.JobGet, JobId = options.GetValueOrDefault("job") },
             "list" => new IpcRequest
@@ -33,7 +42,8 @@ public static class ClientCommand
         };
         if (request is null)
         {
-            Console.Error.WriteLine("usage: atf client <submit|get|list> --state-dir DIR [--key K --instruction TEXT [--behavior B] [--hold] | --job ID | [--status S] [--limit N] [--cursor C]]");
+            Console.Error.WriteLine("usage: atf client <submit|follow-up|get|list> --state-dir DIR "
+                + "[--key K --instruction TEXT [--backend fake|claude|codex|pi] [--cwd DIR] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT] | [--status S] [--limit N] [--cursor C]]");
             return 64;
         }
 

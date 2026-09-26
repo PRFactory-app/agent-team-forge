@@ -3,8 +3,8 @@
 #
 # Runs the existing C# process scenario
 #   ClientLifetimeScenarios.Killed_bridge_does_not_stop_work_and_a_fresh_bridge_gets_the_result
-# which drives real processes: MCP bridge job_submit (held fake child) -> bridge
-# SIGKILLed -> daemon and held fake survive -> fresh bridge job_get returns the
+# which drives real processes: MCP bridge submit_job (held fake child) -> bridge
+# SIGKILLed -> daemon and held fake survive -> fresh bridge get_job returns the
 # committed result -> same-key submit is `existing` with 1 attempt/1 invocation
 # -> result survives a daemon SIGKILL + restart.
 #
@@ -88,10 +88,10 @@ duration="$(grep -o 'duration="[^"]*"' "$trx" 2>/dev/null | head -1 | cut -d'"' 
 if [[ "$status" == 0 && "$total" == 1 && "$passed" == 1 && "$failed" == 0 ]]; then
   cat <<EOF
 == PASS  ${SCENARIO##*.} (${duration:-?})
-   [ok] MCP bridge #1: initialize, tools/list, job_submit key=demo-1 (fake child held) -> accepted
+   [ok] MCP bridge #1: initialize, tools/list, submit_job key=demo-1 (fake child held) -> accepted
    [ok] bridge #1 SIGKILLed; daemon alive; job still running
-   [ok] barrier released; fresh bridge #2 job_get -> completed "fake-result: say hi ✓"
-   [ok] same-key job_submit -> outcome=existing, same job, attempts=1, invocations=1
+   [ok] barrier released; fresh bridge #2 get_job -> completed "fake-result: say hi ✓"
+   [ok] same-key submit_job -> outcome=existing, same job, attempts=1, invocations=1
    [ok] daemon SIGKILLed and restarted -> job still completed, invocations=1
    (each line is an assertion in tests/AgentTeamForge.Tests/Scenarios/ClientLifetimeScenarios.cs)
 EOF

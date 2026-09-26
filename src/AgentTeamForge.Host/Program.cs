@@ -19,7 +19,8 @@ try
         case "init" when options.TryGetValue("state-dir", out var initDir):
             return InitCommand.Run(initDir, options.ContainsKey("test-profile"),
                 options.TryGetValue("queue-limit", out var q) ? int.Parse(q, System.Globalization.CultureInfo.InvariantCulture) : null,
-                options.TryGetValue("max-runtime-seconds", out var m) ? int.Parse(m, System.Globalization.CultureInfo.InvariantCulture) : null);
+                options.TryGetValue("max-runtime-seconds", out var m) ? int.Parse(m, System.Globalization.CultureInfo.InvariantCulture) : null,
+                options.GetValueOrDefault("backends"));
         case "daemon" when options.TryGetValue("state-dir", out var daemonDir):
             return await DaemonCommand.RunAsync(StateDirectory.Open(daemonDir), options.GetValueOrDefault("test-crash-at"), options.GetValueOrDefault("test-fail-at"));
         case "mcp" when options.TryGetValue("state-dir", out var mcpDir):

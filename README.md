@@ -53,11 +53,24 @@ contact models, install a service or control Herdr. Native artifacts use a
 unique directory per verification run; use the printed path, not a guessed
 fixed output directory. Only Linux x64 has recorded checkpoint evidence.
 
+## MVP: real agents from Claude Code (Linux)
+
+`atf init --state-dir DIR` now defaults to real agent backends (`--backends fake`
+or `--test-profile` keeps fake only); `atf daemon --state-dir DIR` runs them.
+Register the MCP bridge with `claude mcp add atf -- /path/to/atf mcp --state-dir DIR`
+and use `submit_job(backend, instruction, cwd?, idempotency_key)`, `get_job`,
+`follow_up(job_id, instruction, idempotency_key)` (resumes the finished job's native
+session on the same backend/cwd) and `list_jobs`. CLI equivalents:
+`atf client submit|get|follow-up|list`. `scripts/demo-real.sh [claude|codex|pi]` is the
+opt-in end-to-end check (spends tokens); `fake` is a plumbing dry run. Jobs run one at
+a time and agents run headless with bypassed permissions.
+
 ## Reading order
 
 | Document | Contents |
 | --- | --- |
 | [Handoff](HANDOFF.md) | Current status, constraints, validation boundaries, and starting context. |
+| [Linux MVP project status](docs/project-status.html) | Current mainline progress, ordered lanes, dependencies and blockers. |
 | [Contributor instructions](AGENTS.md) | Authoritative project and review policy. |
 | README (this file) | Short project orientation and status. |
 | [Setup choices and terminal requirements](docs/terminal-modes.md) | Mandatory choice of interactive or headless execution; Herdr, Windows, and macOS. |

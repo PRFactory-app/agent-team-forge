@@ -6,13 +6,21 @@ using AgentTeamForge.Host.Hosting;
 namespace AgentTeamForge.Host.Features.Setup;
 
 /// <summary>
-/// Creates a private state directory: profile (explicit fake backend), operator
+/// Creates a private state directory: profile (real agents by default, fake only
+/// for a test profile or --backends fake), operator
 /// credential (0600, never printed), and a fresh database. Refuses to reuse one.
 /// </summary>
 public static class InitCommand
 {
-    public static int Run(string stateDir, bool testProfile, int? queueLimit, int? maxRuntimeSeconds)
+    public static int Run(string stateDir, bool testProfile, int? queueLimit, int? maxRuntimeSeconds, string? backends = null)
     {
+        backends ??= testProfile ? SpikeProfileFile.FakeBackends : SpikeProfileFile.AgentBackends;
+        if (backends is not (SpikeProfileFile.FakeBackends or SpikeProfileFile.AgentBackends) || (testProfile && backends != SpikeProfileFile.FakeBackends))
+        {
+            Console.Error.WriteLine("error: profile_invalid_backends");
+            return 2;
+        }
+
         if (!SpikeProfileFile.LimitsAreValid(queueLimit, maxRuntimeSeconds))
         {
             Console.Error.WriteLine("error: profile_invalid_limits");
@@ -34,7 +42,7 @@ public static class InitCommand
             Principal = "local-operator",
             Team = "spike-team",
             Agent = "fake-agent",
-            Backend = "fake",
+            Backend = backends,
             TestProfile = testProfile,
             QueueLimit = queueLimit,
             MaxFakeRuntimeSeconds = maxRuntimeSeconds,
