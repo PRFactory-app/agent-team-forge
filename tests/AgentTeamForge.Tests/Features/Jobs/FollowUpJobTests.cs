@@ -22,7 +22,7 @@ public sealed class FollowUpJobTests
     }
 
     static AcceptJob Accept(JobFixture f, BackendCatalog catalog) =>
-        new(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, () => { }, catalog.Names);
+        new(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
 
     [Fact]
     public async Task Follow_up_resumes_the_parent_session_on_the_parent_backend_and_cwd()

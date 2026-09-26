@@ -84,7 +84,7 @@ public sealed class AdmissionFenceTests
         // Restart: the halted attempt is quarantined, the same-key retry resolves to the
         // one queued job, and the refused key was never stored.
         new RecoverOnStartup(f.Store).Execute();
-        var restarted = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, new AdmissionGate(), () => { });
+        var restarted = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, new AdmissionGate());
         var retry = restarted.Execute(new SubmitJobRequest("k-inflight", "x", null, false));
         Assert.Equal("existing", retry.Outcome);
         Assert.Equal(admitted.Job.JobId, retry.Job!.JobId);

@@ -78,12 +78,13 @@ public static class DaemonCommand
         Log($"backends: {string.Join(',', backends.Names)}");
         var admission = new AdmissionGate();
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log);
-        var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, dispatcher.Signal, backends.Names);
+        var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept),
-            new ListJobs(store, profile.Bound), checkpoints);
+            new ListJobs(store, profile.Bound), checkpoints, dispatcher.Signal);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
-        using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log);
+        using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
+            request => request.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp ? dispatcher.PauseClaims() : null);
 
         using var lifetime = new CancellationTokenSource();
         using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; lifetime.Cancel(); });
