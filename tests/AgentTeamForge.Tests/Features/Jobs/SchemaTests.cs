@@ -105,6 +105,43 @@ public sealed class SchemaTests
     }
 
     [Fact]
+    public void Version_5_database_migrates_to_6_without_losing_jobs_or_runs()
+    {
+        using var dir = new TempStateDir();
+        var path = dir.File("jobs.db");
+        var database = JobDatabase.Create(path, TimeSpan.FromSeconds(1));
+        var store = new JobStore(database, DurabilityCheckpoints.None);
+        var accepted = store.AcceptOrGet(new NewJob("principal", "team", "agent", "job_submit", "key", "original-fingerprint", "instruction", "options"), 10);
+        var jobId = accepted.Job!.JobId;
+        var claim = store.BeginNextAttempt()!;
+        Assert.True(store.Complete(new RunRef(jobId, claim.RunId, claim.Generation, claim.Correlation), "kept"));
+
+        using (var connection = new SqliteConnection($"Data Source={path};Pooling=False"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                ALTER TABLE jobs DROP COLUMN queue_deadline;
+                ALTER TABLE jobs DROP COLUMN timeout_s;
+                DELETE FROM schema_migrations WHERE version=6;
+                """;
+            command.ExecuteNonQuery();
+        }
+
+        var migrated = new JobStore(JobDatabase.Open(path, TimeSpan.FromSeconds(1)), DurabilityCheckpoints.None);
+        Assert.Equal((JobStatus.Completed, "kept", null),
+            (migrated.GetJob(jobId)!.Status, migrated.GetJob(jobId)!.ResultText, migrated.GetJob(jobId)!.TimeoutSeconds));
+        Assert.Equal("completed", Assert.Single(migrated.GetRuns(jobId)).State);
+        Assert.Equal(AcceptKind.Existing, migrated.AcceptOrGet(new NewJob("principal", "team", "agent", "job_submit", "key", "original-fingerprint", "instruction", "options"), 10).Kind);
+        using var check = new SqliteConnection($"Data Source={path};Pooling=False");
+        check.Open();
+        using var query = check.CreateCommand();
+        query.CommandText = "PRAGMA foreign_key_check";
+        using var violations = query.ExecuteReader();
+        Assert.False(violations.Read());
+    }
+
+    [Fact]
     public void Missing_database_is_an_error_not_new_empty_state()
     {
         using var dir = new TempStateDir();

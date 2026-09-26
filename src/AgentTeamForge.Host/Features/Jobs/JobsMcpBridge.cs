@@ -16,13 +16,18 @@ namespace AgentTeamForge.Host.Features.Jobs;
 /// </summary>
 public static class JobsMcpBridge
 {
+    const string LimitProperties = """
+          "timeout_s":{"type":"integer","minimum":1,"maximum":86400,"description":"Cancel the job (reason timeout) this many seconds after it starts running."},
+          "queue_ttl_s":{"type":"integer","minimum":1,"maximum":86400,"description":"Cancel the job (reason queue_ttl) if it has not started this many seconds after acceptance."}
+        """;
+
     const string SubmitProperties = """
           "backend":{"type":"string","enum":["claude","codex","pi","fake"],"description":"Agent CLI the daemon runs for this job."},
           "instruction":{"type":"string","description":"Task for the agent."},
           "cwd":{"type":"string","description":"Absolute working directory for the agent (optional)."},
           "worktree":{"type":"boolean","description":"Create a private git worktree for this job from cwd's HEAD."},
-          "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."}
-        """;
+          "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."},
+        """ + LimitProperties;
 
     const string SubmitSchema = """{"type":"object","properties":{""" + SubmitProperties + """
         },"required":["backend","instruction","idempotency_key"]}
@@ -57,8 +62,9 @@ public static class JobsMcpBridge
         {"type":"object","properties":{
           "job_id":{"type":"string","description":"Finished job whose native agent session is resumed."},
           "instruction":{"type":"string"},
-          "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."}},
-         "required":["job_id","instruction","idempotency_key"]}
+          "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."},
+        """ + LimitProperties + """
+        },"required":["job_id","instruction","idempotency_key"]}
         """;
 
     const string ListSchema = """
@@ -170,6 +176,8 @@ public static class JobsMcpBridge
                 Backend = String(args, "backend"),
                 Cwd = String(args, "cwd"),
                 Worktree = args.TryGetValue("worktree", out var worktree) && worktree.ValueKind == JsonValueKind.True,
+                TimeoutSeconds = Integer(args, "timeout_s"),
+                QueueTtlSeconds = Integer(args, "queue_ttl_s"),
                 Behavior = testProfile ? String(args, "behavior") : null,
                 Hold = testProfile && args.TryGetValue("hold", out var hold) && hold.ValueKind == JsonValueKind.True,
             }, null),
@@ -182,6 +190,8 @@ public static class JobsMcpBridge
                 JobId = String(args, "job_id"),
                 Instruction = String(args, "instruction"),
                 IdempotencyKey = String(args, "idempotency_key"),
+                TimeoutSeconds = Integer(args, "timeout_s"),
+                QueueTtlSeconds = Integer(args, "queue_ttl_s"),
             }, null),
             "job_list" or "list_jobs" => ListRequest(args),
             _ => (null, IpcProtocol.UnknownOp),

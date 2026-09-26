@@ -18,6 +18,8 @@ public sealed record IpcRequest
     public string? Backend { get; init; }
     public string? Cwd { get; init; }
     public bool Worktree { get; init; }
+    public int? TimeoutSeconds { get; init; }
+    public int? QueueTtlSeconds { get; init; }
     public string? Status { get; init; }
     public int? Limit { get; init; }
     public long? Offset { get; init; }

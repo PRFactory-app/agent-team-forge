@@ -14,6 +14,7 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
     public JobResult Execute(FollowUpRequest request)
     {
         if (!accept.IsValid(request.IdempotencyKey, request.Instruction)
+            || !AcceptJob.ValidLimits(request.TimeoutSeconds, request.QueueTtlSeconds)
             || string.IsNullOrWhiteSpace(request.ParentJobId) || request.ParentJobId.Length > 64)
         {
             return JobResult.Fail(JobErrors.InvalidRequest);
@@ -43,6 +44,7 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
 
         return accept.Admit(Operation, request.IdempotencyKey, request.Instruction, "behavior=complete;hold=0",
             parent.Backend, parent.Cwd, parent.JobId, request.WakeKey, request.WakeGeneration, worktreeBase: parent.WorktreeBase,
-            worktreePath: parent.WorktreePath, worktreeBranch: parent.WorktreeBranch);
+            worktreePath: parent.WorktreePath, worktreeBranch: parent.WorktreeBranch,
+            timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds);
     }
 }
