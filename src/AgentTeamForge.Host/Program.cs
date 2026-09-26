@@ -27,6 +27,9 @@ try
                 options.GetValueOrDefault("backends"));
         case "setup":
             return SetupCommand.Run(options);
+        case "doctor":
+            options["check"] = "true";
+            return SetupCommand.Run(options);
         case "start":
             return await SetupCommand.StartAsync(options);
         case "stop":
@@ -53,7 +56,7 @@ catch (StateDirectoryException ex)
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: atf setup --mode headless|herdr [--state-dir DIR] [--apply] | start|stop [--state-dir DIR] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
+    Console.Error.WriteLine("usage: atf setup --mode headless|herdr [--state-dir DIR] [--apply|--check] | doctor [--state-dir DIR] | start|stop [--state-dir DIR] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
     return 64;
 }
 
