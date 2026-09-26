@@ -29,6 +29,15 @@ public static class DaemonCommand
 {
     public static async Task<int> RunAsync(StateDirectory state, string? crashAt, string? failAt)
     {
+        if (OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("ATF_DAEMON_LOG") is { } logPath)
+        {
+            var log = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+            {
+                AutoFlush = true,
+            };
+            Console.SetOut(log);
+            Console.SetError(log);
+        }
         var profile = SpikeProfileFile.Load(state);
         var launchMode = SetupCommand.ConfiguredMode(state);
         if (launchMode is "herdr" or "terminal" or "wt" && !profile.RealAgents)

@@ -3,6 +3,7 @@ using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Runtime.Versioning;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Host.Hosting;
@@ -153,7 +154,7 @@ public static class SetupCommand
                 ? await StartWindowsAsync(state, binary, quiet)
                 : await StartPosixAsync(state, binary, quiet);
         }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException or ArgumentException)
         {
             Console.Error.WriteLine($"error: daemon could not start: {ex.Message}");
             return 1;
@@ -162,6 +163,34 @@ public static class SetupCommand
 
     static async Task<int> StartPosixAsync(StateDirectory state, string binary, bool quiet)
     {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (OperatingSystem.IsLinux()
+            && LoginAutostart.UseSystemdUserUnit(home, ClientSetup.StableBinary(binary, home), state.Path))
+        {
+            var service = new ProcessStartInfo("systemctl")
+            {
+                UseShellExecute = false,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            service.ArgumentList.Add("--user");
+            service.ArgumentList.Add("start");
+            service.ArgumentList.Add("agentteamforge.service");
+            DaemonEnvironment.Scrub(service.Environment);
+            using var starter = Process.Start(service) ?? throw new InvalidOperationException("systemctl launch failed");
+            starter.StandardInput.Close();
+            var output = starter.StandardOutput.ReadToEndAsync();
+            var error = starter.StandardError.ReadToEndAsync();
+            await starter.WaitForExitAsync();
+            if (starter.ExitCode != 0)
+            {
+                Console.Error.WriteLine($"error: systemd user daemon start failed: {(await error).Trim()} {(await output).Trim()}".Trim());
+                return 1;
+            }
+            await Task.WhenAll(output, error);
+            return await WaitForReadyAsync(state, quiet);
+        }
         // Linux: setsid separates the daemon from the invoking shell; the shell only
         // redirects its streams and then execs the real atf process. Darwin has no
         // setsid(1): sh backgrounds the daemon and exits, so the launcher PID is not
@@ -180,6 +209,7 @@ public static class SetupCommand
         info.ArgumentList.Add("daemon");
         info.ArgumentList.Add("--state-dir");
         info.ArgumentList.Add(state.Path);
+        DaemonEnvironment.Scrub(info.Environment);
         info.Environment["ATF_DAEMON_LOG"] = Path.Combine(state.Path, "daemon.log");
         using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
         return await WaitForReadyAsync(state, quiet, OperatingSystem.IsMacOS() ? null : process);
@@ -283,13 +313,10 @@ public static class SetupCommand
         return 1;
     }
 
+    [SupportedOSPlatform("windows")]
     static async Task<int> StartWindowsAsync(StateDirectory state, string binary, bool quiet)
     {
-        var info = new ProcessStartInfo(binary) { UseShellExecute = false, CreateNoWindow = true };
-        info.ArgumentList.Add("daemon");
-        info.ArgumentList.Add("--state-dir");
-        info.ArgumentList.Add(state.Path);
-        using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
+        using var process = WindowsDaemonLauncher.Start(binary, state.Path);
         return await WaitForReadyAsync(state, quiet, process);
     }
 
