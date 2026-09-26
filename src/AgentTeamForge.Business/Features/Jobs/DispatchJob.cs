@@ -375,7 +375,7 @@ public sealed class DispatchJob : IDisposable
                         log($"ignored stale/mismatched backend evidence for {run.RunId}");
                         break;
                     case BackendEvidence.ProtocolError error:
-                        End(run, JobStatus.NeedsReconciliation, error.Code);
+                        End(run, error.Code == JobErrors.SessionExpired ? JobStatus.Failed : JobStatus.NeedsReconciliation, error.Code);
                         return;
                     case BackendEvidence.EndOfOutput:
                         End(run, JobStatus.NeedsReconciliation, "backend_eof");

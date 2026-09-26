@@ -58,6 +58,30 @@ public sealed class JobDatabase
         return db;
     }
 
+    /// <summary>Copies an existing database through SQLite, including committed WAL pages.</summary>
+    public static void Backup(string sourcePath, string destinationPath, TimeSpan busyTimeout)
+    {
+        using var sourceConnection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = sourcePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Cache = SqliteCacheMode.Private,
+            Pooling = false,
+            DefaultTimeout = Math.Max(1, (int)busyTimeout.TotalSeconds),
+        }.ToString());
+        using var destination = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = destinationPath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+            Cache = SqliteCacheMode.Private,
+            Pooling = false,
+            DefaultTimeout = Math.Max(1, (int)busyTimeout.TotalSeconds),
+        }.ToString());
+        sourceConnection.Open();
+        destination.Open();
+        sourceConnection.BackupDatabase(destination);
+    }
+
     internal SqliteConnection OpenConnection()
     {
         var connection = new SqliteConnection(_connectionString);
