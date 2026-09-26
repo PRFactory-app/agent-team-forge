@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
@@ -18,13 +19,19 @@ public sealed class DispatchJob : IDisposable
     readonly SemaphoreSlim _signal = new(0);
     readonly SemaphoreSlim _claimGate = new(1, 1);
     readonly JobStore store;
-    readonly IJobBackend backend;
+    readonly BackendCatalog backends;
     readonly SpikeLimits limits;
     readonly DurabilityCheckpoints checkpoints;
     readonly AdmissionGate admission;
     readonly Action<string> log;
 
+    /// <summary>Single-backend convenience: serves jobs whose backend is "fake".</summary>
     public DispatchJob(JobStore store, IJobBackend backend, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log)
+        : this(store, new BackendCatalog().Register(BackendCatalog.Fake, () => backend), limits, checkpoints, admission, log)
+    {
+    }
+
+    public DispatchJob(JobStore store, BackendCatalog backends, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log)
     {
         // Validated before the daemon reports readiness; CancelAfter would otherwise fault the loop.
         if (limits.MaxFakeRuntime <= TimeSpan.Zero || limits.MaxFakeRuntime > MaxAllowedRuntime)
@@ -33,7 +40,7 @@ public sealed class DispatchJob : IDisposable
         }
 
         this.store = store;
-        this.backend = backend;
+        this.backends = backends;
         this.limits = limits;
         this.checkpoints = checkpoints;
         this.admission = admission;
@@ -150,7 +157,18 @@ public sealed class DispatchJob : IDisposable
             deadline.CancelAfter(limits.MaxFakeRuntime);
             checkpoints.Hit(DurabilityCheckpoints.AttemptAfterCommit);
 
-            var request = new BackendRequest(claim.Job.JobId, claim.Correlation, claim.Job.Instruction, claim.Job.Options);
+            if (!TryPrepare(claim.Job, out var backend, out var resumeSessionId, out var notStarted))
+            {
+                // Nothing was started: no effect is possible.
+                End(run, JobStatus.Failed, notStarted);
+                return;
+            }
+
+            var request = new BackendRequest(claim.Job.JobId, claim.Correlation, claim.Job.Instruction, claim.Job.Options)
+            {
+                ResumeSessionId = resumeSessionId,
+                WorkingDirectory = claim.Job.Cwd,
+            };
             var starting = Task.Run(() => backend.Start(request), CancellationToken.None);
             try
             {
@@ -184,10 +202,13 @@ public sealed class DispatchJob : IDisposable
                     case BackendEvidence.Ack ack when ack.Correlation == claim.Correlation:
                         TryRecord(run, null, acked: true);
                         break;
+                    case BackendEvidence.Session session when session.Correlation == claim.Correlation:
+                        TryRecordSession(run, session.SessionId);
+                        break;
                     case BackendEvidence.Result result when result.Correlation == claim.Correlation:
                         Complete(run, result.Output);
                         return;
-                    case BackendEvidence.Ack or BackendEvidence.Result:
+                    case BackendEvidence.Ack or BackendEvidence.Result or BackendEvidence.Session:
                         log($"ignored stale/mismatched backend evidence for {run.RunId}");
                         break;
                     case BackendEvidence.ProtocolError error:
@@ -225,6 +246,30 @@ public sealed class DispatchJob : IDisposable
         {
             await DisposeQuietly(backendRun);
         }
+    }
+
+    /// <summary>Resolves the job's backend and, for a follow-up, the parent's native session.</summary>
+    bool TryPrepare(JobRecord job, [NotNullWhen(true)] out IJobBackend? backend, out string? resumeSessionId, out string notStarted)
+    {
+        resumeSessionId = null;
+        notStarted = "backend_unavailable";
+        backend = backends.Resolve(job.Backend);
+        if (backend is null || job.ParentJobId is null)
+        {
+            return backend is not null;
+        }
+
+        try
+        {
+            resumeSessionId = store.GetJob(job.ParentJobId)?.SessionId;
+        }
+        catch (StorageException)
+        {
+            resumeSessionId = null;
+        }
+
+        notStarted = "parent_session_missing";
+        return resumeSessionId is not null;
     }
 
     void TerminateLateStart(Task<IBackendRun> starting, RunRef run) =>
@@ -301,6 +346,19 @@ public sealed class DispatchJob : IDisposable
         {
             log($"terminal write failed for {run.RunId}: {(ex is StorageException storage ? storage.Failure.ToString() : ex.GetType().Name)}; halting dispatch");
             Halt("terminal_write_failed");
+        }
+    }
+
+    void TryRecordSession(RunRef run, string sessionId)
+    {
+        try
+        {
+            store.RecordSession(run, sessionId);
+        }
+        catch (StorageException ex)
+        {
+            // Without it a follow-up is refused (parent_not_ready); the turn itself is unaffected.
+            log($"session record failed for {run.RunId}: {ex.Failure}");
         }
     }
 
