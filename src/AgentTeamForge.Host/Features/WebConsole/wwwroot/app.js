@@ -30,6 +30,7 @@
   const tickets = new Map();
   const newAgent = { pending: null, sending: false };
   let modelOptions = {};
+  let tierSettings = [];
   const recentCwds = new Map();
   let pickedDirectory = null;
   let timer = null;
@@ -133,6 +134,7 @@
   async function loadConfig() {
     const r = await api('GET', '/api/config');
     modelOptions = r?.model_options || {};
+    tierSettings = r?.tiers || tierSettings;
     const select = $('new-agent-backend');
     select.replaceChildren();
     for (const backend of (r?.backends || []).filter(name => ['claude', 'codex', 'pi'].includes(name))) {
@@ -156,7 +158,9 @@
     const prior = model.value;
     model.replaceChildren();
     for (const value of choices.models) {
-      const option = element('option', '', value);
+      const mapping = tierSettings.find(row => row.backend === backend && row.tier === value);
+      const label = mapping ? `${value} — ${mapping.model} / ${mapping.effort}${mapping.custom ? ' (custom)' : ''}` : value;
+      const option = element('option', '', label);
       option.value = value;
       model.append(option);
     }
@@ -174,6 +178,69 @@
     }
     $('new-agent-effort-field').hidden = !choices.efforts.length;
     effort.disabled = !choices.efforts.length || newAgent.sending || !!newAgent.pending;
+  }
+
+  async function loadTierSettings() {
+    const r = await api('GET', '/api/settings/tiers');
+    if (!r?.ok) { $('settings-status').textContent = r?.error || 'Could not load settings.'; return; }
+    tierSettings = r.tiers || [];
+    renderTierSettings(r.model_catalog || {});
+  }
+
+  function renderTierSettings(catalog) {
+    const target = $('tier-settings');
+    target.replaceChildren();
+    for (const backend of ['codex', 'pi']) {
+      const section = element('section', 'tier-backend');
+      section.append(element('h3', '', backend === 'codex' ? 'Codex' : 'Pi'));
+      const table = element('table', 'tier-table');
+      const head = element('thead');
+      const headings = element('tr');
+      for (const label of ['Tier', 'Model', 'Effort', 'Default', '']) headings.append(element('th', '', label));
+      head.append(headings); table.append(head);
+      const body = element('tbody');
+      for (const row of tierSettings.filter(item => item.backend === backend)) {
+        const tr = element('tr', row.custom ? 'custom' : '');
+        const name = element('td', '', row.tier + (row.custom ? ' · custom' : ''));
+        name.dataset.label = 'Tier'; tr.append(name);
+        const modelCell = element('td'); modelCell.dataset.label = 'Model';
+        const known = catalog[backend] || [];
+        const model = element(known.length ? 'select' : 'input');
+        if (known.length) {
+          for (const value of [...new Set([...known, row.model])].sort()) {
+            const option = element('option', '', value); option.value = value; model.append(option);
+          }
+          model.value = row.model;
+        } else { model.type = 'text'; model.maxLength = 128; model.value = row.model; }
+        model.setAttribute('aria-label', `${backend} ${row.tier} model`);
+        modelCell.append(model); tr.append(modelCell);
+        const effortCell = element('td'); effortCell.dataset.label = 'Effort';
+        const effort = element('select'); effort.setAttribute('aria-label', `${backend} ${row.tier} effort`);
+        const levels = backend === 'pi' ? ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+          : ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+        for (const value of levels) { const option = element('option', '', value); option.value = value; effort.append(option); }
+        effort.value = row.effort; effortCell.append(effort); tr.append(effortCell);
+        const defaults = element('td', 'tier-default', `${row.default_model} / ${row.default_effort}`);
+        defaults.dataset.label = 'Default'; tr.append(defaults);
+        const actions = element('td', 'tier-actions');
+        const save = element('button', '', 'Save'); save.type = 'button';
+        save.addEventListener('click', async () => {
+          save.disabled = true;
+          const result = await api('PUT', '/api/settings/tiers', { backend, tier: row.tier, model: model.value.trim(), effort: effort.value });
+          $('settings-status').textContent = result?.ok ? `${backend} ${row.tier} saved.` : (result?.error || 'Save failed.');
+          if (result?.ok) { await loadTierSettings(); await loadConfig(); }
+          save.disabled = false;
+        });
+        const reset = element('button', '', 'Reset'); reset.type = 'button'; reset.disabled = !row.custom;
+        reset.addEventListener('click', async () => {
+          const result = await api('PUT', '/api/settings/tiers', { backend, tier: row.tier });
+          $('settings-status').textContent = result?.ok ? `${backend} ${row.tier} reset.` : (result?.error || 'Reset failed.');
+          if (result?.ok) { await loadTierSettings(); await loadConfig(); }
+        });
+        actions.append(save, reset); tr.append(actions); body.append(tr);
+      }
+      table.append(body); section.append(table); target.append(section);
+    }
   }
 
   function renderRecentCwds() {
@@ -939,6 +1006,22 @@
   }
 
   document.addEventListener('DOMContentLoaded', () => {
+    $('settings-toggle').addEventListener('click', async () => {
+      $('overview-view').hidden = true;
+      $('settings-view').hidden = false;
+      $('settings-toggle').setAttribute('aria-expanded', 'true');
+      await loadTierSettings();
+    });
+    $('settings-back').addEventListener('click', () => {
+      $('settings-view').hidden = true;
+      $('overview-view').hidden = false;
+      $('settings-toggle').setAttribute('aria-expanded', 'false');
+    });
+    $('tiers-reset-all').addEventListener('click', async () => {
+      const result = await api('PUT', '/api/settings/tiers', { reset_all: true });
+      $('settings-status').textContent = result?.ok ? 'All tiers reset.' : (result?.error || 'Reset failed.');
+      if (result?.ok) { await loadTierSettings(); await loadConfig(); }
+    });
     $('theme-select').value = theme;
     $('theme-select').addEventListener('change', () => {
       theme = $('theme-select').value;

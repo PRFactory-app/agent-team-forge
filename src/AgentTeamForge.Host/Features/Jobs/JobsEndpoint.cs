@@ -11,7 +11,8 @@ namespace AgentTeamForge.Host.Features.Jobs;
 /// <summary>Thin IPC mapping for the job operations; all rules live in Business.</summary>
 public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, StopJob stop, DurabilityCheckpoints checkpoints, Action onAccepted,
     WakeStore? wakeStore = null, PruneJob? prune = null, JobLogs? logs = null, JobStore? jobStore = null, LeadSessionStore? sessions = null, ExternalTeam? external = null,
-    StopAgent? stopAgent = null, IReadOnlyCollection<string>? configuredBackends = null)
+    StopAgent? stopAgent = null, IReadOnlyCollection<string>? configuredBackends = null, TierMap? tierMap = null,
+    BackendModelDiscovery? modelDiscovery = null)
 {
     public IpcResponse Handle(IpcRequest request)
     {
@@ -55,7 +56,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 return new IpcResponse(false, JobErrors.InvalidRequest);
             }
             var info = sessions.Info(request.LeadSessionId, request.Workspace);
-            return info is null ? new IpcResponse(false, JobErrors.NotFound) : new IpcResponse(true, Outcome: "session", Session: info);
+            return info is null ? new IpcResponse(false, JobErrors.NotFound)
+                : new IpcResponse(true, Outcome: "session", Session: info, Tiers: tierMap?.Settings());
         }
         if (request.Op == IpcProtocol.SessionBindWake)
         {
@@ -91,7 +93,28 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         switch (request.Op)
         {
             case IpcProtocol.JobCapabilities:
-                return new IpcResponse(true, Outcome: "capabilities", Backends: configuredBackends ?? [], ModelOptions: ModelSelection.ConsoleOptions);
+                return new IpcResponse(true, Outcome: "capabilities", Backends: configuredBackends ?? [], ModelOptions: ModelSelection.ConsoleOptions,
+                    Tiers: tierMap?.Settings());
+            case IpcProtocol.TierSettingsGet:
+                return tierMap is null ? new IpcResponse(false, JobErrors.InvalidRequest)
+                    : new IpcResponse(true, Outcome: "tiers", Tiers: tierMap.Settings(), ModelCatalog:
+                        new Dictionary<string, IReadOnlyCollection<string>>
+                        {
+                            ["codex"] = modelDiscovery?.CachedModels("codex") ?? [],
+                            ["pi"] = modelDiscovery?.CachedModels("pi") ?? []
+                        });
+            case IpcProtocol.TierSettingsPut:
+                if (tierMap is null)
+                {
+                    return new IpcResponse(false, JobErrors.InvalidRequest);
+                }
+
+                try
+                {
+                    tierMap.Change(request.Backend, request.Tier, request.Model, request.Effort, request.ResetAllTiers);
+                    return new IpcResponse(true, Outcome: "tiers", Tiers: tierMap.Settings());
+                }
+                catch (ArgumentException ex) { return new IpcResponse(false, ex.Message); }
             case IpcProtocol.ExternalTicket:
                 return external is null ? new IpcResponse(false, JobErrors.InvalidRequest)
                     : MapExternal(external.CreateTicket(request.LeadSessionId, request.Workspace, request.MemberName, request.Note));

@@ -70,6 +70,17 @@ h2 { margin: 0; font-size: 17px; }
 h3 { font-size: 15px; }
 .note { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
 .theme-picker { display: grid; gap: 4px; color: var(--muted); font: 11px var(--font-mono); }
+.tier-backend { margin-top: 22px; min-width: 0; }
+.tier-table { width: 100%; border-collapse: collapse; font: 12px var(--font-mono); }
+.tier-table th, .tier-table td { padding: 9px; border-bottom: 1px solid var(--border); text-align: left; }
+.tier-table th { color: var(--muted); font-weight: 500; }
+.tier-table tr.custom { background: var(--accent-soft); }
+.tier-table input, .tier-table select { width: 100%; min-width: 0; }
+.tier-table .tier-default { color: var(--muted); }
+.tier-actions { white-space: nowrap; }
+.tier-actions button + button { margin-left: 5px; }
+.settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 24px; }
+#settings-status { overflow-wrap: anywhere; color: var(--secondary); }
 .theme-picker select { min-width: 90px; }
 .team-stats { display: flex; align-items: center; flex-wrap: wrap; gap: 22px; }
 .live-pill { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--success-line); border-radius: 999px; padding: 5px 10px; color: var(--success-text); background: var(--success-soft); font: 500 11px var(--font-mono); letter-spacing: .06em; white-space: nowrap; }
@@ -217,6 +228,12 @@ pre { max-height: 50vh; margin: 7px 0; padding: 12px; overflow: auto; white-spac
 .agent-node.settled .node-name { color: var(--secondary); font-size: 12.5px; font-weight: 500; }
 @media (prefers-reduced-motion: reduce) { .lead-state.green .dot, .card-identity .green .dot { animation: none; } }
 @media (max-width: 680px) {
+  .tier-table, .tier-table tbody, .tier-table tr, .tier-table td { display: block; width: 100%; }
+  .tier-table thead { display: none; }
+  .tier-table tr { margin: 12px 0; padding: 8px; border: 1px solid var(--border); border-radius: 8px; }
+  .tier-table td { display: grid; grid-template-columns: 75px minmax(0, 1fr); gap: 8px; align-items: center; border: 0; padding: 5px; }
+  .tier-table td::before { content: attr(data-label); color: var(--muted); }
+  .tier-table .tier-actions { display: flex; padding-left: 88px; }
   body { width: auto; margin: 10px; padding: 16px 14px 24px; }
   .window-bar { margin: -16px -14px 0; padding: 10px 14px; }
   .new-agent-form { padding: 14px; }

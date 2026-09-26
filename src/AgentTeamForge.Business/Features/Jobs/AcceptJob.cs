@@ -12,7 +12,7 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// read or written once the admission gate is closed.
 /// </summary>
 public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLimits limits, bool testProfile, AdmissionGate admission,
-    IReadOnlyCollection<string>? backends = null, Func<string, IReadOnlyCollection<string>>? discoverModels = null)
+    IReadOnlyCollection<string>? backends = null, Func<string, IReadOnlyCollection<string>>? discoverModels = null, TierMap? tierMap = null)
 {
     public const string Operation = "job_submit";
 
@@ -87,7 +87,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         && name.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
 
     internal (string? model, string? effort) ResolveModel(string backend, string? model, string? effort) =>
-        ModelSelection.Resolve(backend, model, effort, discoverModels);
+        ModelSelection.Resolve(backend, model, effort, discoverModels, tierMap);
 
     internal bool IsValid(string? key, string? instruction) =>
         !string.IsNullOrWhiteSpace(key) && key.Length <= limits.MaxIdempotencyKeyChars
