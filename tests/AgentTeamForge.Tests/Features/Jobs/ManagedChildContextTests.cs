@@ -73,10 +73,28 @@ public sealed class ManagedChildContextTests
         info.Environment.Clear();
         info.Environment["WIN_AGENT_TEAMS_PARENT_ID"] = "parent";
         info.Environment["CLAUDE_CODE_MESSAGING_SOCKET"] = "/parent/socket";
+        info.Environment["CLAUDE_CODE_ENTRYPOINT"] = "parent";
+        info.Environment["CLAUDE_CODE_SSE_PORT"] = "1234";
+        info.Environment["CLAUDE_CODE_SESSION_ID"] = "parent-session";
+        info.Environment["CLAUDE_CODE_PARENT_SESSION_ID"] = "parent-session";
         info.Environment["CODEX_THREAD_ID"] = "parent-thread";
+        info.Environment["HERDR_PANE_ID"] = "parent-pane";
         info.Environment["ATF_EXTERNAL_ONLY"] = "1";
         info.Environment["CLAUDE_CODE_OAUTH_TOKEN"] = "test-credential";
+        info.Environment["CLAUDE_CODE_GIT_BASH_PATH"] = "C:\\Git\\bin\\bash.exe";
+        info.Environment["CLAUDE_CODE_USE_BEDROCK"] = "1";
+        info.Environment["CLAUDE_CODE_USE_VERTEX"] = "1";
+        info.Environment["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "2048";
+        info.Environment["CLAUDE_CODE_SANDBOXED"] = "1";
+        info.Environment["AWS_PROFILE"] = "team";
+        info.Environment["GOOGLE_APPLICATION_CREDENTIALS"] = "/tmp/gcp.json";
         ManagedChildContext.ClearInheritedIdentity(info);
-        Assert.Equal(["CLAUDE_CODE_OAUTH_TOKEN"], info.Environment.Keys);
+        string[] expected =
+        [
+            "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_GIT_BASH_PATH", "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_SANDBOXED",
+            "AWS_PROFILE", "GOOGLE_APPLICATION_CREDENTIALS",
+        ];
+        Assert.Equal(expected.Order(), info.Environment.Keys.Order());
     }
 }

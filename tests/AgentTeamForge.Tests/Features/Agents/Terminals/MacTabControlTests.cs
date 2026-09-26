@@ -53,6 +53,10 @@ public sealed class MacTabControlTests
         var wrapper = MacTabControl.WrapperText(launch, "task", "/tmp/atf.pid", "/tmp/atf");
 
         Assert.Contains("export CLAUDE_CODE_SANDBOXED='1'", wrapper);
+        Assert.Contains("unset CLAUDECODE", wrapper);
+        Assert.Contains("CLAUDE_CODE_SESSION_ID", wrapper);
+        Assert.Contains("CLAUDE_CODE_MESSAGING_", wrapper);
+        Assert.DoesNotContain("CLAUDE_CODE_GIT_BASH_PATH", wrapper);
         Assert.Contains("'--settings' '{\"skipDangerousModePermissionPrompt\":true}'", wrapper);
     }
 

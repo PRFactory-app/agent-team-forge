@@ -49,7 +49,7 @@ public class HerdrLaunchCharacterizationTests
         var seed = new Dictionary<string, string?>(BaseEnv)
         {
             ["OPENAI_API_KEY"] = Sentinel,
-            ["AWS_SECRET_ACCESS_KEY"] = Sentinel,
+            ["AWS_SECRET_ACCESS_KEY"] = "aws-credential",
             ["CLAUDE_CODE_MESSAGING_TOKEN"] = Sentinel,
             ["WIN_AGENT_TEAMS_TOKEN"] = Sentinel,
             ["AGENT_SESSION_ID"] = Sentinel,
@@ -72,6 +72,42 @@ public class HerdrLaunchCharacterizationTests
         Assert.Equal("/run/owned.sock", targeted.Environment["HERDR_SOCKET_PATH"]);
         Assert.False(global.Environment.ContainsKey("HERDR_SOCKET_PATH"));
         Assert.False(server.Environment.ContainsKey("HERDR_SOCKET_PATH"));
+    }
+
+    [Fact]
+    public void Environment_KeepsClaudeProviderAndCertificateConfiguration()
+    {
+        var seed = new Dictionary<string, string?>(BaseEnv)
+        {
+            ["CLAUDE_CODE_GIT_BASH_PATH"] = "C:\\Git\\bin\\bash.exe",
+            ["CLAUDE_CODE_USE_BEDROCK"] = "1",
+            ["CLAUDE_CODE_USE_VERTEX"] = "1",
+            ["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "2048",
+            ["CLAUDE_CODE_SANDBOXED"] = "1",
+            ["CLAUDE_CODE_SESSION_ID"] = "parent-session",
+            ["CLAUDE_CODE_ENTRYPOINT"] = "parent",
+            ["AWS_PROFILE"] = "team",
+            ["AWS_SECRET_ACCESS_KEY"] = "aws-credential",
+            ["GOOGLE_APPLICATION_CREDENTIALS"] = "/tmp/gcp.json",
+            ["CLOUDSDK_CONFIG"] = "/tmp/cloudsdk",
+            ["HTTPS_PROXY"] = "http://proxy",
+            ["NODE_EXTRA_CA_CERTS"] = "/tmp/ca.pem",
+        };
+
+        var info = HerdrLaunchFixture.CommandStartInfo(seed, "CLAUDE_CODE_SESSION_ID", null, "session", "list");
+
+        foreach (var key in new[]
+        {
+            "CLAUDE_CODE_GIT_BASH_PATH", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_SANDBOXED", "AWS_PROFILE",
+            "AWS_SECRET_ACCESS_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG",
+            "HTTPS_PROXY", "NODE_EXTRA_CA_CERTS",
+        })
+        {
+            Assert.Equal(seed[key], info.Environment[key]);
+        }
+        Assert.False(info.Environment.ContainsKey("CLAUDE_CODE_SESSION_ID"));
+        Assert.False(info.Environment.ContainsKey("CLAUDE_CODE_ENTRYPOINT"));
     }
 
     [Theory]
