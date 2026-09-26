@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Business.Features.Recovery;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Tests.Support;
@@ -129,23 +130,101 @@ public sealed class FollowUpJobTests
     }
 
     [Fact]
-    public async Task Follow_up_is_refused_when_a_parent_with_a_session_needs_reconciliation()
+    public async Task Failed_parent_with_a_session_can_be_followed_up()
     {
         using var f = new JobFixture();
-        var backend = new ScriptedBackend(r =>
-        [
-            new BackendEvidence.Session(r.Correlation, "sess-uncertain"),
-            new BackendEvidence.ProtocolError("uncertain"),
-        ]);
+        var backend = Agent("sess-failed");
         var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
         var accept = Accept(f, catalog);
         var parent = accept.Execute(new SubmitJobRequest("p", "first", null, false)).Job!;
-        await DispatchNext(f, catalog);
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(f.Store.RecordSession(run, "sess-failed"));
+        Assert.True(f.Store.EndUnsuccessfully(run, JobStatus.Failed, "test_failure"));
 
-        Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(parent.JobId)!.Status);
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "next", "c"));
+        Assert.Equal("accepted", child.Outcome);
+        await DispatchNext(f, catalog);
+        Assert.Equal("sess-failed", backend.Started.Single().ResumeSessionId);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(child.Job!.JobId)!.Status);
+    }
+
+    [Fact]
+    public void Reconciliation_waits_for_the_marked_process_and_allows_follow_up_after_recovery()
+    {
+        using var f = new JobFixture();
+        var accept = f.Accept();
+        var parent = f.Submit("p");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(f.Store.RecordSession(run, "sess-uncertain"));
+        var info = new ProcessStartInfo("sleep") { UseShellExecute = false };
+        info.ArgumentList.Add("300");
+        OrphanedBackendProcess.Mark(info, claim.Correlation);
+        using var process = Process.Start(info)!;
+        try
+        {
+            f.Store.RecordBackendEvidence(run, process.Id, acked: false);
+            Assert.True(f.Store.EndUnsuccessfully(run, JobStatus.NeedsReconciliation, "daemon_restart_uncertain"));
+            var followUp = new FollowUpJob(f.Store, JobFixture.Operator, accept);
+            Assert.Equal(JobErrors.ParentNotReady, followUp.Execute(new FollowUpRequest(parent.JobId, "next", "c")).Error);
+
+            new RecoverOnStartup(f.Store).Execute();
+            Assert.True(process.WaitForExit(5000));
+            Assert.Equal("accepted", followUp.Execute(new FollowUpRequest(parent.JobId, "next", "c")).Outcome);
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill();
+            }
+        }
+    }
+
+    [Fact]
+    public void Reconciliation_without_an_owned_pid_is_never_revived()
+    {
+        // A Herdr TUI is owned by the Herdr server: no pid and no scannable marker,
+        // so a quiet /proc scan does not prove the agent is idle.
+        using var f = new JobFixture();
+        var accept = f.Accept();
+        var parent = f.Submit("p");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(f.Store.RecordSession(run, "sess-herdr"));
+        Assert.True(f.Store.EndUnsuccessfully(run, JobStatus.NeedsReconciliation, "interactive_agent_blocked"));
+
         Assert.Equal(JobErrors.ParentNotReady,
             new FollowUpJob(f.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "next", "c")).Error);
         Assert.Equal(0, f.Store.CountUnattemptedIntents());
+
+        // An interrupt that saw the parent running skipped the idle check, so the
+        // acceptance transaction must not take the parent's later uncertain end.
+        var interrupt = new NewJob(JobFixture.Operator.Principal, JobFixture.Operator.Team, JobFixture.Operator.Agent,
+            FollowUpJob.Operation, "i", "fp", "next", "options")
+        { ParentJobId = parent.JobId, InterruptParent = true };
+        Assert.Equal(AcceptKind.ParentNotReady, f.Store.AcceptOrGet(interrupt, 10).Kind);
+    }
+
+    [Fact]
+    public async Task Missing_codex_session_fails_with_session_expired()
+    {
+        using var f = new JobFixture();
+        using var dir = new TempStateDir();
+        var script = dir.File("codex-missing");
+        File.WriteAllText(script, "#!/bin/sh\necho 'Error: thread/resume failed: no rollout found for thread id' >&2\nexit 1\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        var initial = new BackendCatalog().Register(BackendCatalog.Codex, () => Agent("missing-id"));
+        var accept = Accept(f, initial);
+        var parent = accept.Execute(new SubmitJobRequest("p", "first", null, false) { Backend = BackendCatalog.Codex }).Job!;
+        await DispatchNext(f, initial);
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "next", "c")).Job!;
+
+        await DispatchNext(f, new BackendCatalog().Register(BackendCatalog.Codex, () => new CodexExecBackend(script)));
+
+        var stored = f.Store.GetJob(child.JobId)!;
+        Assert.Equal((JobStatus.Failed, JobErrors.SessionExpired), (stored.Status, stored.ReasonCode));
     }
 
     [Fact]

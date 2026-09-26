@@ -52,8 +52,10 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 return new AcceptOutcome(AcceptKind.ParentNotFound, null);
             }
 
-            if (parent.SessionId is null || parent.Status is not (JobStatus.Completed or JobStatus.Cancelled)
-                && !(job.InterruptParent && parent.Status == JobStatus.Running))
+            // Failed/needs_reconciliation parents were checked idle by the caller while
+            // already terminal; an interrupt saw a running parent, so its later end is unchecked.
+            if (parent.SessionId is null || !(parent.Status is JobStatus.Completed or JobStatus.Cancelled
+                || (job.InterruptParent ? parent.Status == JobStatus.Running : parent.Status is JobStatus.Failed or JobStatus.NeedsReconciliation)))
             {
                 return new AcceptOutcome(AcceptKind.ParentNotReady, null);
             }
@@ -436,7 +438,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     /// keyset, not a snapshot). No `(principal, team, job_id)` index exists, so DB
     /// work still grows with the caller's total jobs; only the returned rows are capped.
     /// </summary>
-    public IReadOnlyList<JobSummaryRecord> ListJobs(string principal, string team, string? status, string? beforeJobId, int take) => Read(connection =>
+    public IReadOnlyList<JobSummaryRecord> ListJobs(string principal, string team, string? status, string? backend, string? since, string? beforeJobId, int take) => Read(connection =>
     {
         using var command = Command(connection, null, """
             SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at, j.worktree_path, j.worktree_branch,
@@ -444,11 +446,13 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             FROM jobs j
             WHERE j.principal=$p AND j.team=$t
               AND ($status IS NULL OR j.status=$status)
+              AND ($backend IS NULL OR j.backend=$backend)
+              AND ($since IS NULL OR j.accepted_at >= $since)
               AND ($before IS NULL OR j.job_id < $before)
             ORDER BY j.job_id DESC
             LIMIT $take
             """,
-            ("$p", principal), ("$t", team), ("$status", status), ("$before", beforeJobId), ("$take", take));
+            ("$p", principal), ("$t", team), ("$status", status), ("$backend", backend), ("$since", since), ("$before", beforeJobId), ("$take", take));
         using var reader = command.ExecuteReader();
         var jobs = new List<JobSummaryRecord>();
         while (reader.Read())
@@ -458,7 +462,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             {
                 WorktreePath = NullableString(reader, 6),
                 WorktreeBranch = NullableString(reader, 7),
-                Backend = NullableString(reader, 8),
+                Backend = reader.GetString(8),
                 SessionId = NullableString(reader, 9),
                 ParentJobId = NullableString(reader, 10),
             });

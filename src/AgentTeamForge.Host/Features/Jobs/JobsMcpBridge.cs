@@ -71,6 +71,8 @@ public static class JobsMcpBridge
     const string ListSchema = """
         {"type":"object","properties":{
           "status":{"type":"string","enum":["queued","running","completed","failed","needs_reconciliation","cancelled"]},
+          "backend":{"type":"string","enum":["fake","claude","codex","pi"]},
+          "since":{"type":"string","description":"Include jobs accepted at or after this ISO 8601 time."},
           "limit":{"type":"integer","minimum":1,"maximum":50,"description":"Page size; default 20."},
           "cursor":{"type":"string","description":"next_cursor from the previous page."}}}
         """;
@@ -205,7 +207,8 @@ public static class JobsMcpBridge
     /// </summary>
     static (IpcRequest?, string?) ListRequest(IDictionary<string, JsonElement> args) =>
         OptionalString(args, "status", out var status) && OptionalString(args, "cursor", out var cursor)
-            ? (new IpcRequest { Op = IpcProtocol.JobList, Status = status, Limit = Integer(args, "limit"), Cursor = cursor }, null)
+            && OptionalString(args, "backend", out var backend) && OptionalString(args, "since", out var since)
+            ? (new IpcRequest { Op = IpcProtocol.JobList, Status = status, Backend = backend, Since = since, Limit = Integer(args, "limit"), Cursor = cursor }, null)
             : (null, JobErrors.InvalidRequest);
 
     static bool OptionalString(IDictionary<string, JsonElement> args, string name, out string? value)

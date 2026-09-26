@@ -11,6 +11,46 @@ public static class OrphanedBackendProcess
 
     public static void Mark(ProcessStartInfo info, string correlation) => info.Environment[Marker] = correlation;
 
+    /// <summary>Read-only Linux check used before reviving an uncertain native session.</summary>
+    public static bool HasMarkedProcess(IReadOnlyCollection<string> correlations)
+    {
+        if (!OperatingSystem.IsLinux() || correlations.Count == 0)
+        {
+            return true; // No proof that an uncertain run is idle on this platform.
+        }
+
+        var markers = correlations.Select(c => Encoding.UTF8.GetBytes($"{Marker}={c}\0")).ToList();
+        try
+        {
+            foreach (var directory in Directory.EnumerateDirectories("/proc"))
+            {
+                if (!int.TryParse(Path.GetFileName(directory), out var pid) || pid <= 0)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var environment = File.ReadAllBytes($"/proc/{pid}/environ");
+                    if (markers.Any(marker => HasEntry(environment, marker)))
+                    {
+                        return true;
+                    }
+                }
+                catch (FileNotFoundException) { } // Process exited during the scan.
+                catch (DirectoryNotFoundException) { }
+                catch (UnauthorizedAccessException) { } // Other users' processes cannot carry our run marker.
+                catch (IOException) { }
+            }
+
+            return false;
+        }
+        catch (IOException)
+        {
+            return true;
+        }
+    }
+
     /// <summary>
     /// Kills every process whose environment carries one of the given run
     /// markers: the backend child and descendants that inherited it. A PID
