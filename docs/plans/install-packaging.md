@@ -44,8 +44,9 @@ than modifying shell startup files. Restart agent clients; verify with Claude's
 - Keep existing state at `${XDG_STATE_HOME:-$HOME/.local/state}/agentteamforge`:
   SQLite, credentials, logs, socket, `profile.json`, and `launch-mode.json`.
   Preserve `--state-dir`; no new ATF config tree or migration just for packaging.
-- Note future `win-x64`/PowerShell and `osx-arm64` releases only. Build and validate
-  on those machines later; do not advertise support now.
+- Build a `win-x64` Native AOT zip and checksum on the Windows CI runner for the
+  first release; validate it on the owner's Windows VM before claiming support.
+  PowerShell installation and `osx-arm64` remain later work.
 
 ## Client setup, upgrade, removal
 

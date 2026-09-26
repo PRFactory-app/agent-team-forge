@@ -1,0 +1,74 @@
+name: Native AOT release bundles
+on:
+  push:
+    tags: ['v*']
+jobs:
+  linux-x64:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100-rc.1.26425.128
+      - name: Native AOT dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - name: Gates
+        run: scripts/verify.sh
+      - name: Bundle
+        run: scripts/release-build.sh "${GITHUB_REF_NAME#v}" "$RUNNER_TEMP/release"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atf-${{ github.ref_name }}-linux-x64
+          path: ${{ runner.temp }}/release/*
+  win-x64:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100-rc.1.26425.128
+      - name: Publish and bundle Native AOT
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = ($env:GITHUB_REF_NAME).Substring(1)
+          if ($version -notmatch '^[0-9][0-9A-Za-z.+-]*$') { throw "Invalid release tag: $env:GITHUB_REF_NAME" }
+          $publish = Join-Path $env:RUNNER_TEMP 'publish'
+          $bundle = Join-Path $env:RUNNER_TEMP 'bundle'
+          $release = Join-Path $env:RUNNER_TEMP 'release'
+          New-Item -ItemType Directory -Force -Path $bundle, $release | Out-Null
+          dotnet publish src/AgentTeamForge.Host/AgentTeamForge.Host.csproj -c Release -r win-x64 --self-contained true -p:PublishAot=true -p:TreatWarningsAsErrors=true "-p:Version=$version" "-p:InformationalVersion=$version" -o $publish
+          if ($LASTEXITCODE -ne 0) { throw 'Native AOT publish failed' }
+          $reported = & (Join-Path $publish 'atf.exe') --version
+          if ($LASTEXITCODE -ne 0 -or $reported -ne "atf $version") { throw "Version smoke failed: $reported" }
+          if (-not (Test-Path (Join-Path $publish 'e_sqlite3.dll'))) { throw 'Published SQLite native library missing' }
+          Copy-Item (Join-Path $publish 'atf.exe') $bundle
+          Get-ChildItem $publish -Filter '*.dll' -File | Copy-Item -Destination $bundle
+          $extension = Join-Path $bundle 'extensions/pi-wake'
+          New-Item -ItemType Directory -Force $extension | Out-Null
+          Copy-Item -Path @('extensions/pi-wake/index.ts','extensions/pi-wake/package.json','extensions/pi-wake/README.md','extensions/pi-wake/PROVENANCE.md') -Destination $extension
+          Copy-Item -Path extensions/pi-wake/src -Destination $extension -Recurse
+          foreach ($license in 'LICENSE','LICENSE.md','COPYING') {
+            if (Test-Path $license) { Copy-Item $license $bundle }
+          }
+          $archive = "atf-$version-win-x64.zip"
+          Compress-Archive -Path (Join-Path $bundle '*') -DestinationPath (Join-Path $release $archive)
+          $files = @($archive)
+          $pdb = Join-Path $publish 'atf.pdb'
+          if (Test-Path $pdb) {
+            $symbol = "atf-$version-win-x64.pdb"
+            Copy-Item $pdb (Join-Path $release $symbol)
+            $files += $symbol
+          }
+          $files | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 (Join-Path $release $_)).Hash.ToLowerInvariant()
+            "$hash  $_"
+          } | Set-Content (Join-Path $release 'SHA256SUMS-win-x64') -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atf-${{ github.ref_name }}-win-x64
+          path: ${{ runner.temp }}/release/*

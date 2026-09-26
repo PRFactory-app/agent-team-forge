@@ -1,16 +1,29 @@
-# Linux release bundle
+# Native AOT release bundles
+
+The first release version is `0.0.1` (tag `v0.0.1`). Both jobs derive the
+package and `atf --version` value from the tag. The bundles include the native
+executable and its published native libraries, so the target machine does not
+need a .NET runtime.
 
 `scripts/release-build.sh VERSION [OUTPUT_DIR]` uses the pinned .NET 11 SDK to
 publish `linux-x64` Native AOT, creates `atf-VERSION-linux-x64.tar.gz` and
 `SHA256SUMS`, and runs the extracted binary through `--version` and the existing
 published scenario smoke. The tag workflow runs the repository gates first and
-uploads these files plus `install.sh` as a CI artifact. It does not publish a
-GitHub release. The owner can publish the artifact after review.
+uploads these files plus `install.sh` as a CI artifact. A separate `win-x64`
+job on `windows-latest` publishes Native AOT on Windows and uploads
+`atf-VERSION-win-x64.zip` with `SHA256SUMS-win-x64` and separate debug symbols.
+The workflow does not publish a GitHub release. The owner can publish the
+artifacts after review and Windows VM validation.
 
 The workflow builds on Ubuntu 24.04 (glibc 2.39). On the local Linux build,
 `ldd atf` reported `libc.so.6`, `libm.so.6`, and the x86-64 glibc loader;
-the archive also bundles the published `libe_sqlite3.so` and contains no .NET runtime. The CI binary's dependencies
-should be checked on its Ubuntu 24.04 runner before publication.
+the archive also bundles the published `libe_sqlite3.so`. The CI binary's
+dependencies should be checked on its Ubuntu 24.04 runner before publication.
+
+The Windows job checks that the built `atf.exe --version` matches the tag. The
+owner's Windows VM remains the runtime validation gate; a CI build alone does
+not establish Windows product support. Native AOT needs a Windows build host
+for `win-x64` and cannot cross-compile from Linux.
 
 Install from downloaded files with `sh install.sh --archive
 atf-VERSION-linux-x64.tar.gz --checksum SHA256SUMS`, or from a release with
