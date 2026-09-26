@@ -7,10 +7,13 @@ namespace AgentTeamForge.DAL.Features.External;
 
 public sealed record JoinTicket(string SessionId, string Name, string Token, DateTimeOffset ExpiresAt)
 {
-    public string JoinPrompt => $"Join my AgentTeamForge team as {Name}. Call join_team(session_id=\"{SessionId}\", token=\"{Token}\"). Save member_token from the reply. Call external_read(member_token=...) to read messages, external_send(member_token=..., text=...) to reply, and leave_team(member_token=...) when finished.";
+    public string JoinPrompt => $"Join my AgentTeamForge team as {Name} using the external-member MCP entry. Call join_team(session_id=\"{SessionId}\", token=\"{Token}\"). Save member_token from the reply. In Codex Desktop, read CODEX_THREAD_ID and the absolute CODEX_HOME for this conversation (default $HOME/.codex), then call external_set_wake(member_token=..., codex_thread_id=..., codex_home=...) to receive queue notices. Call external_read(member_token=...) to read work, external_send(member_token=..., text=...) to reply, and leave_team(member_token=...) only when finished permanently.";
 }
 public sealed record JoinedMember(string SessionId, string Name, string MemberToken);
-public sealed record ExternalMessage(long Seq, string From, string Text, string CreatedAt);
+public sealed record ExternalMessage(long Seq, string From, string Text, string CreatedAt, bool? Truncated = null, int? FullLen = null)
+{
+    public string Ts => CreatedAt;
+}
 public sealed record ExternalInbox(IReadOnlyList<ExternalMessage> Messages, long NextSeq, bool HasMore);
 
 /// <summary>Ticket, membership and inbox transactions. A token only selects its own active membership.</summary>
@@ -241,7 +244,7 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return true;
     }
 
-    public ExternalInbox? ReadMember(string token, long sinceSeq, int limit, DateTimeOffset now)
+    public ExternalInbox? ReadMember(string token, long sinceSeq, int limit, DateTimeOffset now, string? fromAgent = null)
     {
         using var db = database.OpenConnection();
         using var tx = db.BeginTransaction(deferred: false);
@@ -251,7 +254,7 @@ public sealed class ExternalMemberStore(JobDatabase database)
             return null;
         }
 
-        var inbox = Read(db, tx, member.Value.Team, member.Value.Id, sinceSeq, limit, now);
+        var inbox = Read(db, tx, member.Value.Team, member.Value.Id, sinceSeq, limit, now, fromAgent);
         tx.Commit();
         return inbox;
     }
@@ -342,18 +345,20 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return reader.Read() ? (reader.GetString(0), reader.GetString(1), reader.GetString(2)) : null;
     }
 
-    static ExternalInbox Read(SqliteConnection db, SqliteTransaction tx, string teamId, string recipient, long sinceSeq, int limit, DateTimeOffset now)
+    static ExternalInbox Read(SqliteConnection db, SqliteTransaction tx, string teamId, string recipient, long sinceSeq, int limit, DateTimeOffset now, string? fromAgent = null)
     {
         using var select = db.CreateCommand();
         select.Transaction = tx;
         select.CommandText = """
             SELECT seq,sender,text,created_at FROM external_messages
-            WHERE team_id=$team AND recipient=$recipient AND seq>$since ORDER BY seq LIMIT $limit
+            WHERE team_id=$team AND recipient=$recipient AND seq>$since
+            AND ($sender IS NULL OR sender=$sender) ORDER BY seq LIMIT $limit
             """;
         select.Parameters.AddWithValue("$team", teamId);
         select.Parameters.AddWithValue("$recipient", recipient);
         select.Parameters.AddWithValue("$since", sinceSeq);
         select.Parameters.AddWithValue("$limit", limit + 1);
+        select.Parameters.AddWithValue("$sender", (object?)fromAgent ?? DBNull.Value);
         var rows = new List<ExternalMessage>();
         using (var reader = select.ExecuteReader())
         {
@@ -377,12 +382,14 @@ public sealed class ExternalMemberStore(JobDatabase database)
             update.CommandText = """
                 UPDATE external_messages SET read_at=$now WHERE team_id=$team AND recipient=$recipient
                 AND seq>$since AND seq<=$next AND read_at IS NULL
+                AND ($sender IS NULL OR sender=$sender)
                 """;
             update.Parameters.AddWithValue("$now", now.ToString("O"));
             update.Parameters.AddWithValue("$team", teamId);
             update.Parameters.AddWithValue("$recipient", recipient);
             update.Parameters.AddWithValue("$since", sinceSeq);
             update.Parameters.AddWithValue("$next", next);
+            update.Parameters.AddWithValue("$sender", (object?)fromAgent ?? DBNull.Value);
             update.ExecuteNonQuery();
         }
         return new ExternalInbox(rows, next, more);

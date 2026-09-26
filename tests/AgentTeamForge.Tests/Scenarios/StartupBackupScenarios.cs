@@ -1,4 +1,5 @@
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.Host.Transport;
 using AgentTeamForge.Tests.Support;
 
 namespace AgentTeamForge.Tests.Scenarios;
@@ -16,7 +17,12 @@ public sealed class StartupBackupScenarios
         await rig.StartDaemonAsync();
 
         Assert.Contains(rig.DaemonLog, line => line.Contains("backup failed:", StringComparison.Ordinal));
-        var accepted = await rig.SubmitAsync("backup-failed", "still works");
+        var accepted = await Bounded.Until(async () =>
+        {
+            var attempt = await rig.SubmitAsync("backup-failed", "still works");
+            return attempt.Error == IpcProtocol.DaemonUnavailable ? null : attempt;
+        }, "daemon accepts submit after failed backup");
+        Assert.True(accepted.Ok, $"{accepted.Error}; daemon log: {string.Join(" | ", rig.DaemonLog)}");
         await rig.WaitForStatusAsync(accepted.Job!.JobId, JobStatus.Completed);
     }
 }

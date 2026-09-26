@@ -51,13 +51,24 @@ public sealed class SpikeRig : IDisposable
     }
 
     public async Task<Process> StartDaemonAsync(params string[] extra)
+        => await StartDaemonWithEnvironmentAsync(null, extra);
+
+    public async Task<Process> StartDaemonWithEnvironmentAsync(IReadOnlyDictionary<string, string>? environment, params string[] extra)
     {
         lock (_daemonLog)
         {
             _daemonLog.Clear();
         }
 
-        var process = _processes.Start(Info(["daemon", "--state-dir", StateDir, .. extra], redirectInput: false));
+        var info = Info(["daemon", "--state-dir", StateDir, .. extra], redirectInput: false);
+        if (environment is not null)
+        {
+            foreach (var (key, value) in environment)
+            {
+                info.Environment[key] = value;
+            }
+        }
+        var process = _processes.Start(info);
         process.ErrorDataReceived += (_, e) =>
         {
             if (e.Data is not null)

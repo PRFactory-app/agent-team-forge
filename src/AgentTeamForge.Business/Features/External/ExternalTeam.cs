@@ -93,15 +93,30 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
         return members.SendToMember(teamId, name, text, sender, now()) ? new() : new("member_not_found");
     }
 
-    public ExternalResult Read(string? token, long? sinceSeq, int? limit)
+    public ExternalResult Read(string? token, long? sinceSeq, int? limit, string? fromAgent = null, bool full = false, int? maxChars = null)
     {
-        if (!ValidToken(token) || sinceSeq is < 0 || limit is < 1 or > 50)
+        if (!ValidToken(token) || sinceSeq is < 0 || limit is < 0 or > 10000 || maxChars is < 0 or > 65536
+            || fromAgent is { Length: > 64 })
         {
             return new("invalid_request");
         }
 
-        var inbox = members.ReadMember(token!, sinceSeq ?? 0, limit ?? 50, now());
-        return inbox is null ? new("membership_revoked") : new(Inbox: inbox);
+        var inbox = members.ReadMember(token!, sinceSeq ?? 0, full ? int.MaxValue - 1 : limit ?? 50, now(),
+            string.IsNullOrEmpty(fromAgent) ? null : fromAgent);
+        if (inbox is null)
+        {
+            return new("membership_revoked");
+        }
+        if (maxChars is { } max)
+        {
+            inbox = inbox with
+            {
+                Messages = [.. inbox.Messages.Select(message => message.Text.Length > max
+                ? message with { Text = message.Text[..max], Truncated = true, FullLen = message.Text.Length }
+                : message)]
+            };
+        }
+        return new(Inbox: inbox);
     }
 
     public ExternalResult ReadLead(string? sessionId, string? workspace, long? sinceSeq, int? limit)

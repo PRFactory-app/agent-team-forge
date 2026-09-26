@@ -25,7 +25,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             {
                 IpcProtocol.ExternalJoin => external.Join(request.LeadSessionId, request.TicketToken),
                 IpcProtocol.ExternalSend => external.Send(request.MemberToken, request.Text),
-                IpcProtocol.ExternalRead => external.Read(request.MemberToken, request.SinceSeq, request.Limit),
+                IpcProtocol.ExternalRead => external.Read(request.MemberToken, request.SinceSeq, request.Limit, request.FromAgent, request.Full, request.MaxChars),
                 IpcProtocol.ExternalSetWake => external.SetWake(request.MemberToken, request.CodexThreadId, request.WakeHome),
                 _ => external.Leave(request.MemberToken)
             });

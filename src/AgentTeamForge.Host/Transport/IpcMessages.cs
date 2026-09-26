@@ -45,10 +45,27 @@ public sealed record IpcRequest
     public string? Note { get; init; }
     public string? Text { get; init; }
     public long? SinceSeq { get; init; }
+    public string? FromAgent { get; init; }
+    public bool Full { get; init; }
+    public int? MaxChars { get; init; }
     public string? CodexThreadId { get; init; }
 }
 
-public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, AgentTeamForge.DAL.Features.External.JoinTicket? Ticket = null, AgentTeamForge.DAL.Features.External.JoinedMember? Member = null, AgentTeamForge.DAL.Features.External.ExternalInbox? Inbox = null);
+public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, AgentTeamForge.DAL.Features.External.JoinTicket? Ticket = null, AgentTeamForge.DAL.Features.External.JoinedMember? Member = null, AgentTeamForge.DAL.Features.External.ExternalInbox? Inbox = null)
+{
+    // Flat aliases keep the external MCP replies usable by win-agent-teams skills.
+    public bool Success => Ok;
+    public string? Reason => Error;
+    public string? SessionId => Ticket?.SessionId ?? Member?.SessionId;
+    public string? Name => Ticket?.Name ?? Member?.Name;
+    public string? Token => Ticket?.Token;
+    public string? JoinPrompt => Ticket?.JoinPrompt;
+    public DateTimeOffset? ExpiresAt => Ticket?.ExpiresAt;
+    public string? MemberToken => Member?.MemberToken;
+    public IReadOnlyList<AgentTeamForge.DAL.Features.External.ExternalMessage>? Messages => Inbox?.Messages;
+    public long? Seq => Inbox?.NextSeq;
+    public bool? HasMore => Inbox?.HasMore;
+}
 
 public static class IpcProtocol
 {

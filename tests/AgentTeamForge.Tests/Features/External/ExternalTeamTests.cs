@@ -105,7 +105,11 @@ public sealed class ExternalTeamTests
         Assert.False(second.HasMore);
         Assert.Empty(wake.PendingExternal());
         Assert.True(team.SendFromLead(lead.SessionId, lead.Workspace, "member", "reply").Ok);
-        Assert.Equal("reply", Assert.Single(team.Read(token, null, null).Inbox!.Messages).Text);
+        var watermark = team.Read(token, null, 0).Inbox!;
+        Assert.Empty(watermark.Messages);
+        Assert.True(watermark.HasMore);
+        var truncated = Assert.Single(team.Read(token, null, 1, fromAgent: "team-lead", maxChars: 3).Inbox!.Messages);
+        Assert.Equal(("rep", true, 5), (truncated.Text, truncated.Truncated, truncated.FullLen));
     }
 
     [Fact]
