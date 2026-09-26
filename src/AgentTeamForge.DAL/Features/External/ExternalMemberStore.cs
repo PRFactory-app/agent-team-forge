@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using AgentTeamForge.DAL.Sqlite;
 using Microsoft.Data.Sqlite;
 
@@ -17,9 +19,17 @@ public sealed record ExternalMessage(long Seq, string From, string Text, string 
 public sealed record ExternalInbox(IReadOnlyList<ExternalMessage> Messages, long NextSeq, bool HasMore,
     IReadOnlyDictionary<string, long>? Cursors = null, long? SenderSeq = null, int? UnreadCount = null);
 
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSerializable(typeof(ExternalMessage))]
+internal sealed partial class ExternalMessageJson : JsonSerializerContext;
+
 /// <summary>Ticket, membership and inbox transactions. A token only selects its own active membership.</summary>
 public sealed class ExternalMemberStore(JobDatabase database)
 {
+    // The IPC response includes messages twice (inbox and flat MCP alias). Leave
+    // room for both copies, the envelope, and an escaped MCP text projection.
+    const int ReadPageBytes = 480 * 1024;
     static string Hash(string secret) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(secret))).ToLowerInvariant();
     static string Secret() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
 
@@ -382,7 +392,7 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return (long)command.ExecuteScalar()!;
     }
 
-    public ExternalInbox? ReadMemberCompat(string token, long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent)
+    public ExternalInbox? ReadMemberCompat(string token, long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent, int? maxChars = null)
     {
         using var db = database.OpenConnection();
         using var tx = db.BeginTransaction(deferred: false);
@@ -392,12 +402,12 @@ public sealed class ExternalMemberStore(JobDatabase database)
             return null;
         }
 
-        var inbox = ReadCompat(db, tx, member.Value.Team, member.Value.Id, sinceSeq, limit, now, fromAgent);
+        var inbox = ReadCompat(db, tx, member.Value.Team, member.Value.Id, sinceSeq, limit, now, fromAgent, maxChars);
         tx.Commit();
         return inbox;
     }
 
-    public ExternalInbox? ReadLeadCompat(string teamId, long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent)
+    public ExternalInbox? ReadLeadCompat(string teamId, long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent, int? maxChars = null)
     {
         using var db = database.OpenConnection();
         using var tx = db.BeginTransaction(deferred: false);
@@ -410,22 +420,16 @@ public sealed class ExternalMemberStore(JobDatabase database)
             return null;
         }
 
-        var inbox = ReadCompat(db, tx, teamId, "lead", sinceSeq, limit, now, fromAgent);
+        var inbox = ReadCompat(db, tx, teamId, "lead", sinceSeq, limit, now, fromAgent, maxChars);
         tx.Commit();
         return inbox;
     }
 
     static ExternalInbox ReadCompat(SqliteConnection db, SqliteTransaction tx, string teamId, string recipient,
-        long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent)
+        long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent, int? maxChars)
     {
-        using var select = db.CreateCommand();
-        select.Transaction = tx;
-        select.CommandText = "SELECT sender_seq,sender,text,created_at FROM external_messages WHERE team_id=$team AND recipient=$recipient ORDER BY seq";
-        select.Parameters.AddWithValue("$team", teamId);
-        select.Parameters.AddWithValue("$recipient", recipient);
         var positions = new Dictionary<string, long>(StringComparer.Ordinal);
         var cursors = new Dictionary<string, long>(StringComparer.Ordinal);
-        var available = new List<ExternalMessage>();
         using (var watermarks = db.CreateCommand())
         {
             watermarks.Transaction = tx;
@@ -439,18 +443,44 @@ public sealed class ExternalMemberStore(JobDatabase database)
                 cursors[reader.GetString(0)] = reader.GetInt64(2);
             }
         }
-        using (var reader = select.ExecuteReader())
+        var floor = fromAgent is null ? 0 : Math.Max(cursors.GetValueOrDefault(fromAgent), sinceSeq ?? 0);
+        using var select = db.CreateCommand();
+        select.Transaction = tx;
+        select.CommandText = """
+            FROM external_messages m
+            LEFT JOIN external_sender_cursors c ON c.team_id=m.team_id AND c.recipient=m.recipient AND c.sender=m.sender
+            WHERE m.team_id=$team AND m.recipient=$recipient AND ($sender IS NULL OR m.sender=$sender)
+            AND m.sender_seq > CASE WHEN $sender IS NULL THEN COALESCE(c.cursor,0) ELSE $floor END
+            """;
+        var filter = select.CommandText;
+        select.Parameters.AddWithValue("$team", teamId);
+        select.Parameters.AddWithValue("$recipient", recipient);
+        select.Parameters.AddWithValue("$sender", (object?)fromAgent ?? DBNull.Value);
+        select.Parameters.AddWithValue("$floor", floor);
+        select.CommandText = "SELECT count(*) " + filter;
+        var unread = Convert.ToInt32(select.ExecuteScalar());
+        var selected = new List<ExternalMessage>();
+        if (limit > 0 && unread > 0)
         {
+            select.CommandText = "SELECT m.sender_seq,m.sender,m.text,m.created_at " + filter + " ORDER BY m.seq LIMIT $limit";
+            select.Parameters.AddWithValue("$limit", limit);
+            var bytes = 0;
+            using var reader = select.ExecuteReader();
             while (reader.Read())
             {
-                available.Add(new ExternalMessage(reader.GetInt64(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+                var text = reader.GetString(2);
+                var message = new ExternalMessage(reader.GetInt64(0), reader.GetString(1),
+                    maxChars is { } max ? text[..Math.Min(text.Length, max)] : text, reader.GetString(3),
+                    maxChars is null ? null : text.Length > maxChars, maxChars is null ? null : text.Length);
+                var size = JsonSerializer.SerializeToUtf8Bytes(message, ExternalMessageJson.Default.ExternalMessage).Length + 1;
+                if (bytes + size > ReadPageBytes)
+                {
+                    break;
+                }
+                selected.Add(message);
+                bytes += size;
             }
         }
-        var floor = fromAgent is null ? 0 : Math.Max(cursors.GetValueOrDefault(fromAgent), sinceSeq ?? 0);
-        var pending = available.Where(message => (fromAgent is null || message.From == fromAgent)
-            && message.Seq > (fromAgent is null ? cursors.GetValueOrDefault(message.From) : floor)).ToList();
-        var unread = pending.Count;
-        var selected = pending.Take(limit).ToList();
         if (limit != 0)
         {
             var updated = new Dictionary<string, long>(cursors, StringComparer.Ordinal);

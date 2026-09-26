@@ -1,6 +1,7 @@
-using AgentTeamForge.Tests.Support;
 using AgentTeamForge.Host.Transport;
+using AgentTeamForge.Tests.Support;
 using ModelContextProtocol.Protocol;
+using System.Text;
 using System.Text.Json;
 
 namespace AgentTeamForge.Tests.Scenarios;
@@ -8,6 +9,63 @@ namespace AgentTeamForge.Tests.Scenarios;
 [Trait("Category", "Scenario")]
 public sealed class ExternalJoinScenarios
 {
+    [Fact]
+    public async Task External_read_pages_large_messages_without_losing_unread_work()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        await rig.StartDaemonAsync();
+        var (_, lead) = await rig.StartBridgeAsync("large-external-lead");
+        var (_, member) = await rig.StartBridgeAsync(externalOnly: true);
+        var ticket = (await SpikeRig.CallAsync(lead, "create_join_ticket", new() { ["name"] = "reader" })).Ticket!;
+        var token = (await SpikeRig.CallAsync(member, "join_team", new()
+        {
+            ["session_id"] = ticket.SessionId,
+            ["token"] = ticket.Token
+        })).Member!.MemberToken;
+        var escaped = new string('"', 65529) + "\"\\\n\té😀";
+        var unicode = string.Concat(Enumerable.Repeat("😀", 32768));
+        for (var i = 0; i < 50; i++)
+        {
+            Assert.True((await SpikeRig.CallAsync(lead, "send_message", new()
+            {
+                ["to"] = "reader",
+                ["text"] = i % 2 == 0 ? escaped : unicode
+            })).Ok);
+        }
+
+        var water = (await SpikeRig.CallAsync(member, "external_read", new()
+        {
+            ["member_token"] = token,
+            ["limit"] = 0
+        })).Inbox!;
+        Assert.Empty(water.Messages);
+        Assert.Equal(50, water.UnreadCount);
+        Assert.True(water.HasMore);
+
+        var seen = new List<long>();
+        while (seen.Count < 50)
+        {
+            var call = await member.CallToolAsync("external_read", new Dictionary<string, object?>
+            {
+                ["member_token"] = token,
+                ["full"] = true
+            }, cancellationToken: TestContext.Current.CancellationToken);
+            var json = Assert.IsType<TextContentBlock>(Assert.Single(call.Content)).Text;
+            Assert.True(Encoding.UTF8.GetByteCount(json) < 2 * 1024 * 1024);
+            var page = JsonSerializer.Deserialize(json, IpcJson.Default.IpcResponse)!.Inbox!;
+            Assert.NotEmpty(page.Messages);
+            seen.AddRange(page.Messages.Select(message => message.Seq));
+            Assert.Equal(seen.Count < 50, page.HasMore);
+        }
+        Assert.Equal(Enumerable.Range(1, 50).Select(i => (long)i), seen);
+        Assert.Empty((await SpikeRig.CallAsync(member, "external_read", new() { ["member_token"] = token })).Inbox!.Messages);
+    }
+
     [Fact]
     public async Task Separate_member_bridge_joins_and_exchanges_messages_with_lead()
     {
