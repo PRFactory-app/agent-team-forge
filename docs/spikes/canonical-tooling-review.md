@@ -70,3 +70,42 @@ qualify only the Linux fake-core checkpoint, not other platforms or real agents.
 The nonempty TRX guard was inspected in the diff but not independently
 fault-injected; the positive published and demo runs each produced a nonempty
 TRX with the counts above. `shellcheck` was not run because it is unavailable.
+
+## Re-review of caller-cwd fix
+
+**Verdict: APPROVED.** Independently reviewed Claude commit `68a5e6b` against
+`7bd020a`, then merged it into this review branch at `5e43d73`. The blocking
+fallback is removed: path-shaped `DOTNET`, `ATF_DEMO_BIN`, and the published
+binary argument are anchored lexically to the caller's cwd before any `cd`.
+Missing caller paths therefore remain missing and return exit 2 with the
+caller-anchored path. The new `check-caller-cwd.sh` covers the original decoy
+case in `demo.sh` and four corresponding script/override cases. I found no new
+blocking or non-blocking issue in the fix. The earlier transient `/tmp/atf-*`
+observation remains non-blocking; the re-review demo reported no leftovers.
+
+I tested an uncommitted scratch merge of `68a5e6b` into
+`integration/canonical-wave` base `2d6d0c9` at
+`.worktrees/tooling-rereview-scratch`. All .NET commands used isolated SDK
+`/home/mikael/code/github/agent-team-forge/.tools/dotnet11/dotnet`
+(`11.0.100-rc.1.26425.128`). I ran `verify.sh` and the published demo from
+`/tmp`; the demo received both `DOTNET` and `ATF_DEMO_BIN` as caller-relative
+paths. Results on Linux 7.2.5-3-omarchy x86_64:
+
+| Gate | Result |
+| --- | --- |
+| `git diff --check 7bd020a..68a5e6b`; `bash -n` on all four scripts | Passed |
+| Caller-cwd decoy regression script | 5/5 passed; all rejected missing caller paths with exit 2 |
+| Restore and `dotnet format --verify-no-changes --no-restore` | Passed |
+| Release build `-warnaserror` | Passed, 0 warnings and 0 errors |
+| Full tests | 61/61 passed, 0 failed, 0 skipped |
+| `linux-x64` Native AOT publish | Passed; binary is native, 9,788,576 bytes |
+| Published-binary process scenarios | 19/19 passed, 0 failed, 0 skipped |
+| Published-binary demo from unrelated caller cwd | 1/1 passed; no new state dirs reported |
+
+The AOT binary SHA-256 was
+`74817e19d0b37e96a323150551d0799d6149c09f9d4518dc5f9f0ff61f6b0f9f`.
+The ignored scratch evidence is in
+`evidence/published-20260926T145635Z-VeH8Ws/` and
+`.run/demo-20260926T145649Z-200DLT/`. `shellcheck` remains unavailable.
+These gates approve the Linux fake-core tooling delta only; they do not qualify
+real-agent or other-platform behavior.
