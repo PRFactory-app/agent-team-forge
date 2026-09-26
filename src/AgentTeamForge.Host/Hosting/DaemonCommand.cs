@@ -73,14 +73,14 @@ public static class DaemonCommand
             backendEnv[FakeBackendCommand.BarrierDirVariable] = state.BarrierDir;
         }
 
-        var backend = new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits);
+        var backends = BackendCatalog.Create(
+            new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits), profile.RealAgents);
+        Log($"backends: {string.Join(',', backends.Names)}");
         var admission = new AdmissionGate();
-        using var dispatcher = new DispatchJob(store, backend, limits, checkpoints, admission, Log);
-        var endpoint = new JobsEndpoint(
-            new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, dispatcher.Signal),
-            new GetJob(store, profile.Bound),
-            new ListJobs(store, profile.Bound),
-            checkpoints);
+        using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log);
+        var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, dispatcher.Signal, backends.Names);
+        var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept),
+            new ListJobs(store, profile.Bound), checkpoints);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log);

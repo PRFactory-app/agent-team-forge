@@ -20,11 +20,11 @@ public sealed class ClientLifetimeScenarios
 
         var (bridge1, client1) = await rig.StartBridgeAsync();
         var tools = await client1.ListToolsAsync(cancellationToken: TestContext.Current.CancellationToken);
-        Assert.Contains(tools, t => t.Name == "job_submit");
-        Assert.Contains(tools, t => t.Name == "job_get");
+        Assert.Contains(tools, t => t.Name == "submit_job");
+        Assert.Contains(tools, t => t.Name == "get_job");
 
-        var submitted = await SpikeRig.CallAsync(client1, "job_submit",
-            new() { ["idempotency_key"] = "demo-1", ["instruction"] = "say hi ✓", ["hold"] = true });
+        var submitted = await SpikeRig.CallAsync(client1, "submit_job",
+            new() { ["backend"] = "fake", ["idempotency_key"] = "demo-1", ["instruction"] = "say hi ✓", ["hold"] = true });
         Assert.True(submitted.Ok);
         Assert.Equal("accepted", submitted.Outcome);
         var jobId = submitted.Job!.JobId;
@@ -38,13 +38,13 @@ public sealed class ClientLifetimeScenarios
         var (_, client2) = await rig.StartBridgeAsync();
         var done = await Bounded.Until(async () =>
         {
-            var r = await SpikeRig.CallAsync(client2, "job_get", new() { ["job_id"] = jobId });
+            var r = await SpikeRig.CallAsync(client2, "get_job", new() { ["job_id"] = jobId });
             return r.Job?.Status == JobStatus.Completed ? r : null;
         }, "completed via fresh bridge");
         Assert.Equal("fake-result: say hi ✓", done.Job!.Result);
 
-        var retry = await SpikeRig.CallAsync(client2, "job_submit",
-            new() { ["idempotency_key"] = "demo-1", ["instruction"] = "say hi ✓", ["hold"] = true });
+        var retry = await SpikeRig.CallAsync(client2, "submit_job",
+            new() { ["backend"] = "fake", ["idempotency_key"] = "demo-1", ["instruction"] = "say hi ✓", ["hold"] = true });
         Assert.Equal("existing", retry.Outcome);
         Assert.Equal(jobId, retry.Job!.JobId);
         Assert.Equal(1, rig.Invocations(jobId));
@@ -56,6 +56,31 @@ public sealed class ClientLifetimeScenarios
         var afterRestart = await rig.GetAsync(jobId);
         Assert.Equal(JobStatus.Completed, afterRestart.Job!.Status);
         Assert.Equal(1, rig.Invocations(jobId));
+    }
+
+    [Fact]
+    public async Task Mcp_follow_up_resumes_the_native_session_of_the_finished_job()
+    {
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        await rig.StartDaemonAsync();
+        var (_, client) = await rig.StartBridgeAsync();
+
+        var first = await SpikeRig.CallAsync(client, "submit_job",
+            new() { ["backend"] = "fake", ["idempotency_key"] = "turn-1", ["instruction"] = "first", ["cwd"] = rig.StateDir });
+        var parent = await rig.WaitForStatusAsync(first.Job!.JobId, JobStatus.Completed);
+        Assert.Equal("fake-session-" + parent.Job!.JobId, parent.Job.SessionId);
+
+        var next = await SpikeRig.CallAsync(client, "follow_up",
+            new() { ["job_id"] = parent.Job.JobId, ["idempotency_key"] = "turn-2", ["instruction"] = "second" });
+        Assert.Equal("accepted", next.Outcome);
+        var child = await rig.WaitForStatusAsync(next.Job!.JobId, JobStatus.Completed);
+
+        // The fake child echoes the session it was asked to resume.
+        Assert.Equal(parent.Job.SessionId, child.Job!.SessionId);
+        Assert.Equal((parent.Job.JobId, rig.StateDir, "fake-result: second"), (child.Job.ParentJobId, child.Job.Cwd, child.Job.Result));
+        var listed = await SpikeRig.CallAsync(client, "list_jobs", []);
+        Assert.Equal([child.Job.JobId, parent.Job.JobId], listed.Page!.Jobs.Select(j => j.JobId));
     }
 
     [Fact]

@@ -56,14 +56,17 @@ public sealed class AcceptanceOutcomeTests
         Assert.Equal(1, f.Store.CountUnattemptedIntents());
     }
 
-    static JobsEndpoint Endpoint(JobFixture f) =>
-        new(f.Accept(), f.Get(), f.List(), new DurabilityCheckpoints(point =>
+    static JobsEndpoint Endpoint(JobFixture f)
+    {
+        var accept = f.Accept();
+        return new(accept, f.Get(), new FollowUpJob(f.Store, JobFixture.Operator, accept), f.List(), new DurabilityCheckpoints(point =>
         {
             if (point == f.FailAt)
             {
                 throw new InjectedFailureException(point);
             }
         }));
+    }
 
     static IpcRequest Submit(string key, string instruction) =>
         new() { ProtocolVersion = IpcProtocol.Version, Op = IpcProtocol.JobSubmit, IdempotencyKey = key, Instruction = instruction };
