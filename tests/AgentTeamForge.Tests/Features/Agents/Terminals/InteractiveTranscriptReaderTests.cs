@@ -266,6 +266,20 @@ public sealed class InteractiveTranscriptReaderTests
     }
 
     [Fact]
+    public void Claude_binds_after_long_metadata_preamble()
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Claude);
+        // Real Claude transcripts can put a dozen mode/attachment/snapshot records before the first message.
+        var preamble = Enumerable.Range(0, 12).Select(i => i % 2 == 0
+            ? $$$"""{"type":"file-history-snapshot","messageId":"m{{{i}}}"}"""
+            : """{"type":"attachment","isSidechain":false,"sessionId":"claude-native","attachment":{"type":"date"}}""");
+        File.WriteAllLines(file, [.. preamble, ClaudeUser(Marker), ClaudeAssistant("parent", "end_turn")]);
+        Assert.Equal("parent", reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.Message);
+        Assert.Equal(file, launch.NativeTranscript?.Path);
+    }
+
+    [Fact]
     public void Missing_ancestry_is_explicit_uncertainty_even_with_one_matching_file()
     {
         using var state = new TempStateDir();

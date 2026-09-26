@@ -22,7 +22,12 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
     {
         if (launch.NativeTranscript is { } retained)
         {
-            if (HeaderId(retained.Path, launch.Kind) != retained.SessionId)
+            var current = HeaderId(retained.Path, launch.Kind);
+            if (current is null && File.Exists(retained.Path))
+            {
+                return null; // Transiently unreadable: keep polling rather than declare the binding lost.
+            }
+            if (current != retained.SessionId)
             {
                 return new(retained.SessionId, null, BindingError: "interactive_binding_lost");
             }
@@ -63,7 +68,10 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
     {
         try
         {
-            foreach (var line in LiveFiles.ReadLines(path).Take(10))
+            // Codex/Pi carry ancestry in their header; Claude records it on every chain record
+            // (system/attachment/message), which can follow a long preamble of metadata lines.
+            var lines = LiveFiles.ReadLines(path);
+            foreach (var line in kind == InteractiveAgentKind.Claude ? lines : lines.Take(10))
             {
                 using var json = JsonDocument.Parse(line);
                 var root = json.RootElement;
@@ -75,11 +83,10 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                         && source.TryGetProperty("subagent", out _)) { return false; }
                     return null;
                 }
-                if (kind == InteractiveAgentKind.Claude && Str(root, "type") is "user" or "assistant"
-                    && Str(root, "sessionId") is not null)
+                if (kind == InteractiveAgentKind.Claude && root.TryGetProperty("isSidechain", out var sidechain)
+                    && sidechain.ValueKind is JsonValueKind.True or JsonValueKind.False)
                 {
-                    return root.TryGetProperty("isSidechain", out var sidechain)
-                        && sidechain.ValueKind is JsonValueKind.True or JsonValueKind.False ? !sidechain.GetBoolean() : null;
+                    return !sidechain.GetBoolean();
                 }
                 if (kind == InteractiveAgentKind.Pi && Str(root, "type") == "session")
                 {
