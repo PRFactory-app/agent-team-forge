@@ -1,51 +1,128 @@
 # Linux quickstart
 
-## Publish and set up
+## Build or publish
 
-From the repository root, run `DOTNET=.tools/dotnet11/dotnet scripts/verify.sh`.
-It prints the path to a tested Linux binary. Use that path for `ATF` below.
-Install and sign in to the Claude Code and Codex CLIs before submitting real jobs.
+From the repository root, resolve the shared pinned SDK in `.tools/dotnet11`:
 
-```bash
-ATF=/absolute/path/to/published/atf
-STATE="$HOME/.local/state/agentteamforge"
-"$ATF" setup --mode headless --state-dir "$STATE" --apply
-"$ATF" start --state-dir "$STATE"
-```
+~~~bash
+DOTNET="$(realpath "$(git rev-parse --path-format=absolute --git-common-dir)/../.tools/dotnet11/dotnet")"
+export DOTNET_ROOT="$(dirname "$DOTNET")"
 
-`--apply` registers the ATF MCP server in the current user's Claude Code and
-Codex configurations. Omit it to print the registration commands without
-changing those configurations. For visible interactive agent TUIs, choose
-`--mode herdr` at setup instead; it requires Herdr on Linux. Keep the same
-`--state-dir` for setup, start, MCP registration, clients, and stop.
+"$DOTNET" build AgentTeamForge.slnx -c Release
 
-## Lead and jobs
+# Publish a Linux x64 Native AOT apphost for the steps below.
+"$DOTNET" publish src/AgentTeamForge.Host/AgentTeamForge.Host.csproj \
+  -c Release -r linux-x64 --self-contained true \
+  -p:PublishAot=true -o artifacts/quickstart
+export PATH="$PWD/artifacts/quickstart:$PATH"
+~~~
 
-A Codex lead opened directly in a new repository may show **Trust this folder**
-once, even in permission bypass mode. Accept that prompt before leaving the
-lead unattended. In a live check, an ATF-managed Herdr Codex agent started and
-completed in a fresh job worktree without operator input.
+The pinned SDK is `11.0.100-rc.1.26425.128`; Native AOT needs Linux compiler/linker prerequisites.
 
-In a Codex lead, read `CODEX_THREAD_ID` with a shell tool and call
-`register_codex_wake(thread_id)` before submitting jobs. The MCP bridge does
-not always inherit that variable. For a Claude Code lead in bypass mode,
-`setup --apply` enables incoming notices for the user's Claude configuration.
+## Set up and run
 
-Use the MCP tools `submit_job`, `get_job`, `get_job_output`, `follow_up`,
-`stop_job`, and `list_jobs`. For example, submit two independent jobs with
-different `idempotency_key` values, `backend="codex"` or `"claude"`,
-`cwd` set to a Git repository, and `worktree=true`. Each job gets a private
-worktree. When native wake says work is ready, call `list_jobs` and `get_job`;
-the wake is a notice, while the job record holds the result. A follow-up
-resumes the parent's native session and worktree.
+Setup requires `--mode`; a fresh headless setup creates a real-agent profile.
+`--apply` registers both MCP clients and sets `crossSessionInbound` to `accept`
+in Claude's `~/.claude/settings.json`, preserving existing settings. Install
+both client CLIs first; log in to each backend CLI you plan to use:
 
-The CLI uses the same daemon IPC:
+~~~bash
+atf setup --mode headless --apply
+atf start
+~~~
 
-```bash
-"$ATF" client submit --state-dir "$STATE" --backend codex --cwd "$PWD" \
-  --worktree --key example-1 --instruction 'Reply OK.'
-"$ATF" client get --state-dir "$STATE" --job JOB_ID
-"$ATF" client logs JOB_ID --follow --state-dir "$STATE"
-"$ATF" client list --state-dir "$STATE"
-"$ATF" stop --state-dir "$STATE"
-```
+For visible interactive agents, run `atf setup --mode herdr --apply` with Herdr installed, then `atf start`.
+
+State defaults to `$XDG_STATE_HOME/agentteamforge` or
+`~/.local/state/agentteamforge` if unset; pass one `--state-dir DIR` to override:
+
+~~~bash
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agentteamforge"
+atf setup --mode headless --state-dir "$STATE" --apply
+atf start --state-dir "$STATE"
+~~~
+
+`atf start` prints its PID and is safe to repeat. It runs up to 8 jobs
+concurrently by default. `atf stop` safely sends SIGTERM to this state's daemon;
+add `--state-dir "$STATE"` when using an override.
+
+## Register Claude Code and Codex manually
+
+To register manually, use the same state path and absolute published apphost:
+
+~~~bash
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agentteamforge"
+ATF="$(command -v atf)"
+claude mcp add --scope user agentteamforge -- "$ATF" mcp --state-dir "$STATE"
+codex mcp add agentteamforge -- "$ATF" mcp --state-dir "$STATE"
+~~~
+
+## Submit and inspect jobs
+
+MCP tools include `submit_job`, `get_job`, `get_job_output`, `follow_up`, `list_jobs`, `stop_job`, and `register_codex_wake`.
+Use a fresh `idempotency_key` for each submit/follow-up and retain its `job_id`;
+follow-up resumes the finished job's native backend session.
+
+~~~text
+submit_job(backend="claude", instruction="Explain this repository", idempotency_key="qs-1")
+get_job(job_id="<job_id>")
+follow_up(job_id="<completed_job_id>", instruction="Summarize the tests", idempotency_key="qs-2")
+list_jobs(limit=20)
+stop_job(job_id="<running_job_id>")
+~~~
+
+CLI: `submit|get|follow-up|list|stop` return JSON; `logs` prints raw output. Reuse the returned `job_id` for later calls:
+
+~~~bash
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agentteamforge"
+atf client submit --state-dir "$STATE" --backend claude --cwd "$PWD" \
+  --key qs-1 --instruction "Explain this repository"
+atf client get --state-dir "$STATE" --job JOB_ID
+atf client follow-up --state-dir "$STATE" --job JOB_ID --key qs-2 \
+  --instruction "Summarize the tests"
+atf client list --state-dir "$STATE" --limit 20
+atf client stop JOB_ID --state-dir "$STATE"
+~~~
+
+For the real-agent profile, CLI submit accepts `--backend claude|codex|pi`, `--instruction`,
+`--key`, and optional `--cwd`. Get and follow-up use `--job`; follow-up also
+needs `--key` and `--instruction`. List accepts optional `--status`,
+`--limit` (1–50, default 20), and `--cursor`.
+
+For isolation, set `worktree: true` on MCP `submit_job`, or add `--worktree`
+to CLI submit with `--cwd` inside a Git checkout. The job view and list show
+the worktree path and branch; follow-ups reuse that checkout.
+
+To bound a job's run time, pass `timeout_s` (1–86400) to MCP `submit_job` or
+`follow_up`, or `--timeout S` to CLI submit/follow-up; the job is cancelled
+with reason `timeout` that many seconds after it starts running. `queue_ttl_s` /
+`--queue-ttl S` cancels (reason `queue_ttl`) a job that has not started in time.
+
+## Native wake
+
+A Codex lead opened in a new repository may show **Trust this folder** once,
+even in permission bypass mode; accept it before leaving the lead unattended.
+
+Claude Code, Codex, and Pi MCP hosts may receive a notice-only wake after
+completion; the notice names `list_jobs` and `get_job`, which hold the result. If Codex doesn't pass `CODEX_THREAD_ID`
+to MCP, read it with a shell tool and call `register_codex_wake(thread_id="<thread-id>")` before submit.
+CLI calls and generic sessions without a detected host get no wake. Pi needs
+the bundled extension and same state directory:
+
+~~~bash
+ATF_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/agentteamforge" pi -e "$(realpath extensions/pi-wake)"
+~~~
+
+## State, database, and logs
+
+The owner-private state directory holds profile, credential, mode, socket, lock,
+`jobs.db`, daemon output in `daemon.log`, job output in `logs/<job-id>.log`, and
+worktrees under `worktrees/<job-id>`; worktrees remain for manual cleanup.
+
+Read job output with MCP `get_job_output` or `atf client logs JOB_ID --follow --state-dir "$STATE"`.
+
+With the daemon running, `atf prune --dry-run` previews; `atf prune` removes
+eligible completed, failed, or cancelled jobs older than 30 days. Automatic pruning runs at startup and daily, deleting matching logs but leaving worktrees.
+
+`stop_job` / `atf client stop JOB_ID` cancels an individual queued or running
+job. `atf stop` stops the whole daemon.
