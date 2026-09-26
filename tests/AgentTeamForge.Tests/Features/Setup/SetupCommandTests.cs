@@ -98,7 +98,7 @@ public sealed class SetupCommandTests
         await rig.InitAsync();
         var daemon = await rig.StartDaemonAsync();
 
-        var (firstExit, firstOutput, firstError) = await rig.RunToExitAsync(["stop", "--state-dir", rig.StateDir]);
+        var (firstExit, firstOutput, firstError) = await rig.RunToExitAsync(["stop", "--state-dir", rig.StateDir + "/"]);
         Assert.Equal(0, firstExit);
         Assert.Empty(firstError);
         Assert.Contains($"Stopped daemon {daemon.Id}.", firstOutput);

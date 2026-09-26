@@ -217,8 +217,9 @@ public static class SetupCommand
         try
         {
             var proc = $"/proc/{pid}";
-            var exe = File.ResolveLinkTarget(Path.Combine(proc, "exe"), returnFinalTarget: true);
-            if (exe is null || Path.GetFileName(exe.FullName) != "atf")
+            var exe = new FileInfo(Path.Combine(proc, "exe")).LinkTarget;
+            const string deleted = " (deleted)";
+            if (exe is null || Path.GetFileName(exe.EndsWith(deleted, StringComparison.Ordinal) ? exe[..^deleted.Length] : exe) != "atf")
             {
                 return false;
             }
@@ -233,11 +234,23 @@ public static class SetupCommand
 
             var args = Encoding.UTF8.GetString(File.ReadAllBytes(Path.Combine(proc, "cmdline")))
                 .Split('\0', StringSplitOptions.RemoveEmptyEntries);
-            return args.Length >= 4 && Path.GetFileName(args[0]) == "atf"
-                && args[1] == "daemon" && args[2] == "--state-dir"
-                && args[3] == statePath;
+            if (args.Length < 4 || Path.GetFileName(args[0]) != "atf"
+                || args[1] != "daemon" || args[2] != "--state-dir")
+            {
+                return false;
+            }
+
+            var cwd = Path.IsPathFullyQualified(args[3]) ? null : new DirectoryInfo(Path.Combine(proc, "cwd")).LinkTarget;
+            if (!Path.IsPathFullyQualified(args[3]) && cwd is null)
+            {
+                return false;
+            }
+
+            var daemonState = cwd is null ? args[3] : Path.Combine(cwd, args[3]);
+            return Path.TrimEndingDirectorySeparator(Path.GetFullPath(daemonState))
+                == Path.TrimEndingDirectorySeparator(statePath);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             return false;
         }
