@@ -1,4 +1,5 @@
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.External;
 using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Features.Jobs;
@@ -12,7 +13,7 @@ namespace AgentTeamForge.Host.Features.Jobs;
 public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, StopJob stop, DurabilityCheckpoints checkpoints, Action onAccepted,
     WakeStore? wakeStore = null, PruneJob? prune = null, JobLogs? logs = null, JobStore? jobStore = null, LeadSessionStore? sessions = null, ExternalTeam? external = null,
     StopAgent? stopAgent = null, IReadOnlyCollection<string>? configuredBackends = null, TierMap? tierMap = null,
-    BackendModelDiscovery? modelDiscovery = null)
+    BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null)
 {
     public IpcResponse Handle(IpcRequest request)
     {
@@ -94,7 +95,14 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         {
             case IpcProtocol.JobCapabilities:
                 return new IpcResponse(true, Outcome: "capabilities", Backends: configuredBackends ?? [], ModelOptions: ModelSelection.ConsoleOptions,
-                    Tiers: tierMap?.Settings());
+                    Tiers: tierMap?.Settings(), HerdrPlacement: herdrPlacement?.Default, HerdrMode: herdrPlacement is not null);
+            case IpcProtocol.HerdrPlacementGet:
+                return herdrPlacement is null ? new IpcResponse(false, JobErrors.InvalidRequest)
+                    : new IpcResponse(true, Outcome: "herdr_placement", HerdrPlacement: herdrPlacement.Default, HerdrMode: true);
+            case IpcProtocol.HerdrPlacementPut:
+                if (herdrPlacement is null || request.HerdrPlacement is null) { return new IpcResponse(false, JobErrors.InvalidRequest); }
+                try { herdrPlacement.Change(request.HerdrPlacement); return new IpcResponse(true, Outcome: "herdr_placement", HerdrPlacement: herdrPlacement.Default, HerdrMode: true); }
+                catch (ArgumentException e) { return new IpcResponse(false, e.Message); }
             case IpcProtocol.TierSettingsGet:
                 return tierMap is null ? new IpcResponse(false, JobErrors.InvalidRequest)
                     : new IpcResponse(true, Outcome: "tiers", Tiers: tierMap.Settings(), ModelCatalog:
@@ -132,6 +140,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     TargetAgent = request.TargetAgent,
                     Model = request.Model,
                     Effort = request.Effort,
+                    HerdrPlacement = request.HerdrPlacement,
                     Cwd = request.Cwd,
                     Worktree = request.Worktree,
                     TimeoutSeconds = request.TimeoutSeconds,
@@ -162,7 +171,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 {
                     wakeStore.MarkRead(request.JobId!, request.WakeKey, generation);
                 }
-                return Map(found);
+                return Map(WithLocation(found));
             case IpcProtocol.JobOutput:
                 var outputJob = get.Execute(request.JobId ?? string.Empty);
                 if (outputJob.Error is not null)
@@ -193,7 +202,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     Workspace = request.Workspace,
                     OrderByActivity = request.OrderByActivity,
                 });
-                return listed.Error is null ? new IpcResponse(true, Outcome: "listed", Page: listed.Page) : new IpcResponse(false, listed.Error);
+                return listed.Error is null ? new IpcResponse(true, Outcome: "listed", Page: WithLocations(listed.Page!)) : new IpcResponse(false, listed.Error);
             case IpcProtocol.JobPrune:
                 if (prune is null || request.OlderThanDays is not (>= 1 and <= 36500))
                 {
@@ -219,6 +228,27 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
 
     static bool ValidWorkspace(IpcRequest request) => request.Workspace is { Length: > 0 and <= 4096 } workspace
         && Path.IsPathFullyQualified(workspace) && request.BindingKey is { Length: > 0 and <= 4096 };
+
+    JobResult WithLocation(JobResult result)
+    {
+        if (herdrPlacement is null || result.Job is not { HerdrPlacement: not null } job) { return result; }
+        var location = HerdrOwnedSessions.Location(herdrPlacement.StatePath, job.ParentJobId ?? job.JobId);
+        return location is null ? result : result with { Job = job with { HerdrSession = location.Value.Session, HerdrTab = location.Value.TabId, HerdrTabLabel = location.Value.TabLabel } };
+    }
+
+    JobListPage WithLocations(JobListPage page)
+    {
+        if (herdrPlacement is null) { return page; }
+        return page with
+        {
+            Jobs = [.. page.Jobs.Select(job =>
+            {
+                if (job.HerdrPlacement is null) { return job; }
+                var location = HerdrOwnedSessions.Location(herdrPlacement.StatePath, job.ParentJobId ?? job.JobId);
+                return location is null ? job : job with { HerdrSession = location.Value.Session, HerdrTab = location.Value.TabId, HerdrTabLabel = location.Value.TabLabel };
+            })]
+        };
+    }
 
     IpcResponse Accepted(JobResult result)
     {

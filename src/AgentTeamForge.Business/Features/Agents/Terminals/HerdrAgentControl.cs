@@ -19,13 +19,16 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         await File.WriteAllTextAsync(launch.BootstrapPath, launch.AgentName, cancellationToken);
         File.SetUnixFileMode(launch.BootstrapPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 
-        var session = await terminal.StartSessionAsync(cancellationToken);
+        var session = launch.HerdrPlacement is { } placement && placement.StartsWith("herdr-session:", StringComparison.Ordinal)
+            ? await terminal.ExistingSessionAsync(placement[14..], cancellationToken)
+            : await terminal.StartSessionAsync(cancellationToken);
         // Record immediately: a later tab/start failure is still an owned session.
         try
         {
-            HerdrOwnedSessions.Save(launch, session);
+            if (!session.Shared) { HerdrOwnedSessions.Save(launch, session); }
             var binding = await terminal.OpenAgentTabAsync(session, launch.AgentName, launch.WorkingDirectory, launch.BootstrapPath, cancellationToken,
-                bypassClaudeWorkspaceTrust: launch.Kind == InteractiveAgentKind.Claude);
+                bypassClaudeWorkspaceTrust: launch.Kind == InteractiveAgentKind.Claude,
+                onCreated: created => { session = created; HerdrOwnedSessions.Save(launch, created); });
             _runs[launch.AgentName] = (session, binding);
             var args = new List<string> { "agent", "start", launch.AgentName, "--kind", Kind(launch.Kind), "--pane", binding.PaneId, "--timeout", "15000", "--" };
             args.AddRange(AgentArguments(launch));
@@ -35,8 +38,11 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal) : IHerdrAgentCon
         {
             try
             {
-                await terminal.StopOwnedSessionAsync(session, CancellationToken.None);
-                HerdrOwnedSessions.Delete(launch);
+                if (!session.Shared || session.TabId is not null)
+                {
+                    await terminal.StopOwnedSessionAsync(session, CancellationToken.None);
+                    HerdrOwnedSessions.Delete(launch);
+                }
             }
             catch (HerdrLaunchException) { /* The original fault remains uncertain; never touch another session. */ }
             _runs.TryRemove(launch.AgentName, out _);

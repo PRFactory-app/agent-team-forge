@@ -58,7 +58,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         var piDirectory = _kind == InteractiveAgentKind.Pi ? PiDirectory(request) : null;
         var launch = new InteractiveLaunch(_kind, agentName, cwd, request.ResumeSessionId, piDirectory,
             Path.Combine(_stateRoot, "herdr", agentName + ".bootstrap"))
-        { JobId = request.JobId }.WithSelection(request.Options);
+        { JobId = request.JobId, HerdrPlacement = AgentTeamForge.Business.Features.Jobs.JobOptions.Read(request.Options, "herdr_placement") }.WithSelection(request.Options);
         try
         {
             // Dispatch calls Start on a worker. A failure after session creation is uncertain;
@@ -301,6 +301,7 @@ internal sealed record InteractiveLaunch(InteractiveAgentKind Kind, string Agent
     public string? JobId { get; init; }
     public string? Model { get; init; }
     public string? Effort { get; init; }
+    public string? HerdrPlacement { get; init; }
 
     public InteractiveLaunch WithSelection(string options)
     {
