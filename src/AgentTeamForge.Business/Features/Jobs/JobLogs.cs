@@ -118,6 +118,20 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
 
     public string? LastActivity(string jobId, string backend)
     {
+        try
+        {
+            return ReadLastActivity(jobId, backend);
+        }
+        catch (IOException ex)
+        {
+            // Older job log formats must not hide an otherwise readable page.
+            diagnostic?.Invoke($"job log read failed for {jobId}: {ex}");
+            return null;
+        }
+    }
+
+    string? ReadLastActivity(string jobId, string backend)
+    {
         var end = Read(jobId, 0, 1);
         var start = Math.Max(end.StartOffset, end.EndOffset - MaxReadBytes);
         string? last = null;

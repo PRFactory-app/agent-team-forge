@@ -88,9 +88,15 @@ public sealed class IpcClient
         {
             return new IpcResponse(false, IpcProtocol.OutcomeUnknown);
         }
-        catch (UnauthorizedAccessException) when (OperatingSystem.IsWindows())
+        catch (UnauthorizedAccessException)
         {
-            return new IpcResponse(false, requestWriteStarted ? IpcProtocol.OutcomeUnknown : WindowsPipe.AccessDeniedMessage);
+            return requestWriteStarted ? new IpcResponse(false, IpcProtocol.OutcomeUnknown)
+                : new IpcResponse(false, IpcProtocol.AccessDenied, ErrorDetail: AccessDeniedDetail);
+        }
+        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AccessDenied)
+        {
+            return requestWriteStarted ? new IpcResponse(false, IpcProtocol.OutcomeUnknown)
+                : new IpcResponse(false, IpcProtocol.AccessDenied, ErrorDetail: AccessDeniedDetail);
         }
         catch (FrameException ex)
         {
@@ -102,4 +108,6 @@ public sealed class IpcClient
             return new IpcResponse(false, IpcProtocol.DaemonUnavailable);
         }
     }
+
+    internal const string AccessDeniedDetail = "Access to the daemon endpoint was denied. Check its owner and permissions.";
 }

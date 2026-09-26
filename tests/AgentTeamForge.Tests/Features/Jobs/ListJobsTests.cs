@@ -11,6 +11,45 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 public sealed class ListJobsTests
 {
     [Fact]
+    public void Malformed_legacy_row_is_skipped_without_losing_page_cursor()
+    {
+        using var f = new JobFixture();
+        var ordered = new[] { f.Submit("old").JobId, f.Submit("middle").JobId, f.Submit("recent").JobId }
+            .OrderDescending(StringComparer.Ordinal).ToArray();
+        using (var connection = f.Database.OpenConnection())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "UPDATE jobs SET target_agent=X'00' WHERE job_id=$id";
+            command.Parameters.AddWithValue("$id", ordered[1]);
+            command.ExecuteNonQuery();
+        }
+
+        var first = f.List().Execute(new ListJobsRequest(Limit: 1)).Page!;
+        var second = f.List().Execute(new ListJobsRequest(Limit: 1, Cursor: first.NextCursor)).Page!;
+        Assert.Equal(ordered[0], Assert.Single(first.Jobs).JobId);
+        Assert.Equal(ordered[2], Assert.Single(second.Jobs).JobId);
+        Assert.False(second.HasMore);
+    }
+
+    [Fact]
+    public void Legacy_job_log_does_not_fail_list_page()
+    {
+        using var f = new JobFixture();
+        using var temp = new TempStateDir();
+        var job = f.Submit("legacy-log");
+        var directory = temp.File("logs");
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, job.JobId + ".log"), new string('x', 32));
+        var messages = new List<string>();
+        var logs = new JobLogs(temp.Path, messages.Add);
+
+        var listed = new ListJobs(f.Store, JobFixture.Operator, logs).Execute(new ListJobsRequest());
+
+        Assert.Equal(job.JobId, Assert.Single(listed.Page!.Jobs).JobId);
+        Assert.Contains(messages, message => message.Contains("Invalid job log header", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void Listed_lead_job_exposes_its_registered_workspace_for_console_actions()
     {
         using var f = new JobFixture();
