@@ -1,5 +1,11 @@
 # AgentTeamForge — handoff for a fresh session
 
+> **Latest orchestration transfer:** read
+> [the Claude orchestrator handoff](docs/claude-orchestrator-handoff.md) first.
+> It supersedes the historical branch, agent and implementation status below.
+> The user requested a new orchestrator; do not restart the old coordinator's
+> dispatch loop. Keep source-bound review and integration gates intact.
+
 ## 1. Start here
 
 Work from the root of your `agent-team-forge` checkout. All paths in this
