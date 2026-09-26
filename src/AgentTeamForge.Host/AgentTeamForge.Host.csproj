@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>atf</AssemblyName>
+    <RootNamespace>AgentTeamForge.Host</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../AgentTeamForge.Business/AgentTeamForge.Business.csproj" />
+    <!-- DAL reference is composition-only (daemon role); endpoints go through Business. -->
+    <ProjectReference Include="../AgentTeamForge.DAL/AgentTeamForge.DAL.csproj" />
+    <PackageReference Include="ModelContextProtocol.Core" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="AgentTeamForge.Tests" />
+  </ItemGroup>
+</Project>
