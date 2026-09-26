@@ -41,11 +41,11 @@ public static class SetupCommand
         {
             mode = ConfiguredMode(StateDirectory.Open(dir));
         }
-        if (mode is not ("headless" or "herdr" or "wt") || (!check && !options.ContainsKey("mode") && !(autostart is not null && apply)))
+        if (mode is not ("headless" or "herdr" or "terminal" or "wt") || (!check && !options.ContainsKey("mode") && !(autostart is not null && apply)))
         {
             if (!check && !(autostart == "off" && apply && !options.ContainsKey("mode") && mode is null))
             {
-                Console.Error.WriteLine("usage: atf setup --mode headless|herdr|wt [--autostart[=off]] [--state-dir DIR] [--apply|--check]");
+                Console.Error.WriteLine("usage: atf setup --mode headless|herdr|terminal|wt [--autostart[=off]] [--state-dir DIR] [--apply|--check]");
                 return 64;
             }
         }
@@ -86,7 +86,9 @@ public static class SetupCommand
             Console.Error.WriteLine("error: setup requires an agents profile");
             return 78;
         }
-        WriteMode(state, mode!);
+        var settings = mode == "terminal" ? SelectMacTerminal(Environment.GetEnvironmentVariable("KITTY_LISTEN_ON"), commandRunner)
+            : new LaunchModeSettings(mode!);
+        WriteMode(state, settings);
 
         if (apply)
         {
@@ -113,7 +115,7 @@ public static class SetupCommand
         }
         else
         {
-            Console.Out.WriteLine($"Launch mode: {mode}. Run: {FormatCommand(binary, ["start", "--state-dir", state.Path])}");
+            Console.Out.WriteLine($"Launch mode: {mode}{(mode == "terminal" ? " (" + settings.TerminalProvider + ")" : "")}. Run: {FormatCommand(binary, ["start", "--state-dir", state.Path])}");
         }
         return 0;
     }
@@ -189,12 +191,19 @@ public static class SetupCommand
             await Task.WhenAll(output, error);
             return await WaitForReadyAsync(state, quiet);
         }
-        // setsid separates the daemon from the invoking shell; the shell only
-        // redirects its streams and then execs the real atf process.
-        var info = new ProcessStartInfo("setsid") { UseShellExecute = false };
-        info.ArgumentList.Add("sh");
+        // Linux: setsid separates the daemon from the invoking shell; the shell only
+        // redirects its streams and then execs the real atf process. Darwin has no
+        // setsid(1): sh backgrounds the daemon and exits, so the launcher PID is not
+        // the daemon's and readiness is judged by the lock owner and endpoint alone.
+        var info = new ProcessStartInfo(OperatingSystem.IsMacOS() ? "/bin/sh" : "setsid") { UseShellExecute = false };
+        if (!OperatingSystem.IsMacOS())
+        {
+            info.ArgumentList.Add("sh");
+        }
         info.ArgumentList.Add("-c");
-        info.ArgumentList.Add("umask 077; exec \"$@\" </dev/null >>\"$ATF_DAEMON_LOG\" 2>&1");
+        info.ArgumentList.Add(OperatingSystem.IsMacOS()
+            ? "umask 077; \"$@\" </dev/null >>\"$ATF_DAEMON_LOG\" 2>&1 &"
+            : "umask 077; exec \"$@\" </dev/null >>\"$ATF_DAEMON_LOG\" 2>&1");
         info.ArgumentList.Add("sh");
         info.ArgumentList.Add(binary);
         info.ArgumentList.Add("daemon");
@@ -203,7 +212,7 @@ public static class SetupCommand
         DaemonEnvironment.Scrub(info.Environment);
         info.Environment["ATF_DAEMON_LOG"] = Path.Combine(state.Path, "daemon.log");
         using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
-        return await WaitForReadyAsync(state, quiet, process);
+        return await WaitForReadyAsync(state, quiet, OperatingSystem.IsMacOS() ? null : process);
     }
 
     public static int Stop(IReadOnlyDictionary<string, string> options)
@@ -224,6 +233,33 @@ public static class SetupCommand
         if (pid is null)
         {
             Console.Error.WriteLine("error: daemon lock is held but its PID is unavailable");
+            return 1;
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            var token = DarwinProcess.CreationToken(pid.Value);
+            if (token is null)
+            {
+                return StoppedDuringCheck(state);
+            }
+
+            if (!IsOurDaemon(pid.Value, state.Path))
+            {
+                Console.Error.WriteLine("error: lock PID is not this state's atf daemon; no signal sent");
+                return 1;
+            }
+            if (!DarwinProcess.SignalIfSame(pid.Value, token.Value, Native.SigTerm))
+            {
+                return StoppedDuringCheck(state);
+            }
+
+            for (var i = 0; i < 50; i++)
+            {
+                if (LockIsFree(state)) { Console.Out.WriteLine($"Stopped daemon {pid.Value}."); return 0; }
+                Thread.Sleep(100);
+            }
+            Console.Error.WriteLine($"error: daemon {pid.Value} did not stop within 5 seconds");
             return 1;
         }
 
@@ -368,6 +404,8 @@ public static class SetupCommand
         try
         {
             using var process = Process.GetProcessById(pid.Value);
+            // Settle owned agents first so their PowerShell wrappers close their tabs.
+            _ = WtInteractiveBackend.RecoverOwned(state.Path);
             process.Kill();
             process.WaitForExit(5000);
             Console.Out.WriteLine($"Stopped daemon {pid.Value}.");
@@ -417,6 +455,21 @@ public static class SetupCommand
 
     static bool IsOurDaemon(int pid, string statePath)
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            try
+            {
+                var args = DarwinProcess.Arguments(pid)?.Args;
+                return args is { Length: >= 4 } && Path.GetFileName(args[0]) == "atf"
+                    && args[1] == "daemon" && args[2] == "--state-dir"
+                    && Path.IsPathFullyQualified(args[3])
+                    && Path.TrimEndingDirectorySeparator(Path.GetFullPath(args[3])) == Path.TrimEndingDirectorySeparator(statePath);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                return false;
+            }
+        }
         try
         {
             var proc = $"/proc/{pid}";
@@ -488,7 +541,7 @@ public static class SetupCommand
         return 0;
     }
 
-    static void WriteMode(StateDirectory state, string mode)
+    static void WriteMode(StateDirectory state, LaunchModeSettings settings)
     {
         var path = Path.Combine(state.Path, SettingsFile);
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -501,7 +554,7 @@ public static class SetupCommand
                 UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
             }))
             {
-                JsonSerializer.Serialize(file, new LaunchModeSettings(mode), SetupCommandJson.Default.LaunchModeSettings);
+                JsonSerializer.Serialize(file, settings, SetupCommandJson.Default.LaunchModeSettings);
                 file.Flush(flushToDisk: true);
             }
 
@@ -572,27 +625,65 @@ public static class SetupCommand
         }
     }
 
-    static string ReadMode(StateDirectory state)
+    static LaunchModeSettings ReadSettings(StateDirectory state)
     {
         var path = Path.Combine(state.Path, SettingsFile);
         var settings = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(path), SetupCommandJson.Default.LaunchModeSettings);
-        if (settings?.Mode is not ("headless" or "herdr" or "wt"))
+        if (settings?.Mode is not ("headless" or "herdr" or "terminal" or "wt")
+            || settings.Mode == "terminal" && (settings.TerminalProvider is not ("terminal" or "kitty")
+                || settings.TerminalProvider == "kitty" && (settings.KittyAddress is null || settings.KittyBinary is null)))
         {
             throw new StateDirectoryException("launch_mode_invalid");
         }
 
-        return settings.Mode;
+        return settings;
+    }
+
+    static string ReadMode(StateDirectory state) => ReadSettings(state).Mode;
+
+    internal static LaunchModeSettings SelectMacTerminal(string? address,
+        Func<string, IReadOnlyList<string>, (int ExitCode, string Output)> runner, string? kittyBinary = null)
+    {
+        if (address is { Length: > 0 } && address.StartsWith("unix:", StringComparison.Ordinal)
+            && (kittyBinary ?? FindExecutable("kitty")) is { } binary)
+        {
+            try
+            {
+                if (runner(binary, ["@", "--to", address, "ls"]).ExitCode == 0)
+                {
+                    return new("terminal", "kitty", address, binary);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception) { }
+        }
+        return new("terminal", "terminal");
+    }
+
+    static string? FindExecutable(string name)
+    {
+        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+        {
+            if (directory.Length > 0 && File.Exists(Path.Combine(directory, name)))
+            {
+                return Path.Combine(directory, name);
+            }
+        }
+        return null;
     }
 
     static bool ModeAvailable(string mode) => mode switch
     {
         "wt" => OperatingSystem.IsWindows(),
-        "herdr" => OperatingSystem.IsLinux(),
+        "terminal" => OperatingSystem.IsMacOS(),
+        "herdr" => OperatingSystem.IsLinux() || OperatingSystem.IsMacOS(),
         _ => true,
     };
 
     internal static string? ConfiguredMode(StateDirectory state) =>
         File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadMode(state) : null;
+
+    internal static LaunchModeSettings? ConfiguredTerminal(StateDirectory state) =>
+        File.Exists(Path.Combine(state.Path, SettingsFile)) && ReadSettings(state) is { Mode: "terminal" } settings ? settings : null;
 
     internal static (int ExitCode, string Output) RunCommand(string tool, IReadOnlyList<string> args)
     {
@@ -644,7 +735,7 @@ public static class SetupCommand
         ? value : "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
 }
 
-public sealed record LaunchModeSettings(string Mode);
+public sealed record LaunchModeSettings(string Mode, string? TerminalProvider = null, string? KittyAddress = null, string? KittyBinary = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower, WriteIndented = true)]
 [JsonSerializable(typeof(LaunchModeSettings))]

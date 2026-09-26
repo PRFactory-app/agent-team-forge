@@ -4,7 +4,7 @@ using System.Text;
 namespace AgentTeamForge.Business.Features.Jobs;
 
 /// <summary>Bounded, immediately readable raw output for each job and its follow-up chain.</summary>
-public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = null)
+public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = null, bool plainOutput = false)
 {
     public const int MaxLogBytes = 10 * 1024 * 1024;
     public const int MaxReadBytes = 64 * 1024;
@@ -41,6 +41,87 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
             file.ReadExactly(bytes);
             return new JobOutput(Encoding.UTF8.GetString(bytes), Convert.ToBase64String(bytes), position + count, start, end, truncated);
         }
+    }
+
+    /// <summary>Pages complete captured lines. The cursor is an absolute log byte offset.</summary>
+    public JobActivityPage ReadActivity(string jobId, string backend, long afterCursor = 0, int limit = JobActivity.MaxPageSize)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(afterCursor);
+        if (limit is < 1 or > JobActivity.MaxPageSize)
+        {
+            throw new ArgumentOutOfRangeException(nameof(limit));
+        }
+
+        var entries = new List<ActivityEntry>();
+        using var line = new MemoryStream();
+        var cursor = afterCursor;
+        var position = afterCursor;
+        while (entries.Count < limit)
+        {
+            var page = Read(jobId, position);
+            if (page.Truncated)
+            {
+                // The tail was trimmed past our position (possibly between pages): restart at the new start.
+                line.SetLength(0);
+                cursor = page.StartOffset;
+                position = page.StartOffset;
+            }
+            var bytes = Convert.FromBase64String(page.DataBase64);
+            if (bytes.Length == 0)
+            {
+                break;
+            }
+            for (var i = 0; i < bytes.Length; i++)
+            {
+                if (bytes[i] != (byte)'\n')
+                {
+                    if (line.Length <= 4 * 1024 * 1024)
+                    {
+                        line.WriteByte(bytes[i]);
+                    }
+                    continue;
+                }
+                var text = line.Length <= 4 * 1024 * 1024 ? Encoding.UTF8.GetString(line.ToArray()).TrimEnd('\r') : "";
+                line.SetLength(0);
+                foreach (var entry in JobActivity.Normalize(plainOutput ? "plain" : backend, text))
+                {
+                    entries.Add(entry);
+                }
+                cursor = position + i + 1;
+                if (entries.Count >= limit)
+                {
+                    return new JobActivityPage(entries, cursor);
+                }
+            }
+            position = page.NextOffset;
+            if (position >= page.EndOffset)
+            {
+                break;
+            }
+        }
+        return new JobActivityPage(entries, cursor);
+    }
+
+    public string? LastActivity(string jobId, string backend)
+    {
+        var end = Read(jobId, 0, 1);
+        var start = Math.Max(end.StartOffset, end.EndOffset - MaxReadBytes);
+        string? last = null;
+        while (start < end.EndOffset)
+        {
+            var page = ReadActivity(jobId, backend, start);
+            if (page.Entries.Count > 0)
+            {
+                var text = page.Entries[^1].Text.Replace('\r', ' ').Replace('\n', ' ').Trim();
+                last = text.Length > 160 ? text[..160] + "…" : text;
+            }
+            if (page.NextCursor <= start)
+            {
+                break;
+            }
+            start = page.NextCursor;
+        }
+        return last;
     }
 
     /// <summary>Returns a synchronous sink used by the backend's stdout and stderr readers.</summary>

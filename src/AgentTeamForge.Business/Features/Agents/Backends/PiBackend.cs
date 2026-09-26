@@ -38,6 +38,7 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
         {
             info.ArgumentList.Add(argument);
         }
+        WindowsCliLaunch.Configure(info, "pi", executable == "pi");
 
         Process process;
         try

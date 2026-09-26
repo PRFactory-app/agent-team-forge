@@ -8,6 +8,13 @@ namespace AgentTeamForge.Tests.Features.Setup;
 public sealed class SetupCommandTests
 {
     [Fact]
+    public void WindowsDrivePathIsALocalPiExtensionSource()
+    {
+        Assert.True(ClientSetup.IsLocalPackageSource(@"C:\Program Files\AgentTeamForge\extensions\pi-wake"));
+        Assert.False(ClientSetup.IsLocalPackageSource("npm:pi-mcp-adapter"));
+    }
+
+    [Fact]
     public void StableBinaryFollowsCurrentReleaseLink()
     {
         using var temp = new TempStateDir();
@@ -45,6 +52,20 @@ public sealed class SetupCommandTests
         using var temp = new TempStateDir();
         var dir = temp.File("state");
         Assert.Equal(64, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "wt", ["state-dir"] = dir }));
+        Assert.False(Directory.Exists(dir));
+    }
+
+    [Fact]
+    public void MacTerminalModeIsRejectedOffMacBeforeCreatingState()
+    {
+        if (OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        using var temp = new TempStateDir();
+        var dir = temp.File("state");
+        Assert.Equal(64, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "terminal", ["state-dir"] = dir }));
         Assert.False(Directory.Exists(dir));
     }
 

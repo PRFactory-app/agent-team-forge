@@ -1,6 +1,23 @@
 # Linux quickstart
 
-Windows Terminal (`wt`) mode: **ported, untested on Windows**. Windows validation remains on a Windows machine.
+Windows Terminal (`wt`) mode and its console retry, owned-tab cleanup, Windows
+hooks, Pi wake extension, shim launch, and private-file ACL checks are **ported,
+untested on Windows**. Windows validation remains on a Windows machine.
+
+macOS arm64: **prepared, untested**. Install the `osx-arm64` release bundle with
+`install.sh`, then run `atf setup --mode terminal --apply` and `atf start`.
+Terminal.app is the default host and needs no extra install. Its AppleScript
+`do script` launch may open a window rather than a tab; the tester should check
+the placement. If kitty is
+running with a `KITTY_LISTEN_ON=unix:...` remote-control socket and responds
+to `kitty @ --to "$KITTY_LISTEN_ON" ls` during setup, setup selects kitty tabs.
+The selected host is saved for daemon restarts; if kitty later becomes
+unavailable, jobs report a launch failure rather than switching hosts.
+`atf setup --mode herdr --apply` is also available after `brew install herdr`;
+`atf setup --mode headless --apply` selects background agents. Claude native
+wake is unavailable on macOS; poll `get_job`
+to check for results. Please report the daemon log and `atf doctor` output from
+the volunteer run.
 
 ## Build or publish
 
