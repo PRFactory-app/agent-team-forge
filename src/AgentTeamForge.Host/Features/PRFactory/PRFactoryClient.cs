@@ -108,10 +108,7 @@ public sealed class PRFactoryClient(HttpClient httpClient)
     {
         using var response = await httpClient.GetAsync($"api/worker/work-items/{id:D}/agent-commands?leaseToken={lease:D}", ct);
         RejectToken(response.StatusCode);
-        if (response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.NotFound)
-        {
-            throw new PRFactoryLeaseLostException(id);
-        }
+        RejectLostLease(response.StatusCode, id);
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryCommandDrainResponse, ct))?.Commands ?? [];
     }
@@ -121,6 +118,7 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         using var response = await httpClient.PostAsJsonAsync($"api/worker/work-items/{id:D}/agent-commands/ack",
             new PRFactoryCommandAckRequest(lease, acks), PRFactoryWorkItemJson.Default.PRFactoryCommandAckRequest, ct);
         RejectToken(response.StatusCode);
+        RejectLostLease(response.StatusCode, id);
         response.EnsureSuccessStatusCode();
     }
 
@@ -129,6 +127,7 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         using var response = await httpClient.PostAsJsonAsync($"api/worker/work-items/{id:D}/agent-stream",
             batch, PRFactoryWorkItemJson.Default.PRFactoryStreamBatch, ct);
         RejectToken(response.StatusCode);
+        RejectLostLease(response.StatusCode, id);
         response.EnsureSuccessStatusCode();
         var receipt = await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryStreamResponse, ct);
         if (receipt?.Accepted != true)
@@ -144,6 +143,7 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         using var response = await httpClient.PostAsJsonAsync($"api/worker/artefacts/{id:D}",
             new PRFactoryArtefactRequest(artefacts, lease), PRFactoryWorkItemJson.Default.PRFactoryArtefactRequest, ct);
         RejectToken(response.StatusCode);
+        RejectLostLease(response.StatusCode, id);
         response.EnsureSuccessStatusCode();
     }
 
@@ -152,6 +152,7 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         using var response = await httpClient.PostAsJsonAsync($"api/worker/complete/{id:D}",
             new PRFactoryCompletionRequest(true, markdown, null, null, string.Empty, lease), PRFactoryWorkItemJson.Default.PRFactoryCompletionRequest, ct);
         RejectToken(response.StatusCode);
+        RejectLostLease(response.StatusCode, id);
         response.EnsureSuccessStatusCode();
         var receipt = await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryCompletionResponse, ct);
         if (receipt?.Accepted != true)
@@ -165,6 +166,7 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         using var response = await httpClient.PostAsJsonAsync($"api/worker/fail/{id:D}",
             new PRFactoryFailureRequest(error, string.Empty, false, string.Empty, lease), PRFactoryWorkItemJson.Default.PRFactoryFailureRequest, ct);
         RejectToken(response.StatusCode);
+        RejectLostLease(response.StatusCode, id);
         response.EnsureSuccessStatusCode();
         var receipt = await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryFailureResponse, ct);
         if (receipt?.Acknowledged != true)
@@ -178,6 +180,14 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         if (status is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
         {
             throw new WorkerTokenRejectedException();
+        }
+    }
+
+    static void RejectLostLease(HttpStatusCode status, Guid id)
+    {
+        if (status is HttpStatusCode.Conflict or HttpStatusCode.NotFound)
+        {
+            throw new PRFactoryLeaseLostException(id);
         }
     }
 }

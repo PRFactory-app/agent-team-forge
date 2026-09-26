@@ -64,6 +64,23 @@ public sealed class PRFactoryTeamStore(JobDatabase database)
         return command.ExecuteScalar() as string;
     }
 
+    public IReadOnlyList<string> MemberJobs(string server, Guid id)
+    {
+        var jobs = new List<string>();
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT job_id FROM prfactory_members WHERE server=$server AND work_item_id=$id";
+        command.Parameters.AddWithValue("$server", server);
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            jobs.Add(reader.GetString(0));
+        }
+
+        return jobs;
+    }
+
     public void RecordMember(string server, Guid id, string member, int turn, string jobId)
     {
         using var connection = database.OpenConnection();

@@ -10,7 +10,7 @@ public sealed class PRFactoryWorkItems(
     string server, IReadOnlyList<RepositoryMapping> repositories, PRFactoryTeamStore teams,
     PRFactoryClient client, Func<SubmitJobRequest, JobResult> submit, Func<string, JobRecord?> getJob,
     Action onAccepted, Func<string, string?>? leadSessionFor = null, Action<string>? log = null,
-    ExternalTeam? externalTeam = null)
+    ExternalTeam? externalTeam = null, Func<string, JobResult>? stopJob = null)
 {
     public async Task TickAsync(Guid? machineId, CancellationToken ct)
     {
@@ -54,6 +54,26 @@ public sealed class PRFactoryWorkItems(
     }
 
     async Task AdvanceAsync(PRFactoryTeamRecord team, CancellationToken ct)
+    {
+        try
+        {
+            await AdvanceCoreAsync(team, ct);
+        }
+        catch (PRFactoryLeaseLostException)
+        {
+            var externals = teams.ExternalMembers(server, team.WorkItemId);
+            if (externals.Count > 0)
+            {
+                externalTeam!.CloseTeam(externals[0].TeamId);
+                teams.MarkExternalClosed(server, team.WorkItemId);
+            }
+            StopManagedJobs(team.WorkItemId);
+            teams.Finish(server, team.WorkItemId, "failed");
+            log?.Invoke($"PRFactory work item {team.WorkItemId:D} lease_lost; local team closed");
+        }
+    }
+
+    async Task AdvanceCoreAsync(PRFactoryTeamRecord team, CancellationToken ct)
     {
         var item = JsonSerializer.Deserialize(team.ClaimedJson, PRFactoryWorkItemJson.Default.PRFactoryWorkItem)
             ?? throw new InvalidDataException("Invalid persisted PRFactory claim");
@@ -110,24 +130,7 @@ public sealed class PRFactoryWorkItems(
             return;
         }
 
-        bool externalRepliesDrained;
-        try
-        {
-            externalRepliesDrained = externalNames.Length == 0 || await AdvanceExternalAsync(item, externalNames, ct);
-        }
-        catch (PRFactoryLeaseLostException)
-        {
-            // Server cancel or reap: stop renewing join tickets and drop the item instead of retrying forever.
-            var externals = teams.ExternalMembers(server, item.Id);
-            if (externals.Count > 0)
-            {
-                externalTeam!.CloseTeam(externals[0].TeamId);
-                teams.MarkExternalClosed(server, item.Id);
-            }
-            teams.Finish(server, item.Id, "failed");
-            log?.Invoke($"PRFactory work item {item.Id:D} lease lost; external team closed");
-            return;
-        }
+        var externalRepliesDrained = externalNames.Length == 0 || await AdvanceExternalAsync(item, externalNames, ct);
 
         var active = 0;
         var allJobs = new List<JobRecord> { lead };
@@ -203,7 +206,8 @@ public sealed class PRFactoryWorkItems(
         }
         var failed = allJobs.FirstOrDefault(j => j.Status != JobStatus.Completed);
         await FinishAsync(team, item, failed is null || !waitForManaged && lead.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation,
-            failed?.ReasonCode ?? "job failed", repo.Directory, ct, lead.ResultText);
+            failed?.ReasonCode ?? "job failed", repo.Directory, ct,
+            lead.ResultText ?? (!waitForManaged ? "External members completed their work; replies are in the agent stream." : null));
     }
 
     JobRecord? SubmitMember(PRFactoryWorkItem item, string member,
@@ -403,12 +407,31 @@ public sealed class PRFactoryWorkItems(
         if (success)
         {
             await client.CompleteAsync(item.Id, item.LeaseToken, result, ct);
+            StopManagedJobs(item.Id);
             teams.Finish(server, item.Id, "completed");
         }
         else
         {
             await client.FailAsync(item.Id, item.LeaseToken, error, ct);
+            StopManagedJobs(item.Id);
             teams.Finish(server, item.Id, error.StartsWith("multi-repository", StringComparison.Ordinal) ? "refused" : "failed");
+        }
+    }
+
+    void StopManagedJobs(Guid itemId)
+    {
+        foreach (var jobId in teams.MemberJobs(server, itemId))
+        {
+            if (getJob(jobId)?.Status is not (JobStatus.Queued or JobStatus.Running))
+            {
+                continue;
+            }
+
+            var stopped = stopJob?.Invoke(jobId) ?? throw new InvalidOperationException("PRFactory job stop is unavailable");
+            if (stopped.Error is not null)
+            {
+                throw new InvalidOperationException($"PRFactory job stop failed: {stopped.Error}");
+            }
         }
     }
 
