@@ -2,26 +2,31 @@ using AgentTeamForge.DAL.Sqlite;
 
 namespace AgentTeamForge.DAL.Features.Jobs;
 
-public sealed record PRFactoryTeamRecord(string Server, Guid WorkItemId, string ClaimedJson, string State, bool Uploaded);
+public sealed record PRFactoryTeamRecord(string Server, Guid WorkItemId, string ClaimedJson, string State, bool Uploaded,
+    Guid? MachineId, string? AtfJobId, string AcceptanceState);
 public sealed record PRFactoryExternalRecord(string Member, string ActualName, string TeamId, string TicketToken,
     DateTimeOffset TicketExpires, bool TicketUploaded, long ReplySeq, bool Closed);
 public sealed record PRFactoryCommandReceipt(bool Accepted, string? Reason);
 
-/// <summary>Local work ownership and job mappings; the server acceptance protocol is a later slice.</summary>
+/// <summary>Local work ownership, durable acceptance identity, and job mappings.</summary>
 public sealed class PRFactoryTeamStore(JobDatabase database)
 {
-    public bool CreateIfAbsent(string server, Guid id, string claimedJson)
+    public bool CreateIfAbsent(string server, Guid id, string claimedJson, Guid? machineId = null)
     {
         using var connection = database.OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT OR IGNORE INTO prfactory_teams(server, work_item_id, claimed_json, created_at, updated_at)
-            VALUES ($server, $id, $json, $now, $now)
+            INSERT OR IGNORE INTO prfactory_teams(server, work_item_id, claimed_json, created_at, updated_at,
+                machine_id, atf_job_id, acceptance_state)
+            VALUES ($server, $id, $json, $now, $now, $machine, $job, $acceptance)
             """;
         command.Parameters.AddWithValue("$server", server);
         command.Parameters.AddWithValue("$id", id.ToString("D"));
         command.Parameters.AddWithValue("$json", claimedJson);
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$machine", machineId is Guid machine ? machine.ToString("D") : DBNull.Value);
+        command.Parameters.AddWithValue("$job", machineId is null ? DBNull.Value : "atf:" + Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("$acceptance", machineId is null ? "legacy" : "pending");
         return command.ExecuteNonQuery() == 1;
     }
 
@@ -29,11 +34,11 @@ public sealed class PRFactoryTeamStore(JobDatabase database)
     {
         using var connection = database.OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT claimed_json, state, uploaded FROM prfactory_teams WHERE server=$server AND work_item_id=$id";
+        command.CommandText = "SELECT claimed_json, state, uploaded, machine_id, atf_job_id, acceptance_state FROM prfactory_teams WHERE server=$server AND work_item_id=$id";
         command.Parameters.AddWithValue("$server", server);
         command.Parameters.AddWithValue("$id", id.ToString("D"));
         using var reader = command.ExecuteReader();
-        return reader.Read() ? new PRFactoryTeamRecord(server, id, reader.GetString(0), reader.GetString(1), reader.GetInt32(2) != 0) : null;
+        return reader.Read() ? ReadTeam(server, id, reader, 0) : null;
     }
 
     public IReadOnlyList<PRFactoryTeamRecord> Pending(string server)
@@ -41,15 +46,51 @@ public sealed class PRFactoryTeamStore(JobDatabase database)
         var rows = new List<PRFactoryTeamRecord>();
         using var connection = database.OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT work_item_id, claimed_json, state, uploaded FROM prfactory_teams WHERE server=$server AND state='claimed' ORDER BY created_at";
+        command.CommandText = "SELECT work_item_id, claimed_json, state, uploaded, machine_id, atf_job_id, acceptance_state FROM prfactory_teams WHERE server=$server AND state='claimed' ORDER BY created_at";
         command.Parameters.AddWithValue("$server", server);
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            rows.Add(new(server, Guid.Parse(reader.GetString(0)), reader.GetString(1), reader.GetString(2), reader.GetInt32(3) != 0));
+            rows.Add(ReadTeam(server, Guid.Parse(reader.GetString(0)), reader, 1));
         }
 
         return rows;
+    }
+
+    static PRFactoryTeamRecord ReadTeam(string server, Guid id, Microsoft.Data.Sqlite.SqliteDataReader reader, int offset) =>
+        new(server, id, reader.GetString(offset), reader.GetString(offset + 1), reader.GetInt32(offset + 2) != 0,
+            reader.IsDBNull(offset + 3) ? null : Guid.Parse(reader.GetString(offset + 3)),
+            reader.IsDBNull(offset + 4) ? null : reader.GetString(offset + 4), reader.GetString(offset + 5));
+
+    public IReadOnlyList<PRFactoryTeamRecord> ReconciliationNeeded(string server)
+    {
+        var rows = new List<PRFactoryTeamRecord>();
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT work_item_id, claimed_json, state, uploaded, machine_id, atf_job_id, acceptance_state FROM prfactory_teams WHERE server=$server AND acceptance_state='reconciliation_needed' ORDER BY created_at";
+        command.Parameters.AddWithValue("$server", server);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            rows.Add(ReadTeam(server, Guid.Parse(reader.GetString(0)), reader, 1));
+        }
+        return rows;
+    }
+
+    public void SetAcceptance(string server, Guid id, string acceptanceState)
+    {
+        if (acceptanceState is not ("accepted" or "legacy" or "reconciliation_needed"))
+        {
+            throw new ArgumentOutOfRangeException(nameof(acceptanceState));
+        }
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE prfactory_teams SET acceptance_state=$acceptance, updated_at=$now WHERE server=$server AND work_item_id=$id";
+        command.Parameters.AddWithValue("$server", server);
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        command.Parameters.AddWithValue("$acceptance", acceptanceState);
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.ExecuteNonQuery();
     }
 
     public string? MemberJob(string server, Guid id, string member, int turn)
@@ -62,6 +103,23 @@ public sealed class PRFactoryTeamStore(JobDatabase database)
         command.Parameters.AddWithValue("$member", member);
         command.Parameters.AddWithValue("$turn", turn);
         return command.ExecuteScalar() as string;
+    }
+
+    public IReadOnlyList<string> MemberJobs(string server, Guid id)
+    {
+        var jobs = new List<string>();
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT job_id FROM prfactory_members WHERE server=$server AND work_item_id=$id";
+        command.Parameters.AddWithValue("$server", server);
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            jobs.Add(reader.GetString(0));
+        }
+
+        return jobs;
     }
 
     public void RecordMember(string server, Guid id, string member, int turn, string jobId)

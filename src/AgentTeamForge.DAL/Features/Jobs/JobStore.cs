@@ -477,7 +477,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 ParentJobId = NullableString(reader, 10),
                 LeadSessionId = NullableString(reader, 11),
                 TargetAgent = reader.GetString(12),
-                Options = reader.GetString(13),
+                Options = NullableString(reader, 13),
                 LeadWorkspace = NullableString(reader, 14),
             });
         }

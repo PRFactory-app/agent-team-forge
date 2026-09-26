@@ -47,21 +47,17 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
             WorktreePath = r.WorktreePath,
             WorktreeBranch = r.WorktreeBranch,
             Backend = r.Backend,
+            Model = JobOptions.Read(r.Options ?? "", "model"),
+            Effort = JobOptions.Read(r.Options ?? "", "effort"),
             SessionId = r.SessionId,
             ParentJobId = r.ParentJobId,
             LeadSessionId = r.LeadSessionId,
             LeadWorkspace = r.LeadWorkspace,
             TargetAgent = r.TargetAgent,
-            Model = Option(r.Options, "model"),
-            Effort = Option(r.Options, "effort"),
             LastActivity = logs?.LastActivity(r.JobId, r.Backend ?? ""),
         }).ToList();
         return new JobListResult(new JobListPage(jobs, limit, hasMore, hasMore ? jobs[^1].JobId : null), null);
     }
-
-    static string? Option(string? options, string name) => options?.Split(';', StringSplitOptions.RemoveEmptyEntries)
-        .Select(part => part.Split('=', 2))
-        .FirstOrDefault(part => part is [var key, { Length: > 0 }] && key == name)?[1];
 }
 
 /// <summary>Optional exact status filter, page size and opaque continuation cursor; no other query surface.</summary>
@@ -77,6 +73,8 @@ public sealed record ListJobsRequest(string? Status = null, int? Limit = null, s
 public sealed record JobSummary(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)
 {
     public string? Backend { get; init; }
+    public string? Model { get; init; }
+    public string? Effort { get; init; }
     public string? SessionId { get; init; }
     public string? ParentJobId { get; init; }
     public string? WorktreePath { get; init; }
@@ -84,8 +82,6 @@ public sealed record JobSummary(string JobId, string Status, string? ReasonCode,
     public string? LeadSessionId { get; init; }
     public string? LeadWorkspace { get; init; }
     public string? TargetAgent { get; init; }
-    public string? Model { get; init; }
-    public string? Effort { get; init; }
     public string Light => Status switch
     {
         JobStatus.Queued or "waiting" or "parked" => "yellow",

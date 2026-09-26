@@ -39,17 +39,18 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         var started = DateTimeOffset.UtcNow;
         if (request.ResumeSessionId is { } resumeId && _liveSessions.TryRemove(resumeId, out var live))
         {
-            return new Run(_control, _transcripts, request, live, started, RememberSession);
+            var (model, effort) = InteractiveLaunch.Selection(request.Options);
+            if (live.Model == model && live.Effort == effort)
+            {
+                return new Run(_control, _transcripts, request, live, started, RememberSession);
+            }
+            _control.StopOwned(live);
         }
 
         var agentName = "atf" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(10));
         var piDirectory = _kind == InteractiveAgentKind.Pi ? PiDirectory(request) : null;
         var launch = new InteractiveLaunch(_kind, agentName, cwd, request.ResumeSessionId, piDirectory,
-            Path.Combine(_stateRoot, "herdr", agentName + ".bootstrap"))
-        {
-            Model = Option(request.Options, "model"),
-            Effort = Option(request.Options, "effort"),
-        };
+            Path.Combine(_stateRoot, "herdr", agentName + ".bootstrap")).WithSelection(request.Options);
         try
         {
             // Dispatch calls Start on a worker. A failure after session creation is uncertain;
@@ -64,9 +65,6 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     }
 
     void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions[sessionId] = launch;
-
-    static string? Option(string options, string name) => options.Split(';', StringSplitOptions.RemoveEmptyEntries)
-        .Select(part => part.Split('=', 2)).FirstOrDefault(pair => pair is [var key, { Length: > 0 }] && key == name)?[1];
 
     public bool StopIdleSession(string sessionId)
     {
@@ -300,6 +298,20 @@ internal sealed record InteractiveLaunch(InteractiveAgentKind Kind, string Agent
 {
     public string? Model { get; init; }
     public string? Effort { get; init; }
+
+    public InteractiveLaunch WithSelection(string options)
+    {
+        var selection = Selection(options);
+        return this with { Model = selection.Model, Effort = selection.Effort };
+    }
+
+    public static (string? Model, string? Effort) Selection(string options)
+    {
+        var pairs = options.Split(';', StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => part.Split('=', 2)).Where(pair => pair.Length == 2).ToArray();
+        return (pairs.FirstOrDefault(pair => pair[0] == "model")?.ElementAtOrDefault(1),
+            pairs.FirstOrDefault(pair => pair[0] == "effort")?.ElementAtOrDefault(1));
+    }
 }
 
 internal enum InteractiveAgentStatus { Idle, Working, Done, Blocked, Unknown, Gone }

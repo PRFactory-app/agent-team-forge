@@ -1,3 +1,4 @@
+using AgentTeamForge.DAL.Files;
 using System.Diagnostics;
 using AgentTeamForge.DAL.Features.Jobs;
 
@@ -39,15 +40,7 @@ public static class JobWorktree
         try
         {
             var parent = Path.GetDirectoryName(job.WorktreePath)!;
-            if (OperatingSystem.IsWindows())
-            {
-                Directory.CreateDirectory(parent);
-            }
-            else
-            {
-                Directory.CreateDirectory(parent,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            }
+            PrivateFiles.CreateDirectory(parent);
 
             return Git(job.Cwd, AddTimeout, "worktree", "add", "-b", job.WorktreeBranch, job.WorktreePath, job.WorktreeBase) is not null;
         }

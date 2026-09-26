@@ -22,9 +22,9 @@ public sealed class PiBackendTests : IDisposable
         echo '{"type":"session","version":3,"id":"'"$sid"'"}'
         echo 'not json noise'
         echo '{"type":"agent_start"}'
-        if [ "$model" = hang ]; then sleep 300 & echo $! > child.pid; wait; fi
+        if [ "$model" = openai-codex/hang ]; then sleep 300 & echo $! > child.pid; wait; fi
         echo '{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"ignored"}]}}'
-        if [ "$model" = error ]; then
+        if [ "$model" = openai-codex/error ]; then
           echo '{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"boom"}}'
         else
           echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"echo:'"$input"'"},{"type":"thinking","thinking":"x"},{"type":"text","text":"@'"$(basename "$PWD")"'"}],"stopReason":"stop"}}'
@@ -78,6 +78,15 @@ public sealed class PiBackendTests : IDisposable
         Assert.Equal(["--model", "openai-codex/gpt-6-luna"], argv.SkipWhile(a => a != "--model").Take(2));
         Assert.Equal(["--thinking", "low"], argv.SkipWhile(a => a != "--thinking").Take(2));
         Assert.DoesNotContain("--session-id", argv);
+    }
+
+    [Theory]
+    [InlineData("effort=ultra")]
+    [InlineData("thinking=invalid")]
+    public void UnknownThinkingLevelIsOmitted(string options)
+    {
+        var args = PiBackend.BuildArguments(Request("task", options));
+        Assert.DoesNotContain("--thinking", args);
     }
 
     [Fact]

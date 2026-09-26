@@ -121,6 +121,7 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DELETE FROM schema_migrations WHERE version=12;
                 DROP TABLE external_sender_cursors;
                 DROP INDEX external_messages_sender_position;
                 ALTER TABLE external_messages DROP COLUMN sender_seq;
@@ -174,6 +175,10 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                ALTER TABLE prfactory_teams DROP COLUMN acceptance_state;
+                ALTER TABLE prfactory_teams DROP COLUMN atf_job_id;
+                ALTER TABLE prfactory_teams DROP COLUMN machine_id;
+                DELETE FROM schema_migrations WHERE version=12;
                 DROP TABLE external_sender_cursors;
                 DROP INDEX external_messages_sender_position;
                 ALTER TABLE external_messages DROP COLUMN sender_seq;

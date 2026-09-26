@@ -12,7 +12,7 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// read or written once the admission gate is closed.
 /// </summary>
 public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLimits limits, bool testProfile, AdmissionGate admission,
-    IReadOnlyCollection<string>? backends = null)
+    IReadOnlyCollection<string>? backends = null, Func<string, IReadOnlyCollection<string>>? discoverModels = null)
 {
     public const string Operation = "job_submit";
 
@@ -45,15 +45,25 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
             return JobResult.Fail(JobErrors.CwdNotGitRepo);
         }
 
-        var options = $"behavior={behavior};hold={(request.Hold ? 1 : 0)};worktree={(request.Worktree ? 1 : 0)}";
-        if (request.Model is not null)
+        (string? model, string? effort) selection;
+        try
         {
-            options += $";model={request.Model}";
+            selection = ResolveModel(backend, request.Model, request.Effort);
+        }
+        catch (ArgumentException ex)
+        {
+            return JobResult.Fail(ex.Message);
         }
 
-        if (request.Effort is not null)
+        var options = $"behavior={behavior};hold={(request.Hold ? 1 : 0)};worktree={(request.Worktree ? 1 : 0)}";
+        if (selection.model is not null)
         {
-            options += $";effort={request.Effort}";
+            options += $";model={selection.model}";
+        }
+
+        if (selection.effort is not null)
+        {
+            options += $";effort={selection.effort}";
         }
 
         return Admit(Operation, request.IdempotencyKey, request.Instruction, options, backend,
@@ -69,8 +79,10 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
 
     // These values become CLI arguments (and on Windows may pass through a command shim).
     public static bool ValidOption(string? value) => value is null ||
-        (value.Length is > 0 and <= 128 && value[0] != '-'
-            && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '/' or ':' or '+' or '-' or '@'));
+        (value.Length is > 0 and <= 128 && value[0] != '-' && !value.Any(c => char.IsControl(c) || c is ';' or '=' or '"' or '\'' or '`' or '$' or '&' or '|' or '<' or '>'));
+
+    internal (string? model, string? effort) ResolveModel(string backend, string? model, string? effort) =>
+        ModelSelection.Resolve(backend, model, effort, discoverModels);
 
     internal bool IsValid(string? key, string? instruction) =>
         !string.IsNullOrWhiteSpace(key) && key.Length <= limits.MaxIdempotencyKeyChars

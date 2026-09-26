@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 11;
+    public const int CurrentVersion = 12;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -225,7 +225,14 @@ static class Schema
         CREATE INDEX external_messages_sender_position ON external_messages(team_id,recipient,sender,sender_seq);
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11];
+    /// <summary>v12: durable client identity and server acceptance state.</summary>
+    const string V12 = """
+        ALTER TABLE prfactory_teams ADD COLUMN machine_id TEXT;
+        ALTER TABLE prfactory_teams ADD COLUMN atf_job_id TEXT;
+        ALTER TABLE prfactory_teams ADD COLUMN acceptance_state TEXT NOT NULL DEFAULT 'legacy';
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

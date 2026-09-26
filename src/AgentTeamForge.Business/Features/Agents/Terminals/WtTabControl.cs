@@ -249,12 +249,6 @@ internal sealed class WtTabControl : IWtTabControl
         {
             case InteractiveAgentKind.Claude:
                 args.AddRange([WindowsAgentBinary("claude"), "--permission-mode", "bypassPermissions"]);
-                if (launch.ResumeSessionId is { } claudeId)
-                {
-                    args.AddRange(["--resume", claudeId]);
-                }
-                args.Add("--");
-
                 break;
             case InteractiveAgentKind.Codex:
                 args.AddRange([WindowsAgentBinary("codex"), "--dangerously-bypass-approvals-and-sandbox", "-C", launch.WorkingDirectory]);
@@ -263,23 +257,44 @@ internal sealed class WtTabControl : IWtTabControl
                     // Hooks only feed the Windows tab state marker; elsewhere they would just replace user hooks.
                     args.AddRange(CodexHookArguments(HookLauncher(launch)));
                 }
-                if (launch.ResumeSessionId is { } codexId)
-                {
-                    args.AddRange(["resume", codexId]);
-                }
-
                 break;
             case InteractiveAgentKind.Pi:
                 args.AddRange(WindowsPiLauncher());
                 args.AddRange(["-a", "--session-dir", launch.PiSessionDirectory!,
                     "--exclude-tools", "ask_user,ask_question,ask_human,request_input"]);
-                if (launch.ResumeSessionId is not null)
-                {
-                    args.Add("--continue");
-                }
-
                 break;
             default: throw new ArgumentOutOfRangeException(nameof(launch));
+        }
+        if (launch.Model is { Length: > 0 } model)
+        {
+            args.AddRange(launch.Kind switch
+            {
+                InteractiveAgentKind.Codex => ["-m", model],
+                InteractiveAgentKind.Pi => ["--model", model.Contains('/') ? model : "openai-codex/" + model],
+                _ => ["--model", model],
+            });
+        }
+        if (launch.Effort is { Length: > 0 } effort)
+        {
+            switch (launch.Kind)
+            {
+                case InteractiveAgentKind.Claude: args.AddRange(["--effort", effort]); break;
+                case InteractiveAgentKind.Codex: args.AddRange(["-c", "model_reasoning_effort=\"" + effort + "\""]); break;
+                case InteractiveAgentKind.Pi when PiThinking.Valid(effort): args.AddRange(["--thinking", effort]); break;
+            }
+        }
+        if (launch.ResumeSessionId is { } resumeId)
+        {
+            switch (launch.Kind)
+            {
+                case InteractiveAgentKind.Claude: args.AddRange(["--resume", resumeId]); break;
+                case InteractiveAgentKind.Codex: args.AddRange(["resume", resumeId]); break;
+                case InteractiveAgentKind.Pi: args.Add("--continue"); break;
+            }
+        }
+        if (launch.Kind == InteractiveAgentKind.Claude)
+        {
+            args.Add("--");
         }
         var command = args[0];
         if (command.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))

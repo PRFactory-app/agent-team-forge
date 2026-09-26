@@ -1,3 +1,4 @@
+using AgentTeamForge.DAL.Files;
 using System.Text.Json.Nodes;
 using System.Text.Json;
 using AgentTeamForge.Host.Hosting;
@@ -258,12 +259,7 @@ internal static class ClientSetup
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            using (var file = new FileStream(temporary, new FileStreamOptions
-            {
-                Mode = FileMode.CreateNew,
-                Access = FileAccess.Write,
-                UnixCreateMode = OperatingSystem.IsWindows() ? null : StateDirectory.PrivateFile,
-            }))
+            using (var file = new FileStream(temporary, PrivateFiles.Options(FileMode.CreateNew, FileAccess.Write)))
             {
                 using var writer = new Utf8JsonWriter(file, new JsonWriterOptions { Indented = true });
                 value.WriteTo(writer);
