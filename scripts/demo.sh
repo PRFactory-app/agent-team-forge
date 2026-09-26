@@ -8,11 +8,9 @@
 # committed result -> same-key submit is `existing` with 1 attempt/1 invocation
 # -> result survives a daemon SIGKILL + restart.
 #
-# Safety: the scenario harness (SpikeRig) creates its own unique 0700 state dir
-# (/tmp/atf-<random>), starts/kills only processes it holds by handle, bounds
-# every wait, and deletes only that dir. This script deletes nothing: it writes
-# evidence to a new run dir under .run/ (gitignored) and only *reports* any new
-# /tmp/atf-* leftovers. No models, Herdr, services, or uploads.
+# Safety: the scenario harness (SpikeRig) creates disposable state dirs under
+# this run's unique temp root. This script removes only that root at exit,
+# including after a bounded test failure. No models, Herdr, services, or uploads.
 #
 # Usage: scripts/demo.sh            build (Release) and run against the JIT apphost
 #        ATF_DEMO_BIN=path/atf scripts/demo.sh   run against a published binary
@@ -50,8 +48,6 @@ fi
 
 mkdir -p .run
 RUN_DIR="$(mktemp -d "$ROOT/.run/demo-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
-list_tmp_state() { find /tmp -maxdepth 1 -name 'atf-*' -user "$(id -u)" 2>/dev/null | sort; }
-list_tmp_state > "$RUN_DIR/tmp-before.txt"
 
 echo "== AgentTeamForge fake-core demo (TEST CHECKPOINT: fake backend, not a real-agent/product approval)"
 echo "   sdk $actual | binary ${ATF_DEMO_BIN:-built apphost (JIT)} | evidence $RUN_DIR"
@@ -64,14 +60,23 @@ if ! timeout --kill-after=10 "$BUILD_TIMEOUT" "$DOTNET" build AgentTeamForge.sln
 fi
 
 echo "== run scenario (bounded ${TEST_TIMEOUT}s)"
+ATF_TEST_TMP_ROOT="$(mktemp -d /tmp/atf-demo-XXXXXX)"
+export ATF_TEST_TMP_ROOT
+cleanup_tmp() {
+  local status="$1"
+  if [[ "$status" != 0 && "${ATF_KEEP_TMP:-}" == 1 ]]; then
+    echo "   kept temp state: $ATF_TEST_TMP_ROOT" >&2
+  else
+    rm -rf -- "$ATF_TEST_TMP_ROOT" || status=1
+  fi
+  exit "$status"
+}
+trap 'cleanup_tmp $?' EXIT
 status=0
 env "${binary_env[@]}" timeout --kill-after=10 "$TEST_TIMEOUT" "$DOTNET" test AgentTeamForge.slnx \
   -c Release --no-build --filter "FullyQualifiedName=$SCENARIO" \
   --logger "trx;LogFileName=demo.trx" --results-directory "$RUN_DIR" \
   > "$RUN_DIR/test.log" 2>&1 || status=$?
-
-list_tmp_state > "$RUN_DIR/tmp-after.txt"
-leftovers="$(comm -13 "$RUN_DIR/tmp-before.txt" "$RUN_DIR/tmp-after.txt")"
 
 # Require exactly one executed, passed test: an empty filter match must not look green.
 trx="$RUN_DIR/demo.trx"
@@ -97,9 +102,5 @@ else
   result=1
 fi
 
-if [[ -n "$leftovers" ]]; then
-  echo "WARN: new state dirs remain (not deleted; inspect manually):" >&2
-  sed 's/^/   /' <<<"$leftovers" >&2
-fi
 echo "   evidence: $RUN_DIR (trx, build/test logs)"
 exit "$result"

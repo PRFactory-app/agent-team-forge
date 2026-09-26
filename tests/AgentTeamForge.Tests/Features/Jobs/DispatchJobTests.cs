@@ -144,4 +144,27 @@ public sealed class DispatchJobTests
         lifetime.Cancel();
         await loop;
     }
+
+    [Fact]
+    public async Task Submission_is_not_claimed_while_its_reply_is_pending_even_after_a_safety_poll()
+    {
+        using var f = new JobFixture();
+        using var dispatcher = new DispatchJob(f.Store, new ScriptedBackend(r => [new BackendEvidence.Result(r.Correlation, "ok")]), f.Limits,
+            DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+        using var lifetime = new CancellationTokenSource();
+        var loop = dispatcher.RunAsync(lifetime.Token);
+
+        JobView job;
+        using (dispatcher.PauseClaims())
+        {
+            job = f.Submit("pending-reply");
+            dispatcher.Signal();
+            await Task.Delay(TimeSpan.FromMilliseconds(1200), TestContext.Current.CancellationToken);
+            Assert.Equal(JobStatus.Queued, f.Store.GetJob(job.JobId)!.Status);
+        }
+
+        await Bounded.Until(() => f.Store.GetJob(job.JobId)!.Status == JobStatus.Completed, "dispatch after reply");
+        lifetime.Cancel();
+        await loop;
+    }
 }
