@@ -2,7 +2,7 @@
 # Runs the C# process scenarios (daemon, MCP bridge, fake child, crash windows)
 # against a supplied binary, then records size/checksum evidence. Uses only
 # temporary private state; no credentials or model calls. Evidence goes to a
-# new, unique 0700 directory under evidence/; nothing is deleted.
+# new, unique 0700 directory under evidence/.
 # DOTNET selects the SDK (default: <repo>/.tools/dotnet11/dotnet, else PATH).
 set -euo pipefail
 # Anchor caller-relative overrides to the caller's cwd (lexically, so a missing
@@ -27,6 +27,18 @@ BIN="$(realpath "$BIN")"
 if file "$BIN" | grep -q 'ELF' && [[ ! -f "$(dirname "$BIN")/atf.dll" ]]; then kind=native; else kind=jit; fi
 mkdir -p evidence
 EVIDENCE_DIR="$(mktemp -d "$ROOT/evidence/published-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
+ATF_TEST_TMP_ROOT="$(mktemp -d /tmp/atf-smoke-XXXXXX)"
+export ATF_TEST_TMP_ROOT
+cleanup_tmp() {
+  local status="$1"
+  if [[ "$status" != 0 && "${ATF_KEEP_TMP:-}" == 1 ]]; then
+    echo "   kept temp state: $ATF_TEST_TMP_ROOT" >&2
+  else
+    rm -rf -- "$ATF_TEST_TMP_ROOT" || status=1
+  fi
+  exit "$status"
+}
+trap 'cleanup_tmp $?' EXIT
 ATF_HOST_BINARY="$BIN" "$DOTNET" test AgentTeamForge.slnx -c Release --no-build \
   --filter "Category=Scenario" --logger "trx;LogFileName=published-scenarios.trx" \
   --results-directory "$EVIDENCE_DIR/test-results"
