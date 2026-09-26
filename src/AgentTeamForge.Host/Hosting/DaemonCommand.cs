@@ -11,6 +11,7 @@ using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Host.Features.FakeBackend;
 using AgentTeamForge.Host.Features.Jobs;
+using AgentTeamForge.Host.Features.PRFactory;
 using AgentTeamForge.Host.Features.Setup;
 using AgentTeamForge.Host.Transport;
 
@@ -136,6 +137,7 @@ public static class DaemonCommand
         var dispatching = dispatcher.RunAsync(lifetime.Token);
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path), Log).RunAsync(lifetime.Token);
         var pruning = profile.AutoPrune ? RunPruneAsync(prune, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
+        var prfactory = PRFactoryHeartbeat.RunAsync(state, lifetime.Token, log: Log);
         await Task.WhenAny(serving, dispatching);
 
         // The dispatcher only returns on its own when halted or faulted; it closed
@@ -152,6 +154,7 @@ public static class DaemonCommand
         await serving;
         await waking;
         await pruning;
+        await prfactory;
         try
         {
             await dispatching;
