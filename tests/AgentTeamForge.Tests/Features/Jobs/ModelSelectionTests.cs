@@ -10,6 +10,25 @@ public sealed class ModelSelectionTests
 {
     static IReadOnlyCollection<string> AllModels(string _) => ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"];
 
+    [Fact]
+    public void Console_choices_match_resolved_tiers_and_backend_effort_rules()
+    {
+        foreach (var backend in new[] { "codex", "pi" })
+        {
+            var options = ModelSelection.ConsoleOptions[backend];
+            Assert.Empty(options.Efforts);
+            foreach (var tier in options.Models)
+            {
+                Assert.True(ModelSelection.ValidConsoleSelection(backend, tier, null));
+                Assert.NotNull(ModelSelection.Resolve(backend, tier, null, AllModels).Model);
+            }
+        }
+        Assert.DoesNotContain("high-fast", ModelSelection.ConsoleOptions["pi"].Models);
+        Assert.DoesNotContain("medium-fast", ModelSelection.ConsoleOptions["codex"].Models);
+        Assert.False(ModelSelection.ValidConsoleSelection("codex", "high", "low"));
+        Assert.True(ModelSelection.ValidConsoleSelection("claude", "opus", "medium"));
+    }
+
     [Theory]
     [InlineData("cheapest", "gpt-6-luna", "high")]
     [InlineData("low", "gpt-6-luna", "xhigh")]
@@ -50,10 +69,84 @@ public sealed class ModelSelectionTests
     public void Retired_tier_and_unavailable_model_fail_with_guidance()
     {
         Assert.Contains("use 'high'", Assert.Throws<ArgumentException>(() => ModelSelection.Resolve("pi", "high-fast", null, AllModels)).Message);
+        Assert.Contains("not available", Assert.Throws<ArgumentException>(() =>
+            ModelSelection.Resolve("codex", "medium-fast", null, AllModels)).Message);
         Assert.Contains("npm install -g @openai/codex@latest", Assert.Throws<ArgumentException>(() =>
             ModelSelection.Resolve("codex", "max", null, _ => ["gpt-6-luna"])).Message);
         Assert.Contains("npm install -g @earendil-works/pi-coding-agent@latest", Assert.Throws<ArgumentException>(() =>
             ModelSelection.Resolve("pi", "high", null, _ => ["gpt-6-luna"])).Message);
+    }
+
+    [Theory]
+    [InlineData("codex", "max", "gpt-6-luna")]
+    [InlineData("pi", "medium-fast", "gpt-6-luna")]
+    public void Known_missing_tier_is_rejected_before_a_job_exists(string backend, string tier, string available)
+    {
+        using var fixture = new JobFixture();
+        var accept = new AcceptJob(fixture.Store, JobFixture.Operator, fixture.Limits, fixture.TestProfile,
+            fixture.Admission, [backend], _ => [available]);
+
+        var refused = accept.Execute(new SubmitJobRequest("missing", "task", null, false)
+        {
+            Backend = backend,
+            Model = tier,
+        });
+
+        Assert.Contains("npm install -g", refused.Error);
+        Assert.Empty(fixture.List().Execute(new ListJobsRequest()).Page!.Jobs);
+    }
+
+    [Fact]
+    public void Unknown_catalog_allows_tier_and_keeps_its_effort()
+    {
+        using var fixture = new JobFixture();
+        var accept = new AcceptJob(fixture.Store, JobFixture.Operator, fixture.Limits, fixture.TestProfile,
+            fixture.Admission, ["codex"], _ => []);
+
+        var accepted = accept.Execute(new SubmitJobRequest("unknown", "task", null, false)
+        {
+            Backend = "codex",
+            Model = "max",
+            Effort = "low",
+        });
+
+        Assert.Equal("accepted", accepted.Outcome);
+        Assert.Equal(("gpt-6-astra", "medium"), (accepted.Job!.Model, accepted.Job.Effort));
+    }
+
+    [Fact]
+    public void Discovery_parses_live_shapes_caches_results_and_times_out()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        using var dir = new TempStateDir();
+        var script = dir.File("models");
+        var calls = dir.File("calls");
+        File.WriteAllText(script, $"#!/bin/sh\nprintf x >> '{calls}'\nif [ \"$1\" = debug ]; then\n  echo '{{\"models\":[{{\"slug\":\"gpt-6-sol\",\"supported_in_api\":true,\"visibility\":\"list\"}},{{\"slug\":\"hidden\",\"supported_in_api\":true,\"visibility\":\"hide\"}}]}}'\nelse\n  printf 'provider model context\\nopenai-codex gpt-6-luna 1M\\n'\nfi\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        var discovery = new BackendModelDiscovery(TimeSpan.FromSeconds(2), _ => script);
+
+        Assert.Equal(["gpt-6-sol"], discovery.GetModels("codex"));
+        Assert.Equal(["gpt-6-luna"], discovery.GetModels("pi"));
+        Assert.Equal(["gpt-6-sol"], discovery.GetModels("codex"));
+        Assert.Equal("xx", File.ReadAllText(calls));
+
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var completed = dir.File("completed");
+        File.WriteAllText(script, $"#!/bin/sh\nprintf x >> '{calls}'\nsleep 5\nprintf done >> '{completed}'\n");
+        var hung = new BackendModelDiscovery(TimeSpan.FromMilliseconds(100), _ => script);
+        Assert.Empty(hung.GetModels("codex"));
+        Assert.Empty(hung.GetModels("codex"));
+        Assert.Equal("xxx", File.ReadAllText(calls));
+
+        // An unknown catalog is not cached for the daemon lifetime.
+        var retried = new BackendModelDiscovery(TimeSpan.FromMilliseconds(100), _ => script, unknownTtl: TimeSpan.Zero);
+        Assert.Empty(retried.GetModels("codex"));
+        Assert.Empty(retried.GetModels("codex"));
+        Assert.Equal("xxxxx", File.ReadAllText(calls));
+        Assert.False(File.Exists(completed));
     }
 
     [Theory]
@@ -93,9 +186,12 @@ public sealed class ModelSelectionTests
     public async Task Follow_up_inherits_resolved_selection_and_resolves_overrides()
     {
         using var fixture = new JobFixture();
+        using var state = new TempStateDir();
+        var tierMap = new TierMap(state.Path, AllModels);
         var accept = new AcceptJob(fixture.Store, JobFixture.Operator, fixture.Limits, fixture.TestProfile,
-            fixture.Admission, ["fake", "codex"], AllModels);
-        var parent = accept.Execute(new SubmitJobRequest("parent", "task", null, false) { Backend = "codex", Model = "cheapest" }).Job!;
+            fixture.Admission, ["fake", "codex"], AllModels, tierMap);
+        var parent = accept.Execute(new SubmitJobRequest("parent", "task", null, false)
+        { Backend = "codex", Model = "cheapest", TargetAgent = "codex-named" }).Job!;
         var backend = new ScriptedBackend(r =>
         [
             new BackendEvidence.Ack(r.Correlation),
@@ -106,16 +202,20 @@ public sealed class ModelSelectionTests
         using var dispatcher = new DispatchJob(fixture.Store, new BackendCatalog().Register("codex", () => backend), fixture.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
         await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
         Assert.Equal(JobStatus.Completed, fixture.Store.GetJob(parent.JobId)!.Status);
+        tierMap.Change("codex", "cheapest", "gpt-6-sol", "xhigh");
 
         var followUp = new FollowUpJob(fixture.Store, JobFixture.Operator, accept);
         var inherited = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f1")).Job!;
         var effortOnly = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f2") { Effort = "low" }).Job!;
         var tier = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f3") { Model = "max", Effort = "low" }).Job!;
         var unavailable = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f4") { Model = "gpt-7" });
+        var changedTier = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f5") { Model = "cheapest" }).Job!;
 
         Assert.Equal(("gpt-6-luna", "high"), (inherited.Model, inherited.Effort));
+        Assert.Equal("codex-named", fixture.Store.GetJob(inherited.JobId)!.TargetAgent);
         Assert.Equal(("gpt-6-luna", "low"), (effortOnly.Model, effortOnly.Effort));
         Assert.Equal(("gpt-6-astra", "medium"), (tier.Model, tier.Effort));
+        Assert.Equal(("gpt-6-sol", "xhigh"), (changedTier.Model, changedTier.Effort));
         Assert.Contains("not available", unavailable.Error);
     }
 }

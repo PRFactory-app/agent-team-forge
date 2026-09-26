@@ -195,10 +195,13 @@ public static class PRFactoryConnection
     public static void PublishJoinTickets(StateDirectory state, PRFactoryTeamStore teams, string server)
     {
         var prompts = teams.Pending(server)
+            .Where(team => team.AcceptanceState != "reconciliation_needed") // A fenced team takes no new joiners.
             .SelectMany(team => teams.ExternalMembers(server, team.WorkItemId)
                 .Where(member => !member.Closed && member.TicketExpires > DateTimeOffset.UtcNow)
                 .Select(member => $"Work item {team.WorkItemId:D}, external member {member.Member}: "
                     + new JoinTicket(member.TeamId, member.ActualName, member.TicketToken, member.TicketExpires).JoinPrompt))
+            .Concat(teams.ReconciliationNeeded(server)
+                .Select(team => $"Work item {team.WorkItemId:D}: reconciliation needed; local results retained, remote publication fenced."))
             .ToArray();
         WritePrivate(Path.Combine(state.Path, JoinsName), JsonSerializer.SerializeToUtf8Bytes(prompts, PRFactorySettingsJson.Default.StringArray));
     }

@@ -3,8 +3,10 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Transport;
+using AgentTeamForge.Host.Hosting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -16,9 +18,19 @@ namespace AgentTeamForge.Host.Features.WebConsole;
 
 /// <summary>Browser follow-up body. The key comes from the page and is reused only by an explicit operator retry.</summary>
 public sealed record WebFollowUpBody(string? Instruction, string? IdempotencyKey, bool Interrupt = false, string? Model = null, string? Effort = null);
+public sealed record WebSubmitBody(string? Backend, string? Instruction, string? IdempotencyKey, string? Cwd,
+    string? Model = null, string? Effort = null, string? LeadSessionId = null, string? Workspace = null, string? Name = null);
+public sealed record WebJoinTicketBody(string? Name, string? Workspace, string? Note = null);
+public sealed record WebTierBody(string? Backend, string? Tier, string? Model, string? Effort, bool ResetAll = false);
+public sealed record WebDirectoryEntry(string Name, string Path);
+public sealed record WebDirectoryList(string Path, string? Parent, IReadOnlyList<WebDirectoryEntry> Directories);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 [JsonSerializable(typeof(WebFollowUpBody))]
+[JsonSerializable(typeof(WebSubmitBody))]
+[JsonSerializable(typeof(WebJoinTicketBody))]
+[JsonSerializable(typeof(WebTierBody))]
+[JsonSerializable(typeof(WebDirectoryList))]
 public sealed partial class WebConsoleJson : JsonSerializerContext;
 
 /// <summary>
@@ -60,16 +72,16 @@ public sealed class WebConsoleServer : IAsyncDisposable
 
     readonly WebApplication _app;
     readonly Func<IpcRequest, CancellationToken, Task<IpcResponse>> _send;
-    readonly byte[] _token;
+    readonly Func<string> _token;
     readonly SemaphoreSlim _calls = new(MaxConcurrentCalls, MaxConcurrentCalls);
     string _host = string.Empty;
     string _origin = string.Empty;
 
-    WebConsoleServer(WebApplication app, Func<IpcRequest, CancellationToken, Task<IpcResponse>> send, string token)
+    WebConsoleServer(WebApplication app, Func<IpcRequest, CancellationToken, Task<IpcResponse>> send, Func<string> token)
     {
         _app = app;
         _send = send;
-        _token = Encoding.UTF8.GetBytes(token);
+        _token = token;
     }
 
     public int Port { get; private set; }
@@ -77,11 +89,15 @@ public sealed class WebConsoleServer : IAsyncDisposable
     public static string NewToken() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
     /// <summary>Binds 127.0.0.1:<paramref name="port"/> (0 = ephemeral) and starts serving.</summary>
-    public static async Task<WebConsoleServer> StartAsync(int port, string token, Func<IpcRequest, CancellationToken, Task<IpcResponse>> send)
+    public static Task<WebConsoleServer> StartAsync(int port, string token, Func<IpcRequest, CancellationToken, Task<IpcResponse>> send) =>
+        StartAsync(port, () => token, send);
+
+    /// <summary>Reads the current bearer on each API call so rotation takes effect without a daemon restart.</summary>
+    public static async Task<WebConsoleServer> StartAsync(int port, Func<string> token, Func<IpcRequest, CancellationToken, Task<IpcResponse>> send)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(port, 0);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(port, 65535);
-        ArgumentOutOfRangeException.ThrowIfLessThan(token.Length, 32);
+        ArgumentOutOfRangeException.ThrowIfLessThan(token().Length, 32);
 
         // Empty builder: no config files, env-var URLs or logging providers (headers are never logged).
         var builder = WebApplication.CreateEmptyBuilder(new WebApplicationOptions());
@@ -99,7 +115,12 @@ public sealed class WebConsoleServer : IAsyncDisposable
         var app = builder.Build();
         var server = new WebConsoleServer(app, send, token);
         app.Run(server.HandleAsync);
-        await app.StartAsync();
+        try { await app.StartAsync(); }
+        catch
+        {
+            await app.DisposeAsync();
+            throw;
+        }
         var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
         server.Port = new Uri(address).Port;
         server._host = $"127.0.0.1:{server.Port}";
@@ -140,10 +161,16 @@ public sealed class WebConsoleServer : IAsyncDisposable
         }
 
         var origin = request.Headers.Origin;
-        var isPost = HttpMethods.IsPost(request.Method);
-        if ((isPost || origin.Count > 0) && (origin.Count != 1 || !string.Equals(origin[0], _origin, StringComparison.Ordinal)))
+        var isMutation = HttpMethods.IsPost(request.Method) || HttpMethods.IsPut(request.Method);
+        if ((isMutation || origin.Count > 0) && (origin.Count != 1 || !string.Equals(origin[0], _origin, StringComparison.Ordinal)))
         {
             await Reject(ctx, StatusCodes.Status403Forbidden, ForbiddenOrigin);
+            return;
+        }
+
+        if (HttpMethods.IsGet(request.Method) && path == "/api/directories")
+        {
+            await ListDirectoriesAsync(ctx);
             return;
         }
 
@@ -155,7 +182,12 @@ public sealed class WebConsoleServer : IAsyncDisposable
                 Op = IpcProtocol.JobList,
                 Status = request.Query["status"].Count == 0 ? null : request.Query["status"].ToString(),
                 Cursor = request.Query["cursor"].Count == 0 ? null : request.Query["cursor"].ToString(),
+                OrderByActivity = true,
             },
+            ("GET", ["config"]) => new IpcRequest { Op = IpcProtocol.JobCapabilities },
+            ("GET", ["settings", "tiers"]) => new IpcRequest { Op = IpcProtocol.TierSettingsGet },
+            ("PUT", ["settings", "tiers"]) => await ReadTierAsync(ctx),
+            ("POST", ["jobs"]) => await ReadSubmitAsync(ctx),
             ("GET", ["jobs", var id]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobGet, JobId = id },
             ("GET", ["jobs", var id, "output"]) when ValidId(id) => new IpcRequest
             {
@@ -173,13 +205,15 @@ public sealed class WebConsoleServer : IAsyncDisposable
             },
             ("POST", ["jobs", var id, "follow-up"]) when ValidId(id) => await ReadFollowUpAsync(ctx, id),
             ("POST", ["jobs", var id, "stop"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStop, JobId = id },
+            ("POST", ["jobs", var id, "stop-agent"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStopAgent, JobId = id },
+            ("POST", ["leads", var id, "join-ticket"]) when Guid.TryParseExact(id, "D", out _) => await ReadJoinTicketAsync(ctx, id),
             _ => null,
         };
         if (ipc is null)
         {
             if (!ctx.Response.HasStarted)
             {
-                await Reject(ctx, isPost ? StatusCodes.Status400BadRequest : StatusCodes.Status404NotFound, isPost ? BadRequest : NotFound);
+                await Reject(ctx, isMutation ? StatusCodes.Status400BadRequest : StatusCodes.Status404NotFound, isMutation ? BadRequest : NotFound);
             }
 
             return;
@@ -205,24 +239,38 @@ public sealed class WebConsoleServer : IAsyncDisposable
         await WriteAsync(ctx, StatusCodes.Status200OK, response);
     }
 
-    static async Task<IpcRequest?> ReadFollowUpAsync(HttpContext ctx, string jobId)
+    static async Task ListDirectoriesAsync(HttpContext ctx)
     {
-        var request = ctx.Request;
-        if (request.ContentType is not { } type || !type.StartsWith("application/json", StringComparison.OrdinalIgnoreCase)
-            || request.ContentLength is not (> 0 and <= MaxBodyBytes))
+        var values = ctx.Request.Query["path"];
+        if (values.Count != 1 || values[0] is not { Length: > 0 and <= 4096 } path
+            || !Path.IsPathFullyQualified(path) || !Directory.Exists(path))
         {
-            return null;
+            await Reject(ctx, StatusCodes.Status400BadRequest, BadRequest);
+            return;
         }
 
-        WebFollowUpBody? body;
         try
         {
-            body = await JsonSerializer.DeserializeAsync(request.Body, WebConsoleJson.Default.WebFollowUpBody, ctx.RequestAborted);
+            var directory = new DirectoryInfo(Path.GetFullPath(path));
+            var children = directory.EnumerateDirectories()
+                .Where(child => (child.Attributes & FileAttributes.ReparsePoint) == 0)
+                .Take(100)
+                .Select(child => new WebDirectoryEntry(child.Name, child.FullName))
+                .OrderBy(child => child.Name, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var parent = directory.Parent?.FullName;
+            ctx.Response.ContentType = "application/json; charset=utf-8";
+            await JsonSerializer.SerializeAsync(ctx.Response.Body, new WebDirectoryList(directory.FullName, parent, children), WebConsoleJson.Default.WebDirectoryList);
         }
-        catch (Exception ex) when (ex is JsonException or BadHttpRequestException or IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return null;
+            await Reject(ctx, StatusCodes.Status400BadRequest, BadRequest);
         }
+    }
+
+    static async Task<IpcRequest?> ReadFollowUpAsync(HttpContext ctx, string jobId)
+    {
+        var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebFollowUpBody);
 
         if (body is not { Instruction: { Length: > 0 and <= MaxInstructionChars } instruction, IdempotencyKey: { Length: > 0 and <= MaxKeyChars } key }
             || string.IsNullOrWhiteSpace(instruction))
@@ -242,6 +290,88 @@ public sealed class WebConsoleServer : IAsyncDisposable
         };
     }
 
+    static async Task<IpcRequest?> ReadTierAsync(HttpContext ctx)
+    {
+        var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebTierBody);
+        if (body is null)
+        {
+            return null;
+        }
+
+        return new IpcRequest
+        {
+            Op = IpcProtocol.TierSettingsPut,
+            Backend = body.Backend,
+            Tier = body.Tier,
+            Model = body.Model,
+            Effort = body.Effort,
+            ResetAllTiers = body.ResetAll
+        };
+    }
+
+    static async Task<IpcRequest?> ReadSubmitAsync(HttpContext ctx)
+    {
+        var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebSubmitBody);
+        if (body is not
+            {
+                Backend: "claude" or "codex" or "pi", Instruction: { Length: > 0 and <= MaxInstructionChars } instruction,
+                IdempotencyKey: { Length: > 0 and <= MaxKeyChars } key, Cwd: { Length: > 0 and <= 4096 } cwd
+            }
+            || string.IsNullOrWhiteSpace(instruction) || !Path.IsPathFullyQualified(cwd) || !Directory.Exists(cwd)
+            || !ModelSelection.ValidConsoleSelection(body.Backend, body.Model, body.Effort)
+            || body.Name is not null && (!AcceptJob.ValidAgentName(body.Name) || body.Name == "fake-agent")
+            || (body.LeadSessionId is null) != (body.Workspace is null)
+            || body.LeadSessionId is not null && (!Guid.TryParseExact(body.LeadSessionId, "D", out _)
+                || !Path.IsPathFullyQualified(body.Workspace!)))
+        {
+            return null;
+        }
+        return new IpcRequest
+        {
+            Op = IpcProtocol.JobSubmit,
+            Backend = body.Backend,
+            TargetAgent = body.Name ?? body.Backend + "-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..8],
+            Instruction = instruction,
+            IdempotencyKey = key,
+            Cwd = cwd,
+            Model = body.Model,
+            Effort = body.Effort,
+            LeadSessionId = body.LeadSessionId,
+            Workspace = body.Workspace
+        };
+    }
+
+    static async Task<IpcRequest?> ReadJoinTicketAsync(HttpContext ctx, string leadId)
+    {
+        var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebJoinTicketBody);
+        if (body is not { Name: { Length: > 0 and <= 64 } name, Workspace: { Length: > 0 and <= 4096 } workspace }
+            || !name.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')
+            || !Path.IsPathFullyQualified(workspace) || body.Note is { Length: > 4096 })
+        {
+            return null;
+        }
+        return new IpcRequest
+        {
+            Op = IpcProtocol.ExternalTicket,
+            LeadSessionId = leadId,
+            Workspace = workspace,
+            MemberName = name,
+            Note = body.Note
+        };
+    }
+
+    static async Task<T?> ReadBodyAsync<T>(HttpContext ctx, JsonTypeInfo<T> typeInfo)
+    {
+        var request = ctx.Request;
+        if (request.ContentType is not { } type || !type.StartsWith("application/json", StringComparison.OrdinalIgnoreCase)
+            || request.ContentLength is not (> 0 and <= MaxBodyBytes))
+        {
+            return default;
+        }
+        try { return await JsonSerializer.DeserializeAsync(request.Body, typeInfo, ctx.RequestAborted); }
+        catch (Exception ex) when (ex is JsonException or BadHttpRequestException or IOException) { return default; }
+    }
+
     static bool ValidId(string id) => id.Length is > 0 and <= 128 && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
 
     bool HasToken(HttpRequest request)
@@ -252,7 +382,14 @@ public sealed class WebConsoleServer : IAsyncDisposable
             return false;
         }
 
-        return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(value["Bearer ".Length..]), _token);
+        try
+        {
+            return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(value["Bearer ".Length..]), Encoding.UTF8.GetBytes(_token()));
+        }
+        catch (StateDirectoryException)
+        {
+            return false;
+        }
     }
 
     static async Task ServeAssetAsync(HttpContext ctx, string path)

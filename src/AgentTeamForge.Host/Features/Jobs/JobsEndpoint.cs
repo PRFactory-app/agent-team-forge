@@ -10,7 +10,9 @@ namespace AgentTeamForge.Host.Features.Jobs;
 
 /// <summary>Thin IPC mapping for the job operations; all rules live in Business.</summary>
 public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, StopJob stop, DurabilityCheckpoints checkpoints, Action onAccepted,
-    WakeStore? wakeStore = null, PruneJob? prune = null, JobLogs? logs = null, JobStore? jobStore = null, LeadSessionStore? sessions = null, ExternalTeam? external = null)
+    WakeStore? wakeStore = null, PruneJob? prune = null, JobLogs? logs = null, JobStore? jobStore = null, LeadSessionStore? sessions = null, ExternalTeam? external = null,
+    StopAgent? stopAgent = null, IReadOnlyCollection<string>? configuredBackends = null, TierMap? tierMap = null,
+    BackendModelDiscovery? modelDiscovery = null)
 {
     public IpcResponse Handle(IpcRequest request)
     {
@@ -54,7 +56,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 return new IpcResponse(false, JobErrors.InvalidRequest);
             }
             var info = sessions.Info(request.LeadSessionId, request.Workspace);
-            return info is null ? new IpcResponse(false, JobErrors.NotFound) : new IpcResponse(true, Outcome: "session", Session: info);
+            return info is null ? new IpcResponse(false, JobErrors.NotFound)
+                : new IpcResponse(true, Outcome: "session", Session: info, Tiers: tierMap?.Settings());
         }
         if (request.Op == IpcProtocol.SessionBindWake)
         {
@@ -81,7 +84,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             return new IpcResponse(false, JobErrors.InvalidRequest);
         }
         // Reads reach any job in the lead's workspace; stop and follow-up only its own.
-        if (request.LeadSessionId is not null && request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobActivity or IpcProtocol.JobStop or IpcProtocol.JobFollowUp
+        if (request.LeadSessionId is not null && request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobActivity or IpcProtocol.JobStop or IpcProtocol.JobStopAgent or IpcProtocol.JobFollowUp
             && (jobStore is null || request.JobId is null
                 || !jobStore.LeadCanAccess(request.JobId, request.LeadSessionId, request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobActivity ? request.Workspace : null)))
         {
@@ -89,6 +92,29 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         }
         switch (request.Op)
         {
+            case IpcProtocol.JobCapabilities:
+                return new IpcResponse(true, Outcome: "capabilities", Backends: configuredBackends ?? [], ModelOptions: ModelSelection.ConsoleOptions,
+                    Tiers: tierMap?.Settings());
+            case IpcProtocol.TierSettingsGet:
+                return tierMap is null ? new IpcResponse(false, JobErrors.InvalidRequest)
+                    : new IpcResponse(true, Outcome: "tiers", Tiers: tierMap.Settings(), ModelCatalog:
+                        new Dictionary<string, IReadOnlyCollection<string>>
+                        {
+                            ["codex"] = modelDiscovery?.CachedModels("codex") ?? [],
+                            ["pi"] = modelDiscovery?.CachedModels("pi") ?? []
+                        });
+            case IpcProtocol.TierSettingsPut:
+                if (tierMap is null)
+                {
+                    return new IpcResponse(false, JobErrors.InvalidRequest);
+                }
+
+                try
+                {
+                    tierMap.Change(request.Backend, request.Tier, request.Model, request.Effort, request.ResetAllTiers);
+                    return new IpcResponse(true, Outcome: "tiers", Tiers: tierMap.Settings());
+                }
+                catch (ArgumentException ex) { return new IpcResponse(false, ex.Message); }
             case IpcProtocol.ExternalTicket:
                 return external is null ? new IpcResponse(false, JobErrors.InvalidRequest)
                     : MapExternal(external.CreateTicket(request.LeadSessionId, request.Workspace, request.MemberName, request.Note));
@@ -103,6 +129,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 return Accepted(accept.Execute(new SubmitJobRequest(request.IdempotencyKey ?? string.Empty, request.Instruction ?? string.Empty, request.Behavior, request.Hold)
                 {
                     Backend = request.Backend,
+                    TargetAgent = request.TargetAgent,
                     Model = request.Model,
                     Effort = request.Effort,
                     Cwd = request.Cwd,
@@ -127,6 +154,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 }));
             case IpcProtocol.JobStop:
                 return Map(stop.Execute(request.JobId ?? string.Empty));
+            case IpcProtocol.JobStopAgent:
+                return stopAgent is null ? new IpcResponse(false, JobErrors.BackendUnavailable) : Map(stopAgent.Execute(request.JobId ?? string.Empty));
             case IpcProtocol.JobGet:
                 var found = get.Execute(request.JobId ?? string.Empty);
                 if (found.Error is null && request.WakeKey is not null && request.WakeGeneration is long generation && wakeStore is not null)
@@ -162,6 +191,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     LeadSessionId = request.LeadSessionId,
                     AllWorkspace = request.AllWorkspace,
                     Workspace = request.Workspace,
+                    OrderByActivity = request.OrderByActivity,
                 });
                 return listed.Error is null ? new IpcResponse(true, Outcome: "listed", Page: listed.Page) : new IpcResponse(false, listed.Error);
             case IpcProtocol.JobPrune:
@@ -221,5 +251,6 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
 
     static IpcResponse MapExternal(ExternalResult result) => new(result.Ok, result.Error,
         result.Ok ? "ok" : null, WakeGeneration: result.WakeGeneration, Ticket: result.Ticket,
-        Member: result.Member, Inbox: result.Inbox, AlreadyLeft: result.AlreadyLeft, LeftName: result.Name);
+        Member: result.Member, Inbox: result.Inbox, AlreadyLeft: result.AlreadyLeft, LeftName: result.Name,
+        ErrorDetail: result.ErrorDetail);
 }

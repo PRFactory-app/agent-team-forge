@@ -9,7 +9,19 @@
 <script src="/app.js" defer></script>
 </head>
 <body>
-<header><h1>AgentTeamForge console</h1><span id="status"></span></header>
+<div class="window-bar"><span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>AgentTeamForge · agent monitor</span><span id="status" role="status"></span></div>
+
+<header class="console-header">
+  <div class="heading"><p class="eyebrow">OPERATOR CONSOLE</p><h1>Agent team</h1><p class="note">Live jobs, grouped by lead session</p></div>
+  <div class="team-stats">
+    <button id="settings-toggle" type="button" aria-controls="settings-view" aria-expanded="false">Settings</button>
+    <label class="theme-picker" for="theme-select">Theme<select id="theme-select"><option value="auto">Auto</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+    <span class="live-pill"><span class="dot" aria-hidden="true"></span> TEAM LIVE</span>
+    <span class="stat"><span class="stat-label">ELAPSED · SHOWN</span><strong id="elapsed">—</strong></span>
+    <span class="stat"><span class="stat-label">RUNNING</span><strong id="running-count">0 of 0</strong></span>
+  </div>
+</header>
+<div id="lights" aria-label="Job status counts"></div>
 
 <section id="login">
   <form id="login-form" autocomplete="off">
@@ -17,14 +29,12 @@
     <input id="token" type="password" autocomplete="off" spellcheck="false" required>
     <button type="submit">Connect</button>
   </form>
-  <p class="note">The token is kept in page memory only. Reloading the page requires entering it again.</p>
+  <p class="note">The token stays in this tab until it closes.</p>
 </section>
 
 <main id="console" hidden>
-  <section>
-    <h2>History <button id="refresh" type="button">Refresh</button></h2>
-    <label for="status-filter">Status</label>
-    <select id="status-filter">
+  <section id="overview-view">
+    <div class="section-heading"><h2>Overview</h2><div class="toolbar"><button id="new-agent-toggle" type="button" aria-expanded="false" aria-controls="new-agent-form">New agent</button><label for="status-filter">Status</label><select id="status-filter">
       <option value="">All</option>
       <option value="queued">Queued</option>
       <option value="running">Running</option>
@@ -32,50 +42,35 @@
       <option value="failed">Failed</option>
       <option value="cancelled">Cancelled</option>
       <option value="needs_reconciliation">Needs reconciliation</option>
-    </select>
-    <table>
-      <thead><tr><th>Job</th><th>Status</th><th>Backend</th><th>Model</th><th>Effort</th><th>Session</th><th>Parent</th><th>Attempts</th><th>Action</th></tr></thead>
-      <tbody id="jobs"></tbody>
-    </table>
-    <p><button id="page-prev" type="button" disabled>Previous</button> <span id="page-number">Page 1</span> <button id="page-next" type="button" disabled>Next</button></p>
-  </section>
-
-  <section id="detail" hidden>
-    <h2>Job <span id="d-id"></span></h2>
-    <dl>
-      <dt>Status</dt><dd id="d-status"></dd>
-      <dt>Reason</dt><dd id="d-reason"></dd>
-      <dt>Backend</dt><dd id="d-backend"></dd>
-      <dt>Model</dt><dd id="d-model"></dd>
-      <dt>Effort</dt><dd id="d-effort"></dd>
-      <dt>Session</dt><dd id="d-session"></dd>
-      <dt>Parent</dt><dd id="d-parent"></dd>
-      <dt>Cwd</dt><dd id="d-cwd"></dd>
-      <dt>Attempts</dt><dd id="d-attempts"></dd>
-    </dl>
-    <h3>Result</h3>
-    <pre id="d-result"></pre>
-
-    <h3>Follow-up</h3>
-    <form id="follow-form" autocomplete="off">
-      <textarea id="follow-text" rows="4" maxlength="8192" required></textarea>
-      <label for="follow-model">Model or tier (optional)</label><input id="follow-model" maxlength="128" autocomplete="off">
-      <label for="follow-effort">Effort (optional)</label><input id="follow-effort" maxlength="128" autocomplete="off">
-      <label><input id="follow-interrupt" type="checkbox"> Interrupt running job</label>
-      <button id="follow-send" type="submit">Send follow-up</button>
-      <button id="follow-retry" type="button" hidden>Retry with same key</button>
-      <button id="follow-discard" type="button" hidden>Discard pending attempt</button>
+    </select><button id="refresh" type="button">Refresh</button></div></div>
+    <form id="new-agent-form" class="new-agent-form" autocomplete="off" hidden>
+      <h3>New agent</h3>
+      <p class="note">The working directory must be an existing absolute directory on this machine.</p>
+      <div class="new-agent-fields">
+        <label>Backend <select id="new-agent-backend" required></select></label>
+        <label>Name <input id="new-agent-name" type="text" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" placeholder="Auto: backend-short id"></label>
+        <label>Model / tier <select id="new-agent-model" required></select></label>
+        <label id="new-agent-effort-field">Effort <select id="new-agent-effort"></select></label>
+        <label class="new-agent-directory">Working directory <input id="new-agent-cwd" type="text" maxlength="4096" placeholder="/absolute/existing/directory" required></label>
+        <button id="new-agent-browse" type="button">Browse directories</button>
+        <label>Lead session <select id="new-agent-lead"><option value="">No lead session</option></select></label>
+      </div>
+      <div id="new-agent-recent" class="directory-recent" hidden><span>Recent directories</span><div id="new-agent-recent-list"></div></div>
+      <div id="new-agent-picker" class="directory-picker" hidden><div id="new-agent-breadcrumb" class="directory-breadcrumb"></div><div id="new-agent-directory-list" class="directory-list"></div><div class="directory-picker-actions"><button id="new-agent-use-dir" type="button">Use this directory</button><button id="new-agent-close-picker" type="button">Close</button><span id="new-agent-picker-status" role="status"></span></div></div>
+      <label>Prompt <textarea id="new-agent-prompt" rows="4" maxlength="8192" required></textarea></label>
+      <div class="new-agent-actions"><button id="new-agent-submit" type="submit">Submit job</button><button id="new-agent-retry" type="button" hidden>Retry same submission</button><button id="new-agent-discard" type="button" hidden>Discard attempt</button><span id="new-agent-result" role="status"></span></div>
     </form>
-    <p id="follow-state"></p>
-
-    <h3>Logs</h3>
-    <button id="logs-refresh" type="button">Read new logs</button>
-    <pre id="d-logs"></pre>
-
-    <h3>Stop</h3>
-    <button id="stop-job" type="button">Stop job</button>
-    <p id="stop-state"></p>
+    <p class="note">Counts and elapsed time cover this page of history. Updates every 5 seconds.</p>
+    <div id="jobs"></div>
+    <nav class="pager" aria-label="History pages"><button id="page-prev" type="button" disabled>Previous</button> <span id="page-number">Page 1</span> <button id="page-next" type="button" disabled>Next</button></nav>
   </section>
+
+  <section id="settings-view" hidden>
+    <div class="section-heading"><div><h2>Settings · capability tiers</h2><p class="note">Changes apply to new jobs. Existing jobs keep their selected model and effort.</p></div><button id="settings-back" type="button">Back to overview</button></div>
+    <div id="tier-settings"></div>
+    <div class="settings-actions"><button id="tiers-reset-all" type="button">Reset all to default</button><span id="settings-status" role="status"></span></div>
+  </section>
+
 </main>
 </body>
 </html>

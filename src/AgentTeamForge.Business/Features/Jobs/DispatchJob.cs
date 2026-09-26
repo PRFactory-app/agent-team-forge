@@ -77,9 +77,9 @@ public sealed class DispatchJob : IDisposable
     {
         if (_running.TryGetValue(jobId, out var active))
         {
+            active.TerminateOnce(backend => TryTerminate(backend, jobId));
             try { active.Stop.Cancel(); }
             catch (ObjectDisposedException) { } // The attempt just finished.
-            active.TerminateOnce(TryTerminate);
         }
     }
 
@@ -90,7 +90,7 @@ public sealed class DispatchJob : IDisposable
         {
             // Own the stop effect before cancellation wakes RunAttemptAsync's
             // catch path, which otherwise wins and kills an interactive TUI.
-            active.TerminateOnce(TryInterrupt);
+            active.TerminateOnce(backend => TryInterrupt(backend, jobId));
             try { active.Stop.Cancel(); }
             catch (ObjectDisposedException) { }
             CloseInterruptedIfUnclaimed(jobId);
@@ -104,7 +104,7 @@ public sealed class DispatchJob : IDisposable
         try
         {
             var parent = store.GetJob(jobId);
-            if (!store.HasQueuedFollowUp(jobId) && parent?.SessionId is { } sessionId &&
+            if (!store.IsSessionFenced(jobId) && !store.HasQueuedFollowUp(jobId) && parent?.SessionId is { } sessionId &&
                 backends.Resolve(parent.Backend) is HerdrInteractiveBackend interactive)
             {
                 interactive.CloseUnclaimedSession(sessionId);
@@ -121,7 +121,7 @@ public sealed class DispatchJob : IDisposable
         {
             var job = store.GetJob(jobId);
             // A sibling follow-up still queued on the same parent resumes in that tab.
-            if (job?.ParentJobId is not { } parentId || store.HasQueuedFollowUp(parentId)
+            if (job?.ParentJobId is not { } parentId || store.IsSessionFenced(parentId) || store.HasQueuedFollowUp(parentId)
                 || store.GetJob(parentId)?.SessionId is not { } sessionId)
             {
                 return;
@@ -351,6 +351,7 @@ public sealed class DispatchJob : IDisposable
             // A stop may have committed after claim but before this task was scheduled.
             if (store.GetJob(run.JobId)?.Status == JobStatus.Cancelled)
             {
+                store.ReconcileStoppedJob(run.JobId); // No backend effect occurred.
                 return;
             }
 
@@ -384,13 +385,14 @@ public sealed class DispatchJob : IDisposable
             {
                 // Proven no effect: the only case allowed to end as failed.
                 End(run, JobStatus.Failed, "backend_not_started");
+                if (store.GetJob(run.JobId)?.Status == JobStatus.Cancelled) { store.ReconcileStoppedJob(run.JobId); }
                 return;
             }
             catch (OperationCanceledException)
             {
                 // Process start cannot be cancelled. A late start may exist: it is
                 // terminated when it returns, never delivered to, never replaced.
-                TerminateLateStart(starting, run);
+                TerminateLateStart(starting, run, daemonLifetime.IsCancellationRequested && backend is HerdrInteractiveBackend);
                 if (!daemonLifetime.IsCancellationRequested && !stopRequested.IsCancellationRequested)
                 {
                     End(run, JobStatus.NeedsReconciliation, "backend_start_timeout");
@@ -432,32 +434,35 @@ public sealed class DispatchJob : IDisposable
         }
         catch (OperationCanceledException) when (stopRequested.IsCancellationRequested)
         {
-            active.TerminateOnce(TryTerminate);
+            active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
         }
         catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested)
         {
-            // Leave the attempt started for restart recovery, but stop its owned process/session.
-            active.TerminateOnce(TryTerminate);
+            // Human-visible Herdr sessions outlive the daemon; restart quarantines them.
+            if (backends.Resolve(claim.Job.Backend) is not HerdrInteractiveBackend)
+            {
+                active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
+            }
         }
         catch (OperationCanceledException)
         {
             // Spike-only policy: kill our own direct child through its held handle.
             // A possible surviving child or failed kill stays uncertain, never retried.
             // Once-only, so a concurrent interrupt keeps its live interactive tab.
-            active.TerminateOnce(TryTerminate);
+            active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
             End(run, JobStatus.NeedsReconciliation, "backend_timeout");
         }
         catch (Exception) when (stopRequested.IsCancellationRequested)
         {
             // Killing the owned child can surface as a stream or process error.
-            active.TerminateOnce(TryTerminate);
+            active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
         }
         catch (Exception ex)
         {
             // Unanticipated fault after the attempt commit: the effect is unknown, so
             // quarantine (never failed, never requeued) and stop claiming work.
             log($"dispatcher fault for {run.RunId}: {ex.GetType().Name}");
-            active.TerminateOnce(TryTerminate);
+            active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
             End(run, JobStatus.NeedsReconciliation, "dispatcher_fault");
             Halt("dispatcher_fault");
         }
@@ -473,6 +478,15 @@ public sealed class DispatchJob : IDisposable
             }
 
             await DisposeQuietly(backendRun);
+            if (backendRun?.OwnedSessionStopped == true)
+            {
+                try { store.ReconcileStoppedJob(run.JobId); }
+                catch (StorageException ex)
+                {
+                    log($"session reconciliation failed for {run.JobId}: {ex.Message}");
+                    Halt("terminal_write_failed");
+                }
+            }
         }
     }
 
@@ -500,37 +514,48 @@ public sealed class DispatchJob : IDisposable
         return resumeSessionId is not null;
     }
 
-    void TerminateLateStart(Task<IBackendRun> starting, RunRef run) =>
+    void TerminateLateStart(Task<IBackendRun> starting, RunRef run, bool preserve) =>
         _ = starting.ContinueWith(async late =>
         {
             _ = late.Exception;
             if (late.IsCompletedSuccessfully)
             {
-                log($"late backend start for {run.RunId}; terminating owned child");
-                TryTerminate(late.Result);
+                log($"late backend start for {run.RunId}; preserve interactive session: {preserve}");
+                if (!preserve) { TryTerminate(late.Result, run.JobId); }
                 await DisposeQuietly(late.Result);
             }
         }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default).Unwrap();
 
-    void TryTerminate(IBackendRun? backendRun)
+    void TryTerminate(IBackendRun? backendRun, string jobId)
     {
         try
         {
             backendRun?.TerminateOwnedChild();
+            if (backendRun is not null && store.GetJob(jobId)?.Status == JobStatus.Cancelled)
+            {
+                store.ReconcileStoppedJob(jobId);
+            }
         }
         catch (Exception ex)
         {
-            log($"owned child termination failed: {ex.GetType().Name}");
+            var details = ex is AggregateException aggregate
+                ? string.Join("; ", aggregate.Flatten().InnerExceptions.Select(inner => $"{inner.GetType().Name}: {inner.Message}"))
+                : $"{ex.GetType().Name}: {ex.Message}";
+            log($"owned child termination failed: {details}");
         }
     }
 
-    void TryInterrupt(IBackendRun? backendRun)
+    void TryInterrupt(IBackendRun? backendRun, string jobId)
     {
-        try { backendRun?.InterruptTurn(); }
+        try
+        {
+            backendRun?.InterruptTurn();
+            if (backendRun is not null) { store.ReconcileStoppedJob(jobId); }
+        }
         catch (Exception ex)
         {
             log($"owned turn interruption failed: {ex.GetType().Name}; stopping owned backend");
-            TryTerminate(backendRun);
+            TryTerminate(backendRun, jobId);
         }
     }
 

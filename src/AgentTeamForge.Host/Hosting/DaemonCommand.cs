@@ -16,6 +16,7 @@ using AgentTeamForge.Host.Features.FakeBackend;
 using AgentTeamForge.Host.Features.Jobs;
 using AgentTeamForge.Host.Features.PRFactory;
 using AgentTeamForge.Host.Features.Setup;
+using AgentTeamForge.Host.Features.WebConsole;
 using AgentTeamForge.Host.Transport;
 
 namespace AgentTeamForge.Host.Hosting;
@@ -112,10 +113,7 @@ public static class DaemonCommand
             {
                 return;
             }
-            var recoveryEnvironment = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
-                .ToDictionary(e => (string)e.Key, e => (string?)e.Value, StringComparer.Ordinal);
-            var terminal = new HerdrTerminal(new HerdrTerminalOptions { Environment = recoveryEnvironment });
-            HerdrOwnedSessions.Recover(state.Path, session => terminal.RecoverOwnedSessionAsync(session, CancellationToken.None), Log);
+            HerdrOwnedSessions.Recover(state.Path, store.FenceSession, Log);
         }
         var quarantined = new RecoverOnStartup(store, () =>
         {
@@ -140,6 +138,7 @@ public static class DaemonCommand
 
         var backends = BackendCatalog.Create(
             new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits), profile.RealAgents && launchMode is not ("herdr" or "terminal" or "wt"));
+        var interactiveBackends = new List<IInteractiveSessionStop>();
         if (launchMode == "herdr")
         {
             var seed = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
@@ -149,15 +148,20 @@ public static class DaemonCommand
             var claude = Interactive(InteractiveAgentKind.Claude);
             var codex = Interactive(InteractiveAgentKind.Codex);
             var pi = Interactive(InteractiveAgentKind.Pi);
+            interactiveBackends.AddRange([claude, codex, pi]);
             backends.Register(BackendCatalog.Claude, () => claude);
             backends.Register(BackendCatalog.Codex, () => codex);
             backends.Register(BackendCatalog.Pi, () => pi);
         }
         if (launchMode == "wt")
         {
-            backends.Register(BackendCatalog.Claude, () => new WtInteractiveBackend(InteractiveAgentKind.Claude, state.Path));
-            backends.Register(BackendCatalog.Codex, () => new WtInteractiveBackend(InteractiveAgentKind.Codex, state.Path));
-            backends.Register(BackendCatalog.Pi, () => new WtInteractiveBackend(InteractiveAgentKind.Pi, state.Path));
+            var claude = new WtInteractiveBackend(InteractiveAgentKind.Claude, state.Path);
+            var codex = new WtInteractiveBackend(InteractiveAgentKind.Codex, state.Path);
+            var pi = new WtInteractiveBackend(InteractiveAgentKind.Pi, state.Path);
+            interactiveBackends.AddRange([claude, codex, pi]);
+            backends.Register(BackendCatalog.Claude, () => claude);
+            backends.Register(BackendCatalog.Codex, () => codex);
+            backends.Register(BackendCatalog.Pi, () => pi);
         }
         if (launchMode == "terminal")
         {
@@ -174,16 +178,19 @@ public static class DaemonCommand
         Log($"backends: {string.Join(',', backends.Names)}");
         var admission = new AdmissionGate();
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs);
-        var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names);
+        var modelDiscovery = new BackendModelDiscovery();
+        var tierMap = new TierMap(state.Path, modelDiscovery.CachedModels, Log);
+        var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap);
         var externalTeam = new ExternalTeam(externalMembers, wakeStore);
         // Remote claims have their own lead identity and cannot borrow the local MCP lead.
         var connectorAccept = new AcceptJob(store, new BoundPrincipal("prfactory", "connector", "connector-lead"),
-            limits, profile.TestProfile, admission, backends.Names);
+            limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap);
         var connectorTeams = new PRFactoryTeamStore(database);
         var connectorSessions = new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
             new ListJobs(store, profile.Bound, jobLogs),
-            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store, new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam);
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
+            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
@@ -194,8 +201,21 @@ public static class DaemonCommand
         using var sigint = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGINT, context => { context.Cancel = true; lifetime.Cancel(); });
 
         using var listener = OperatingSystem.IsWindows() ? null : server.Bind();
-        Log($"ready pid={Environment.ProcessId}");
         var serving = OperatingSystem.IsWindows() ? server.ServeWindowsAsync(lifetime.Token) : server.ServeAsync(listener!, lifetime.Token);
+        WebConsoleServer? webConsole = null;
+        var webPort = SetupCommand.ConfiguredWebPort(state);
+        try
+        {
+            WebConsoleToken.Ensure(state);
+            var webClient = new IpcClient(state, limits, TimeSpan.FromSeconds(15));
+            webConsole = await WebConsoleServer.StartAsync(webPort, () => WebConsoleToken.Read(state), webClient.SendAsync);
+            Log($"web console listening on {webConsole.Url}");
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            Log($"web console unavailable on 127.0.0.1:{webPort}: {ex.GetType().Name}: {ex.Message}");
+        }
+        Log($"ready pid={Environment.ProcessId}");
         var dispatching = dispatcher.RunAsync(lifetime.Token);
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path), Log).RunAsync(lifetime.Token);
         var pruning = profile.AutoPrune ? RunPruneAsync(prune, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
@@ -226,6 +246,11 @@ public static class DaemonCommand
         await waking;
         await pruning;
         await prfactory;
+        if (webConsole is not null)
+        {
+            await webConsole.StopAsync();
+            await webConsole.DisposeAsync();
+        }
         try
         {
             await dispatching;
@@ -234,6 +259,14 @@ public static class DaemonCommand
         {
             halted = true;
             Log($"error: dispatcher_halted reason=dispatcher_fault ({ex.GetType().Name})");
+        }
+        foreach (var backend in interactiveBackends)
+        {
+            try { backend.StopAllIdleSessions(); }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                Log($"idle agent cleanup failed: {ex.GetType().Name}");
+            }
         }
 
         // Submits admitted before closure finish their bounded transaction before

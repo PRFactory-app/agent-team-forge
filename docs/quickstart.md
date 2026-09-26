@@ -1,11 +1,38 @@
 # Linux quickstart
 
+Linux x64 on tested glibc distributions:
+
+~~~sh
+curl -fsSL https://github.com/PRFactory-app/agent-team-forge/releases/latest/download/install.sh | sh
+"$HOME/.local/bin/atf" setup
+~~~
+
+Install and log in to any backend CLIs you want to use: Claude Code, Codex,
+or Pi. First setup asks for an explicit launch mode in a terminal. Herdr gives
+visible interactive agent windows when available; headless runs agents in the
+background. For automation, use `"$HOME/.local/bin/atf" setup --mode headless`.
+Reload installed client sessions after setup, then run
+`"$HOME/.local/bin/atf" doctor` to check registration. The daemon starts on
+first use. Login autostart is off by default.
+
+The installer leaves shell startup files alone. The absolute setup command works
+without `~/.local/bin` in PATH; add `export PATH="$HOME/.local/bin:$PATH"`
+to `~/.bashrc` (Bash) or `~/.zshrc` (Zsh) only if you want to type `atf`.
+Setup refuses to register a temporary or
+worktree binary or state path without `--force`. For testing, use
+`atf start --state-dir DIR` or `atf mcp --state-dir DIR`.
+
+See [install](install.md) for upgrades and uninstall. Linux arm64 and musl are
+unsupported; macOS arm64 and Windows x64 are tester-only until native validation.
+
+## Platform notes
+
 Windows Terminal (`wt`) mode and its console retry, owned-tab cleanup, Windows
 hooks, Pi wake extension, shim launch, and private-file ACL checks are **ported,
 untested on Windows**. Windows validation remains on a Windows machine.
 
 macOS arm64: **prepared, untested**. Install the `osx-arm64` release bundle with
-`install.sh`, then run `atf setup --mode terminal --apply` and `atf start`.
+`install.sh`, then run `atf setup --mode terminal`.
 Terminal.app is the default host and needs no extra install. Its AppleScript
 `do script` launch may open a window rather than a tab; the tester should check
 the placement. If kitty is
@@ -13,48 +40,24 @@ running with a `KITTY_LISTEN_ON=unix:...` remote-control socket and responds
 to `kitty @ --to "$KITTY_LISTEN_ON" ls` during setup, setup selects kitty tabs.
 The selected host is saved for daemon restarts; if kitty later becomes
 unavailable, jobs report a launch failure rather than switching hosts.
-`atf setup --mode herdr --apply` is also available after `brew install herdr`;
-`atf setup --mode headless --apply` selects background agents. Claude native
+`atf setup --mode herdr` is also available after `brew install herdr`;
+`atf setup --mode headless` selects background agents. Claude native
 wake is unavailable on macOS; poll `get_job`
 to check for results. Please report the daemon log and `atf doctor` output from
 the volunteer run.
 
-## Build or publish
-
-From the repository root, resolve the shared pinned SDK in `.tools/dotnet11`:
-
-~~~bash
-DOTNET="$(realpath "$(git rev-parse --path-format=absolute --git-common-dir)/../.tools/dotnet11/dotnet")"
-export DOTNET_ROOT="$(dirname "$DOTNET")"
-
-"$DOTNET" build AgentTeamForge.slnx -c Release
-
-# Publish a Linux x64 Native AOT apphost for the steps below.
-"$DOTNET" publish src/AgentTeamForge.Host/AgentTeamForge.Host.csproj \
-  -c Release -r linux-x64 --self-contained true \
-  -p:PublishAot=true -o artifacts/quickstart
-export PATH="$PWD/artifacts/quickstart:$PATH"
-~~~
-
-The pinned SDK is `11.0.100-rc.1.26425.128`; Native AOT needs Linux compiler/linker prerequisites.
-
 ## Set up and run
 
-Install once; the daemon starts on first agent use or CLI client call. To start
-it at login instead, add `--autostart` to setup. Login autostart is off by default.
+Setup applies by default; `--apply` remains an alias. `--check` and `atf doctor`
+are read-only. It registers whichever Claude, Codex, and Pi clients are installed
+and reports skipped or failed clients with a rerun instruction. Claude's
+`crossSessionInbound` is set to `accept`, preserving other settings. Pi setup
+installs the MCP adapter and bundled wake extension; adapter installation needs
+network access.
 
-Setup requires `--mode`; a fresh headless setup creates a real-agent profile.
-`--apply` registers both MCP clients and sets `crossSessionInbound` to `accept`
-in Claude's `~/.claude/settings.json`, preserving existing settings. Install
-both client CLIs first; log in to each backend CLI you plan to use:
-
-~~~bash
-atf setup --mode headless --apply
-~~~
-
-For visible interactive agents, run `atf setup --mode herdr --apply` with Herdr installed.
-To enable login startup after setup, run `atf setup --autostart --apply`. To
-remove it, run `atf setup --autostart=off --apply`; `atf doctor` reports whether
+For visible interactive agents, run `atf setup --mode herdr` with Herdr available.
+To enable login startup after setup, run `atf setup --autostart`. To
+remove it, run `atf setup --autostart=off`; `atf doctor` reports whether
 it is installed. `atf start` remains available when you want to start the
 daemon explicitly.
 
@@ -63,14 +66,51 @@ State defaults to `$XDG_STATE_HOME/agentteamforge` or
 
 ~~~bash
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agentteamforge"
-atf setup --mode headless --state-dir "$STATE" --apply
+atf setup --mode headless --state-dir "$STATE"
 ~~~
 
 `atf start` prints its PID and is safe to repeat. It runs up to 8 jobs
 concurrently by default. `atf stop` safely sends SIGTERM to this state's daemon;
 add `--state-dir "$STATE"` when using an override.
 
-## Register Claude Code and Codex manually
+## Web console
+
+The daemon serves a small text console on `127.0.0.1:8765` in every launch
+mode. Print its link with `atf web`, or use `atf web --open` to open it in a
+browser. With a custom state directory, add `--state-dir "$STATE"`.
+
+The link carries the console token in a `#token=...` fragment. The page keeps
+it in that tab's session storage and removes it from the address bar. The token
+is stored separately from the daemon's IPC credential in the owner-private
+`web-console.key` state file. Run `atf web --rotate-token` to revoke old links
+immediately and print a new one.
+
+In interactive launch modes, a finished turn can leave its owned agent tab idle
+for follow-up. Use **Stop agent** in the console to close that tab; **Stop job**
+cancels a queued or running job. The console labels an absent result separately
+from an empty result.
+
+Click a lead or agent card to expand its inline composer, result, and live
+activity transcript. The card's one-line preview shows the latest activity.
+Expand **Raw logs** inside the card when you need the full output stream.
+Click it again or press Escape to collapse it. Press Enter to send, or
+Shift+Enter for a newline. Check **Interrupt** to interrupt a running turn.
+The lead-session card lets you choose which of its member agents to message;
+the lead session itself is an MCP binding, not a managed agent. Message delivery
+and job activity appear in the cards.
+
+Use **New agent** above the overview to submit a prompt to a configured Claude
+Code, Codex, or Pi backend. Enter an existing absolute working directory and,
+optionally, a model, effort, and lead session. The daemon validates the directory
+and option values before accepting the job. Expand a lead card to generate a
+ten-minute join ticket for a Claude Desktop or Codex Desktop external member;
+copy the displayed `join_team` instructions into that member's conversation.
+
+To change the port, run `atf setup --mode headless --web-port 8766` (or use your
+configured launch mode), then restart the daemon. If the port is occupied, the
+daemon logs that the web console is unavailable and continues serving jobs.
+
+## Register Claude Code and Codex manually (troubleshooting)
 
 To register manually, use the same state path and absolute published apphost:
 
@@ -179,7 +219,8 @@ ATF_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/agentteamforge" pi -e "$(re
 
 ## State, database, and logs
 
-The owner-private state directory holds profile, credential, mode, socket, lock,
+The owner-private state directory holds profile, IPC credential, web console
+token, mode, socket, lock,
 `jobs.db`, daemon output in `daemon.log`, job output in `logs/<job-id>.log`, and
 worktrees under `worktrees/<job-id>`; worktrees remain for manual cleanup.
 
@@ -190,3 +231,22 @@ eligible completed, failed, or cancelled jobs older than 30 days. Automatic prun
 
 `stop_job` / `atf client stop JOB_ID` cancels an individual queued or running
 job. `atf stop` stops the whole daemon.
+
+## Developer build or publish
+
+From the repository root, resolve the shared pinned SDK in `.tools/dotnet11`:
+
+~~~bash
+DOTNET="$(realpath "$(git rev-parse --path-format=absolute --git-common-dir)/../.tools/dotnet11/dotnet")"
+export DOTNET_ROOT="$(dirname "$DOTNET")"
+
+"$DOTNET" build AgentTeamForge.slnx -c Release
+
+# Publish a Linux x64 Native AOT apphost for the steps below.
+"$DOTNET" publish src/AgentTeamForge.Host/AgentTeamForge.Host.csproj \
+  -c Release -r linux-x64 --self-contained true \
+  -p:PublishAot=true -o artifacts/quickstart
+export PATH="$PWD/artifacts/quickstart:$PATH"
+~~~
+
+The pinned SDK is `11.0.100-rc.1.26425.128`; Native AOT needs Linux compiler/linker prerequisites.

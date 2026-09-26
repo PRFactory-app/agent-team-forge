@@ -2,6 +2,7 @@ using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Features.Sessions;
 using AgentTeamForge.Tests.Support;
 using Microsoft.Data.Sqlite;
 
@@ -9,6 +10,25 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 
 public sealed class ListJobsTests
 {
+    [Fact]
+    public void Listed_lead_job_exposes_its_registered_workspace_for_console_actions()
+    {
+        using var f = new JobFixture();
+        var workspace = Environment.CurrentDirectory;
+        var session = new LeadSessionStore(f.Database).Start(workspace, "web-console-test");
+        var accepted = f.Accept().Execute(new SubmitJobRequest("lead-web", "hello", null, false)
+        {
+            LeadSessionId = session.SessionId,
+            Cwd = workspace,
+        });
+
+        Assert.Null(accepted.Error);
+        var listed = Assert.Single(f.List().Execute(new ListJobsRequest()).Page!.Jobs);
+        Assert.Equal(session.SessionId, listed.LeadSessionId);
+        Assert.Equal(workspace, listed.LeadWorkspace);
+        Assert.Equal(workspace, listed.Cwd);
+    }
+
     [Fact]
     public void Lists_only_jobs_of_the_bound_principal_and_team()
     {
@@ -51,6 +71,32 @@ public sealed class ListJobsTests
 
         var defaulted = f.List().Execute(new ListJobsRequest()).Page!;
         Assert.Equal(ListJobs.DefaultPageSize, defaulted.Limit);
+    }
+
+    [Fact]
+    public void Activity_order_paging_shows_a_recently_updated_older_job_first()
+    {
+        using var f = new JobFixture();
+        var older = f.Submit("older");
+        var newer = f.Submit("newer");
+        using (var connection = f.Database.OpenConnection())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "UPDATE jobs SET updated_at='2100-01-01T00:00:00.0000000+00:00' WHERE job_id=$id";
+            command.Parameters.AddWithValue("$id", older.JobId);
+            command.ExecuteNonQuery();
+            command.CommandText = "UPDATE jobs SET updated_at='2000-01-01T00:00:00.0000000+00:00' WHERE job_id=$id";
+            command.Parameters["$id"].Value = newer.JobId;
+            command.ExecuteNonQuery();
+        }
+
+        var request = new ListJobsRequest(Limit: 1) { OrderByActivity = true };
+        var first = f.List().Execute(request).Page!;
+        var second = f.List().Execute(request with { Cursor = first.NextCursor }).Page!;
+
+        Assert.Equal(older.JobId, Assert.Single(first.Jobs).JobId);
+        Assert.Equal(newer.JobId, Assert.Single(second.Jobs).JobId);
+        Assert.False(second.HasMore);
     }
 
     /// <summary>

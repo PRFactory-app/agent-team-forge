@@ -56,6 +56,173 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
     HttpRequestMessage FollowUp(string json = """{"instruction":"next","idempotency_key":"k1"}""", string? origin = null, string? token = null) =>
         Api(HttpMethod.Post, "/api/jobs/j1/follow-up", token, origin ?? Origin, json);
 
+    HttpRequestMessage Submit(WebSubmitBody body, string? token = null, string? origin = null) =>
+        Api(HttpMethod.Post, "/api/jobs", token, origin ?? Origin,
+            JsonSerializer.Serialize(body, WebConsoleJson.Default.WebSubmitBody));
+
+    HttpRequestMessage Ticket(string leadId, WebJoinTicketBody body, string? token = null, string? origin = null) =>
+        Api(HttpMethod.Post, $"/api/leads/{leadId}/join-ticket", token, origin ?? Origin,
+            JsonSerializer.Serialize(body, WebConsoleJson.Default.WebJoinTicketBody));
+
+    [Fact]
+    public async Task Tier_settings_require_bearer_host_and_origin_before_forwarding()
+    {
+        const string body = """{"backend":"codex","tier":"xhigh","model":"gpt-6-sol","effort":"xhigh"}""";
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Send(Api(HttpMethod.Get, "/api/settings/tiers", WebConsoleServer.NewToken()))).Status);
+        var badHost = Api(HttpMethod.Get, "/api/settings/tiers");
+        badHost.Headers.Host = "localhost:" + _server.Port;
+        Assert.Equal(HttpStatusCode.MisdirectedRequest, (await Send(badHost)).Status);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Send(Api(HttpMethod.Put, "/api/settings/tiers", origin: "http://attacker.example", json: body))).Status);
+        Assert.Empty(_forwarded);
+        Assert.Equal(HttpStatusCode.OK, (await Send(Api(HttpMethod.Get, "/api/settings/tiers"))).Status);
+        Assert.Equal(HttpStatusCode.OK, (await Send(Api(HttpMethod.Put, "/api/settings/tiers", origin: Origin, json: body))).Status);
+        Assert.Equal([IpcProtocol.TierSettingsGet, IpcProtocol.TierSettingsPut], _forwarded.Select(r => r.Op));
+        Assert.Equal(("codex", "xhigh", "gpt-6-sol", "xhigh"),
+            (_forwarded[1].Backend, _forwarded[1].Tier, _forwarded[1].Model, _forwarded[1].Effort));
+    }
+
+    [Fact]
+    public async Task New_agent_forwards_valid_options_and_directory_after_auth_checks()
+    {
+        var body = new WebSubmitBody("codex", "do work", "new-agent-1", Environment.CurrentDirectory,
+            "high");
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Send(Submit(body, WebConsoleServer.NewToken()))).Status);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Send(Submit(body, origin: "http://attacker.example"))).Status);
+        Assert.Empty(_forwarded);
+
+        var (status, _) = await Send(Submit(body));
+        Assert.Equal(HttpStatusCode.OK, status);
+        var request = Assert.Single(_forwarded);
+        Assert.Equal((IpcProtocol.JobSubmit, "codex", "high", null, Environment.CurrentDirectory),
+            (request.Op, request.Backend, request.Model, request.Effort, request.Cwd));
+        Assert.Equal("new-agent-1", request.IdempotencyKey);
+        Assert.Matches("^codex-[0-9a-f]{8}$", request.TargetAgent);
+    }
+
+    [Fact]
+    public async Task New_agent_can_attach_to_a_lead_with_its_registered_workspace()
+    {
+        var lead = Guid.NewGuid().ToString("D");
+        var body = new WebSubmitBody("claude", "do work", "lead-agent-1", Environment.CurrentDirectory,
+            "opus", "medium", LeadSessionId: lead, Workspace: Environment.CurrentDirectory, Name: "my-agent");
+
+        Assert.Equal(HttpStatusCode.OK, (await Send(Submit(body))).Status);
+        var request = Assert.Single(_forwarded);
+        Assert.Equal((lead, Environment.CurrentDirectory), (request.LeadSessionId, request.Workspace));
+        Assert.Equal("my-agent", request.TargetAgent);
+    }
+
+    [Fact]
+    public async Task Generated_name_is_stable_for_a_submission_retry()
+    {
+        var body = new WebSubmitBody("pi", "do work", "retry-key", Environment.CurrentDirectory, "medium-fast");
+        await Send(Submit(body));
+        await Send(Submit(body));
+        Assert.Equal(2, _forwarded.Count);
+        Assert.Equal(_forwarded[0].TargetAgent, _forwarded[1].TargetAgent);
+        Assert.Matches("^pi-[0-9a-f]{8}$", _forwarded[0].TargetAgent);
+    }
+
+    [Theory]
+    [InlineData("-bad", null)]
+    [InlineData("high-fast", null)]
+    [InlineData("gpt-6-sol", null)]
+    [InlineData("high", "medium")]
+    public async Task Unsafe_new_agent_options_have_no_effect(string? model, string? effort)
+    {
+        var body = new WebSubmitBody("codex", "do work", "unsafe-1", Environment.CurrentDirectory, model, effort);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Send(Submit(body))).Status);
+        Assert.Empty(_forwarded);
+    }
+
+    [Fact]
+    public async Task New_agent_requires_an_existing_absolute_directory()
+    {
+        var relative = new WebSubmitBody("claude", "do work", "cwd-1", "relative/path", "opus");
+        var absent = relative with { Cwd = Path.Combine(Path.GetTempPath(), "atf-web-absent-" + Guid.NewGuid().ToString("N")) };
+        Assert.Equal(HttpStatusCode.BadRequest, (await Send(Submit(relative))).Status);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Send(Submit(absent))).Status);
+        Assert.Empty(_forwarded);
+    }
+
+    [Theory]
+    [InlineData("bad name")]
+    [InlineData("fake-agent")]
+    [InlineData("-bad")]
+    public async Task Invalid_new_agent_name_is_rejected(string name)
+    {
+        var body = new WebSubmitBody("claude", "do work", "named-1", Environment.CurrentDirectory, "opus", Name: name);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Send(Submit(body))).Status);
+        Assert.Empty(_forwarded);
+    }
+
+    [Fact]
+    public async Task Directory_picker_requires_auth_and_lists_only_bounded_directories()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "atf-dir-picker-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            for (var i = 0; i < 105; i++)
+            {
+                Directory.CreateDirectory(Path.Combine(root, $"sub-{i:D3}"));
+            }
+            File.WriteAllText(Path.Combine(root, "private.txt"), "secret");
+            var path = "/api/directories?path=" + Uri.EscapeDataString(root);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await Send(Api(HttpMethod.Get, path, WebConsoleServer.NewToken()))).Status);
+            var wrongHost = Api(HttpMethod.Get, path);
+            wrongHost.Headers.Host = "localhost:" + _server.Port;
+            Assert.Equal(HttpStatusCode.MisdirectedRequest, (await Send(wrongHost)).Status);
+            Assert.Equal(HttpStatusCode.BadRequest, (await Send(Api(HttpMethod.Get, "/api/directories?path=relative"))).Status);
+            Assert.Empty(_forwarded);
+
+            using var response = await _http.SendAsync(Api(HttpMethod.Get, path), TestContext.Current.CancellationToken);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+            var directories = json.RootElement.GetProperty("directories").EnumerateArray().ToArray();
+            Assert.Equal(100, directories.Length);
+            Assert.All(directories, entry => Assert.StartsWith("sub-", entry.GetProperty("name").GetString()));
+            Assert.DoesNotContain(directories, entry => entry.GetProperty("name").GetString() == "private.txt");
+            Assert.DoesNotContain("secret", json.RootElement.ToString(), StringComparison.Ordinal);
+            Assert.Empty(_forwarded);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task Config_and_join_ticket_use_existing_bearer_and_origin_checks()
+    {
+        var lead = Guid.NewGuid().ToString("D");
+        var body = new WebJoinTicketBody("codex-desktop", Environment.CurrentDirectory);
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await Send(Api(HttpMethod.Get, "/api/config", WebConsoleServer.NewToken()))).Status);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Send(Ticket(lead, body, WebConsoleServer.NewToken()))).Status);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Send(Ticket(lead, body, origin: "http://attacker.example"))).Status);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Send(Ticket(lead, body with { Name = "bad name" }))).Status);
+        Assert.Empty(_forwarded);
+
+        Assert.Equal(HttpStatusCode.OK, (await Send(Api(HttpMethod.Get, "/api/config"))).Status);
+        Assert.Equal(HttpStatusCode.OK, (await Send(Ticket(lead, body))).Status);
+        Assert.Collection(_forwarded,
+            r => Assert.Equal(IpcProtocol.JobCapabilities, r.Op),
+            r => Assert.Equal((IpcProtocol.ExternalTicket, lead, Environment.CurrentDirectory, "codex-desktop"),
+                (r.Op, r.LeadSessionId, r.Workspace, r.MemberName)));
+    }
+
+    [Fact]
+    public async Task Stop_agent_uses_the_same_bearer_and_origin_checks_as_other_mutations()
+    {
+        var (badTokenStatus, _) = await Send(Api(HttpMethod.Post, "/api/jobs/j1/stop-agent", WebConsoleServer.NewToken(), Origin));
+        var (badOriginStatus, _) = await Send(Api(HttpMethod.Post, "/api/jobs/j1/stop-agent", origin: "http://attacker.example"));
+        Assert.Equal(HttpStatusCode.Unauthorized, badTokenStatus);
+        Assert.Equal(HttpStatusCode.Forbidden, badOriginStatus);
+        Assert.Empty(_forwarded);
+
+        var (acceptedStatus, _) = await Send(Api(HttpMethod.Post, "/api/jobs/j1/stop-agent", origin: Origin));
+        Assert.Equal(HttpStatusCode.OK, acceptedStatus);
+        Assert.Equal((IpcProtocol.JobStopAgent, "j1"), (Assert.Single(_forwarded).Op, _forwarded[0].JobId));
+    }
+
     async Task<(HttpStatusCode Status, IpcResponse Body)> Send(HttpRequestMessage request)
     {
         using var response = await _http.SendAsync(request, TestContext.Current.CancellationToken);

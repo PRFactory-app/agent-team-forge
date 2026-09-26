@@ -86,6 +86,21 @@ public sealed class AcceptJobTests
         Assert.Equal(0, f.Store.CountUnattemptedIntents());
     }
 
+    [Theory]
+    [InlineData("-model")]
+    [InlineData("model'quote")]
+    [InlineData("model\"quote")]
+    [InlineData("model;cmd")]
+    [InlineData("model&cmd")]
+    [InlineData("model$HOME")]
+    public void Unsafe_model_and_effort_values_are_rejected_before_acceptance(string value)
+    {
+        using var f = new JobFixture();
+        Assert.Equal(JobErrors.InvalidRequest, f.Accept().Execute(new SubmitJobRequest("model", "x", null, false) { Model = value }).Error);
+        Assert.Equal(JobErrors.InvalidRequest, f.Accept().Execute(new SubmitJobRequest("effort", "x", null, false) { Effort = value }).Error);
+        Assert.Equal(0, f.Store.CountUnattemptedIntents());
+    }
+
     [Fact]
     public void Test_controls_are_refused_without_an_explicit_test_profile()
     {

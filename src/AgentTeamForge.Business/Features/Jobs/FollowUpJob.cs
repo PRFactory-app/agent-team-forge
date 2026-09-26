@@ -9,7 +9,8 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// parent's backend and cwd. An interrupt cancels a running parent in the same
 /// transaction that accepts the new turn.
 /// </summary>
-public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, AcceptJob accept, Action<string>? cancelRunning = null)
+public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, AcceptJob accept, Action<string>? cancelRunning = null,
+    Func<int, byte[]>? readProcessEnvironment = null)
 {
     public const string Operation = "job_follow_up";
 
@@ -55,6 +56,24 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
         try
         {
             var runs = interruptRunning ? [] : store.GetRuns(parent.JobId);
+            // A headless sibling may have ended before recording its own session.
+            // Reconcile only terminal runs with owned process evidence, never TUIs.
+            foreach (var peerId in store.GetSessionJobs(parent.JobId))
+            {
+                if (store.GetJob(peerId) is not { } peer) { continue; } // Concurrent prune.
+                var peerRuns = store.GetRuns(peerId);
+                if (peer.Status is JobStatus.NeedsReconciliation or JobStatus.Cancelled && peerRuns.Count > 0
+                    && peerRuns[^1].BackendPid is not null && peerRuns.All(r => r.State != "started")
+                    && !OrphanedBackendProcess.HasMarkedProcess([.. peerRuns.Select(r => r.Correlation)],
+                        [.. peerRuns.Where(r => r.BackendPid.HasValue).Select(r => r.BackendPid!.Value)], readProcessEnvironment))
+                {
+                    store.ReconcileStoppedJob(peerId);
+                }
+            }
+            if (store.IsSessionFenced(parent.JobId))
+            {
+                return JobResult.Fail(JobErrors.ParentNotReady);
+            }
             // A needs_reconciliation row can be committed before its child exits. Only
             // a terminal run with no live marked process proves this session is idle.
             // A run without a daemon-owned pid (a Herdr TUI, or a start that never
@@ -62,8 +81,8 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             if (runs.Any(r => r.State == "started")
                 || (parent.Status is JobStatus.Failed or JobStatus.NeedsReconciliation
                     && (runs.Count == 0
-                        || (parent.Status == JobStatus.NeedsReconciliation && runs[^1].BackendPid is null)
-                        || OrphanedBackendProcess.HasMarkedProcess([.. runs.Select(r => r.Correlation)]))))
+                        || OrphanedBackendProcess.HasMarkedProcess([.. runs.Select(r => r.Correlation)],
+                            [.. runs.Where(r => r.BackendPid.HasValue).Select(r => r.BackendPid!.Value)], readProcessEnvironment))))
             {
                 return JobResult.Fail(JobErrors.ParentNotReady);
             }
@@ -100,6 +119,7 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             parent.Backend, parent.Cwd, parent.JobId, request.WakeKey, request.WakeGeneration, worktreeBase: parent.WorktreeBase,
             worktreePath: parent.WorktreePath, worktreeBranch: parent.WorktreeBranch,
             timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds,
-            interruptParent: interruptRunning, cancelRunning: cancelRunning, leadSessionId: request.LeadSessionId);
+            interruptParent: interruptRunning, cancelRunning: cancelRunning, leadSessionId: request.LeadSessionId,
+            targetAgent: parent.TargetAgent);
     }
 }

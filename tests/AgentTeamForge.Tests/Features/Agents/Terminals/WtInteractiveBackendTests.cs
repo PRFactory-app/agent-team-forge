@@ -7,7 +7,7 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 public sealed class WtInteractiveBackendTests
 {
     [Fact]
-    public async Task FakeTabLaunchReportsNativeResultAndStopsOwnedTab()
+    public async Task FakeTabLaunchRetainsNativeSessionUntilStopAgent()
     {
         var tabs = new FakeTabs();
         var reader = new FakeReader(new InteractiveTranscript("session-1", "done", Completed: true));
@@ -26,6 +26,8 @@ public sealed class WtInteractiveBackendTests
         Assert.Contains(new BackendEvidence.Session("corr", "session-1"), evidence);
         Assert.Contains(new BackendEvidence.Result("corr", "done"), evidence);
         await run.DisposeAsync();
+        Assert.False(tabs.Stopped);
+        Assert.True(backend.StopIdleSession("session-1"));
         Assert.True(tabs.Stopped);
     }
 

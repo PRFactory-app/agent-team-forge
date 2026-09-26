@@ -12,7 +12,7 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// read or written once the admission gate is closed.
 /// </summary>
 public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLimits limits, bool testProfile, AdmissionGate admission,
-    IReadOnlyCollection<string>? backends = null, Func<string, IReadOnlyCollection<string>>? discoverModels = null)
+    IReadOnlyCollection<string>? backends = null, Func<string, IReadOnlyCollection<string>>? discoverModels = null, TierMap? tierMap = null)
 {
     public const string Operation = "job_submit";
 
@@ -29,6 +29,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
             || ((request.Hold || behavior != FakeBehavior.Complete) && !testProfile)
             || !ValidLimits(request.TimeoutSeconds, request.QueueTtlSeconds)
             || !ValidOption(request.Model) || !ValidOption(request.Effort)
+            || request.TargetAgent is not null && !ValidAgentName(request.TargetAgent)
             || !TryNormalizeCwd(request.Cwd, out var cwd))
         {
             return JobResult.Fail(JobErrors.InvalidRequest);
@@ -68,7 +69,8 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
 
         return Admit(Operation, request.IdempotencyKey, request.Instruction, options, backend,
             cwd, null, request.WakeKey, request.WakeGeneration, request.Worktree, baseCommit,
-            timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds, leadSessionId: request.LeadSessionId);
+            timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds, leadSessionId: request.LeadSessionId,
+            targetAgent: request.TargetAgent);
     }
 
     /// <summary>Optional job timeout and queue TTL: whole seconds, at most one day.</summary>
@@ -77,11 +79,15 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
 
     const int MaxLimitSeconds = 86_400;
 
-    internal static bool ValidOption(string? value) => value is null ||
+    // These values become CLI arguments (and on Windows may pass through a command shim).
+    public static bool ValidOption(string? value) => value is null ||
         (value.Length is > 0 and <= 128 && value[0] != '-' && !value.Any(c => char.IsControl(c) || c is ';' or '=' or '"' or '\'' or '`' or '$' or '&' or '|' or '<' or '>'));
 
+    public static bool ValidAgentName(string name) => name.Length is > 0 and <= 64 && char.IsAsciiLetterOrDigit(name[0])
+        && name.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
+
     internal (string? model, string? effort) ResolveModel(string backend, string? model, string? effort) =>
-        ModelSelection.Resolve(backend, model, effort, discoverModels);
+        ModelSelection.Resolve(backend, model, effort, discoverModels, tierMap);
 
     internal bool IsValid(string? key, string? instruction) =>
         !string.IsNullOrWhiteSpace(key) && key.Length <= limits.MaxIdempotencyKeyChars
@@ -91,7 +97,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
     internal JobResult Admit(string operation, string key, string instruction, string options, string backend, string? cwd, string? parentJobId,
         string? wakeKey = null, long? wakeGeneration = null, bool createWorktree = false, string? worktreeBase = null,
         string? worktreePath = null, string? worktreeBranch = null, int? timeoutSeconds = null, int? queueTtlSeconds = null,
-        bool interruptParent = false, Action<string>? cancelRunning = null, string? leadSessionId = null)
+        bool interruptParent = false, Action<string>? cancelRunning = null, string? leadSessionId = null, string? targetAgent = null)
     {
         if (!admission.TryEnter())
         {
@@ -100,14 +106,15 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
 
         try
         {
-            string[] fields = [principal.Agent, instruction, options, backend, cwd ?? string.Empty, parentJobId ?? string.Empty];
+            var agent = targetAgent ?? principal.Agent;
+            string[] fields = [agent, instruction, options, backend, cwd ?? string.Empty, parentJobId ?? string.Empty];
             if (timeoutSeconds is not null || queueTtlSeconds is not null)
             {
                 // Only when set, so fingerprints of jobs accepted before these limits existed are unchanged.
                 fields = [.. fields, $"timeout={timeoutSeconds};queue_ttl={queueTtlSeconds}"];
             }
 
-            var job = new NewJob(principal.Principal, principal.Team, principal.Agent, operation, leadSessionId is null ? key : leadSessionId + ":" + key, Fingerprint(fields), instruction, options)
+            var job = new NewJob(principal.Principal, principal.Team, agent, operation, leadSessionId is null ? key : leadSessionId + ":" + key, Fingerprint(fields), instruction, options)
             {
                 TimeoutSeconds = timeoutSeconds,
                 QueueTtlSeconds = queueTtlSeconds,

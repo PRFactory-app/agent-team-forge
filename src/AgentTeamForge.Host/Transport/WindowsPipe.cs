@@ -23,8 +23,9 @@ internal static partial class WindowsPipe
         // Elevated tokens can default to BUILTIN\Administrators as owner. Use the
         // user SID so the identity remains stable across elevation levels.
         // Set the medium label atomically with the user-only DACL. PipeSecurity
-        // cannot preserve this mandatory-label ACE as an audit rule. Requesting
-        // WRITE_OWNER at creation also aliases FILE_FLAG_FIRST_PIPE_INSTANCE.
+        // cannot preserve this mandatory-label ACE as an audit rule, and its
+        // WRITE_OWNER request aliases FILE_FLAG_FIRST_PIPE_INSTANCE, which would
+        // block later instances. Squatting is refused by the ACL check below.
         var sddl = $"O:{user.Value}D:P(A;;0x001F019F;;;{user.Value})S:(ML;;NW;;;ME)";
         if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl, 1, out var descriptor, out _))
         {

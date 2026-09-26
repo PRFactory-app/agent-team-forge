@@ -87,3 +87,46 @@ jobs:
         with:
           name: atf-${{ github.ref_name }}-win-x64
           path: ${{ runner.temp }}/release/*
+  publish-linux:
+    needs: linux-x64
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: atf-${{ github.ref_name }}-linux-x64
+          path: release
+      - name: Publish Linux release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "AgentTeamForge $GITHUB_REF_NAME" --generate-notes
+  attach-osx:
+    needs: [publish-linux, osx-arm64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: atf-${{ github.ref_name }}-osx-arm64
+          path: release
+      - name: Attach macOS tester assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # install.sh is already published (and listed in SHA256SUMS) by the Linux job.
+        run: gh release upload "$GITHUB_REF_NAME" release/atf-* release/SHA256SUMS-osx-arm64 --repo "$GITHUB_REPOSITORY" --clobber
+  attach-win:
+    needs: [publish-linux, win-x64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: atf-${{ github.ref_name }}-win-x64
+          path: release
+      - name: Attach Windows tester assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --clobber

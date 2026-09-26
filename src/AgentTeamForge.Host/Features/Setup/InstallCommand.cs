@@ -6,6 +6,14 @@ public static class InstallCommand
 {
     public static int Uninstall(IReadOnlyDictionary<string, string> options)
     {
+        if (options.ContainsKey("teardown-only"))
+        {
+            var home = Environment.GetEnvironmentVariable("HOME") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var binary = Path.Combine(home, ".local", "bin", "atf");
+            var teardownState = SetupCommand.ResolveStateDir(options);
+            return ClientSetup.Teardown(binary, teardownState, home, SetupCommand.RunCommand)
+                && LoginAutostart.RemoveOwned(home, binary, teardownState, SetupCommand.RunCommand) ? 0 : 1;
+        }
         var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Executable path unavailable");
         var payload = new FileInfo(executable).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? executable;
         var script = Path.Combine(Path.GetDirectoryName(payload)!, "install.sh");

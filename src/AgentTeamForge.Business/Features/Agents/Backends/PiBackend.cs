@@ -146,19 +146,7 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
             yield return new BackendEvidence.EndOfOutput();
         }
 
-        public void TerminateOwnedChild()
-        {
-            try
-            {
-                if (!_process.HasExited)
-                {
-                    _process.Kill(entireProcessTree: true);
-                }
-            }
-            catch (InvalidOperationException)
-            {
-            }
-        }
+        public void TerminateOwnedChild() => OwnedProcessTermination.Kill(_process);
 
         public async ValueTask DisposeAsync()
         {

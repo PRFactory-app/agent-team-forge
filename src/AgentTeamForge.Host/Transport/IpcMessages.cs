@@ -20,8 +20,11 @@ public sealed record IpcRequest
     public bool Hold { get; init; }
     public string? JobId { get; init; }
     public string? Backend { get; init; }
+    public string? TargetAgent { get; init; }
     public string? Model { get; init; }
     public string? Effort { get; init; }
+    public string? Tier { get; init; }
+    public bool ResetAllTiers { get; init; }
     public string? Cwd { get; init; }
     public bool Worktree { get; init; }
     public bool Interrupt { get; init; }
@@ -34,6 +37,7 @@ public sealed record IpcRequest
     public long? AfterCursor { get; init; }
     public int? MaxBytes { get; init; }
     public string? Cursor { get; init; }
+    public bool OrderByActivity { get; init; }
     public int? OlderThanDays { get; init; }
     public bool DryRun { get; init; }
     public string? WakeKey { get; init; }
@@ -54,7 +58,7 @@ public sealed record IpcRequest
     public string? CodexThreadId { get; init; }
 }
 
-public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, AgentTeamForge.DAL.Features.External.JoinTicket? Ticket = null, AgentTeamForge.DAL.Features.External.JoinedMember? Member = null, AgentTeamForge.DAL.Features.External.ExternalInbox? Inbox = null, JobActivityPage? Activity = null, bool? AlreadyLeft = null, string? LeftName = null)
+public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, AgentTeamForge.DAL.Features.External.JoinTicket? Ticket = null, AgentTeamForge.DAL.Features.External.JoinedMember? Member = null, AgentTeamForge.DAL.Features.External.ExternalInbox? Inbox = null, JobActivityPage? Activity = null, bool? AlreadyLeft = null, string? LeftName = null, IReadOnlyCollection<string>? Backends = null, IReadOnlyDictionary<string, AgentModelOptions>? ModelOptions = null, string? ErrorDetail = null, IReadOnlyList<TierSetting>? Tiers = null, IReadOnlyDictionary<string, IReadOnlyCollection<string>>? ModelCatalog = null)
 {
     // Flat aliases keep the external MCP replies usable by win-agent-teams skills.
     public bool Success => Ok;
@@ -79,11 +83,15 @@ public static class IpcProtocol
     public const int Version = 1;
     public const string Hello = "hello";
     public const string JobSubmit = "job_submit";
+    public const string JobCapabilities = "job_capabilities";
+    public const string TierSettingsGet = "tier_settings_get";
+    public const string TierSettingsPut = "tier_settings_put";
     public const string JobGet = "job_get";
     public const string JobOutput = "job_output";
     public const string JobActivity = "get_job_activity";
     public const string JobFollowUp = "job_follow_up";
     public const string JobStop = "job_stop";
+    public const string JobStopAgent = "job_stop_agent";
     public const string JobList = "job_list";
     public const string JobPrune = "job_prune";
     public const string WakeRegister = "wake_register";
