@@ -24,6 +24,7 @@ public sealed record SubmitJobRequest(string IdempotencyKey, string Instruction,
 
     public string? Model { get; init; }
     public string? Effort { get; init; }
+    public string? HerdrPlacement { get; init; }
 
     /// <summary>Absolute existing directory the agent runs in; null uses the daemon default.</summary>
     public string? Cwd { get; init; }
@@ -81,6 +82,10 @@ public sealed record JobView(string JobId, string Status, string? Result, string
     public string? Backend { get; init; }
     public string? Model { get; init; }
     public string? Effort { get; init; }
+    public string? HerdrPlacement { get; init; }
+    public string? HerdrSession { get; init; }
+    public string? HerdrTab { get; init; }
+    public string? HerdrTabLabel { get; init; }
 
     public string? SessionId { get; init; }
 

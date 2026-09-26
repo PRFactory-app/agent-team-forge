@@ -139,12 +139,13 @@ public static class DaemonCommand
         var backends = BackendCatalog.Create(
             new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits), profile.RealAgents && launchMode is not ("herdr" or "terminal" or "wt"));
         var interactiveBackends = new List<IInteractiveSessionStop>();
+        HerdrTerminal? herdrTerminal = null;
         if (launchMode == "herdr")
         {
             var seed = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
                 .ToDictionary(e => (string)e.Key, e => (string?)e.Value, StringComparer.Ordinal);
-            HerdrInteractiveBackend Interactive(InteractiveAgentKind kind) =>
-                new(new HerdrTerminal(new HerdrTerminalOptions { Environment = seed }), kind, state.Path);
+            herdrTerminal = new HerdrTerminal(new HerdrTerminalOptions { Environment = seed });
+            HerdrInteractiveBackend Interactive(InteractiveAgentKind kind) => new(herdrTerminal, kind, state.Path);
             var claude = Interactive(InteractiveAgentKind.Claude);
             var codex = Interactive(InteractiveAgentKind.Codex);
             var pi = Interactive(InteractiveAgentKind.Pi);
@@ -180,17 +181,20 @@ public static class DaemonCommand
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs);
         var modelDiscovery = new BackendModelDiscovery();
         var tierMap = new TierMap(state.Path, modelDiscovery.CachedModels, Log);
-        var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap);
+        var herdrPlacement = herdrTerminal is null ? null : new HerdrPlacement(state.Path, Log);
+        Func<string, string?>? checkHerdrSession = herdrTerminal is null ? null : herdrTerminal.CheckExistingSession;
+        var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap,
+            herdrPlacement, checkHerdrSession);
         var externalTeam = new ExternalTeam(externalMembers, wakeStore);
         // Remote claims have their own lead identity and cannot borrow the local MCP lead.
         var connectorAccept = new AcceptJob(store, new BoundPrincipal("prfactory", "connector", "connector-lead"),
-            limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap);
+            limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap, herdrPlacement, checkHerdrSession);
         var connectorTeams = new PRFactoryTeamStore(database);
         var connectorSessions = new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
             new ListJobs(store, profile.Bound, jobLogs),
             new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
-            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery);
+            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,

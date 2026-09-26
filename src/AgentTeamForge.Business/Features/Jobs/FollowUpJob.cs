@@ -115,6 +115,10 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
         {
             options += ";effort=" + selection.effort;
         }
+        if (JobOptions.Read(parent.Options, "herdr_placement") is { } placement)
+        {
+            options += ";herdr_placement=" + placement;
+        }
         return accept.Admit(Operation, request.IdempotencyKey, request.Instruction, options,
             parent.Backend, parent.Cwd, parent.JobId, request.WakeKey, request.WakeGeneration, worktreeBase: parent.WorktreeBase,
             worktreePath: parent.WorktreePath, worktreeBranch: parent.WorktreeBranch,

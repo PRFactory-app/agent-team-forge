@@ -12,7 +12,8 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// read or written once the admission gate is closed.
 /// </summary>
 public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLimits limits, bool testProfile, AdmissionGate admission,
-    IReadOnlyCollection<string>? backends = null, Func<string, IReadOnlyCollection<string>>? discoverModels = null, TierMap? tierMap = null)
+    IReadOnlyCollection<string>? backends = null, Func<string, IReadOnlyCollection<string>>? discoverModels = null, TierMap? tierMap = null,
+    HerdrPlacement? herdrPlacement = null, Func<string, string?>? checkHerdrSession = null)
 {
     public const string Operation = "job_submit";
 
@@ -66,6 +67,19 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         {
             options += $";effort={selection.effort}";
         }
+
+        if (backend is BackendCatalog.Claude or BackendCatalog.Codex or BackendCatalog.Pi && herdrPlacement is not null)
+        {
+            string placement;
+            try { placement = herdrPlacement.Resolve(request.HerdrPlacement); }
+            catch (ArgumentException e) { return JobResult.Fail(e.Message); }
+            if (placement.StartsWith("herdr-session:", StringComparison.Ordinal) && checkHerdrSession?.Invoke(placement[14..]) is { } problem)
+            {
+                return JobResult.Fail(problem);
+            }
+            options += ";herdr_placement=" + placement;
+        }
+        else if (request.HerdrPlacement is not null) { return JobResult.Fail("Herdr placement requires Herdr launch mode"); }
 
         return Admit(Operation, request.IdempotencyKey, request.Instruction, options, backend,
             cwd, null, request.WakeKey, request.WakeGeneration, request.Worktree, baseCommit,

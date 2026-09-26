@@ -48,6 +48,7 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal)
         Backend = job.Backend,
         Model = JobOptions.Read(job.Options, "model"),
         Effort = JobOptions.Read(job.Options, "effort"),
+        HerdrPlacement = JobOptions.Read(job.Options, "herdr_placement"),
         SessionId = job.SessionId,
         ParentJobId = job.ParentJobId,
         Cwd = job.WorktreePath ?? job.Cwd,

@@ -31,6 +31,8 @@
   const newAgent = { pending: null, sending: false };
   let modelOptions = {};
   let tierSettings = [];
+  let herdrMode = false;
+  let defaultPlacement = 'own-session';
   const recentCwds = new Map();
   let pickedDirectory = null;
   let timer = null;
@@ -135,6 +137,12 @@
     const r = await api('GET', '/api/config');
     modelOptions = r?.model_options || {};
     tierSettings = r?.tiers || tierSettings;
+    herdrMode = !!r?.herdr_mode;
+    defaultPlacement = r?.herdr_placement || 'own-session';
+    $('new-agent-placement-field').hidden = !herdrMode;
+    $('herdr-settings').hidden = !herdrMode;
+    setPlacementControls('new-agent', defaultPlacement);
+    setPlacementControls('settings', defaultPlacement);
     const select = $('new-agent-backend');
     select.replaceChildren();
     for (const backend of (r?.backends || []).filter(name => ['claude', 'codex', 'pi'].includes(name))) {
@@ -185,6 +193,19 @@
     if (!r?.ok) { $('settings-status').textContent = r?.error || 'Could not load settings.'; return; }
     tierSettings = r.tiers || [];
     renderTierSettings(r.model_catalog || {});
+  }
+
+  function setPlacementControls(prefix, value) {
+    const shared = value.startsWith('herdr-session:');
+    $(prefix + '-placement').value = shared ? 'shared' : 'own-session';
+    $(prefix + '-session').value = shared ? value.slice(14) : 'default';
+    $(prefix + '-session-field').hidden = !shared;
+    $(prefix + '-session').required = shared;
+  }
+
+  function chosenPlacement(prefix) {
+    return $(prefix + '-placement').value === 'shared'
+      ? 'herdr-session:' + $(prefix + '-session').value.trim() : 'own-session';
   }
 
   function renderTierSettings(catalog) {
@@ -329,6 +350,7 @@
         name: $('new-agent-name').value.trim() || null,
         model: $('new-agent-model').value.trim() || null,
         effort: $('new-agent-effort').value.trim() || null,
+        herdr_placement: herdrMode ? chosenPlacement('new-agent') : null,
         cwd: $('new-agent-cwd').value.trim(),
         lead_session_id: leadId,
         workspace: leadId ? knownLeads.get(leadId) : null,
@@ -946,6 +968,7 @@
         if (j.backend) chips.append(backendChip(j.backend));
         if (j.model) chips.append(element('span', 'chip', j.model));
         if (j.effort) chips.append(element('span', 'chip subtle', 'effort ' + j.effort));
+        if (herdrMode && j.herdr_placement) chips.append(element('span', 'chip subtle', j.herdr_placement === 'own-session' ? 'Own Herdr session' : 'Herdr ' + j.herdr_placement.slice(14)));
         const state = element('span', 'badge ' + (j.status === 'completed' ? 'done' : j.light),
           j.status === 'completed' ? 'done' : j.status === 'parked' ? 'parked · awaiting reply' : j.status.replaceAll('_', ' '));
         const cardMeta = element('span', 'card-meta');
@@ -960,6 +983,22 @@
         side.append(element('span', 'elapsed', age(j.accepted_at)));
         if (j.status === 'running' && j.updated_at) side.append(element('span', 'beat', 'last update ' + age(j.updated_at) + ' ago'));
         card.append(open, side);
+        if (herdrMode && j.herdr_placement) {
+          const location = element('div', 'card-meta');
+          if (j.herdr_placement === 'own-session') {
+            if (j.herdr_session) {
+              const command = 'herdr session attach ' + j.herdr_session;
+              location.append(element('span', '', command));
+              const copy = element('button', '', 'Copy'); copy.type = 'button';
+              copy.addEventListener('click', () => navigator.clipboard.writeText(command));
+              location.append(copy);
+            } else location.append(element('span', '', 'Herdr session pending'));
+          } else {
+            location.append(element('span', '', 'Herdr session ' + (j.herdr_session || j.herdr_placement.slice(14))
+              + (j.herdr_tab ? ' · tab ' + (j.herdr_tab_label || j.herdr_tab) + ' (' + j.herdr_tab + ')' : ' · tab pending')));
+          }
+          card.append(location);
+        }
         const panel = cardPanel(card, key, j.session_id ? [j] : [], false, j);
         open.setAttribute('aria-controls', panel.id);
         tree.append(card);
@@ -1011,6 +1050,10 @@
       $('settings-view').hidden = false;
       $('settings-toggle').setAttribute('aria-expanded', 'true');
       await loadTierSettings();
+      if (herdrMode) {
+        const placement = await api('GET', '/api/settings/herdr-placement');
+        if (placement?.ok) setPlacementControls('settings', placement.herdr_placement);
+      }
     });
     $('settings-back').addEventListener('click', () => {
       $('settings-view').hidden = true;
@@ -1021,6 +1064,17 @@
       const result = await api('PUT', '/api/settings/tiers', { reset_all: true });
       $('settings-status').textContent = result?.ok ? 'All tiers reset.' : (result?.error || 'Reset failed.');
       if (result?.ok) { await loadTierSettings(); await loadConfig(); }
+    });
+    for (const prefix of ['new-agent', 'settings']) {
+      $(prefix + '-placement').addEventListener('change', () => {
+        $(prefix + '-session-field').hidden = $(prefix + '-placement').value !== 'shared';
+        $(prefix + '-session').required = $(prefix + '-placement').value === 'shared';
+      });
+    }
+    $('settings-placement-save').addEventListener('click', async () => {
+      const result = await api('PUT', '/api/settings/herdr-placement', { herdr_placement: chosenPlacement('settings') });
+      $('settings-status').textContent = result?.ok ? 'Herdr placement saved.' : (result?.error || 'Save failed.');
+      if (result?.ok) { defaultPlacement = result.herdr_placement; setPlacementControls('new-agent', defaultPlacement); }
     });
     $('theme-select').value = theme;
     $('theme-select').addEventListener('change', () => {
