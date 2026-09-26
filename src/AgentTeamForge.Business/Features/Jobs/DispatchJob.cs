@@ -235,7 +235,7 @@ public sealed class DispatchJob : IDisposable
             var request = new BackendRequest(claim.Job.JobId, claim.Correlation, claim.Job.Instruction, claim.Job.Options)
             {
                 ResumeSessionId = resumeSessionId,
-                WorkingDirectory = claim.Job.WorktreePath ?? claim.Job.Cwd,
+                WorkingDirectory = JobWorktree.WorkingDirectory(claim.Job),
             };
             var starting = Task.Run(() => backend.Start(request), CancellationToken.None);
             try
