@@ -65,6 +65,12 @@ for follow-up. Use **Stop agent** in the console to close that tab; **Stop job**
 cancels a queued or running job. The console labels an absent result separately
 from an empty result.
 
+Each agent card has an inline message composer. Press Enter to send, or
+Shift+Enter for a newline. Check **Interrupt** to interrupt a running turn.
+The lead-session card lets you choose which of its member agents to message;
+the lead session itself is an MCP binding, not a managed agent. Message delivery
+and job output appear in the cards.
+
 To change the port, run `atf setup --mode headless --web-port 8766` (or use your
 configured launch mode), then restart the daemon. If the port is occupied, the
 daemon logs that the web console is unavailable and continues serving jobs.
