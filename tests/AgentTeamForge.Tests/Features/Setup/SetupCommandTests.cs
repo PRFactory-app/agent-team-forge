@@ -80,6 +80,34 @@ public sealed class SetupCommandTests
         Assert.False(File.Exists(Path.Combine(state, "launch-mode.json")));
     }
 
+    [Fact]
+    public void IsolatedSetupRefusesInheritedClientHomesEvenWithForce()
+    {
+        using var temp = new TempStateDir();
+        var home = temp.File("home");
+        var state = temp.File("state");
+        var values = new Dictionary<string, string?>
+        {
+            ["CODEX_HOME"] = "/home/owner/.codex",
+            ["CLAUDE_CONFIG_DIR"] = Path.Combine(home, ".claude"),
+        };
+        string? Env(string name) => values.GetValueOrDefault(name);
+
+        var options = new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = state };
+        (int, string) NoCommands(string _, IReadOnlyList<string> __) => throw new InvalidOperationException("client invoked");
+        Assert.Equal(64, SetupCommand.Run(options, NoCommands, "/tmp/atf", homePath: home, clientEnvironment: Env));
+        options["force"] = "true";
+        Assert.Equal(64, SetupCommand.Run(options, NoCommands, "/tmp/atf", homePath: home, clientEnvironment: Env));
+        Assert.False(Directory.Exists(state));
+        Assert.Contains("CODEX_HOME", SetupCommand.ClientConfigProblem(state, home, force: true, Env));
+        Assert.Contains("CODEX_HOME", SetupCommand.ClientConfigProblem(Path.Combine(home, ".local", "state", "agentteamforge"), home, force: false, Env));
+        values["CODEX_HOME"] = Path.Combine(home, ".codex");
+        values["CLAUDE_CONFIG_DIR"] = "/home/owner/.claude";
+        Assert.Contains("CLAUDE_CONFIG_DIR", SetupCommand.ClientConfigProblem(state, home, force: true, Env));
+        values["CLAUDE_CONFIG_DIR"] = Path.Combine(home, ".claude");
+        Assert.Null(SetupCommand.ClientConfigProblem(state, home, force: true, Env));
+    }
+
     [Theory]
     [InlineData("claude")]
     [InlineData("codex")]

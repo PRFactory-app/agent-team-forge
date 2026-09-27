@@ -9,13 +9,16 @@ public static class InstallCommand
     {
         if (options.ContainsKey("teardown-only"))
         {
-            var home = OperatingSystem.IsWindows()
-                ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
-                : Environment.GetEnvironmentVariable("HOME") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var home = SetupCommand.ClientHome();
             var binary = OperatingSystem.IsWindows()
                 ? Path.Combine(home, ".local", "share", "agentteamforge", "bin", "atf.exe")
                 : Path.Combine(home, ".local", "bin", "atf");
             var teardownState = SetupCommand.ResolveStateDir(options);
+            if (SetupCommand.ClientConfigProblem(teardownState, home, options.ContainsKey("force"), Environment.GetEnvironmentVariable) is { } problem)
+            {
+                Console.Error.WriteLine($"error: {problem}");
+                return 64;
+            }
             return ClientSetup.Teardown(binary, teardownState, home, SetupCommand.RunCommand)
                 && LoginAutostart.RemoveOwned(home, binary, teardownState, SetupCommand.RunCommand) ? 0 : 1;
         }
@@ -50,6 +53,10 @@ public static class InstallCommand
         if (options.ContainsKey("purge"))
         {
             start.ArgumentList.Add(windows ? "-Purge" : "--purge");
+        }
+        if (options.ContainsKey("force"))
+        {
+            start.ArgumentList.Add(windows ? "-Force" : "--force");
         }
         if (options.TryGetValue("state-dir", out var stateDir))
         {

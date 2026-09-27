@@ -22,7 +22,7 @@ public static class SetupCommand
 
     public static int Run(IReadOnlyDictionary<string, string> options, Func<string, IReadOnlyList<string>, (int ExitCode, string Output)>? commandRunner = null,
         string? executablePath = null, string? claudeSettingsPath = null, string? homePath = null, string? extensionPath = null,
-        TextReader? input = null, bool? interactive = null)
+        TextReader? input = null, bool? interactive = null, Func<string, string?>? clientEnvironment = null)
     {
         var check = options.ContainsKey("check");
         var apply = options.ContainsKey("apply");
@@ -95,7 +95,7 @@ public static class SetupCommand
             return 64;
         }
 
-        var home = homePath ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var home = homePath ?? ClientHome();
         var executable = executablePath ?? Environment.ProcessPath
             ?? throw new InvalidOperationException("Executable path unavailable");
         var binary = ClientSetup.StableBinary(executable, home);
@@ -114,6 +114,14 @@ public static class SetupCommand
                     $"{(available[backend] ? "available" : "unavailable")}, sign-in {signIn[backend]}");
             }
             return ClientSetup.Reconcile(binary, dir, home, settingsPath, extensionPath, commandRunner, apply: false) ? 0 : 1;
+        }
+
+        if (!(autostart == "off" && !options.ContainsKey("mode"))
+            && ClientConfigProblem(dir, home, options.ContainsKey("force"),
+                clientEnvironment ?? (homePath is null ? Environment.GetEnvironmentVariable : _ => null)) is { } configProblem)
+        {
+            Console.Error.WriteLine($"error: {configProblem}");
+            return 64;
         }
 
         var unsafeBinary = UnsafeRegistrationPath(executable, home);
@@ -227,6 +235,32 @@ public static class SetupCommand
 
     static bool Within(string path, string root) => path.Equals(Path.TrimEndingDirectorySeparator(root), StringComparison.Ordinal)
         || path.StartsWith(Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+
+    internal static string ClientHome() => OperatingSystem.IsWindows()
+        ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+        : Environment.GetEnvironmentVariable("HOME") is { Length: > 0 } home
+            ? Path.GetFullPath(home)
+            : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+    internal static string? ClientConfigProblem(string stateDir, string home, bool force, Func<string, string?> environment)
+    {
+        var defaultState = Path.GetFullPath(Path.Combine(
+            environment("XDG_STATE_HOME") is { Length: > 0 } xdg ? xdg : Path.Combine(home, ".local", "state"),
+            "agentteamforge"));
+        var nonDefault = Path.GetFullPath(stateDir) != defaultState;
+        if (nonDefault && !force)
+        {
+            return $"non-default state directory {stateDir} would change client registrations; use --force only with the intended client HOME";
+        }
+        foreach (var name in new[] { "CODEX_HOME", "CLAUDE_CONFIG_DIR" })
+        {
+            if (environment(name) is { Length: > 0 } configured && !Within(Path.GetFullPath(configured), Path.GetFullPath(home)))
+            {
+                return $"{name}={configured} is outside HOME={home}; refusing client config writes for state directory {stateDir}";
+            }
+        }
+        return null;
+    }
 
     public static async Task<int> StartAsync(IReadOnlyDictionary<string, string> options, string? executablePath = null, bool quiet = false)
     {
@@ -651,7 +685,7 @@ public static class SetupCommand
         // packaged (MSIX) app whose tabs see a virtualized AppData\Local where directories created by
         // unpackaged processes are invisible, so `wt ... powershell -File <state>\wt\*.ps1` fails.
         Path.Combine(Environment.GetEnvironmentVariable("XDG_STATE_HOME") is { Length: > 0 } xdg ? xdg :
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state"), "agentteamforge"));
+            Path.Combine(ClientHome(), ".local", "state"), "agentteamforge"));
 
     /// <summary>The pre-move Windows default (%LOCALAPPDATA%\AgentTeamForge) when it holds state and the new default does not.</summary>
     static string? LegacyWindowsStateDir(IReadOnlyDictionary<string, string> options, string dir)
