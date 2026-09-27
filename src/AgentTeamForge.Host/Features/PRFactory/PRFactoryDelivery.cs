@@ -29,6 +29,18 @@ public sealed partial class PRFactoryWorkItems
                 var kill = command.Kind.Equals("KillAgent", StringComparison.OrdinalIgnoreCase);
                 var send = command.Kind.Equals("SendMessage", StringComparison.OrdinalIgnoreCase);
                 if (!kill && !send) { receipt = new(false, "unknown_kind"); }
+                else if (send && command.QuestionId is { } questionId && interaction is not null)
+                {
+                    // A correlated answer: ACK means a durable reservation, not that the agent consumed it.
+                    var answered = new HumanWaitResult(null, JobErrors.DaemonUnhealthy);
+                    await Guard(item.Id, () =>
+                    {
+                        answered = interaction.Answer(server, item.Id, command.TargetAgentName, questionId, command.CommandId,
+                            command.Text ?? "", MaxIterations(item, command.TargetAgentName), DateTimeOffset.UtcNow);
+                        return Task.CompletedTask;
+                    }, ct);
+                    receipt = new(answered.Error is null, answered.Error);
+                }
                 else if (external is not null)
                 {
                     if (kill)

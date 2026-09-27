@@ -97,6 +97,7 @@ public static class JobsMcpBridge
     const string LeadSendSchema = """{"type":"object","properties":{"to":{"type":"string","default":"team-lead"},"text":{"type":"string"}},"required":["text"]}""";
     const string MemberReadSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"from_agent":{"type":"string"},"since_seq":{"type":"integer","minimum":0},"full":{"type":"boolean"},"limit":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0}},"required":["member_token"]}""";
     const string LeadReadSchema = """{"type":"object","properties":{"from_agent":{"type":"string"},"since_seq":{"type":"integer","minimum":0},"full":{"type":"boolean"},"limit":{"type":"integer","minimum":0,"maximum":10000},"max_chars":{"type":"integer","minimum":0}}}""";
+    const string HumanInputSchema = """{"type":"object","properties":{"question":{"type":"string"},"idempotency_key":{"type":"string","description":"Stable key for this question; reuse it when retrying."}},"required":["question","idempotency_key"]}""";
     const string LeaveSchema = """{"type":"object","properties":{"member_token":{"type":"string"}},"required":["member_token"]}""";
     internal static IpcRequest ClaudeMemberWake(IpcRequest request, IpcRequest? host) => request with
     {
@@ -222,6 +223,10 @@ public static class JobsMcpBridge
             new() { Name = "job_get", Description = "Read a job's committed state and result (spike).", InputSchema = Parse(GetSchema) },
             new() { Name = "job_list", Description = "List your jobs' committed state, newest first, one bounded page at a time (read-only, spike).", InputSchema = Parse(ListSchema) },
         };
+        if (parentMemberToken is not null)
+        {
+            tools.Add(new() { Name = "request_human_input", Description = "Ask the human owner a question that blocks your task. The question is saved durably; then END YOUR TURN. Never wait on stdin or an approval prompt. The answer resumes this same session in a new turn.", InputSchema = Parse(HumanInputSchema) });
+        }
         if (externalOnly)
         {
             tools.RemoveAll(tool => tool.Name is not ("join_team" or "external_send" or "external_read" or "external_set_wake" or "leave_team"));
@@ -299,6 +304,16 @@ public static class JobsMcpBridge
                     else if (call.Name == "wake_status")
                     {
                         response = await SendAsync(new IpcRequest { Op = IpcProtocol.WakeStatus, LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
+                    }
+                    else if (call.Name == "request_human_input" && parentMemberToken is not null)
+                    {
+                        response = await SendAsync(new IpcRequest
+                        {
+                            Op = IpcProtocol.HumanInputRequest,
+                            MemberToken = parentMemberToken,
+                            Text = String(args, "question"),
+                            IdempotencyKey = String(args, "idempotency_key"),
+                        }, cancellationToken);
                     }
                     else if (call.Name == "close_team")
                     {

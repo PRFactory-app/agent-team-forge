@@ -83,7 +83,9 @@ public sealed record PRFactoryRemotePublication(bool Remote, string Branch, stri
 public sealed record PRFactoryFailureRequest(string ErrorMessage, string ErrorDetails, bool ShouldRetry, string PartialResult, Guid? LeaseToken);
 public sealed record PRFactoryCompletionResponse(bool Accepted);
 public sealed record PRFactoryFailureResponse(bool Acknowledged);
-public sealed record PRFactoryCommand(Guid CommandId, string Kind, string TargetAgentName, string? Text);
+// QuestionId correlates a human answer to request_human_input (human-wait-v1); absent for ordinary sends.
+public sealed record PRFactoryCommand(Guid CommandId, string Kind, string TargetAgentName, string? Text, string? QuestionId = null);
+public sealed record PRFactoryHumanWaitNotice(string QuestionId, string Question, string Status, Guid? AnswerCommandId, string? Error);
 public sealed record PRFactoryCommandDrainResponse(List<PRFactoryCommand> Commands);
 public sealed record PRFactoryCommandAck(Guid CommandId, bool Accepted, string? Reason);
 public sealed record PRFactoryCommandAckRequest(Guid LeaseToken, List<PRFactoryCommandAck> Acks);
@@ -114,4 +116,5 @@ public sealed record PRFactoryStreamResponse(bool Accepted, Dictionary<string, l
 [JsonSerializable(typeof(PRFactoryCommandAckResponse))]
 [JsonSerializable(typeof(PRFactoryStreamBatch))]
 [JsonSerializable(typeof(PRFactoryStreamResponse))]
+[JsonSerializable(typeof(PRFactoryHumanWaitNotice))]
 internal sealed partial class PRFactoryWorkItemJson : JsonSerializerContext;

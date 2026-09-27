@@ -151,9 +151,26 @@ the team completes normally; an unknown reset waits for explicit recovery.
 Accepted-but-unfinished teams are capped (10) and polling asks only for free
 slots. Pruning never removes turns of accepted teams or unresumed parks.
 
+## Human questions during a turn
+
+Managed agents get a `request_human_input(question, idempotency_key)` tool on
+their private agentteamforge MCP server, authenticated by the managed child's
+own member token (never a caller-supplied job ID). The daemon records the
+question against the asking turn, and the agent ends its turn; nobody waits on
+stdin or an approval prompt. The team cannot complete while a question is open.
+Question state is streamed as `human-wait` records (agent `<member>:questions`)
+with frozen, replayable batches. A server command carrying `questionId` is an
+answer: its ACK means a durable reservation (or an explicit error such as
+`max_iterations_exceeded` or `stale_question`). The answer resumes the saved
+session once, in the same workspace, under a fixed key, even after restart or a
+redelivered command; it counts as applied when that resumed turn completes.
+Commands poll every ~2 s while teams are active. Cursor/Droid are refused.
+
 Registration advertises `authority-disposition-v1` and `remote-publication-v1`.
-Not yet wired: workspace continuity with authoritative start SHAs, mid-turn
-human wait, readiness probes, multi-repository work and binary attachments.
+Not advertised yet: `human-wait-v1` (needs native transcript receipts and
+real CLI session proofs, plus the server's `questionId` wire), workspace
+continuity with authoritative start SHAs, readiness probes, external-member
+human waits, multi-repository work and binary attachments.
 
 ## Phase artefacts
 

@@ -627,6 +627,14 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return (long)command.ExecuteScalar()! == 1;
     }
 
+    /// <summary>The live member name for a secret; null once revoked, left or its team closed.</summary>
+    public string? ActiveMemberName(string token)
+    {
+        using var db = database.OpenConnection();
+        using var tx = db.BeginTransaction();
+        return FindMember(db, tx, token)?.Name;
+    }
+
     public bool TokenBelongsToTeam(string token, string teamId)
     {
         using var db = database.OpenConnection();

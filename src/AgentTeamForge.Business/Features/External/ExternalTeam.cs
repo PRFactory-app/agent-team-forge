@@ -39,6 +39,9 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
             && Token.IsMatch(parts[2]) && members.TokenBelongsToTeam(parts[2], parts[1]) ? parts[2] : null;
     }
 
+    /// <summary>Authenticates a member token to its live member name (managed children: child-&lt;root job&gt;).</summary>
+    public string? MemberName(string? token) => MemberSecret(token) is { } secret ? members.ActiveMemberName(secret) : null;
+
     /// <summary>The connector calls this with a stable work-item key; retries recover the same team ID.</summary>
     public string? CreateActorTeam(string ownerKey) => ownerKey is { Length: > 0 and <= 256 }
         ? members.CreateActorTeam(ownerKey, now()) : null;

@@ -14,7 +14,8 @@ public sealed partial class PRFactoryWorkItems(
     ExternalTeam? externalTeam = null, Func<string, JobResult>? stopJob = null,
     Func<FollowUpRequest, JobResult>? followUp = null, JobLogs? jobLogs = null,
     PRFactoryAuthority? authority = null, PRFactoryWorkspace? workspaces = null, string? workspaceRoot = null,
-    AccountAdmission? accounts = null, int maxAcceptedTeams = 10, PRFactoryPublicationStore? publications = null)
+    AccountAdmission? accounts = null, int maxAcceptedTeams = 10, PRFactoryPublicationStore? publications = null,
+    PRFactoryInteraction? interaction = null, HumanWaitStore? humanWaits = null)
 {
     // Parked turns share one account binding per backend until configured accounts exist.
     public const string DefaultAccount = "default";
@@ -283,7 +284,8 @@ public sealed partial class PRFactoryWorkItems(
         JobRecord? lead;
         try
         {
-            lead = await SubmitMember(item, "lead", item.AgentType, item.Model, item.Effort, item.Prompt, Cwd("lead"), workspace is not null, ct);
+            lead = await SubmitMember(item, "lead", item.AgentType, item.Model, item.Effort,
+                humanWaits is null ? item.Prompt : item.Prompt + "\n\n" + HumanInputHint, Cwd("lead"), workspace is not null, ct);
         }
         catch (PRFactoryJobSubmissionException ex)
         {
@@ -320,7 +322,8 @@ public sealed partial class PRFactoryWorkItems(
             }
 
             var instruction = $"{item.Prompt}\n\nRole: {member.Role}\nMember: {member.Name}"
-                + (string.IsNullOrWhiteSpace(member.Notes) ? "" : $"\nNotes: {member.Notes}");
+                + (string.IsNullOrWhiteSpace(member.Notes) ? "" : $"\nNotes: {member.Notes}")
+                + (humanWaits is null ? "" : "\n\n" + HumanInputHint);
             JobRecord? child;
             try
             {
@@ -344,6 +347,7 @@ public sealed partial class PRFactoryWorkItems(
             }
         }
         await AdvanceCommandsAsync(item, ct);
+        await AdvanceHumanWaitsAsync(item, ct);
         var outputDrained = await UploadManagedAsync(item, ct);
         allJobs = [.. teams.ManagedMembers(server, item.Id).GroupBy(m => m.Member)
             .Select(g => getJob(g.Last().JobId)!)];
@@ -386,6 +390,14 @@ public sealed partial class PRFactoryWorkItems(
             var externals = teams.ExternalMembers(server, item.Id);
             externalTeam!.CloseTeam(externals[0].TeamId);
             teams.MarkExternalClosed(server, item.Id);
+        }
+        if (BlockingWait(item.Id, out var waitFailed) is { } blocking)
+        {
+            if (waitFailed)
+            {
+                await FinishAsync(team, item, false, $"human wait {blocking.QuestionId} {blocking.Status}: {blocking.Error}", repo.Directory, ct);
+            }
+            return; // A question is open: the answer resumes the saved session before completion.
         }
         var failed = allJobs.FirstOrDefault(j => j.Status != JobStatus.Completed);
         if (failed is null && workspace is { RepositoryPath: not null, ReadOnly: false } && managedMembers.Length > 0

@@ -201,11 +201,17 @@ public static class DaemonCommand
             limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap, herdrPlacement, checkHerdrSession, launchMode);
         var connectorTeams = new PRFactoryTeamStore(database);
         var connectorSessions = new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database);
+        var connectorPrincipal = new BoundPrincipal("prfactory", "connector", "connector-lead");
+        var authorityRows = new PRFactoryAuthorityStore(database);
+        var humanWaits = new HumanWaitStore(database);
+        var humanWait = new HumanWait(humanWaits, store, connectorTeams, connectorPrincipal);
         var claudeMailbox = new ClaudeWakeMailbox();
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
             new ListJobs(store, profile.Bound, jobLogs),
             new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
-            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode);
+            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
+            (token, question, key) => PRFactoryInteraction.RequestFromManagedChild(humanWait, store, authorityRows,
+                externalTeam.MemberName(token), question, key));
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
@@ -234,11 +240,9 @@ public static class DaemonCommand
         var dispatching = dispatcher.RunAsync(lifetime.Token);
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path, claudeMailbox), Log).RunAsync(lifetime.Token);
         var pruning = profile.AutoPrune ? RunPruneAsync(prune, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
-        var connectorPrincipal = new BoundPrincipal("prfactory", "connector", "connector-lead");
         var connectorStop = new StopJob(store, connectorPrincipal,
             dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership);
         var connectorStopAgent = new StopAgent(store, connectorPrincipal, backends);
-        var authorityRows = new PRFactoryAuthorityStore(database);
         // The daemon is the sole writer of team workspaces; the singleton serializes Git mutations.
         using var teamWorkspaces = new TeamWorkspace(new PRFactoryWorkspaceStore(database));
         var connectorWorkspaces = new PRFactoryWorkspace(teamWorkspaces);
@@ -267,6 +271,8 @@ public static class DaemonCommand
                 Log($"job {job.JobId} parked: {job.Backend} account usage limit");
             }
         };
+        var connectorFollowUp = new FollowUpJob(store, connectorPrincipal, connectorAccept, dispatcher.InterruptRunning);
+        var connectorInteraction = new PRFactoryInteraction(humanWaits, connectorTeams, store, connectorFollowUp.Execute, externalTeam);
         var prfactory = PRFactoryHeartbeat.RunAsync(state, lifetime.Token, log: Log,
             onConnected: async (client, settings, machineId, ct) =>
             {
@@ -280,12 +286,12 @@ public static class DaemonCommand
                     connectorAccept.Execute, store.GetJob, dispatcher.Signal,
                     cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId, Log, externalTeam,
                     connectorStop.Execute,
-                    new FollowUpJob(store, connectorPrincipal, connectorAccept,
-                        dispatcher.InterruptRunning).Execute, jobLogs, authority, connectorWorkspaces, workspaceRoot, accounts,
-                        publications: connectorPublications).TickAsync(machineId, ct);
+                    connectorFollowUp.Execute, jobLogs, authority, connectorWorkspaces, workspaceRoot, accounts,
+                        publications: connectorPublications, interaction: connectorInteraction, humanWaits: humanWaits).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
             },
-            onTokenRejected: ct => authority?.TransportFailureAsync(Guid.Empty, System.Net.HttpStatusCode.Unauthorized, ct) ?? Task.CompletedTask);
+            onTokenRejected: ct => authority?.TransportFailureAsync(Guid.Empty, System.Net.HttpStatusCode.Unauthorized, ct) ?? Task.CompletedTask,
+            activeWork: () => authority is { } current && connectorTeams.Pending(current.Server).Count > 0);
         var firstStopped = await Task.WhenAny(serving, dispatching);
 
         // Stop admission before tearing down either service. A serving fault

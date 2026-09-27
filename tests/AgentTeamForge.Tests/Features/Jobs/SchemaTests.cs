@@ -125,6 +125,10 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE prfactory_human_stream;
+                DROP INDEX human_waits_open_member;
+                DROP TABLE human_waits;
+                DELETE FROM schema_migrations WHERE version=22;
                 DROP TABLE prfactory_publications;
                 DELETE FROM schema_migrations WHERE version=21;
                 DROP TABLE account_admission_reservations;
@@ -205,6 +209,10 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE prfactory_human_stream;
+                DROP INDEX human_waits_open_member;
+                DROP TABLE human_waits;
+                DELETE FROM schema_migrations WHERE version=22;
                 DROP TABLE prfactory_publications;
                 DELETE FROM schema_migrations WHERE version=21;
                 DROP TABLE account_admission_reservations;

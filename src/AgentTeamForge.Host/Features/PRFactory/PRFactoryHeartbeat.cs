@@ -5,12 +5,14 @@ namespace AgentTeamForge.Host.Features.PRFactory;
 /// <summary>Opt-in machine registration/heartbeat and connected work-item tick.</summary>
 public static class PRFactoryHeartbeat
 {
+    static readonly TimeSpan FastTick = TimeSpan.FromSeconds(2);
+
     public static async Task RunAsync(StateDirectory state, CancellationToken ct,
         Func<HttpMessageHandler>? handlerFactory = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         Action<string>? log = null,
         Func<PRFactoryClient, PRFactorySettings, Guid, CancellationToken, Task>? onConnected = null,
-        Func<CancellationToken, Task>? onTokenRejected = null)
+        Func<CancellationToken, Task>? onTokenRejected = null, Func<bool>? activeWork = null)
     {
         delay ??= Task.Delay;
         log ??= _ => { };
@@ -78,7 +80,15 @@ public static class PRFactoryHeartbeat
                         await onConnected(client!, settings, machineId!.Value, ct);
                     }
 
-                    await delay(interval, ct);
+                    // While teams are active, commands/answers/waits tick every ~2 s between machine heartbeats.
+                    var remaining = interval;
+                    while (onConnected is not null && activeWork?.Invoke() == true && remaining > FastTick)
+                    {
+                        await delay(FastTick, ct);
+                        remaining -= FastTick;
+                        await onConnected(client!, settings, machineId!.Value, ct);
+                    }
+                    await delay(remaining, ct);
                 }
                 catch (WorkerTokenRejectedException)
                 {

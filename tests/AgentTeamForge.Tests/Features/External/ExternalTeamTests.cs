@@ -34,6 +34,21 @@ public sealed class ExternalTeamTests
     }
 
     [Fact]
+    public void Member_token_authenticates_only_a_live_member_name()
+    {
+        using var f = new JobFixture();
+        var lead = new LeadSessionStore(f.Database).Start("/workspace/a", "lead-a");
+        var team = Team(f);
+        var ticket = team.CreateTicket(lead.SessionId, lead.Workspace, "child-job1", "Managed agent").Ticket!;
+        var token = team.Join(ticket.SessionId, ticket.Token).Member!.MemberToken;
+        Assert.Equal("child-job1", team.MemberName(token));
+        Assert.Null(team.MemberName(token[..^1] + (token[^1] == '0' ? '1' : '0')));
+        Assert.Null(team.MemberName(null));
+        Assert.True(team.Leave(token).Ok);
+        Assert.Null(team.MemberName(token));
+    }
+
+    [Fact]
     public void Large_external_pages_fit_ipc_and_only_delivered_rows_advance_the_cursor()
     {
         using var f = new JobFixture();

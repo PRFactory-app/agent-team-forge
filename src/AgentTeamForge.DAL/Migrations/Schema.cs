@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 21;
+    public const int CurrentVersion = 22;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -280,7 +280,16 @@ static class Schema
     /// <summary>v21: PRFactory branch publication intents and verified receipts (slice 6).</summary>
     internal const string V21 = PRFactoryPublicationMigration.Sql;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21];
+    /// <summary>v22: human waits (slice 3) plus their exact, replayable PRFactory stream batches.</summary>
+    internal const string V22 = HumanWaitMigration.Sql + """
+        CREATE TABLE prfactory_human_stream(
+            server TEXT NOT NULL, work_item_id TEXT NOT NULL, agent TEXT NOT NULL,
+            question_id TEXT NOT NULL REFERENCES human_waits(question_id), status TEXT NOT NULL,
+            seq INTEGER NOT NULL, batch TEXT NOT NULL, uploaded INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(question_id, status), UNIQUE(server, work_item_id, agent, seq));
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

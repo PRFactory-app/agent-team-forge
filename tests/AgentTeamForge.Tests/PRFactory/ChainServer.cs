@@ -16,6 +16,9 @@ sealed class ChainServer(PRFactoryWorkItem item)
     public List<JsonElement> Completions { get; } = [];
     public List<string> Failures { get; } = [];
     public bool Offered { get; set; } = true;
+    public List<PRFactoryCommand> Commands { get; } = [];
+    public List<JsonElement> Acks { get; } = [];
+    public List<PRFactoryStreamLine> Lines { get; } = [];
 
     public PRFactoryClient Client() =>
         new(PRFactoryClient.CreateHttpClient(Url, "fake-token", new Handler(Reply)));
@@ -25,8 +28,27 @@ sealed class ChainServer(PRFactoryWorkItem item)
         lock (this)
         {
             var path = request.RequestUri!.AbsolutePath;
-            if (ManagedWire.Reply(request) is { } managed) { return managed; }
+            if (path.EndsWith("/agent-commands", StringComparison.Ordinal))
+            {
+                return Json(JsonSerializer.Serialize(new PRFactoryCommandDrainResponse([.. Commands]), PRFactoryWorkItemJson.Default.PRFactoryCommandDrainResponse));
+            }
+            if (path.EndsWith("/agent-stream", StringComparison.Ordinal))
+            {
+                var stream = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                Lines.AddRange(JsonSerializer.Deserialize(stream, PRFactoryWorkItemJson.Default.PRFactoryStreamBatch)!.Lines);
+                request.Content = new StringContent(stream);
+                return ManagedWire.Reply(request)!;
+            }
             var body = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+            if (path.EndsWith("/agent-commands/ack", StringComparison.Ordinal))
+            {
+                foreach (var ack in JsonElement.Parse(body!).GetProperty("acks").EnumerateArray())
+                {
+                    Acks.Add(ack);
+                    Commands.RemoveAll(c => c.CommandId == ack.GetProperty("commandId").GetGuid());
+                }
+                return Json("{\"applied\":1}");
+            }
             if (path.EndsWith("/poll", StringComparison.Ordinal))
             {
                 return Json(Offered ? "{\"workItems\":[" + ItemJson() + "]}" : "{\"workItems\":[]}");

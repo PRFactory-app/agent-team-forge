@@ -14,7 +14,8 @@ namespace AgentTeamForge.Host.Features.Jobs;
 public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, StopJob stop, DurabilityCheckpoints checkpoints, Action onAccepted,
     WakeStore? wakeStore = null, PruneJob? prune = null, JobLogs? logs = null, JobStore? jobStore = null, LeadSessionStore? sessions = null, ExternalTeam? external = null,
     StopAgent? stopAgent = null, IReadOnlyCollection<string>? configuredBackends = null, TierMap? tierMap = null,
-    BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null, ClaudeWakeMailbox? claudeMailbox = null, string? launchMode = null)
+    BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null, ClaudeWakeMailbox? claudeMailbox = null, string? launchMode = null,
+    Func<string?, string?, string?, HumanInputRequestResult>? humanInput = null)
 {
     public IpcResponse Handle(IpcRequest request)
     {
@@ -296,6 +297,14 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 if (wakeStore is null || sessions is null || request.LeadSessionId is null || request.Workspace is null
                     || !sessions.Exists(request.LeadSessionId, request.Workspace)) { return new IpcResponse(false, JobErrors.InvalidRequest); }
                 return new IpcResponse(true, Outcome: "wake_status", WakeStatus: wakeStore.Status(request.LeadSessionId));
+            case IpcProtocol.HumanInputRequest:
+                {
+                    // Authenticated by the managed child's private member token, never by a caller-supplied job ID.
+                    var asked = humanInput?.Invoke(request.MemberToken, request.Text, request.IdempotencyKey)
+                        ?? new HumanInputRequestResult(null, IpcProtocol.UnknownOp);
+                    return asked.Error is { } error ? new IpcResponse(false, error)
+                        : new IpcResponse(true, Outcome: asked.Wait!.QuestionId, Instruction: asked.Instruction);
+                }
             default:
                 return new IpcResponse(false, IpcProtocol.UnknownOp);
         }
