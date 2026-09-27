@@ -18,6 +18,7 @@ public sealed record PRFactoryRepositoryFreshnessRequest(Guid LeaseToken, Guid R
     string BranchName, string? HeadCommitSha, int PushState, string? Message, string BaseBranchName,
     string CurrentBaseShaAtStart, int CommitsBehindAtStart, int RefreshAction);
 public sealed record PRFactoryCapabilityResponse(string[] Capabilities);
+public sealed record PRFactoryHandoverRequest(string RequestId, string Reason, DateTimeOffset RequestedAt);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true)]
 [JsonSerializable(typeof(PRFactoryWipReport))]
@@ -27,38 +28,59 @@ public sealed record PRFactoryCapabilityResponse(string[] Capabilities);
 [JsonSerializable(typeof(PRFactoryBaseConflictRequest))]
 [JsonSerializable(typeof(PRFactoryRepositoryFreshnessRequest))]
 [JsonSerializable(typeof(PRFactoryCapabilityResponse))]
+[JsonSerializable(typeof(PRFactoryHandoverRequest))]
 internal sealed partial class PRFactoryBaseWipJson : JsonSerializerContext;
 
 public sealed partial class PRFactoryClient
 {
-    public async Task<bool> SupportsMultiRepoAsync(CancellationToken ct)
+    string[]? serverCapabilities;
+    DateTimeOffset capabilityExpires;
+    static readonly TimeSpan CapabilityTtl = TimeSpan.FromSeconds(15);
+
+    async Task<string[]> ServerCapabilitiesAsync(CancellationToken ct)
     {
+        if (serverCapabilities is not null && (clock?.GetUtcNow() ?? DateTimeOffset.UtcNow) < capabilityExpires)
+        {
+            return serverCapabilities;
+        }
         using var response = await httpClient.GetAsync("api/worker/capabilities", ct);
         RejectToken(response.StatusCode);
-        if (response.StatusCode == HttpStatusCode.NotFound)
+        if (response.StatusCode == HttpStatusCode.NotFound || (int)response.StatusCode >= 500)
         {
-            workerVersion = "1.0.0";
-            return false;
+            serverCapabilities = [];
         }
-        response.EnsureSuccessStatusCode();
-        var capabilities = await response.Content.ReadFromJsonAsync(PRFactoryBaseWipJson.Default.PRFactoryCapabilityResponse, ct);
-        var supported = capabilities?.Capabilities?.Contains("multi-repo-v1", StringComparer.Ordinal) == true;
-        workerVersion = supported ? "1.1.0" : "1.0.0";
-        return supported;
+        else
+        {
+            response.EnsureSuccessStatusCode();
+            serverCapabilities = (await response.Content.ReadFromJsonAsync(
+                PRFactoryBaseWipJson.Default.PRFactoryCapabilityResponse, ct))?.Capabilities ?? [];
+        }
+        capabilityExpires = (clock?.GetUtcNow() ?? DateTimeOffset.UtcNow) + CapabilityTtl;
+        workerVersion = serverCapabilities.Contains("multi-repo-v1", StringComparer.Ordinal) ? "1.1.0" : "1.0.0";
+        return serverCapabilities;
+    }
+
+    public async Task<bool> SupportsMultiRepoAsync(CancellationToken ct)
+    {
+        return (await ServerCapabilitiesAsync(ct)).Contains("multi-repo-v1", StringComparer.Ordinal);
     }
 
     public async Task<bool> SupportsBaseWipAsync(CancellationToken ct)
     {
-        using var response = await httpClient.GetAsync("api/worker/capabilities", ct);
-        RejectToken(response.StatusCode);
-        if (response.StatusCode == HttpStatusCode.NotFound)
-        {
-            return false;
-        }
+        return (await ServerCapabilitiesAsync(ct)).Contains("base-wip-v1", StringComparer.Ordinal);
+    }
 
+    public async Task<PRFactoryHandoverRequest?> GetHandoverRequestAsync(Guid id, Guid machineId,
+        string atfJobId, CancellationToken ct)
+    {
+        if (!await SupportsBaseWipAsync(ct)) { return null; }
+        using var response = await httpClient.GetAsync(
+            $"api/worker/work-items/{id:D}/handover-request?machineId={machineId:D}&atfJobId={Uri.EscapeDataString(atfJobId)}", ct);
+        RejectToken(response.StatusCode);
+        if (response.StatusCode == HttpStatusCode.NoContent) { return null; }
+        if (response.StatusCode == HttpStatusCode.Conflict) { throw new PRFactoryLeaseLostException(id); }
         response.EnsureSuccessStatusCode();
-        var capabilities = await response.Content.ReadFromJsonAsync(PRFactoryBaseWipJson.Default.PRFactoryCapabilityResponse, ct);
-        return capabilities?.Capabilities?.Contains("base-wip-v1", StringComparer.Ordinal) == true;
+        return await response.Content.ReadFromJsonAsync(PRFactoryBaseWipJson.Default.PRFactoryHandoverRequest, ct);
     }
 
     public async Task ReportBaseConflictAsync(Guid id, PRFactoryBaseConflictRequest request, CancellationToken ct)
@@ -127,7 +149,7 @@ public sealed partial class PRFactoryClient
         RejectToken(response.StatusCode);
         if (response.StatusCode == HttpStatusCode.Conflict)
         {
-            throw new PRFactoryLeaseLostException(id);
+            throw new InvalidOperationException("Server refused WIP release; workspace retained for reconciliation.");
         }
 
         response.EnsureSuccessStatusCode();
@@ -174,6 +196,11 @@ public sealed class PRFactoryHandover(PRFactoryClient client, PRFactoryHandoverS
             {
                 throw new InvalidOperationException("Release refused: child workspace has uncommitted work.");
             }
+        }
+        if (Directory.Exists(workspace.StagingPath)
+            && Directory.EnumerateFileSystemEntries(workspace.StagingPath).Any())
+        {
+            throw new InvalidOperationException("Release refused: unreceipted staging files remain.");
         }
         var wip = store.Wip(workspace.Key);
         var head = JobWorktree.Head(workspace.LeadPath);
@@ -233,10 +260,16 @@ public sealed class PRFactoryHandover(PRFactoryClient client, PRFactoryHandoverS
                 throw new InvalidOperationException("Workspace became dirty; cleanup refused.");
             }
         }
+        if (Directory.Exists(workspace.StagingPath)
+            && Directory.EnumerateFileSystemEntries(workspace.StagingPath).Any())
+        {
+            throw new InvalidOperationException("Unreceipted staging files remain; cleanup refused.");
+        }
         foreach (var path in owned)
         {
             await TeamWorkspace.Git(repository, "worktree", "remove", "--", path);
         }
-        Directory.Delete(root, recursive: true);
+        if (Directory.Exists(workspace.StagingPath)) { Directory.Delete(workspace.StagingPath); }
+        Directory.Delete(root); // Unknown artifacts keep the root for inspection.
     }
 }

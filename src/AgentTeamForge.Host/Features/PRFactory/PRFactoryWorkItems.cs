@@ -36,6 +36,23 @@ public sealed partial class PRFactoryWorkItems(
         {
             await IsolateAsync(pending.WorkItemId, () => AdvanceAsync(pending, ct), ct);
         }
+        if (handovers is not null && workspaces is not null)
+        {
+            foreach (var key in handovers.ReleasedKeys(server))
+            {
+                if (workspaces.Get(key) is not { } released || !Directory.Exists(released.Root)) { continue; }
+                var idText = key[(server.Length + 1)..];
+                if (!Guid.TryParse(idText, out var id) || teams.Get(server, id) is not { State: not "claimed" }) { continue; }
+                await IsolateAsync(id, async () =>
+                {
+                    var coordinator = new PRFactoryHandover(client, handovers, (_, _, _) => Task.FromResult(false));
+                    await coordinator.CleanupReleasedAsync(released,
+                        () => teams.MemberJobs(server, id).All(job => getJob(job)?.Status is not
+                            (JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation))
+                            && teams.ExternalMembers(server, id).All(member => member.Closed), TimeSpan.Zero);
+                }, ct);
+            }
+        }
         if (authority?.IntakeBlocked == true)
         {
             return;
@@ -148,6 +165,12 @@ public sealed partial class PRFactoryWorkItems(
     {
         try
         {
+            if (handovers?.Release(WorkspaceKey(team.WorkItemId)) is not null)
+            {
+                await Observe(team.WorkItemId, "revoked", "handover_released", ct);
+                teams.Finish(server, team.WorkItemId, "completed");
+                return;
+            }
             if (!await ConfirmAcceptanceAsync(team, ct))
             {
                 return;
@@ -233,6 +256,20 @@ public sealed partial class PRFactoryWorkItems(
     async Task<bool> ApplyAcceptanceAsync(PRFactoryTeamRecord team, PRFactoryClient.Acceptance acceptance, CancellationToken ct)
     {
         var id = team.WorkItemId;
+        if (acceptance.Disposition == "accepted")
+        {
+            var claim = JsonSerializer.Deserialize(team.ClaimedJson, PRFactoryWorkItemJson.Default.PRFactoryWorkItem)!;
+            if (claim.HandoverReleaseId != acceptance.HandoverReleaseId
+                || claim.HandoverRepositoryId != acceptance.HandoverRepositoryId
+                || !string.Equals(claim.HandoverBaseCommitSha, acceptance.HandoverBaseCommitSha,
+                    StringComparison.OrdinalIgnoreCase)
+                || (claim.HandoverReleaseId is not null && (claim.StartFromBranch != acceptance.StartFromBranch
+                    || !string.Equals(claim.StartCommitSha, acceptance.StartCommitSha, StringComparison.OrdinalIgnoreCase))))
+            {
+                await FenceAsync(id, "handover_acceptance_mismatch", ct);
+                return false;
+            }
+        }
         switch (acceptance.Disposition)
         {
             case "accepted" when team.AcceptanceState != "reconciliation_needed":
@@ -340,6 +377,12 @@ public sealed partial class PRFactoryWorkItems(
                 await FinishAsync(team, item, false, $"workspace preparation failed: {ex.Message}", repo?.Directory, ct);
                 return;
             }
+        }
+        if (baseWip && team.MachineId is Guid handoverMachine && team.AtfJobId is { Length: > 0 } handoverJob
+            && await client.GetHandoverRequestAsync(item.Id, handoverMachine, handoverJob, ct) is { } request)
+        {
+            await HandleHandoverAsync(team, item, workspace, request, ct);
+            return; // No new lead, child, command or finalization turn after a handover request.
         }
         if ((baseWip || multiRepo) && workspace is { RepositoryPath: not null }
             && teams.MemberJob(server, item.Id, "lead", 0) is null)
@@ -493,7 +536,7 @@ public sealed partial class PRFactoryWorkItems(
                     string? receipt = null;
                     await Guard(item.Id, async () => receipt = await client.ReportWipAsync(item.Id, report, ct), ct);
                     return receipt!;
-                }, allowRewrite: handovers.Refresh(workspace.Key)?.Action == "Rebased", ct);
+                }, allowRewrite: handovers.Refresh(workspace.Key)?.Action == "Rebased", ct: ct);
             }
             catch (WipPushException ex)
             {
@@ -776,14 +819,95 @@ public sealed partial class PRFactoryWorkItems(
 
     string WorkspaceKey(Guid id) => $"{server}|{id:D}";
 
+    async Task HandleHandoverAsync(PRFactoryTeamRecord team, PRFactoryWorkItem item,
+        WorkspaceSnapshot? workspace, PRFactoryHandoverRequest request, CancellationToken ct)
+    {
+        if (workspace is not { RepositoryPath: not null, ReadOnly: false } || handovers is null
+            || item.LeaseToken is not Guid lease || item.RepositoryId is not Guid repository
+            || team.MachineId is not Guid machine || team.AtfJobId is not { Length: > 0 } atfJob)
+        {
+            log?.Invoke($"PRFactory work item {item.Id:D} handover deferred: repository workspace unavailable");
+            return;
+        }
+        bool Quiescent() => teams.MemberJobs(server, item.Id).All(id => getJob(id)?.Status is not
+                (JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation))
+            && teams.ExternalMembers(server, item.Id).All(member => member.Closed);
+        if (!Quiescent()) { return; } // Let active turns reach a terminal state; never interrupt dirty buffers.
+
+        try
+        {
+            foreach (var path in new[] { workspace.LeadPath }.Concat(workspace.Members.Select(m => m.Path)))
+            {
+                if ((await TeamWorkspace.Git(path, "status", "--porcelain", "--untracked-files=all")).Length != 0)
+                {
+                    throw new InvalidOperationException("Uncommitted work remains; handover held.");
+                }
+            }
+            var publisher = new WipPublisher(handovers, async (id, effect, token) =>
+            {
+                await Guard(id, effect, token);
+                return true;
+            });
+            var branch = WipPublisher.BranchName(Environment.MachineName,
+                item.TicketKey ?? throw new InvalidOperationException("WIP ticket key missing."));
+            await publisher.PublishAsync(item.Id, workspace, branch, async (wipBranch, head) =>
+            {
+                var count = await TeamWorkspace.Git(workspace.LeadPath, "rev-list", "--count", workspace.BaseSha + ".." + head);
+                var report = new PRFactoryWipReport(lease, machine, atfJob, repository, workspace.BaseSha!,
+                    wipBranch, head, int.Parse(count, System.Globalization.CultureInfo.InvariantCulture),
+                    true, null, $"{item.Id:D}:{head}:{request.RequestId}");
+                string? receipt = null;
+                await Guard(item.Id, async () => receipt = await client.ReportWipAsync(item.Id, report, ct), ct);
+                return receipt!;
+            }, allowRewrite: handovers.Refresh(workspace.Key)?.Action == "Rebased", forceReport: true, ct: ct);
+
+            var coordinator = new PRFactoryHandover(client, handovers, async (id, effect, token) =>
+            {
+                await Guard(id, effect, token);
+                return true;
+            });
+            await coordinator.ReleaseAsync(item, workspace, machine, atfJob, request.Reason, Quiescent, ct);
+            await Observe(item.Id, "revoked", "handover_released", ct);
+            teams.Finish(server, item.Id, "completed");
+            try
+            {
+                await coordinator.CleanupReleasedAsync(workspace, Quiescent, TimeSpan.Zero);
+            }
+            catch (InvalidOperationException ex)
+            {
+                log?.Invoke($"PRFactory work item {item.Id:D} released; cleanup retained workspace: {ex.Message}");
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            log?.Invoke($"PRFactory work item {item.Id:D} handover held: {ex.Message}");
+        }
+    }
+
     async Task<WorkspaceSnapshot> PrepareWorkspaceAsync(PRFactoryWorkItem item, RepositoryMapping? repo,
         PRFactoryTeamMember[] members, bool baseWip, CancellationToken ct)
     {
+        var handover = item.HandoverReleaseId is not null || item.HandoverRepositoryId is not null
+            || item.HandoverBaseCommitSha is not null;
+        if (handover && (!baseWip || string.IsNullOrWhiteSpace(item.HandoverReleaseId)
+            || item.HandoverRepositoryId != item.RepositoryId
+            || item.HandoverBaseCommitSha is not { } handoverBase || !JobWorktree.IsCommitSha(handoverBase)
+            || item.StartCommitSha is not { } handoverSha || !JobWorktree.IsCommitSha(handoverSha)
+            || item.StartFromBranch is not { } branch || !branch.StartsWith("wip/", StringComparison.Ordinal)
+            || item.Continuation is not null))
+        {
+            throw new InvalidOperationException("Handover release and repository snapshot are incomplete or mismatched.");
+        }
         var key = WorkspaceKey(item.Id);
         var names = members.Select(m => m.Name).ToArray();
         var root = workspaceRoot ?? throw new InvalidOperationException("Workspace root is not configured.");
         if (workspaces!.Get(key) is { } saved)
         {
+            if (handover && (saved.RepositoryId != item.HandoverRepositoryId!.Value.ToString("D")
+                || saved.StartingSha != item.StartCommitSha))
+            {
+                throw new InvalidOperationException("Saved workspace differs from the handover release.");
+            }
             // Recorded choices are immutable; recovery only re-materializes the owned checkouts.
             return await workspaces.PrepareAsync(new WorkspaceRequest(key, root, saved.RepositoryId, saved.RepositoryPath,
                 saved.Remote, saved.BaseBranch, saved.PublishBranch, saved.ReadOnly, names));

@@ -37,7 +37,8 @@ public sealed class WipPublisher(PRFactoryHandoverStore store, PublicationAuthor
 
     /// <summary>Push a committed lead tip and save the server's verified receipt. Never includes dirty buffers.</summary>
     public async Task<WipRecord> PublishAsync(Guid workItemId, WorkspaceSnapshot workspace, string branch,
-        Func<string, string, Task<string>> report, bool allowRewrite = false, CancellationToken ct = default)
+        Func<string, string, Task<string>> report, bool allowRewrite = false, bool forceReport = false,
+        CancellationToken ct = default)
     {
         if (workspace.RepositoryPath is null || workspace.Remote is null || workspace.InternalBranch is null)
         {
@@ -58,7 +59,7 @@ public sealed class WipPublisher(PRFactoryHandoverStore store, PublicationAuthor
 
         var head = await Git(cwd, "rev-parse", "HEAD");
         var prior = store.Wip(workspace.Key);
-        if (prior?.HeadSha == head && prior.State == "reported")
+        if (!forceReport && prior?.HeadSha == head && prior.State == "reported")
         {
             return prior;
         }

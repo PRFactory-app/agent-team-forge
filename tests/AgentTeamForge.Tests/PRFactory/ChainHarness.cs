@@ -85,7 +85,7 @@ sealed class ChainHarness : IDisposable
         Server.MultiRepoSupported = true;
     }
 
-    public PRFactoryWorkItems Adapter() => new(ChainServer.Url,
+    public PRFactoryWorkItems Adapter(bool baseWip = false) => new(ChainServer.Url,
         Server.Item.RepositoryId is { } repositoryId
             ? SecondaryId is { } secondary ? [new RepositoryMapping(repositoryId, Repo, ExternalMembers), new RepositoryMapping(secondary, SecondaryRepo!)]
                 : [new RepositoryMapping(repositoryId, Repo, ExternalMembers)] : [], Teams, Server.Client(),
@@ -93,6 +93,7 @@ sealed class ChainHarness : IDisposable
         authority: Authority, workspaces: new PRFactoryWorkspace(Workspaces), workspaceRoot: WorkspaceRoot, accounts: Accounts,
         publications: new PRFactoryPublicationStore(Database),
         interaction: new PRFactoryInteraction(HumanWaits, Teams, Store, FollowUp.Execute), humanWaits: HumanWaits, allowRepoLess: AllowRepoLess,
+        handovers: baseWip ? new PRFactoryHandoverStore(Database) : null,
         repositorySets: SecondaryId is null ? null : new PRFactoryRepositorySet(new PRFactoryRepositorySetStore(Database),
             new PRFactoryWorkspace(Workspaces), new PRFactoryWorkspaceStore(Database), new PRFactoryHandoverStore(Database)));
 

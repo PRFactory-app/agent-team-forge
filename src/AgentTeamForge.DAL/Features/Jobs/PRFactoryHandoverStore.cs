@@ -104,6 +104,21 @@ public sealed class PRFactoryHandoverStore(JobDatabase database)
         return row.Read() ? new(row.GetString(0), row.GetString(1), DateTimeOffset.Parse(row.GetString(2))) : null;
     }
 
+    public IReadOnlyList<string> ReleasedKeys(string server)
+    {
+        using var db = database.OpenConnection();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT workspace_key FROM prfactory_wip_releases";
+        using var rows = cmd.ExecuteReader();
+        var keys = new List<string>();
+        while (rows.Read())
+        {
+            var key = rows.GetString(0);
+            if (key.StartsWith(server + "|", StringComparison.Ordinal)) { keys.Add(key); }
+        }
+        return keys;
+    }
+
     public void RecordRelease(string key, WipReleaseRecord receipt)
     {
         using var db = database.OpenConnection();

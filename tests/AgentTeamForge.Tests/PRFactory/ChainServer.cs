@@ -28,6 +28,11 @@ sealed class ChainServer(PRFactoryWorkItem item)
     public List<string> PollQueries { get; } = [];
     public List<string> UploadOrder { get; } = [];
     public bool MultiRepoSupported { get; set; }
+    public bool BaseWipSupported { get; set; }
+    public string? AcceptanceReleaseIdOverride { get; set; }
+    public bool HandoverRequested { get; set; }
+    public List<JsonElement> WipReports { get; } = [];
+    public List<JsonElement> Releases { get; } = [];
     public List<JsonElement> RepositoryResults { get; } = [];
     public Action? OnBlobUpload { get; set; }
 
@@ -77,7 +82,8 @@ sealed class ChainServer(PRFactoryWorkItem item)
             var path = request.RequestUri!.AbsolutePath;
             if (path == "/api/worker/capabilities")
             {
-                return Json(MultiRepoSupported ? "{\"capabilities\":[\"multi-repo-v1\"]}" : "{\"capabilities\":[]}");
+                return Json(MultiRepoSupported ? "{\"capabilities\":[\"multi-repo-v1\"]}"
+                    : BaseWipSupported ? "{\"capabilities\":[\"base-wip-v1\"]}" : "{\"capabilities\":[]}");
             }
             if (path == "/api/work-item-blobs/capabilities")
             {
@@ -116,6 +122,29 @@ sealed class ChainServer(PRFactoryWorkItem item)
                 return ManagedWire.Reply(request)!;
             }
             var body = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+            if (path.EndsWith("/handover-request", StringComparison.Ordinal))
+            {
+                Assert.True(BaseWipSupported);
+                Assert.Contains("machineId=" + ChainHarness.Machine.ToString("D"), request.RequestUri.Query);
+                Assert.Contains("atfJobId=" + Uri.EscapeDataString(AcceptedJobId!), request.RequestUri.Query);
+                return HandoverRequested ? Json("{\"requestId\":\"request-1\",\"reason\":\"move\",\"requestedAt\":\"2026-09-28T00:00:00Z\"}")
+                    : new HttpResponseMessage(HttpStatusCode.NoContent);
+            }
+            if (path.EndsWith("/wip-publication", StringComparison.Ordinal))
+            {
+                var report = JsonElement.Parse(body!);
+                WipReports.Add(report);
+                return Json("{\"accepted\":true,\"receiptId\":\"" + report.GetProperty("publicationId").GetString()
+                    + "\",\"verifiedHeadSha\":\"" + report.GetProperty("headSha").GetString() + "\"}");
+            }
+            if (path.Contains("/release/", StringComparison.Ordinal))
+            {
+                var release = JsonElement.Parse(body!);
+                Releases.Add(release);
+                HandoverRequested = false;
+                return Json("{\"released\":true,\"releaseId\":\"" + release.GetProperty("releaseId").GetString()
+                    + "\",\"verifiedWipSha\":\"" + release.GetProperty("verifiedWipSha").GetString() + "\"}");
+            }
             if (path.EndsWith("/repository-result", StringComparison.Ordinal))
             {
                 RepositoryResults.Add(JsonElement.Parse(body!));
@@ -147,7 +176,13 @@ sealed class ChainServer(PRFactoryWorkItem item)
                     AcceptedJobId ??= JsonElement.Parse(body!).GetProperty("jobId").GetString();
                 }
                 return AcceptedJobId is null ? new HttpResponseMessage(HttpStatusCode.NotFound)
-                    : Json("{\"atfJobId\":\"" + AcceptedJobId + "\",\"status\":" + Status + "}");
+                    : Json(JsonSerializer.Serialize(new PRFactoryAtfAcceptanceResponse(AcceptedJobId,
+                        JsonElement.Parse(Status.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                        HandoverReleaseId: AcceptanceReleaseIdOverride ?? Item.HandoverReleaseId,
+                        HandoverRepositoryId: Item.HandoverRepositoryId,
+                        HandoverBaseCommitSha: Item.HandoverBaseCommitSha,
+                        StartFromBranch: Item.StartFromBranch, StartCommitSha: Item.StartCommitSha),
+                        PRFactoryWorkItemJson.Default.PRFactoryAtfAcceptanceResponse));
             }
             if (Status is 5 or 6 && (path.Contains("/artefacts/", StringComparison.Ordinal)
                 || path.Contains("/complete/", StringComparison.Ordinal) || path.Contains("/fail/", StringComparison.Ordinal)))

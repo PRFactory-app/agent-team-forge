@@ -28,6 +28,11 @@ public sealed class PRFactoryWorkItem
     public string? StepKey { get; set; }
     public string? StartFromBranch { get; set; }
     public string? StartCommitSha { get; set; }
+    public string? HandoverReleaseId { get; set; }
+    public Guid? HandoverRepositoryId { get; set; }
+    public string? HandoverBaseCommitSha { get; set; }
+    public string? Disposition { get; set; }
+    public string? DispositionReason { get; set; }
     public PRFactoryWorkspaceRevision? Continuation { get; set; }
     public PRFactoryWorkspaceRevision? BaseSnapshot { get; set; }
     // base-wip-v1: approved plan basis for this repository; a moved base requires server checkpoint.
@@ -80,7 +85,9 @@ public sealed record PRFactoryClaimResponse(PRFactoryWorkItem? WorkItem);
 public sealed record PRFactoryClaimRequest(string MachineName, string WorkerVersion, Guid? MachineId);
 public sealed record PRFactoryAtfAcceptRequest(Guid MachineId, Guid LeaseToken, string JobId);
 public sealed record PRFactoryAtfAcceptanceResponse(string? AtfJobId, System.Text.Json.JsonElement Status,
-    string? Disposition = null, string? DispositionReason = null);
+    string? Disposition = null, string? DispositionReason = null, string? HandoverReleaseId = null,
+    Guid? HandoverRepositoryId = null, string? HandoverBaseCommitSha = null,
+    string? StartFromBranch = null, string? StartCommitSha = null);
 public sealed record PRFactoryLeaseHeartbeatRequest(Guid LeaseToken);
 public sealed record PRFactoryArtefactFile(string FileName, string Content, string? Kind);
 public sealed record PRFactoryArtefactRequest(List<PRFactoryArtefactFile> Artefacts, Guid? LeaseToken);

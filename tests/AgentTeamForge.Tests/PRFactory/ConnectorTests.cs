@@ -86,7 +86,7 @@ public sealed class ConnectorTests
                     registrationCount++;
                     var capabilities = System.Text.Json.JsonElement.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())
                         .GetProperty("capabilities").EnumerateArray().Select(c => c.GetString()!).ToArray();
-                    Assert.Equal(["authority-disposition-v1", "remote-publication-v1", "workspace-continuity-v1", "blob-attachments-v1", "base-wip-v1", "multi-repo-v1"], capabilities);
+                    Assert.Equal(["authority-disposition-v1", "remote-publication-v1", "workspace-continuity-v1", "blob-attachments-v1"], capabilities);
                     return new HttpResponseMessage(HttpStatusCode.OK)
                     {
                         Content = new StringContent("{\"machineId\":\"8ad6f5c0-a4f0-42dc-8c29-59677ea37949\",\"heartbeatIntervalSeconds\":1}", Encoding.UTF8, "application/json")
@@ -107,6 +107,73 @@ public sealed class ConnectorTests
         Assert.Equal(1, registrationCount);
         Assert.Equal(2, heartbeatCount);
         Assert.Equal([TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2)], delays);
+    }
+
+    [Fact]
+    public async Task Capability_failure_allows_legacy_registration_and_retries_after_ttl()
+    {
+        var clock = new ManualClock();
+        var capabilityCalls = 0;
+        var registrations = new List<(string Version, string[] Capabilities)>();
+        using var http = PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(request =>
+        {
+            if (request.RequestUri!.AbsolutePath == "/api/worker/capabilities")
+            {
+                capabilityCalls++;
+                return capabilityCalls == 1 ? new(HttpStatusCode.ServiceUnavailable)
+                    : new(HttpStatusCode.OK) { Content = new StringContent("{\"capabilities\":[\"base-wip-v1\"]}") };
+            }
+            using var body = System.Text.Json.JsonDocument.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            registrations.Add((body.RootElement.GetProperty("workerVersion").GetString()!,
+                [.. body.RootElement.GetProperty("capabilities").EnumerateArray().Select(c => c.GetString()!)]));
+            return new(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"machineId\":\"8ad6f5c0-a4f0-42dc-8c29-59677ea37949\",\"heartbeatIntervalSeconds\":30}")
+            };
+        }));
+        var client = new PRFactoryClient(http, clock);
+        await client.RegisterMachineAsync(TestContext.Current.CancellationToken);
+        Assert.Equal("1.0.0", registrations[0].Version);
+        Assert.DoesNotContain("base-wip-v1", registrations[0].Capabilities);
+        Assert.False(await client.SupportsBaseWipAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(1, capabilityCalls);
+        clock.Advance(TimeSpan.FromSeconds(16));
+        Assert.True(await client.SupportsBaseWipAsync(TestContext.Current.CancellationToken));
+        await client.RegisterMachineAsync(TestContext.Current.CancellationToken);
+        Assert.Contains("base-wip-v1", registrations[1].Capabilities);
+        Assert.Equal(2, capabilityCalls);
+    }
+
+    [Fact]
+    public async Task Handover_poll_is_capability_gated_and_uses_acceptance_identity()
+    {
+        var id = Guid.NewGuid();
+        var machine = Guid.NewGuid();
+        var capabilityCalls = 0;
+        var handoverCalls = 0;
+        using var http = PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(request =>
+        {
+            if (request.RequestUri!.AbsolutePath == "/api/worker/capabilities")
+            {
+                capabilityCalls++;
+                return new(HttpStatusCode.OK) { Content = new StringContent("{\"capabilities\":[\"base-wip-v1\"]}") };
+            }
+            handoverCalls++;
+            Assert.Equal($"/api/worker/work-items/{id:D}/handover-request", request.RequestUri.AbsolutePath);
+            Assert.Contains($"machineId={machine:D}", request.RequestUri.Query);
+            Assert.Contains("atfJobId=atf%3Ajob", request.RequestUri.Query);
+            return handoverCalls == 1 ? new(HttpStatusCode.NoContent)
+                : new(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"requestId\":\"handover-1\",\"reason\":\"move\",\"requestedAt\":\"2026-09-28T00:00:00Z\"}")
+                };
+        }));
+        var client = new PRFactoryClient(http);
+        Assert.Null(await client.GetHandoverRequestAsync(id, machine, "atf:job", TestContext.Current.CancellationToken));
+        var request = await client.GetHandoverRequestAsync(id, machine, "atf:job", TestContext.Current.CancellationToken);
+        Assert.Equal("handover-1", request?.RequestId);
+        Assert.Equal(1, capabilityCalls);
+        Assert.Equal(2, handoverCalls);
     }
 
     [Fact]
@@ -179,5 +246,12 @@ public sealed class ConnectorTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
             Task.FromResult(reply(request));
+    }
+
+    sealed class ManualClock : TimeProvider
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        public override DateTimeOffset GetUtcNow() => now;
+        public void Advance(TimeSpan span) => now += span;
     }
 }

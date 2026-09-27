@@ -40,7 +40,7 @@ public sealed class PRFactoryStreamRejectedException(HttpStatusCode statusCode)
     public HttpStatusCode StatusCode { get; } = statusCode;
 }
 
-public sealed partial class PRFactoryClient(HttpClient httpClient)
+public sealed partial class PRFactoryClient(HttpClient httpClient, TimeProvider? clock = null)
 {
     // Server capability gate: single-repository worker contract, not the ATF product version.
     string workerVersion = "1.0.0";
@@ -51,7 +51,9 @@ public sealed partial class PRFactoryClient(HttpClient httpClient)
     bool legacyLogged;
     public enum AcceptanceResult { Confirmed, NotFound, Conflict }
     /// <summary>Server disposition: accepted, completed, cancelled, revoked or reconciliation-needed.</summary>
-    public sealed record Acceptance(AcceptanceResult Result, string Disposition, string? Reason = null);
+    public sealed record Acceptance(AcceptanceResult Result, string Disposition, string? Reason = null,
+        string? HandoverReleaseId = null, Guid? HandoverRepositoryId = null,
+        string? HandoverBaseCommitSha = null, string? StartFromBranch = null, string? StartCommitSha = null);
 
     public void LogLegacyOnce(Action<string>? log)
     {
@@ -73,11 +75,13 @@ public sealed partial class PRFactoryClient(HttpClient httpClient)
 
     public async Task<RegisterMachineResponse> RegisterMachineAsync(CancellationToken ct)
     {
-        await SupportsMultiRepoAsync(ct);
+        var supported = await ServerCapabilitiesAsync(ct);
+        var advertised = Capabilities.Where(capability => capability is not ("base-wip-v1" or "multi-repo-v1")
+            || supported.Contains(capability, StringComparer.Ordinal)).ToArray();
         var request = new RegisterMachineRequest(Environment.MachineName,
             $"{Environment.MachineName}:{Environment.UserName}",
             System.Runtime.InteropServices.RuntimeInformation.OSDescription,
-            workerVersion, Capabilities);
+            workerVersion, advertised);
         using var response = await httpClient.PostAsJsonAsync("api/worker/machines/register", request,
             PRFactoryWireJson.Default.RegisterMachineRequest, ct);
         RejectToken(response.StatusCode);
@@ -179,7 +183,9 @@ public sealed partial class PRFactoryClient(HttpClient httpClient)
         }
         var disposition = Disposition(item);
         return new(disposition == "accepted" ? AcceptanceResult.Confirmed : AcceptanceResult.Conflict,
-            disposition, item.DispositionReason ?? (disposition == "accepted" ? null : "server_" + disposition));
+            disposition, item.DispositionReason ?? (disposition == "accepted" ? null : "server_" + disposition),
+            item.HandoverReleaseId, item.HandoverRepositoryId, item.HandoverBaseCommitSha,
+            item.StartFromBranch, item.StartCommitSha);
     }
 
     // An explicit authority-disposition-v1 value wins; older servers only expose work-item status.
