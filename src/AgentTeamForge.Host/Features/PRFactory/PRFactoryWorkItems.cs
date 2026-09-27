@@ -11,13 +11,23 @@ public sealed partial class PRFactoryWorkItems(
     PRFactoryClient client, Func<SubmitJobRequest, JobResult> submit, Func<string, JobRecord?> getJob,
     Action onAccepted, Func<string, string?>? leadSessionFor = null, Action<string>? log = null,
     ExternalTeam? externalTeam = null, Func<string, JobResult>? stopJob = null,
-    Func<FollowUpRequest, JobResult>? followUp = null, JobLogs? jobLogs = null)
+    Func<FollowUpRequest, JobResult>? followUp = null, JobLogs? jobLogs = null,
+    PRFactoryAuthority? authority = null)
 {
     public async Task TickAsync(Guid? machineId, CancellationToken ct)
     {
+        if (authority is not null)
+        {
+            // Unfinished stops survive terminal server dispositions and restarts.
+            await authority.RetryStopsAsync(ct);
+        }
         foreach (var pending in teams.Pending(server))
         {
             await IsolateAsync(pending.WorkItemId, () => AdvanceAsync(pending, ct), ct);
+        }
+        if (authority?.IntakeBlocked == true)
+        {
+            return;
         }
 
         var offered = await client.PollAsync(repositories.Select(r => r.Id), machineId, ct);
@@ -50,9 +60,31 @@ public sealed partial class PRFactoryWorkItems(
         catch (Exception ex) when (ex is not (WorkerTokenRejectedException or OutOfMemoryException)
             && !(ex is OperationCanceledException && ct.IsCancellationRequested))
         {
+            if (ex is HttpRequestException or TaskCanceledException && authority is not null)
+            {
+                // Ownership is retained; further mutations wait for fresh server confirmation.
+                await authority.TransportFailureAsync(id, null, CancellationToken.None);
+            }
             log?.Invoke($"PRFactory work item {id:D} deferred ({ex.GetType().Name})");
         }
     }
+
+    /// <summary>Admits one remote/local side effect under current server authority.</summary>
+    async Task Guard(Guid id, Func<Task> effect, CancellationToken ct)
+    {
+        if (authority is null)
+        {
+            await effect();
+            return;
+        }
+        if (!await authority.RunAsync(id, effect, ct))
+        {
+            throw new PRFactoryFencedException(id);
+        }
+    }
+
+    Task Observe(Guid id, string disposition, string? reason, CancellationToken ct) =>
+        authority?.ObserveAsync(id, disposition, reason, ct) ?? Task.CompletedTask;
 
     async Task AdvanceAsync(PRFactoryTeamRecord team, CancellationToken ct)
     {
@@ -69,7 +101,7 @@ public sealed partial class PRFactoryWorkItems(
         {
             if (team.AcceptanceState != "legacy")
             {
-                Fence(team.WorkItemId);
+                await FenceAsync(team.WorkItemId, "lease_rejected", ct);
                 return;
             }
             var externals = teams.ExternalMembers(server, team.WorkItemId);
@@ -86,12 +118,10 @@ public sealed partial class PRFactoryWorkItems(
 
     async Task<bool> ConfirmAcceptanceAsync(PRFactoryTeamRecord team, CancellationToken ct)
     {
-        if (team.AcceptanceState == "reconciliation_needed")
-        {
-            return false;
-        }
         if (team.AcceptanceState == "legacy")
         {
+            // Old servers: lease loss surfaces as 404/409 on the next mutation.
+            await Observe(team.WorkItemId, "accepted", null, ct);
             return true;
         }
         if (team.MachineId is not Guid machine || team.AtfJobId is not { Length: > 0 } jobId)
@@ -99,62 +129,71 @@ public sealed partial class PRFactoryWorkItems(
             throw new InvalidDataException("PRFactory acceptance identity is missing");
         }
 
-        if (team.AcceptanceState == "accepted")
+        if (team.AcceptanceState is "accepted" or "reconciliation_needed")
         {
+            // A fenced team keeps polling only to observe a definitive server disposition.
             var observed = await client.GetAtfAcceptanceAsync(team.WorkItemId, machine, jobId, ct);
-            if (observed != PRFactoryClient.AcceptanceResult.Confirmed)
-            {
-                Fence(team.WorkItemId);
-                return false;
-            }
-            return true;
+            return await ApplyAcceptanceAsync(team, observed, ct);
         }
 
         var item = JsonSerializer.Deserialize(team.ClaimedJson, PRFactoryWorkItemJson.Default.PRFactoryWorkItem)
             ?? throw new InvalidDataException("Invalid persisted PRFactory claim");
         if (item.LeaseToken is not Guid lease || lease == Guid.Empty)
         {
-            Fence(team.WorkItemId);
+            await FenceAsync(team.WorkItemId, "lease_missing", ct);
             return false;
         }
         var accepted = await client.AcceptAtfAsync(team.WorkItemId, machine, lease, jobId, ct);
-        if (accepted == PRFactoryClient.AcceptanceResult.Conflict)
-        {
-            Fence(team.WorkItemId);
-            return false;
-        }
-        if (accepted == PRFactoryClient.AcceptanceResult.NotFound)
+        if (accepted.Result == PRFactoryClient.AcceptanceResult.NotFound)
         {
             var observed = await client.GetAtfAcceptanceAsync(team.WorkItemId, machine, jobId, ct);
-            if (observed == PRFactoryClient.AcceptanceResult.Conflict)
+            if (observed.Result != PRFactoryClient.AcceptanceResult.NotFound)
             {
-                Fence(team.WorkItemId);
-                return false;
-            }
-            if (observed == PRFactoryClient.AcceptanceResult.Confirmed)
-            {
-                teams.SetAcceptance(server, team.WorkItemId, "accepted");
-                return true;
+                return await ApplyAcceptanceAsync(team, observed, ct);
             }
             // Both acceptance routes are absent or the item disappeared. The established lease
             // heartbeat distinguishes a missing feature from a lost claim before dispatch.
             if (!await client.ConfirmLegacyLeaseAsync(team.WorkItemId, lease, ct))
             {
-                Fence(team.WorkItemId);
+                await FenceAsync(team.WorkItemId, "lease_lost_before_acceptance", ct);
                 return false;
             }
             teams.SetAcceptance(server, team.WorkItemId, "legacy");
             client.LogLegacyOnce(log);
+            await Observe(team.WorkItemId, "accepted", null, ct);
             return true;
         }
-        teams.SetAcceptance(server, team.WorkItemId, "accepted");
-        return true;
+        return await ApplyAcceptanceAsync(team, accepted, ct);
     }
 
-    void Fence(Guid id)
+    async Task<bool> ApplyAcceptanceAsync(PRFactoryTeamRecord team, PRFactoryClient.Acceptance acceptance, CancellationToken ct)
+    {
+        var id = team.WorkItemId;
+        switch (acceptance.Disposition)
+        {
+            case "accepted" when team.AcceptanceState != "reconciliation_needed":
+                teams.SetAcceptance(server, id, "accepted");
+                await Observe(id, "accepted", null, ct);
+                return true;
+            case "accepted":
+                return false; // Fencing is sticky; ordinary acceptance never reopens it.
+            case "completed" or "cancelled" or "revoked":
+                // Definitive: stop owned execution (retried until quiescent) and close the local team.
+                await Observe(id, acceptance.Disposition, acceptance.Reason, ct);
+                teams.Finish(server, id, acceptance.Disposition == "completed" ? "completed" : "failed");
+                log?.Invoke($"PRFactory work item {id:D} {acceptance.Disposition} by server; local execution stopped");
+                return false;
+            default:
+                await FenceAsync(id, acceptance.Reason ?? "reconciliation_needed", ct);
+                return false;
+        }
+    }
+
+    async Task FenceAsync(Guid id, string reason, CancellationToken ct)
     {
         teams.SetAcceptance(server, id, "reconciliation_needed");
-        log?.Invoke($"PRFactory work item {id:D} reconciliation needed; remote publication fenced");
+        await Observe(id, "reconciliation-needed", reason, ct);
+        log?.Invoke($"PRFactory work item {id:D} reconciliation needed ({reason}); dispatch and publication fenced");
     }
 
     async Task AdvanceCoreAsync(PRFactoryTeamRecord team, CancellationToken ct)
@@ -202,7 +241,7 @@ public sealed partial class PRFactoryWorkItems(
         JobRecord? lead;
         try
         {
-            lead = SubmitMember(item, "lead", item.AgentType, item.Model, item.Effort, item.Prompt, repo.Directory);
+            lead = await SubmitMember(item, "lead", item.AgentType, item.Model, item.Effort, item.Prompt, repo.Directory, ct);
         }
         catch (PRFactoryJobSubmissionException ex)
         {
@@ -243,8 +282,8 @@ public sealed partial class PRFactoryWorkItems(
             JobRecord? child;
             try
             {
-                child = SubmitMember(item, member.Name, member.Backend ?? item.AgentType,
-                    member.Model ?? item.Model, member.Effort ?? item.Effort, instruction, repo.Directory);
+                child = await SubmitMember(item, member.Name, member.Backend ?? item.AgentType,
+                    member.Model ?? item.Model, member.Effort ?? item.Effort, instruction, repo.Directory, ct);
             }
             catch (PRFactoryJobSubmissionException ex)
             {
@@ -308,8 +347,8 @@ public sealed partial class PRFactoryWorkItems(
             lead.ResultText ?? (!waitForManaged ? "External members completed their work; replies are in the agent stream." : null));
     }
 
-    JobRecord? SubmitMember(PRFactoryWorkItem item, string member,
-        PRFactoryAgentType agent, string? model, PRFactoryEffort? effort, string instruction, string cwd)
+    async Task<JobRecord?> SubmitMember(PRFactoryWorkItem item, string member,
+        PRFactoryAgentType agent, string? model, PRFactoryEffort? effort, string instruction, string cwd, CancellationToken ct)
     {
         var existingId = teams.MemberJob(server, item.Id, member, 0);
         if (existingId is not null)
@@ -322,15 +361,22 @@ public sealed partial class PRFactoryWorkItems(
         var prefix = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(server)))[..12];
         var memberKey = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(member)))[..12];
         var key = $"prf:{prefix}:{item.Id:N}:{memberKey}:0";
-        var result = submit(new SubmitJobRequest(key, instruction, null, false)
+        var result = JobResult.Fail(JobErrors.DaemonUnhealthy);
+        await Guard(item.Id, () =>
         {
-            Backend = backend,
-            Cwd = cwd,
-            Worktree = !item.ReadOnly,
-            Model = model,
-            Effort = effort?.ToString().ToLowerInvariant(),
-            LeadSessionId = leadSessionFor?.Invoke(cwd),
-        });
+            result = submit(new SubmitJobRequest(key, instruction, null, false)
+            {
+                Backend = backend,
+                Cwd = cwd,
+                Worktree = !item.ReadOnly,
+                Model = model,
+                Effort = effort?.ToString().ToLowerInvariant(),
+                LeadSessionId = leadSessionFor?.Invoke(cwd),
+            });
+            // The member mapping is part of the admitted effect: a concurrent fence must see it.
+            if (result.Error is null) { teams.RecordMember(server, item.Id, member, 0, result.Job!.JobId); }
+            return Task.CompletedTask;
+        }, ct);
         if (result.Error is JobErrors.QueueFull or JobErrors.StorageBusy or JobErrors.DaemonUnhealthy)
         {
             return null;
@@ -341,7 +387,6 @@ public sealed partial class PRFactoryWorkItems(
         }
 
         var jobId = result.Job!.JobId;
-        teams.RecordMember(server, item.Id, member, 0, jobId);
         if (result.Outcome == "accepted")
         {
             onAccepted();
@@ -363,9 +408,13 @@ public sealed partial class PRFactoryWorkItems(
             var external = teams.External(server, item.Id, name);
             if (external is null)
             {
-                var ticket = actor.CreateTicketForTeam(teamId, name, $"PRFactory work item {item.Id:D}").Ticket
-                    ?? throw new InvalidDataException("Cannot create external join ticket");
-                teams.RecordExternal(server, item.Id, name, ticket.Name, teamId, ticket.Token, ticket.ExpiresAt);
+                await Guard(item.Id, () =>
+                {
+                    var ticket = actor.CreateTicketForTeam(teamId, name, $"PRFactory work item {item.Id:D}").Ticket
+                        ?? throw new InvalidDataException("Cannot create external join ticket");
+                    teams.RecordExternal(server, item.Id, name, ticket.Name, teamId, ticket.Token, ticket.ExpiresAt);
+                    return Task.CompletedTask;
+                }, ct);
                 external = teams.External(server, item.Id, name)!;
             }
             if (!external.Closed && actor.RenewExpiredTicket(external.TeamId, external.ActualName) is { } renewed)
@@ -377,12 +426,13 @@ public sealed partial class PRFactoryWorkItems(
             {
                 // The ticket is a bearer secret; everyone in the tenant can read the agent stream,
                 // so publish only a notice. The owner reads the prompt via `atf prfactory status`.
-                var response = await client.UploadStreamAsync(item.Id, new PRFactoryStreamBatch(item.LeaseToken,
+                PRFactoryStreamResponse response = null!;
+                await Guard(item.Id, async () => response = await client.UploadStreamAsync(item.Id, new PRFactoryStreamBatch(item.LeaseToken,
                     $"join:{item.Id:N}:{name}",
                     [new("member", teamId, name, "external", "Waiting", item.RepositoryId, "lead")],
                     [new(name, 1, DateTimeOffset.UtcNow, "Record",
                         $"External member {name} is waiting to join. On the connected machine run `atf prfactory status` for the private join prompt.",
-                        "join-notice")]), ct);
+                        "join-notice")]), ct), ct);
                 if (!response.AcceptedThroughSeq.TryGetValue(name, out var seq) || seq < 1)
                 {
                     throw new HttpRequestException("PRFactory did not acknowledge join ticket line");
@@ -415,8 +465,9 @@ public sealed partial class PRFactoryWorkItems(
             .ToList();
         if (lines.Count > 0)
         {
-            var response = await client.UploadStreamAsync(item.Id, new PRFactoryStreamBatch(item.LeaseToken,
-                $"replies:{item.Id:N}:{cursor}:{inbox.NextSeq}", [], lines), ct);
+            PRFactoryStreamResponse response = null!;
+            await Guard(item.Id, async () => response = await client.UploadStreamAsync(item.Id, new PRFactoryStreamBatch(item.LeaseToken,
+                $"replies:{item.Id:N}:{cursor}:{inbox.NextSeq}", [], lines), ct), ct);
             if (lines.Any(line => !response.AcceptedThroughSeq.TryGetValue(line.AgentName, out var seq) || seq < line.Seq))
             {
                 throw new HttpRequestException("PRFactory did not acknowledge external reply lines");
@@ -464,7 +515,7 @@ public sealed partial class PRFactoryWorkItems(
         {
             try
             {
-                await client.UploadArtefactPayloadAsync(item.Id, delivery.Payload!, ct);
+                await Guard(item.Id, () => client.UploadArtefactPayloadAsync(item.Id, delivery.Payload!, ct), ct);
                 teams.SetUploaded(server, item.Id);
             }
             catch (InvalidDataException ex)
@@ -486,17 +537,19 @@ public sealed partial class PRFactoryWorkItems(
             {
                 result = null;
             }
-            await client.CompleteAsync(item.Id, item.LeaseToken, result, ct,
+            await Guard(item.Id, () => client.CompleteAsync(item.Id, item.LeaseToken, result, ct,
                 !item.ReadOnly && cwd is not null ? JobWorktree.Branch(cwd) : null,
-                !item.ReadOnly && cwd is not null ? JobWorktree.Head(cwd) : null);
+                !item.ReadOnly && cwd is not null ? JobWorktree.Head(cwd) : null), ct);
             StopManagedJobs(item.Id);
             teams.Finish(server, item.Id, "completed");
+            await Observe(item.Id, "completed", null, ct); // Also closes retained interactive sessions.
         }
         else
         {
-            await client.FailAsync(item.Id, item.LeaseToken, error, ct);
+            await Guard(item.Id, () => client.FailAsync(item.Id, item.LeaseToken, error, ct), ct);
             StopManagedJobs(item.Id);
             teams.Finish(server, item.Id, error.StartsWith("multi-repository", StringComparison.Ordinal) ? "refused" : "failed");
+            await Observe(item.Id, "completed", "failure_reported", ct);
         }
     }
 
@@ -545,4 +598,5 @@ public sealed partial class PRFactoryWorkItems(
     };
 
     sealed class PRFactoryJobSubmissionException(string message) : Exception(message);
+    sealed class PRFactoryFencedException(Guid id) : Exception($"PRFactory work item {id:D} is not under confirmed authority");
 }

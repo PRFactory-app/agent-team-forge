@@ -71,7 +71,8 @@ public sealed record PRFactoryPollResponse(List<PRFactoryWorkItem> WorkItems);
 public sealed record PRFactoryClaimResponse(PRFactoryWorkItem? WorkItem);
 public sealed record PRFactoryClaimRequest(string MachineName, string WorkerVersion, Guid? MachineId);
 public sealed record PRFactoryAtfAcceptRequest(Guid MachineId, Guid LeaseToken, string JobId);
-public sealed record PRFactoryAtfAcceptanceResponse(string? AtfJobId, System.Text.Json.JsonElement Status);
+public sealed record PRFactoryAtfAcceptanceResponse(string? AtfJobId, System.Text.Json.JsonElement Status,
+    string? Disposition = null, string? DispositionReason = null);
 public sealed record PRFactoryLeaseHeartbeatRequest(Guid LeaseToken);
 public sealed record PRFactoryArtefactFile(string FileName, string Content, string? Kind);
 public sealed record PRFactoryArtefactRequest(List<PRFactoryArtefactFile> Artefacts, Guid? LeaseToken);

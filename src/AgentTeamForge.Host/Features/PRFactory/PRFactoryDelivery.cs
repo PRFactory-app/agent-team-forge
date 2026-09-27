@@ -40,8 +40,13 @@ public sealed partial class PRFactoryWorkItems
                     else if (external.Closed) { receipt = new(false, "member_closed"); }
                     else
                     {
-                        var sent = externalTeam!.SendToMemberOnce(external.TeamId, external.ActualName, command.Text, "prfactory", command.CommandId.ToString("D"));
-                        if (sent.Error == "member_not_found" && !externalTeam.HasLeft(external.TeamId, external.ActualName)) { continue; }
+                        AgentTeamForge.Business.Features.External.ExternalResult sent = null!;
+                        await Guard(item.Id, () =>
+                        {
+                            sent = externalTeam!.SendToMemberOnce(external.TeamId, external.ActualName, command.Text, "prfactory", command.CommandId.ToString("D"));
+                            return Task.CompletedTask;
+                        }, ct);
+                        if (sent.Error == "member_not_found" && !externalTeam!.HasLeft(external.TeamId, external.ActualName)) { continue; }
                         receipt = new(sent.Ok, sent.Error == "member_not_found" ? "member_left" : sent.Error);
                     }
                 }
@@ -66,17 +71,23 @@ public sealed partial class PRFactoryWorkItems
                     }
                     else
                     {
-                        outcome = followUp?.Invoke(new FollowUpRequest(parent, command.Text ?? "", "prf-command:" + command.CommandId.ToString("N")) { Defer = true })
-                            ?? JobResult.Fail(JobErrors.DaemonUnhealthy);
-                        if (outcome.Error is null)
+                        var accepted = JobResult.Fail(JobErrors.DaemonUnhealthy);
+                        await Guard(item.Id, () =>
                         {
-                            var members = teams.ManagedMembers(server, item.Id).Where(m => m.Member == command.TargetAgentName).ToList();
-                            if (!members.Any(m => m.JobId == outcome.Job!.JobId))
+                            accepted = followUp?.Invoke(new FollowUpRequest(parent, command.Text ?? "", "prf-command:" + command.CommandId.ToString("N")) { Defer = true })
+                                ?? JobResult.Fail(JobErrors.DaemonUnhealthy);
+                            if (accepted.Error is null)
                             {
-                                teams.RecordMember(server, item.Id, command.TargetAgentName, members.Max(m => m.Turn) + 1, outcome.Job!.JobId);
+                                var members = teams.ManagedMembers(server, item.Id).Where(m => m.Member == command.TargetAgentName).ToList();
+                                if (!members.Any(m => m.JobId == accepted.Job!.JobId))
+                                {
+                                    teams.RecordMember(server, item.Id, command.TargetAgentName, members.Max(m => m.Turn) + 1, accepted.Job!.JobId);
+                                }
                             }
-                            onAccepted();
-                        }
+                            return Task.CompletedTask;
+                        }, ct);
+                        outcome = accepted;
+                        if (outcome.Error is null) { onAccepted(); }
                     }
                     if (outcome.Error is JobErrors.QueueFull or JobErrors.StorageBusy or JobErrors.StorageUnavailable or JobErrors.DaemonUnhealthy or JobErrors.ParentNotReady) { continue; }
                     receipt = new(outcome.Error is null, outcome.Error);
@@ -88,7 +99,7 @@ public sealed partial class PRFactoryWorkItems
         }
         if (acks.Count > 0)
         {
-            await client.AckCommandsAsync(item.Id, lease, acks, ct);
+            await Guard(item.Id, () => client.AckCommandsAsync(item.Id, lease, acks, ct), ct);
             foreach (var ack in acks) { teams.RemovePendingCommand(server, item.Id, ack.CommandId); }
         }
     }
@@ -153,7 +164,8 @@ public sealed partial class PRFactoryWorkItems
                 if (position.Pending is not null)
                 {
                     var batch = JsonSerializer.Deserialize(position.Pending, PRFactoryWorkItemJson.Default.PRFactoryStreamBatch)!;
-                    var response = await client.UploadStreamAsync(item.Id, batch, ct);
+                    PRFactoryStreamResponse response = null!;
+                    await Guard(item.Id, async () => response = await client.UploadStreamAsync(item.Id, batch, ct), ct);
                     if (!response.AcceptedThroughSeq.TryGetValue(member.Member, out var accepted) || accepted < position.Seq)
                     {
                         throw new HttpRequestException("PRFactory did not acknowledge managed output");

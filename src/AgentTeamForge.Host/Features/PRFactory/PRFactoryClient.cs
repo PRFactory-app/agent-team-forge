@@ -39,6 +39,8 @@ public sealed class PRFactoryClient(HttpClient httpClient)
     const string WorkerVersion = "1.0.0";
     bool legacyLogged;
     public enum AcceptanceResult { Confirmed, NotFound, Conflict }
+    /// <summary>Server disposition: accepted, completed, cancelled, revoked or reconciliation-needed.</summary>
+    public sealed record Acceptance(AcceptanceResult Result, string Disposition, string? Reason = null);
 
     public void LogLegacyOnce(Action<string>? log)
     {
@@ -118,14 +120,14 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         return (await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryClaimResponse, ct))?.WorkItem;
     }
 
-    public async Task<AcceptanceResult> GetAtfAcceptanceAsync(Guid id, Guid machineId, string jobId, CancellationToken ct)
+    public async Task<Acceptance> GetAtfAcceptanceAsync(Guid id, Guid machineId, string jobId, CancellationToken ct)
     {
         using var response = await httpClient.GetAsync(
             $"api/worker/work-items/{id:D}/atf-acceptance?machineId={machineId:D}&jobId={Uri.EscapeDataString(jobId)}", ct);
         return await ReadAcceptanceAsync(response, jobId, ct);
     }
 
-    public async Task<AcceptanceResult> AcceptAtfAsync(Guid id, Guid machineId, Guid leaseToken, string jobId, CancellationToken ct)
+    public async Task<Acceptance> AcceptAtfAsync(Guid id, Guid machineId, Guid leaseToken, string jobId, CancellationToken ct)
     {
         using var response = await httpClient.PostAsJsonAsync($"api/worker/work-items/{id:D}/atf-acceptance",
             new PRFactoryAtfAcceptRequest(machineId, leaseToken, jobId), PRFactoryWorkItemJson.Default.PRFactoryAtfAcceptRequest, ct);
@@ -145,16 +147,16 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         return true;
     }
 
-    static async Task<AcceptanceResult> ReadAcceptanceAsync(HttpResponseMessage response, string jobId, CancellationToken ct)
+    static async Task<Acceptance> ReadAcceptanceAsync(HttpResponseMessage response, string jobId, CancellationToken ct)
     {
         RejectToken(response.StatusCode);
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
-            return AcceptanceResult.NotFound;
+            return new(AcceptanceResult.NotFound, "reconciliation-needed", "acceptance_not_found");
         }
         if (response.StatusCode == HttpStatusCode.Conflict)
         {
-            return AcceptanceResult.Conflict;
+            return new(AcceptanceResult.Conflict, "reconciliation-needed", "acceptance_conflict");
         }
         response.EnsureSuccessStatusCode();
         var item = await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryAtfAcceptanceResponse, ct);
@@ -162,13 +164,46 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         {
             throw new HttpRequestException("PRFactory returned a mismatched ATF acceptance");
         }
-        if (item.Status.ValueKind == JsonValueKind.String
-            && string.Equals(item.Status.GetString(), "ReconciliationNeeded", StringComparison.OrdinalIgnoreCase)
-            || item.Status.ValueKind == JsonValueKind.Number && item.Status.TryGetInt32(out var status) && status == 6)
+        var disposition = Disposition(item);
+        return new(disposition == "accepted" ? AcceptanceResult.Confirmed : AcceptanceResult.Conflict,
+            disposition, item.DispositionReason ?? (disposition == "accepted" ? null : "server_" + disposition));
+    }
+
+    // An explicit authority-disposition-v1 value wins; older servers only expose work-item status.
+    // Anything unrecognized becomes reconciliation, never acceptance.
+    static string Disposition(PRFactoryAtfAcceptanceResponse item)
+    {
+        if (item.Disposition is { Length: > 0 } explicitDisposition)
         {
-            return AcceptanceResult.Conflict;
+            var normalized = explicitDisposition.Replace("_", "-", StringComparison.Ordinal).ToLowerInvariant();
+            if (normalized == "reconciliationneeded") { normalized = "reconciliation-needed"; }
+            return normalized is "accepted" or "completed" or "cancelled" or "revoked" or "reconciliation-needed"
+                ? normalized : "reconciliation-needed";
         }
-        return AcceptanceResult.Confirmed;
+        var status = item.Status.ValueKind switch
+        {
+            JsonValueKind.String => item.Status.GetString(),
+            JsonValueKind.Number when item.Status.TryGetInt32(out var number) => number switch
+            {
+                0 => "Pending",
+                1 => "Claimed",
+                2 => "InProgress",
+                3 => "Completed",
+                4 => "Failed",
+                5 => "Cancelled",
+                6 => "ReconciliationNeeded",
+                _ => null
+            },
+            _ => null
+        };
+        return status?.ToLowerInvariant() switch
+        {
+            "pending" or "claimed" or "inprogress" => "accepted",
+            "completed" => "completed",
+            "cancelled" => "cancelled",
+            "failed" => "revoked",
+            _ => "reconciliation-needed"
+        };
     }
 
     public async Task<IReadOnlyList<PRFactoryCommand>> DrainCommandsAsync(Guid id, Guid lease, CancellationToken ct)

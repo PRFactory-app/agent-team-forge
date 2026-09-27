@@ -9,7 +9,8 @@ public static class PRFactoryHeartbeat
         Func<HttpMessageHandler>? handlerFactory = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         Action<string>? log = null,
-        Func<PRFactoryClient, PRFactorySettings, Guid, CancellationToken, Task>? onConnected = null)
+        Func<PRFactoryClient, PRFactorySettings, Guid, CancellationToken, Task>? onConnected = null,
+        Func<CancellationToken, Task>? onTokenRejected = null)
     {
         delay ??= Task.Delay;
         log ??= _ => { };
@@ -89,6 +90,15 @@ public static class PRFactoryHeartbeat
                         PRFactoryConnection.MarkRejected(state);
                     }
                     log("PRFactory worker token rejected; remote connector stopped");
+                    try
+                    {
+                        // Quiesce owned work without erasing acceptance identity.
+                        if (onTokenRejected is not null) { await onTokenRejected(ct); }
+                    }
+                    catch (Exception ex) when (ex is not OutOfMemoryException && !(ex is OperationCanceledException && ct.IsCancellationRequested))
+                    {
+                        log($"PRFactory token-rejection fencing deferred ({ex.GetType().Name})");
+                    }
                     try { await delay(TimeSpan.FromSeconds(5), ct); }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
                 }

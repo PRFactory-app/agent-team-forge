@@ -79,6 +79,24 @@ public sealed class DispatchJob : IDisposable
 
     public void Signal() => _signal.Release();
 
+    /// <summary>Optional owner admission (PRFactory authority, account windows); false leaves the job queued.</summary>
+    public Func<string, bool>? LaunchGate { get; set; }
+
+    bool Eligible(string jobId)
+    {
+        try { return LaunchGate?.Invoke(jobId) ?? true; }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            log($"dispatch launch gate failed for {jobId}: {ex.GetType().Name}");
+            return false; // Fail closed; the claim loop retries.
+        }
+    }
+
+    /// <summary>Quiescence proof: no attempt of this job is still unwinding and none is quarantined.</summary>
+    public bool ExecutionStopped(string jobId) =>
+        !_running.ContainsKey(jobId) && !_reconciledWindows.ContainsKey(jobId)
+        && store.GetJob(jobId)?.Status is { } status && status is not (JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation);
+
     /// <summary>Interrupts an active attempt after its cancelled state has committed.</summary>
     public void CancelRunning(string jobId)
     {
@@ -348,7 +366,7 @@ public sealed class DispatchJob : IDisposable
                         }
 
                         claim = store.BeginNextAttempt([.. _running.Keys],
-                            (correlations, pids) => OrphanedBackendProcess.HasMarkedProcess(correlations, pids));
+                            (correlations, pids) => OrphanedBackendProcess.HasMarkedProcess(correlations, pids), Eligible);
                     }
                 }
                 finally

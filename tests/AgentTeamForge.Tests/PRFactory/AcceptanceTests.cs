@@ -78,9 +78,10 @@ public sealed class AcceptanceTests
         Assert.Equal("local result", job.ResultText);
         Assert.Equal(0, server.Uploads);
         Assert.Equal(0, server.Completions);
-        var calls = server.Gets;
+        // Fenced teams keep observing the server only for a definitive disposition; nothing is published.
         await adapter.TickAsync(Machine, CancellationToken.None);
-        Assert.Equal(calls, server.Gets);
+        Assert.Equal(0, server.Uploads + server.Completions);
+        Assert.Equal("reconciliation_needed", teams.Get(ServerUrl, server.Item.Id)!.AcceptanceState);
         Assert.Contains(teams.ReconciliationNeeded(ServerUrl), t => t.WorkItemId == server.Item.Id);
         teams.RecordExternal(ServerUrl, server.Item.Id, "reviewer", "reviewer", "team-1", "secret-ticket", DateTimeOffset.UtcNow.AddHours(1));
         var state = StateDirectory.Open(dir.Path);

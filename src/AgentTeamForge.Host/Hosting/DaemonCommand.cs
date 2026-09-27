@@ -234,18 +234,39 @@ public static class DaemonCommand
         var dispatching = dispatcher.RunAsync(lifetime.Token);
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path, claudeMailbox), Log).RunAsync(lifetime.Token);
         var pruning = profile.AutoPrune ? RunPruneAsync(prune, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
+        var connectorPrincipal = new BoundPrincipal("prfactory", "connector", "connector-lead");
+        var connectorStop = new StopJob(store, connectorPrincipal,
+            dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership);
+        var connectorStopAgent = new StopAgent(store, connectorPrincipal, backends);
+        var authorityRows = new PRFactoryAuthorityStore(database);
+        // One long-lived authority per connected server; ticks construct the adapter afresh.
+        PRFactoryAuthority? authority = null;
+        dispatcher.LaunchGate = jobId =>
+        {
+            if (store.GetJob(jobId)?.Principal != connectorPrincipal.Principal) { return true; }
+            // Connector turns launch only under fresh server confirmation; unmapped ones wait for their mapping.
+            var owner = authorityRows.OwnerOf(jobId);
+            var current = authority;
+            return owner is { } o && current is not null && o.Server == current.Server && current.MayLaunch(o.WorkItemId);
+        };
         var prfactory = PRFactoryHeartbeat.RunAsync(state, lifetime.Token, log: Log,
             onConnected: async (client, settings, machineId, ct) =>
             {
+                if (authority?.Server != settings.Url)
+                {
+                    authority?.Dispose();
+                    authority = new PRFactoryAuthority(settings.Url, authorityRows, connectorTeams,
+                        connectorStop.Execute, connectorStopAgent.Execute, externalTeam.RevokeMember, dispatcher.ExecutionStopped);
+                }
                 await new PRFactoryWorkItems(settings.Url, settings.Repositories, connectorTeams, client,
                     connectorAccept.Execute, store.GetJob, dispatcher.Signal,
                     cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId, Log, externalTeam,
-                    new StopJob(store, new BoundPrincipal("prfactory", "connector", "connector-lead"),
-                        dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership).Execute,
-                    new FollowUpJob(store, new BoundPrincipal("prfactory", "connector", "connector-lead"), connectorAccept,
-                        dispatcher.InterruptRunning).Execute, jobLogs).TickAsync(machineId, ct);
+                    connectorStop.Execute,
+                    new FollowUpJob(store, connectorPrincipal, connectorAccept,
+                        dispatcher.InterruptRunning).Execute, jobLogs, authority).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
-            });
+            },
+            onTokenRejected: ct => authority?.TransportFailureAsync(Guid.Empty, System.Net.HttpStatusCode.Unauthorized, ct) ?? Task.CompletedTask);
         var firstStopped = await Task.WhenAny(serving, dispatching);
 
         // Stop admission before tearing down either service. A serving fault
@@ -279,6 +300,7 @@ public static class DaemonCommand
         await waking;
         await pruning;
         await prfactory;
+        authority?.Dispose(); // Only after connector ticks have stopped.
         if (webConsole is not null)
         {
             await webConsole.StopAsync();

@@ -193,7 +193,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     /// follow-up of a job holding it), so turns on one session never overlap.
     /// </summary>
     public AttemptClaim? BeginNextAttempt(IReadOnlyCollection<string>? settlingJobs = null,
-        Func<string[], int[], bool>? hasMarkedProcess = null) => Write(connection =>
+        Func<string[], int[], bool>? hasMarkedProcess = null, Func<string, bool>? eligible = null) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         // A terminal commit can precede backend disposal (retaining an interactive
@@ -225,6 +225,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         string? jobId = null;
         foreach (var (candidateJobId, parentId, parentStatus, parentSession, options) in candidates)
         {
+            // Skipped intents stay queued: an owner gate (authority, account window) may reopen later.
+            if (eligible is not null && !eligible(candidateJobId)) { continue; }
             if (parentStatus == JobStatus.Failed && options.Contains(";defer=1", StringComparison.Ordinal))
             {
                 if (parentSession is null || hasMarkedProcess is null) { continue; }
