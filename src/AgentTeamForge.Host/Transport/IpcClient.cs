@@ -28,8 +28,9 @@ public sealed class IpcClient
     readonly StateDirectory _state;
     readonly SpikeLimits _limits;
     readonly TimeSpan _budget;
+    readonly TimeProvider _timeProvider;
 
-    public IpcClient(StateDirectory state, SpikeLimits limits, TimeSpan? callBudget = null)
+    public IpcClient(StateDirectory state, SpikeLimits limits, TimeSpan? callBudget = null, TimeProvider? timeProvider = null)
     {
         var budget = callBudget ?? DefaultCallBudget;
         if (budget <= TimeSpan.Zero || budget > MaxCallBudget)
@@ -40,13 +41,14 @@ public sealed class IpcClient
         _state = state;
         _limits = limits;
         _budget = budget;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<IpcResponse> SendAsync(IpcRequest request, CancellationToken cancellationToken)
     {
         var credential = Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(_state.CredentialFile)).Trim();
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(_budget);
+        using var budget = new CancellationTokenSource(_budget, _timeProvider);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, budget.Token);
         var requestWriteStarted = false;
         try
         {
