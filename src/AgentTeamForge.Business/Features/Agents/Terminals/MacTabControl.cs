@@ -312,7 +312,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
 public sealed class MacInteractiveBackend(InteractiveAgentKind kind, string stateRoot, string provider, string? kittyAddress, string? kittyBinary) : IJobBackend
 {
     readonly WtInteractiveBackend _backend = new(new MacTabControl(provider, kittyAddress, kittyBinary),
-        new InteractiveTranscriptReader(), kind, stateRoot, "terminal");
+        new InteractiveTranscriptReader(), kind, stateRoot, "terminal", configPreflight: InteractiveAgentPreflight.CheckCurrent);
 
     public IBackendRun Start(BackendRequest request) => _backend.Start(request);
 

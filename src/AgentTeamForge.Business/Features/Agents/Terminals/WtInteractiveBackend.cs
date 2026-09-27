@@ -17,14 +17,16 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
     readonly RetainedSessions _liveSessions;
     readonly ConcurrentDictionary<string, InteractiveLaunch> _jobs = [];
     readonly TimeSpan _startupTimeout;
+    readonly Action<InteractiveAgentKind, string>? _configPreflight;
 
     public WtInteractiveBackend(InteractiveAgentKind kind, string stateRoot)
-        : this(new WtTabControl(), new InteractiveTranscriptReader(), kind, stateRoot, "wt") { }
+        : this(new WtTabControl(), new InteractiveTranscriptReader(), kind, stateRoot, "wt", configPreflight: InteractiveAgentPreflight.CheckCurrent) { }
 
     internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot)
         : this(tabs, transcripts, kind, stateRoot, "wt") { }
 
-    internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot, string tabDirectory, TimeSpan? startupTimeout = null)
+    internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot, string tabDirectory, TimeSpan? startupTimeout = null,
+        Action<InteractiveAgentKind, string>? configPreflight = null)
     {
         _tabs = tabs;
         _transcripts = transcripts;
@@ -33,6 +35,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
         _tabDirectory = tabDirectory;
         _liveSessions = new RetainedSessions(tabs.StopOwned);
         _startupTimeout = startupTimeout ?? InteractiveStartup.Timeout;
+        _configPreflight = configPreflight;
     }
 
     public IBackendRun Start(BackendRequest request)
@@ -44,6 +47,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
         }
 
         _tabs.Preflight(_kind);
+        _configPreflight?.Invoke(_kind, cwd);
         if (request.ResumeSessionId is { } resumeId && _liveSessions.TryTake(resumeId, out var previous))
         {
             try { _tabs.StopOwned(previous); }

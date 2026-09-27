@@ -13,6 +13,34 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 public sealed class WtInteractiveBackendTests
 {
     [Fact]
+    public async Task Config_preflight_fails_before_any_tab_and_does_not_fence_the_job()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var tabs = new FakeTabs();
+        var backend = new WtInteractiveBackend(tabs, new FakeReader(null), InteractiveAgentKind.Claude,
+            state.Path, "wt", configPreflight: (kind, cwd) =>
+            {
+                var env = new Dictionary<string, string?> { ["HOME"] = state.Path };
+                if (InteractiveAgentPreflight.Check(kind, name => env.GetValueOrDefault(name), cwd, InteractivePlatform.Windows) is { } blocked)
+                {
+                    throw blocked;
+                }
+            });
+        var job = f.Submit("preflight");
+        var claim = f.Store.BeginNextAttempt()!;
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        await dispatcher.RunAttemptAsync(claim, TestContext.Current.CancellationToken);
+
+        Assert.True(tabs.Preflighted);
+        Assert.Null(tabs.Launch);
+        Assert.Equal(JobStatus.Failed, f.Store.GetJob(job.JobId)!.Status);
+        Assert.Equal("agent_first_run_required", f.Store.GetJob(job.JobId)!.ReasonCode);
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+        Assert.Null(f.Store.GetRuns(job.JobId).Single().SubmittedAt);
+    }
+
+    [Fact]
     public async Task FakeTabLaunchRetainsNativeSessionUntilStopAgent()
     {
         var tabs = new FakeTabs();
