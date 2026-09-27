@@ -37,8 +37,8 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
             var binding = await terminal.OpenAgentTabAsync(session, launch.AgentName, launch.WorkingDirectory, launch.BootstrapPath, cancellationToken,
                 workspaceTrustEnvironment: InteractiveAgentCommand.WorkspaceTrustEnvironment(launch.Kind),
                 onCreated: created => { session = created; HerdrOwnedSessions.Save(launch, created); },
-                exclusivePiMcp: launch.Kind == InteractiveAgentKind.Pi && launch.JobId is { } jobId
-                    && File.Exists(ManagedChildContext.ConfigPath(Path.GetDirectoryName(bootstrap)!, jobId)));
+                exclusivePiMcp: launch.Kind == InteractiveAgentKind.Pi && InteractiveAgentCommand.ManagedConfigPath(launch) is { } config
+                    && File.Exists(config));
             _runs[launch.AgentName] = (session, binding);
             var args = new List<string> { "agent", "start", launch.AgentName, "--kind", Kind(launch.Kind), "--pane", binding.PaneId, "--timeout", "15000", "--" };
             args.AddRange(AgentArguments(launch));
@@ -248,17 +248,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         _ => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 
-    internal static IReadOnlyList<string> AgentArguments(InteractiveLaunch launch)
-    {
-        var args = new List<string>();
-        if (launch.JobId is { } jobId)
-        {
-            var stateRoot = Path.GetDirectoryName(Path.GetDirectoryName(launch.BootstrapPath))!;
-            args.AddRange(ManagedChildContext.Arguments(Kind(launch.Kind), ManagedChildContext.ConfigPath(stateRoot, jobId)));
-        }
-        args.AddRange(InteractiveAgentCommand.Arguments(launch));
-        return args;
-    }
+    internal static IReadOnlyList<string> AgentArguments(InteractiveLaunch launch) => InteractiveAgentCommand.ManagedArguments(launch);
 
     static string? FindStatus(JsonNode? node)
     {

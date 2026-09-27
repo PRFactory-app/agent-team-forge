@@ -157,6 +157,8 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
             "for name in $(env | cut -d= -f1 | grep -E '^(" + identityPrefixes + ")' || :); do unset \"$name\"; done\n" +
             (trust is { } env ? "export " + env.Name + "=" + ShellQuote(env.Value) + "\n" : "") +
             (launch.Kind == InteractiveAgentKind.Codex ? "export CODEX_HOME=" + ShellQuote(codexHome ?? CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory)) + "\n" : "") +
+            (launch.Kind == InteractiveAgentKind.Pi && InteractiveAgentCommand.ManagedConfigPath(launch) is { } config && File.Exists(config)
+                ? "export PI_MCP_CONFIG_MODE=exclusive\n" : "") +
             "cd " + ShellQuote(launch.WorkingDirectory) + "\n" +
             "export ATF_RUN_CORRELATION=" + ShellQuote(launch.AgentName) + "\n" +
             ShellQuote(atfBinary) + " terminal-token --pid \"$$\" --sidecar " + ShellQuote(sidecar) + "\n" +
