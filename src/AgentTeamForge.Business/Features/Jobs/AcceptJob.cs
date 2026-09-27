@@ -121,16 +121,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         {
             return JobErrors.HerdrPromptTooLarge;
         }
-        // Native WT agent launches pass the prompt on the Windows command line. Quoting can
-        // double its size; 12 Ki UTF-16 chars leaves room under CreateProcess's 32 Ki limit.
-        if (OperatingSystem.IsWindows() && instruction.Length > 12 * 1024)
-        {
-            return JobErrors.WindowsPromptTooLarge;
-        }
-        if (OperatingSystem.IsMacOS() && Encoding.UTF8.GetByteCount(instruction) > 120 * 1024)
-        {
-            return JobErrors.MacPromptTooLarge;
-        }
+        // Windows tabs hand an over-long prompt over as a private file; macOS has no per-argument limit.
         return null;
     }
 
