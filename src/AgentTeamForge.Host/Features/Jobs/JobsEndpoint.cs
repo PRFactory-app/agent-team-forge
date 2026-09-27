@@ -171,7 +171,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 {
                     wakeStore.MarkRead(request.JobId!, request.WakeKey, generation);
                 }
-                return Map(WithLocation(found));
+                return Map(WithLocation(found)) with { HerdrMode = herdrPlacement is not null };
             case IpcProtocol.JobOutput:
                 var outputJob = get.Execute(request.JobId ?? string.Empty);
                 if (outputJob.Error is not null)

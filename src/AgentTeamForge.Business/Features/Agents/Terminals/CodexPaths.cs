@@ -12,6 +12,14 @@ public static class CodexPaths
         return Path.GetFullPath(configured is { Length: > 0 } ? configured : Path.Combine(home, ".codex"), daemonDirectory);
     }
 
+    // An explicit CODEX_HOME must exist before Codex starts. With an unset home,
+    // Codex can initialize its default directory itself on first use.
+    public static string? LaunchHome(Func<string, string?> environment, string daemonDirectory)
+    {
+        var home = Home(environment, daemonDirectory);
+        return environment("CODEX_HOME") is { Length: > 0 } || Directory.Exists(home) ? home : null;
+    }
+
     internal static string TrustKey(string directory)
     {
         var full = Path.GetFullPath(directory);

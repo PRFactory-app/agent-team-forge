@@ -101,6 +101,18 @@ public sealed class DispatchJobTests
     }
 
     [Fact]
+    public async Task Cli_rejection_before_a_turn_fails_without_fencing()
+    {
+        using var f = new JobFixture();
+        var job = await DispatchOne(f, new ScriptedBackend(_ => [new BackendEvidence.NotStarted("Error: Unknown option: --mcp-config")]));
+
+        Assert.Equal(JobStatus.Failed, job.Status);
+        Assert.Equal("backend_not_started", job.ReasonCode);
+        Assert.Contains("Unknown option", job.ResultText);
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+    }
+
+    [Fact]
     public async Task Failed_completion_write_leaves_no_partial_completion_and_halts_dispatch()
     {
         using var f = new JobFixture();

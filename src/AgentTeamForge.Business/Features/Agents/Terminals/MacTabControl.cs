@@ -10,7 +10,7 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 internal sealed class MacTabControl(string provider, string? kittyAddress, string? kittyBinary) : IWtTabControl
 {
     readonly ConcurrentDictionary<string, OwnedTab> _tabs = [];
-    readonly string _codexHome = CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
+    readonly string? _codexHome = CodexPaths.LaunchHome(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
 
     public void Preflight(InteractiveAgentKind kind)
     {
@@ -156,11 +156,19 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
             "unset " + identityNames + "\n" +
             "for name in $(env | cut -d= -f1 | grep -E '^(" + identityPrefixes + ")' || :); do unset \"$name\"; done\n" +
             (trust is { } env ? "export " + env.Name + "=" + ShellQuote(env.Value) + "\n" : "") +
-            (launch.Kind == InteractiveAgentKind.Codex ? "export CODEX_HOME=" + ShellQuote(codexHome ?? CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory)) + "\n" : "") +
+            (launch.Kind == InteractiveAgentKind.Codex ? CodexHomeLine(codexHome) : "") +
+            (launch.Kind == InteractiveAgentKind.Pi && InteractiveAgentCommand.ManagedConfigPath(launch) is { } config && File.Exists(config)
+                ? "export PI_MCP_CONFIG_MODE=exclusive\n" : "") +
             "cd " + ShellQuote(launch.WorkingDirectory) + "\n" +
             "export ATF_RUN_CORRELATION=" + ShellQuote(launch.AgentName) + "\n" +
             ShellQuote(atfBinary) + " terminal-token --pid \"$$\" --sidecar " + ShellQuote(sidecar) + "\n" +
             "exec " + command + "\n";
+    }
+
+    static string CodexHomeLine(string? codexHome)
+    {
+        var home = codexHome ?? CodexPaths.LaunchHome(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
+        return home is null ? "unset CODEX_HOME\n" : "export CODEX_HOME=" + ShellQuote(home) + "\n";
     }
 
     internal static string ShellQuote(string value) => value.Contains('\0')

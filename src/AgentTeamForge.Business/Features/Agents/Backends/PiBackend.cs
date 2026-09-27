@@ -117,6 +117,11 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
         {
             if (_deliveryFailed)
             {
+                if (await UnknownOptionAsync(cancellationToken) is { } unknownOption)
+                {
+                    yield return new BackendEvidence.NotStarted(unknownOption);
+                    yield break;
+                }
                 yield return new BackendEvidence.ProtocolError(resuming && await BackendSessionErrors.HasExpiredDiagnosticAsync(_stderrDrain, cancellationToken)
                     ? "session_expired" : "backend_delivery_failed");
                 yield break;
@@ -142,12 +147,30 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
                 yield break;
             }
 
+            if (!turn.Started && await UnknownOptionAsync(cancellationToken) is { } diagnostic)
+            {
+                yield return new BackendEvidence.NotStarted(diagnostic);
+                yield break;
+            }
+
             if (turn.FinishAtEndOfOutput() is { } final)
             {
                 yield return final;
             }
 
             yield return new BackendEvidence.EndOfOutput();
+        }
+
+        async Task<string?> UnknownOptionAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                var diagnostic = await _stderrDrain.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken);
+                if (!diagnostic.Contains("Unknown option", StringComparison.OrdinalIgnoreCase)) { return null; }
+                await _process.WaitForExitAsync(cancellationToken).WaitAsync(TimeSpan.FromSeconds(1), cancellationToken);
+                return diagnostic.Trim();
+            }
+            catch (TimeoutException) { return null; }
         }
 
         public void TerminateOwnedChild() => OwnedProcessTermination.Kill(_process);
@@ -187,11 +210,12 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
     /// <summary>Maps Pi JSON events to evidence; the final answer is the last assistant message.</summary>
     internal sealed class TurnState
     {
-        bool _acked;
         bool _finished;
         string? _text;
         string? _stopReason;
         bool _skippedLine;
+
+        public bool Started { get; private set; }
 
         public void MarkSkippedLine() => _skippedLine = true;
 
@@ -221,8 +245,8 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
                     case "session" when root.TryGetProperty("id", out var id) && id.GetString() is { Length: > 0 } sessionId:
                         yield return new BackendEvidence.Session(correlation, sessionId);
                         break;
-                    case "agent_start" when !_acked:
-                        _acked = true;
+                    case "agent_start" when !Started:
+                        Started = true;
                         yield return new BackendEvidence.Ack(correlation);
                         break;
                     case "message_end" when root.TryGetProperty("message", out var message) && IsAssistant(message):

@@ -30,6 +30,12 @@ public static class DaemonCommand
 {
     public static async Task<int> RunAsync(StateDirectory state, string? crashAt, string? failAt)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            // The old shell launcher set this before exec; keep private defaults for
+            // daemon-created files even when the invoking client has a loose umask.
+            _ = Native.umask(0x3F); // 077
+        }
         if (OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("ATF_DAEMON_LOG") is { } logPath)
         {
             var log = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
@@ -39,7 +45,7 @@ public static class DaemonCommand
             Console.SetOut(log);
             Console.SetError(log);
         }
-        var profile = SpikeProfileFile.Load(state);
+        var profile = ProfileFile.Load(state);
         var launchMode = SetupCommand.ConfiguredMode(state);
         if (launchMode is "herdr" or "terminal" or "wt" && !profile.RealAgents)
         {
@@ -77,7 +83,7 @@ public static class DaemonCommand
 
         // Pin a relative CODEX_HOME to this daemon's startup directory before any
         // terminal or transcript reader captures its environment.
-        Environment.SetEnvironmentVariable("CODEX_HOME", CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory));
+        Environment.SetEnvironmentVariable("CODEX_HOME", CodexPaths.LaunchHome(Environment.GetEnvironmentVariable, Environment.CurrentDirectory));
 
         var limits = profile.Limits;
         var checkpoints = new DurabilityCheckpoints(point =>
