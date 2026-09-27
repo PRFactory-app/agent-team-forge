@@ -118,8 +118,10 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         switch (request.Op)
         {
             case IpcProtocol.JobCapabilities:
+                var installed = BackendAvailability.ReadInstalled(configuredBackends ?? []);
                 return new IpcResponse(true, Outcome: "capabilities", Backends: configuredBackends ?? [],
-                    BackendAvailability: BackendAvailability.Read(configuredBackends ?? [], launchMode), LaunchMode: launchMode, ModelOptions: ModelSelection.ConsoleOptions,
+                    BackendAvailability: BackendAvailability.Read(configuredBackends ?? [], launchMode), BackendInstalled: installed,
+                    BackendSignIn: BackendAvailability.ReadSignIn(installed), LaunchMode: launchMode, ModelOptions: ModelSelection.ConsoleOptions,
                     ModelCatalog: new Dictionary<string, IReadOnlyCollection<string>>
                     {
                         ["codex"] = modelDiscovery?.CachedModels("codex") ?? [],

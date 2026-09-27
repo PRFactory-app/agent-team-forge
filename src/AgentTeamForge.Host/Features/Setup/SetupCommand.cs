@@ -7,6 +7,7 @@ using System.Globalization;
 using System.Runtime.Versioning;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
+using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Hosting;
 using AgentTeamForge.Host.Transport;
 
@@ -101,6 +102,16 @@ public static class SetupCommand
         if (check)
         {
             Console.Out.WriteLine($"Login autostart: {(LoginAutostart.IsInstalled(home) ? "on" : "off")}");
+            var configured = new[] { BackendCatalog.Claude, BackendCatalog.Codex, BackendCatalog.Pi,
+                BackendCatalog.Cursor, BackendCatalog.Droid };
+            var installed = BackendAvailability.ReadInstalled(configured);
+            var available = BackendAvailability.Read(configured, mode);
+            var signIn = BackendAvailability.ReadSignIn(installed);
+            foreach (var backend in configured)
+            {
+                Console.Out.WriteLine($"Backend {backend}: {(installed[backend] ? "installed" : "not installed")}, " +
+                    $"{(available[backend] ? "available" : "unavailable")}, sign-in {signIn[backend]}");
+            }
             return ClientSetup.Reconcile(binary, dir, home, settingsPath, extensionPath, commandRunner, apply: false) ? 0 : 1;
         }
 

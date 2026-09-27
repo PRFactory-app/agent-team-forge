@@ -140,7 +140,7 @@ internal static class ClientSetup
         {
             var (code, version) = run(binaryName, ["--version"]);
             Console.Out.WriteLine(code == 127 ? $"{client}: skipped (not installed)"
-                : code == 0 ? $"{client}: available ({BoundedError(version)}; headless-only)"
+                : code == 0 ? $"{client}: installed ({BoundedError(version)}; headless-only)"
                 : $"{client}: found but version check failed ({BoundedError(version)})");
         }
         if (installed == 0)

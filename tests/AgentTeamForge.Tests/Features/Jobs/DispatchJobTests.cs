@@ -4,11 +4,59 @@ using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Tests.Support;
+using System.Diagnostics;
 
 namespace AgentTeamForge.Tests.Features.Jobs;
 
 public sealed class DispatchJobTests
 {
+    [Theory]
+    [InlineData(0, "completed")]
+    [InlineData(7, "failed")]
+    public async Task Headless_exit_reaps_detached_descendant_and_leaves_foreign_process(int exit, string expected)
+    {
+        if (!OperatingSystem.IsLinux()) { return; }
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        using var foreign = Process.Start("/bin/sleep", ["300"])!;
+        var script = state.File("fake-cursor");
+        var pidFile = state.File("worker.pid");
+        File.WriteAllText(script, "#!/bin/sh\n" +
+            "cat >/dev/null\n" +
+            "setsid sleep 300 </dev/null >/dev/null 2>&1 &\n" +
+            "echo $! > '" + pidFile + "'\n" +
+            (exit == 0 ? "echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\",\"session_id\":\"s\"}'\n"
+                : "echo failed >&2\n") +
+            "exit " + exit + "\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var job = f.Submit("k");
+        var claim = f.Store.BeginNextAttempt()!;
+        try
+        {
+            using var dispatcher = Dispatcher(f, new CursorCliBackend(script));
+            await dispatcher.RunAttemptAsync(claim, CancellationToken.None);
+            Assert.Equal(expected, f.Store.GetJob(job.JobId)!.Status);
+            var detached = int.Parse(File.ReadAllText(pidFile), System.Globalization.CultureInfo.InvariantCulture);
+            Assert.True(SpinWait.SpinUntil(() => !Alive(detached), TimeSpan.FromSeconds(5)));
+            Assert.False(foreign.HasExited);
+        }
+        finally
+        {
+            OrphanedBackendProcess.TerminateMarked([claim.Correlation]);
+            if (!foreign.HasExited) { foreign.Kill(); }
+        }
+    }
+
+    static bool Alive(int pid)
+    {
+        try
+        {
+            var stat = File.ReadAllText($"/proc/{pid}/stat");
+            return stat[(stat.LastIndexOf(')') + 2)..][0] != 'Z';
+        }
+        catch (IOException) { return false; }
+    }
+
     static DispatchJob Dispatcher(JobFixture f, IJobBackend backend) =>
         new(f.Store, backend, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
 

@@ -626,6 +626,14 @@ public sealed class DispatchJob : IDisposable
                 _reconciledWindows[run.JobId] = backendRun;
             }
             else { await DisposeQuietly(backendRun); }
+            // A finished headless turn can leave helpers reparented to init (Cursor's
+            // worker-server is one example). The per-run marker and pidfd/creation
+            // token check identify only processes started by this attempt, even when
+            // the original CLI has exited or a descendant created a new session.
+            if (backends.Resolve(claim.Job.Backend) is not (HerdrInteractiveBackend or WtInteractiveBackend))
+            {
+                OrphanedBackendProcess.TerminateMarked([run.Correlation]);
+            }
             _running.TryRemove(run.JobId, out _);
             if (backendRun?.OwnedSessionStopped == true)
             {
@@ -699,6 +707,7 @@ public sealed class DispatchJob : IDisposable
                 log($"late backend start for {run.RunId}; preserve interactive session: {preserve}");
                 if (!preserve) { TryTerminate(late.Result, run.JobId); }
                 await DisposeQuietly(late.Result);
+                if (!preserve) { OrphanedBackendProcess.TerminateMarked([run.Correlation]); }
             }
         }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default).Unwrap();
 
