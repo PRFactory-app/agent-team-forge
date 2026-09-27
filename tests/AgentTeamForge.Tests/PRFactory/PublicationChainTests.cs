@@ -87,13 +87,22 @@ public sealed class PublicationChainTests
         Assert.Equal("uncommitted", File.ReadAllText(Path.Combine(lead.Cwd!, "base.txt")));
     }
 
-    [Fact]
-    public async Task Cancellation_mid_run_stops_the_turn_and_blocks_publication_and_completion()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Cancellation_mid_run_stops_the_turn_and_blocks_publication_and_completion(bool repoLess)
     {
-        using var h = new ChainHarness(Implementation());
+        var item = Implementation();
+        if (repoLess) { item.RepositoryId = null; }
+        using var h = new ChainHarness(item) { AllowRepoLess = repoLess };
         await h.TickAsync();
         var (lead, run) = h.StartOne();
-        ChainHarness.Commit(lead.Cwd!, "src/partial.txt", "half done");
+        if (!repoLess) { ChainHarness.Commit(lead.Cwd!, "src/partial.txt", "half done"); }
+        else
+        {
+            Directory.CreateDirectory(Path.Combine(lead.Cwd!, "src"));
+            File.WriteAllText(Path.Combine(lead.Cwd!, "src/partial.txt"), "half done");
+        }
 
         h.Server.Status = 5; // The ticket is cancelled in PRFactory while the agent works.
         await h.TickAsync();

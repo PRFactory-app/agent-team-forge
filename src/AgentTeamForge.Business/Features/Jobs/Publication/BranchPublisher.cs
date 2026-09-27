@@ -75,18 +75,21 @@ public sealed class BranchPublisher(PRFactoryPublicationStore store, Publication
         finally { gate.Release(); }
     }
 
-    // The one defined exclusion: untracked phase documents in the ticket artefact folder are
-    // uploaded as artefacts, not published code. Tracked changes there still count as dirty.
+    // Untracked phase documents and allowlisted attachment outputs are uploaded separately.
+    // Tracked changes there still count as dirty.
     internal static bool IsStagedArtefact(string porcelain, string? folder)
     {
         if (string.IsNullOrWhiteSpace(folder) || !porcelain.StartsWith("?? ", StringComparison.Ordinal)) { return false; }
         var prefix = folder.Replace('\\', '/').Trim('/') + "/";
         var path = porcelain[3..].Trim('"');
-        // The collector uploads top-level text documents only. Never hide source files or
+        // Only the exact collector locations qualify. Never hide source files or arbitrary
         // nested directories merely because the claim names their ancestor as the folder.
-        return prefix != "/" && !Path.IsPathRooted(folder) && !prefix.Contains("..", StringComparison.Ordinal)
-            && path.StartsWith(prefix, StringComparison.Ordinal) && !path[prefix.Length..].Contains('/')
-            && Path.GetExtension(path).ToLowerInvariant() is ".md" or ".html";
+        if (prefix == "/" || Path.IsPathRooted(folder) || prefix.Contains("..", StringComparison.Ordinal)
+            || !path.StartsWith(prefix, StringComparison.Ordinal)) { return false; }
+        var relative = path[prefix.Length..];
+        return !relative.Contains('/') && Path.GetExtension(path).ToLowerInvariant() is ".md" or ".html"
+            || relative.StartsWith("attachments/", StringComparison.Ordinal)
+            && !relative["attachments/".Length..].Contains('/') && AttachmentFiles.MediaType(path) is not null;
     }
 
     static async Task ValidateRemote(PublicationRequest request, CancellationToken ct)

@@ -290,7 +290,8 @@ public static class DaemonCommand
                     cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId, Log, externalTeam,
                     connectorStop.Execute,
                     connectorFollowUp.Execute, jobLogs, authority, connectorWorkspaces, workspaceRoot, accounts,
-                        publications: connectorPublications, interaction: connectorInteraction, humanWaits: humanWaits).TickAsync(machineId, ct);
+                        publications: connectorPublications, interaction: connectorInteraction, humanWaits: humanWaits,
+                        allowRepoLess: settings.TenantWideToken && settings.RepoLess).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
             },
             onTokenRejected: ct => authority?.TransportFailureAsync(Guid.Empty, System.Net.HttpStatusCode.Unauthorized, ct) ?? Task.CompletedTask,

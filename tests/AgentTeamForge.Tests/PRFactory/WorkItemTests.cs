@@ -42,7 +42,7 @@ public sealed class WorkItemTests
             }
             return outcome;
         }
-        PRFactoryWorkItems Adapter() => new("https://example.test", [new RepositoryMapping(item.RepositoryId, dir.Path)],
+        PRFactoryWorkItems Adapter() => new("https://example.test", [new RepositoryMapping(item.RepositoryId!.Value, dir.Path)],
             teams, new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             Submit, jobs.GetJob, () => { });
         await Adapter().TickAsync(null, CancellationToken.None); // The failure is deferred to the next tick.
@@ -70,7 +70,7 @@ public sealed class WorkItemTests
         var server = new FakeServer(item);
         var teams = new PRFactoryTeamStore(db);
         var job = NewJob("lead-job", "codex") with { Status = JobStatus.Running };
-        var adapter = new PRFactoryWorkItems("https://example.test", [new RepositoryMapping(item.RepositoryId, dir.Path)],
+        var adapter = new PRFactoryWorkItems("https://example.test", [new RepositoryMapping(item.RepositoryId!.Value, dir.Path)],
             teams, new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             _ => JobResult.Ok(new JobView("lead-job", JobStatus.Running, null, null, 0), "accepted"), _ => job, () => { });
 
@@ -130,7 +130,7 @@ public sealed class WorkItemTests
             jobs[id] = NewJob(id, request.Backend!);
             return JobResult.Ok(new JobView(id, JobStatus.Queued, null, null, 0), "accepted");
         }
-        PRFactoryWorkItems Adapter() => new("https://example.test", [new RepositoryMapping(server.Item.RepositoryId, dir.Path)],
+        PRFactoryWorkItems Adapter() => new("https://example.test", [new RepositoryMapping(server.Item.RepositoryId!.Value, dir.Path)],
             teams, new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             Submit, id => jobs.GetValueOrDefault(id), () => { }, cwd => sessions.Start(cwd, "prfactory:https://example.test").SessionId);
         var first = Adapter();
@@ -171,7 +171,7 @@ public sealed class WorkItemTests
             ContextJson = "{\"repositories\":{\"secondary\":[{\"id\":\"" + Guid.NewGuid().ToString("D") + "\"}]}}"
         });
         var spawns = 0;
-        var adapter = new PRFactoryWorkItems("https://example.test", [new RepositoryMapping(server.Item.RepositoryId, dir.Path)],
+        var adapter = new PRFactoryWorkItems("https://example.test", [new RepositoryMapping(server.Item.RepositoryId!.Value, dir.Path)],
             teams, new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             _ => { spawns++; throw new InvalidOperationException("should not submit"); }, _ => null, () => { });
         await adapter.TickAsync(null, CancellationToken.None);
@@ -198,7 +198,7 @@ public sealed class WorkItemTests
             ExpectedOutput = "secret.md",
             TicketArtefactFolder = ".."
         });
-        var adapter = new PRFactoryWorkItems("https://example.test", [new RepositoryMapping(server.Item.RepositoryId, repo + "/")],
+        var adapter = new PRFactoryWorkItems("https://example.test", [new RepositoryMapping(server.Item.RepositoryId!.Value, repo + "/")],
             teams, new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             _ => JobResult.Ok(new JobView("job_1", JobStatus.Completed, null, null, 0), "accepted"),
             id => NewJob(id, "codex") with { Status = JobStatus.Completed }, () => { });
@@ -233,7 +233,7 @@ public sealed class WorkItemTests
         var accept = new AcceptJob(jobs, new BoundPrincipal("prfactory", "connector", "connector-lead"),
             new SpikeLimits(), false, new AdmissionGate(), ["codex"]);
         var logs = new List<string>();
-        var adapter = new PRFactoryWorkItems("https://example.test", [new RepositoryMapping(item.RepositoryId, dir.Path)],
+        var adapter = new PRFactoryWorkItems("https://example.test", [new RepositoryMapping(item.RepositoryId!.Value, dir.Path)],
             teams, new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             accept.Execute, jobs.GetJob, () => { }, log: logs.Add);
 

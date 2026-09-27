@@ -32,6 +32,20 @@ is released, end-to-end use against the hosted app is not supported.
 Settings and token are stored owner-only in the state directory. The local IPC
 credential is never sent to the server.
 
+For a **tenant-wide worker token**, add `--token-scope tenant-wide`. This enables
+repo-less intake by default; `--repo-less false` disables it. Repository-scoped
+tokens and existing configurations never poll repo-less work. The worker API
+does not expose token scope, so the setting records the scope chosen when the
+token was created; the server still enforces that scope. A tenant-wide connection
+can omit `--repo` entirely for scratch-only work. With mappings, the connector
+polls mapped repositories and separately sends an empty repository list for
+repo-less work, filtering that response to null repository IDs.
+
+Null or omitted repository IDs use TeamWorkspace's private scratch directory,
+retained across follow-ups and restarts. They never run Git preparation,
+plan-basis discovery or publication and complete with null branch/SHA. Text
+artefacts, human questions, cancellation and attachments work in scratch too.
+
 ## How it works
 
 The daemon talks to PRFactory only by **outbound HTTPS polling**, reusing the
@@ -168,11 +182,11 @@ session once, in the same workspace, under a fixed key, even after restart or a
 redelivered command; it counts as applied when that resumed turn completes.
 Commands poll every ~2 s while teams are active. Cursor/Droid are refused.
 
-Registration advertises `authority-disposition-v1`, `remote-publication-v1` and
-`workspace-continuity-v1`.
+Registration advertises `authority-disposition-v1`, `remote-publication-v1`,
+`workspace-continuity-v1` and `blob-attachments-v1`.
 Not advertised yet: `human-wait-v1` (needs native transcript receipts and
 real CLI session proofs, plus the server's `questionId` wire), readiness probes,
-external-member human waits, multi-repository work and binary attachments.
+external-member human waits and multi-repository work.
 
 ## Phase artefacts
 
@@ -197,3 +211,28 @@ symlinks), failed jobs and terminal upload rejections go directly to Fail with
 a persisted diagnostic. Network errors, HTTP 408/429 and server errors retry;
 token rejection and lease fencing retain their existing handling. An execution
 failure never depends on a successful artefact upload.
+
+## Diff and binary attachments
+
+ATF discovers `blob-attachments-v1` through
+`GET /api/work-item-blobs/capabilities`. Servers without it receive no blob
+uploads. After a writable phase publishes, ATF generates `changes.patch` using
+`git diff base...head` from the publication's frozen SHAs. Patches above 10 MiB
+are truncated with `IsTruncated` and a binary-change summary. Scratch work
+never produces a Git diff.
+
+Agents may put PNG, JPEG, WebP, PDF, TXT, PATCH and DIFF files directly in
+`<TicketArtefactFolder>/attachments/`. Unsupported extensions are ignored;
+unsafe paths and symlinks fail the phase. Untracked files of these types in
+that folder are upload output and do not block publication; tracked edits
+still require commits. Each file is limited to 10 MiB and the complete batch,
+including the patch, to 50 MiB. Oversized attachments fail visibly before any
+blob from the batch is sent.
+
+SQLite freezes the entire batch, including multipart bytes, stable ClientKeys,
+machine/job/lease identity, attempt, SHA-256 and media types, before the first
+send. Restarts and lost responses replay identical requests even if local files
+change. Every upload passes the authority gate and all uploads precede
+completion. HTTP 409 and other terminal rejections persist a Fail diagnostic;
+transient failures retry. Loss of server capability holds already-frozen pending
+uploads instead of completing without them.

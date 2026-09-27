@@ -169,7 +169,7 @@ public sealed class AcceptanceTests
     {
         var local = job ?? NewJob;
         var client = new PRFactoryClient(PRFactoryClient.CreateHttpClient(ServerUrl, "fake-token", new FakeHandler(server.Reply)));
-        return new PRFactoryWorkItems(ServerUrl, [new RepositoryMapping(server.Item.RepositoryId, dir.Path)], teams, client,
+        return new PRFactoryWorkItems(ServerUrl, [new RepositoryMapping(server.Item.RepositoryId!.Value, dir.Path)], teams, client,
             _ => { onSubmit(); return JobResult.Ok(new JobView("local-job", JobStatus.Queued, null, null, 0), "accepted"); },
             _ => local(), () => { }, log: log);
     }

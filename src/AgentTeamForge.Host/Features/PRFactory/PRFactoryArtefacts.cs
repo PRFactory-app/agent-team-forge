@@ -46,12 +46,12 @@ internal static class PRFactoryArtefacts
         {
             throw new InvalidDataException($"Missing required output {item.TicketArtefactFolder}/{expected}");
         }
-        if (item.Type == "Planning" && JobWorktree.Head(cwd) is { } head)
+        if (item.RepositoryId is { } repositoryId && item.Type == "Planning" && JobWorktree.Head(cwd) is { } head)
         {
             var paths = await JobWorktree.TrackedPathsAsync(cwd, ct);
             if (paths is not null)
             {
-                var manifest = new PRFactoryPlanBasis([new(item.RepositoryId, RepositoryName(item, cwd), JobWorktree.Branch(cwd), head, paths)]);
+                var manifest = new PRFactoryPlanBasis([new(repositoryId, RepositoryName(item, cwd), JobWorktree.Branch(cwd), head, paths)]);
                 files.Add(new("plan-basis.json", JsonSerializer.Serialize(manifest, PRFactoryWorkItemJson.Default.PRFactoryPlanBasis), "plan-basis"));
             }
         }
@@ -68,7 +68,7 @@ internal static class PRFactoryArtefacts
         catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException) { return Path.GetFileName(cwd); }
     }
 
-    static string SafePath(string cwd, string relative)
+    internal static string SafePath(string cwd, string relative)
     {
         var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(cwd));
         if (Path.IsPathRooted(relative) || relative.Split(Path.DirectorySeparatorChar).Contains(".."))

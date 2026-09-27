@@ -28,7 +28,7 @@ public sealed class ExternalJoinTests
         var accept = new AcceptJob(jobs, principal, new SpikeLimits(), false, new AdmissionGate(), ["codex"]);
         var stop = new StopJob(jobs, principal, _ => { });
         PRFactoryWorkItems Adapter() => new("https://example.test",
-            [new(server.Item.RepositoryId, dir.Path, ["visitor"])], store,
+            [new(server.Item.RepositoryId!.Value, dir.Path, ["visitor"])], store,
             new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             accept.Execute, jobs.GetJob, () => { }, externalTeam: new ExternalTeam(new ExternalMemberStore(db), new WakeStore(db)), stopJob: stop.Execute);
         var send = new PRFactoryCommand(Guid.NewGuid(), "SendMessage", "visitor", "waiting");
@@ -61,7 +61,7 @@ public sealed class ExternalJoinTests
         var accept = new AcceptJob(jobs, principal, new SpikeLimits(), false, new AdmissionGate(), ["codex"]);
         var stop = new StopJob(jobs, principal, _ => { });
         PRFactoryWorkItems Adapter() => new("https://example.test",
-            [new(server.Item.RepositoryId, dir.Path, ["visitor"])], store,
+            [new(server.Item.RepositoryId!.Value, dir.Path, ["visitor"])], store,
             new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             accept.Execute, jobs.GetJob, () => { }, externalTeam: new ExternalTeam(new ExternalMemberStore(db), new WakeStore(db)), stopJob: stop.Execute);
         var send = new PRFactoryCommand(Guid.NewGuid(), "SendMessage", "visitor", "waiting");
@@ -101,7 +101,7 @@ public sealed class ExternalJoinTests
         var lead = new JobRecord("lead-job", "prfactory", "connector", "connector-lead", "lead-job", "prompt", "",
             JobStatus.Running, null, null, 0, "codex", null, null, null);
         PRFactoryWorkItems Adapter(JobDatabase db) => new("https://example.test",
-            [new RepositoryMapping(server.Item.RepositoryId, dir.Path, ["visitor"])], new PRFactoryTeamStore(db),
+            [new RepositoryMapping(server.Item.RepositoryId!.Value, dir.Path, ["visitor"])], new PRFactoryTeamStore(db),
             new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             Submit, _ => lead, () => { }, externalTeam: new ExternalTeam(new ExternalMemberStore(db), new WakeStore(db)));
 
@@ -161,7 +161,7 @@ public sealed class ExternalJoinTests
         var lead = new JobRecord("lead-job", "prfactory", "connector", "connector-lead", "lead-job", "prompt", "",
             JobStatus.Running, null, null, 0, "codex", null, null, null);
         var adapter = new PRFactoryWorkItems("https://example.test",
-            [new RepositoryMapping(server.Item.RepositoryId, dir.Path, ["visitor"])], new PRFactoryTeamStore(database),
+            [new RepositoryMapping(server.Item.RepositoryId!.Value, dir.Path, ["visitor"])], new PRFactoryTeamStore(database),
             new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             _ => JobResult.Ok(new JobView("lead-job", JobStatus.Running, null, null, 0), "accepted"), _ => lead, () => { },
             externalTeam: actor);
@@ -210,7 +210,7 @@ public sealed class ExternalJoinTests
         var actor = new ExternalTeam(new ExternalMemberStore(database), new WakeStore(database));
         var store = new PRFactoryTeamStore(database);
         var adapter = new PRFactoryWorkItems("https://example.test",
-            [new RepositoryMapping(server.Item.RepositoryId, dir.Path, ["visitor"])], store,
+            [new RepositoryMapping(server.Item.RepositoryId!.Value, dir.Path, ["visitor"])], store,
             new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             Submit, id => jobs.GetValueOrDefault(id), () => { }, externalTeam: actor);
 
@@ -250,7 +250,7 @@ public sealed class ExternalJoinTests
         var accept = new AcceptJob(jobs, principal, new SpikeLimits(), false, new AdmissionGate(), ["codex"]);
         var stop = new StopJob(jobs, principal, _ => throw new InvalidOperationException("queued lead must not have a running backend"));
         var adapter = new PRFactoryWorkItems("https://example.test",
-            [new RepositoryMapping(server.Item.RepositoryId, dir.Path, ["visitor", "second"])], store,
+            [new RepositoryMapping(server.Item.RepositoryId!.Value, dir.Path, ["visitor", "second"])], store,
             new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             accept.Execute, jobs.GetJob, () => { }, externalTeam: actor, stopJob: stop.Execute);
 
@@ -288,7 +288,7 @@ public sealed class ExternalJoinTests
         var lead = new JobRecord("lead-job", "prfactory", "connector", "connector-lead", "lead-job", "prompt", "",
             JobStatus.Running, null, null, 0, "codex", null, null, null);
         var adapter = new PRFactoryWorkItems("https://example.test",
-            [new RepositoryMapping(server.Item.RepositoryId, dir.Path, ["visitor", "second"])], store,
+            [new RepositoryMapping(server.Item.RepositoryId!.Value, dir.Path, ["visitor", "second"])], store,
             new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             _ => JobResult.Ok(new JobView("lead-job", JobStatus.Running, null, null, 0), "accepted"), _ => lead, () => { },
             externalTeam: actor);
@@ -322,7 +322,7 @@ public sealed class ExternalJoinTests
             JobStatus.Running, null, null, 0, "codex", null, null, null);
         var stops = new List<string>();
         var adapter = new PRFactoryWorkItems("https://example.test",
-            [new RepositoryMapping(server.Item.RepositoryId, dir.Path, ["visitor"])], store,
+            [new RepositoryMapping(server.Item.RepositoryId!.Value, dir.Path, ["visitor"])], store,
             new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
             _ => JobResult.Ok(new JobView("lead-job", JobStatus.Running, null, null, 0), "accepted"), _ => lead, () => { },
             externalTeam: actor, stopJob: id => { stops.Add(id); lead = lead with { Status = JobStatus.Cancelled }; return JobResult.Ok(new JobView(id, JobStatus.Cancelled, null, null, 0), "stopped"); });
@@ -388,6 +388,7 @@ public sealed class ExternalJoinTests
         public HttpResponseMessage Reply(HttpRequestMessage request)
         {
             var path = request.RequestUri!.AbsolutePath;
+            if (path == "/api/work-item-blobs/capabilities") { return new(HttpStatusCode.NotFound); }
             if (path.EndsWith("/poll", StringComparison.Ordinal))
             {
                 return Json("{\"workItems\":[" + JsonSerializer.Serialize(Item, PRFactoryWorkItemJson.Default.PRFactoryWorkItem) + "]}");

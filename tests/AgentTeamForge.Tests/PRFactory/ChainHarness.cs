@@ -60,6 +60,7 @@ sealed class ChainHarness : IDisposable
     public string WorkspaceRoot => root.File("workspaces");
     public AccountAdmission? Accounts { get; set; }
     public string[]? ExternalMembers { get; set; }
+    public bool AllowRepoLess { get; set; }
     public AgentTeamForge.Business.Features.External.ExternalTeam External => new(
         new AgentTeamForge.DAL.Features.External.ExternalMemberStore(Database), new AgentTeamForge.DAL.Features.Wake.WakeStore(Database));
     public HumanWaitStore HumanWaits => new(Database);
@@ -67,11 +68,11 @@ sealed class ChainHarness : IDisposable
     public List<string> Logs { get; } = [];
 
     public PRFactoryWorkItems Adapter() => new(ChainServer.Url,
-        [new RepositoryMapping(Server.Item.RepositoryId, Repo, ExternalMembers)], Teams, Server.Client(),
+        Server.Item.RepositoryId is { } repositoryId ? [new RepositoryMapping(repositoryId, Repo, ExternalMembers)] : [], Teams, Server.Client(),
         Accept.Execute, Store.GetJob, () => { }, log: Logs.Add, externalTeam: External, stopJob: Stop.Execute, followUp: FollowUp.Execute,
         authority: Authority, workspaces: new PRFactoryWorkspace(Workspaces), workspaceRoot: WorkspaceRoot, accounts: Accounts,
         publications: new PRFactoryPublicationStore(Database),
-        interaction: new PRFactoryInteraction(HumanWaits, Teams, Store, FollowUp.Execute), humanWaits: HumanWaits);
+        interaction: new PRFactoryInteraction(HumanWaits, Teams, Store, FollowUp.Execute), humanWaits: HumanWaits, allowRepoLess: AllowRepoLess);
 
     public Task TickAsync() => Adapter().TickAsync(Machine, CancellationToken.None);
 

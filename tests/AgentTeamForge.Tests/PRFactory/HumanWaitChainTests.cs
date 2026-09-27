@@ -5,19 +5,22 @@ namespace AgentTeamForge.Tests.PRFactory;
 
 public sealed class HumanWaitChainTests
 {
-    [Fact]
-    public async Task Question_ends_turn_answer_command_resumes_same_session_then_publishes_and_completes()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Question_ends_turn_answer_command_resumes_same_session_then_publishes_and_completes(bool repoLess)
     {
         using var h = new ChainHarness(new PRFactoryWorkItem
         {
             Id = Guid.NewGuid(),
             Type = "Implementation",
             TicketKey = "PRF-7",
-            RepositoryId = Guid.NewGuid(),
+            RepositoryId = repoLess ? null : Guid.NewGuid(),
             LeaseToken = Guid.NewGuid(),
             AgentType = PRFactoryAgentType.Codex,
             Prompt = "Implement",
-        });
+        })
+        { AllowRepoLess = repoLess };
         await h.TickAsync();
         var (lead, run) = h.StartOne();
         Assert.Contains("request_human_input", lead.Instruction, StringComparison.Ordinal);
@@ -46,7 +49,8 @@ public sealed class HumanWaitChainTests
             Assert.Equal(lead.JobId, job.ParentJobId); // Same saved session, same owned checkout.
             Assert.Equal(lead.Cwd, job.Cwd);
             Assert.Contains("Human answer: Use Postgres", job.Instruction, StringComparison.Ordinal);
-            ChainHarness.Commit(job.Cwd!, "db.txt", "postgres");
+            if (repoLess) { File.WriteAllText(Path.Combine(job.Cwd!, "db.txt"), "postgres"); }
+            else { ChainHarness.Commit(job.Cwd!, "db.txt", "postgres"); }
         }));
         Assert.Equal("session-" + lead.JobId, h.Store.GetJob(lead.JobId)!.SessionId); // The session the follow-up resumes.
 
@@ -55,7 +59,8 @@ public sealed class HumanWaitChainTests
         Assert.Equal("applied", h.HumanWaits.Get(asked.Wait.QuestionId)!.Status);
         Assert.Equal(2, h.Teams.MemberJobs(ChainServer.Url, h.Server.Item.Id).Count); // One answer turn only.
         var completion = Assert.Single(h.Server.Completions);
-        Assert.Equal(ChainHarness.Git(lead.Cwd!, "rev-parse", "HEAD"), completion.GetProperty("resultCommitSha").GetString());
+        if (repoLess) { Assert.Null(completion.GetProperty("resultCommitSha").GetString()); }
+        else { Assert.Equal(ChainHarness.Git(lead.Cwd!, "rev-parse", "HEAD"), completion.GetProperty("resultCommitSha").GetString()); }
         Assert.Equal(completion.GetProperty("resultCommitSha").GetString(), h.RemoteHead("prfactory/" + h.Server.Item.Id));
         Assert.Contains(h.Server.Lines, l => l.RecordKind == "human-wait" && l.Text.Contains("\"applied\"", StringComparison.Ordinal));
     }

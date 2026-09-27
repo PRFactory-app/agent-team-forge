@@ -35,7 +35,8 @@ public sealed class PRFactoryWorkItem
     // Repository set/default base are carried in ContextJson by the worker contract.
     // Retain repository outcomes (including base SHA/branch) for publication slices.
     public System.Text.Json.JsonElement? RepositoryResults { get; set; }
-    public Guid RepositoryId { get; set; }
+    public Guid? RepositoryId { get; set; }
+    public int AttemptCount { get; set; }
     public PRFactoryAgentType AgentType { get; set; }
     public string? Model { get; set; }
     public PRFactoryEffort? Effort { get; set; }
@@ -97,7 +98,7 @@ public sealed record PRFactoryCommandAckRequest(Guid LeaseToken, List<PRFactoryC
 public sealed record PRFactoryCommandAckResponse(int Applied);
 public sealed record PRFactoryStreamLine(string AgentName, long Seq, DateTimeOffset At, string Stream, string Text, string? RecordKind);
 public sealed record PRFactoryStreamEvent(string Kind, string? TeamId, string AgentName, string Backend, string? State,
-    Guid RepositoryId, string? SpawnedBy);
+    Guid? RepositoryId, string? SpawnedBy);
 public sealed record PRFactoryStreamBatch(Guid? LeaseToken, string BatchId, List<PRFactoryStreamEvent> Events, List<PRFactoryStreamLine> Lines);
 public sealed record PRFactoryStreamResponse(bool Accepted, Dictionary<string, long> AcceptedThroughSeq, int CreditLines, int CreditBytes);
 

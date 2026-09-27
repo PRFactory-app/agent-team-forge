@@ -36,7 +36,7 @@ public sealed class AuthorityWiringTests
         using var authority = new PRFactoryAuthority(ChainServer.Url, rows, teams, stop.Execute, stopAgent.Execute,
             (_, _) => true, id => store.GetJob(id)?.Status is not (JobStatus.Queued or JobStatus.Running));
         var client = server.Client();
-        PRFactoryWorkItems Adapter() => new(ChainServer.Url, [new RepositoryMapping(server.Item.RepositoryId, dir.Path)], teams, client,
+        PRFactoryWorkItems Adapter() => new(ChainServer.Url, [new RepositoryMapping(server.Item.RepositoryId!.Value, dir.Path)], teams, client,
             accept.Execute, store.GetJob, () => { }, stopJob: stop.Execute, authority: authority);
 
         await Adapter().TickAsync(Machine, TestContext.Current.CancellationToken);

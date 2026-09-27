@@ -19,6 +19,49 @@ sealed class ChainServer(PRFactoryWorkItem item)
     public List<PRFactoryCommand> Commands { get; } = [];
     public List<JsonElement> Acks { get; } = [];
     public List<PRFactoryStreamLine> Lines { get; } = [];
+    public bool BlobsSupported { get; set; }
+    public bool LoseBlobResponse { get; set; }
+    public HttpStatusCode? BlobRejection { get; set; }
+    public List<BlobRequest> Blobs { get; } = [];
+    public List<string> PollQueries { get; } = [];
+    public List<string> UploadOrder { get; } = [];
+    public Action? OnBlobUpload { get; set; }
+
+    public sealed record BlobRequest(string ContentType, byte[] Payload, Dictionary<string, string> Fields, byte[] File);
+
+    static BlobRequest ReadBlob(HttpRequestMessage request)
+    {
+        Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
+        Assert.Equal("fake-token", request.Headers.Authorization.Parameter);
+        Assert.Equal("blob-attachments-v1", Assert.Single(request.Headers.GetValues("X-PRFactory-Capability")));
+        var type = request.Content!.Headers.ContentType!;
+        Assert.Equal("multipart/form-data", type.MediaType);
+        var boundary = type.Parameters.Single(p => p.Name == "boundary").Value!.Trim('"');
+        var payload = request.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+        var fields = new Dictionary<string, string>(StringComparer.Ordinal);
+        byte[]? file = null;
+        foreach (var part in Encoding.Latin1.GetString(payload).Split("--" + boundary)[1..^1])
+        {
+            var split = part.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+            Assert.True(split >= 0);
+            var headers = part[..split].Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
+            var disposition = System.Net.Http.Headers.ContentDispositionHeaderValue.Parse(
+                headers.Single(h => h.StartsWith("Content-Disposition:", StringComparison.Ordinal))["Content-Disposition:".Length..].Trim());
+            var name = disposition.Name!.Trim('"');
+            var bytes = Encoding.Latin1.GetBytes(part[(split + 4)..^2]);
+            if (name == "File")
+            {
+                file = bytes;
+                Assert.Equal(fields["FileName"], disposition.FileName!.Trim('"'));
+                Assert.Contains("Content-Type: " + fields["MediaType"], headers);
+            }
+            else { fields.Add(name, Encoding.UTF8.GetString(bytes)); }
+        }
+        Assert.NotNull(file);
+        Assert.Equal(file.Length.ToString(System.Globalization.CultureInfo.InvariantCulture), fields["ByteCount"]);
+        Assert.Equal(Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(file)), fields["Sha256"]);
+        return new(type.ToString(), payload, fields, file);
+    }
 
     public PRFactoryClient Client() =>
         new(PRFactoryClient.CreateHttpClient(Url, "fake-token", new Handler(Reply)));
@@ -28,6 +71,29 @@ sealed class ChainServer(PRFactoryWorkItem item)
         lock (this)
         {
             var path = request.RequestUri!.AbsolutePath;
+            if (path == "/api/work-item-blobs/capabilities")
+            {
+                return BlobsSupported ? Json("{\"protocolRevision\":2,\"capabilities\":[\"blob-attachments-v1\"]}")
+                    : new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
+            if (path == $"/api/work-item-blobs/work-items/{Item.Id:D}")
+            {
+                Assert.True(BlobsSupported);
+                var blob = ReadBlob(request);
+                Assert.Equal(ChainHarness.Machine.ToString("D"), blob.Fields["MachineId"]);
+                Assert.Equal(AcceptedJobId, blob.Fields["JobId"]);
+                Assert.Equal(Item.LeaseToken!.Value.ToString("D"), blob.Fields["LeaseToken"]);
+                Assert.Equal(Item.AttemptCount.ToString(System.Globalization.CultureInfo.InvariantCulture), blob.Fields["Attempt"]);
+                Assert.Equal((Item.RepositoryId ?? Guid.Empty).ToString("D"), blob.Fields["RepositoryId"]);
+                var previous = Blobs.FirstOrDefault(b => b.Fields["ClientKey"] == blob.Fields["ClientKey"]);
+                if (previous is not null) { Assert.Equal(previous.Payload, blob.Payload); Assert.Equal(previous.ContentType, blob.ContentType); }
+                Blobs.Add(blob);
+                UploadOrder.Add("blob");
+                OnBlobUpload?.Invoke();
+                if (BlobRejection is { } rejection) { return new HttpResponseMessage(rejection) { Content = new StringContent("blob rejected") }; }
+                if (LoseBlobResponse) { LoseBlobResponse = false; throw new HttpRequestException("blob response lost"); }
+                return Json("{\"id\":\"" + Guid.NewGuid() + "\"}");
+            }
             if (path.EndsWith("/agent-commands", StringComparison.Ordinal))
             {
                 return Json(JsonSerializer.Serialize(new PRFactoryCommandDrainResponse([.. Commands]), PRFactoryWorkItemJson.Default.PRFactoryCommandDrainResponse));
@@ -51,6 +117,7 @@ sealed class ChainServer(PRFactoryWorkItem item)
             }
             if (path.EndsWith("/poll", StringComparison.Ordinal))
             {
+                PollQueries.Add(request.RequestUri.Query);
                 return Json(Offered ? "{\"workItems\":[" + ItemJson() + "]}" : "{\"workItems\":[]}");
             }
             if (path.Contains("/claim/", StringComparison.Ordinal))
@@ -74,11 +141,13 @@ sealed class ChainServer(PRFactoryWorkItem item)
             }
             if (path.Contains("/artefacts/", StringComparison.Ordinal))
             {
+                UploadOrder.Add("artefacts");
                 Artefacts.Add(body!);
                 return Json("{\"accepted\":true}");
             }
             if (path.Contains("/complete/", StringComparison.Ordinal))
             {
+                UploadOrder.Add("complete");
                 Completions.Add(JsonElement.Parse(body!));
                 Status = 3;
                 return Json("{\"accepted\":true}");

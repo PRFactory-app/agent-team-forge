@@ -151,7 +151,7 @@ public sealed class DeliveryTests
             http = PRFactoryClient.CreateHttpClient(Url, "token", new Handler(Reply));
             Client = new(http);
         }
-        public PRFactoryWorkItems Adapter() => new(Url, [new(Item.RepositoryId, Dir.Path)], Teams, Client,
+        public PRFactoryWorkItems Adapter() => new(Url, [new(Item.RepositoryId!.Value, Dir.Path)], Teams, Client,
             accept.Execute, Jobs.GetJob, () => { }, stopJob: stop.Execute, followUp: follow.Execute, jobLogs: Logs);
         public void Finish(string id, string result)
         {
@@ -162,6 +162,7 @@ public sealed class DeliveryTests
         HttpResponseMessage Reply(HttpRequestMessage request)
         {
             var path = request.RequestUri!.AbsolutePath;
+            if (path == "/api/work-item-blobs/capabilities") { return new(HttpStatusCode.NotFound); }
             var body = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
             if (path.EndsWith("/register", StringComparison.Ordinal))
             {

@@ -15,7 +15,8 @@ public sealed partial class PRFactoryWorkItems(
     Func<FollowUpRequest, JobResult>? followUp = null, JobLogs? jobLogs = null,
     PRFactoryAuthority? authority = null, PRFactoryWorkspace? workspaces = null, string? workspaceRoot = null,
     AccountAdmission? accounts = null, int maxAcceptedTeams = 10, PRFactoryPublicationStore? publications = null,
-    PRFactoryInteraction? interaction = null, HumanWaitStore? humanWaits = null)
+    PRFactoryInteraction? interaction = null, HumanWaitStore? humanWaits = null,
+    bool allowRepoLess = false)
 {
     // Parked turns share one account binding per backend until configured accounts exist.
     public const string DefaultAccount = "default";
@@ -46,10 +47,20 @@ public sealed partial class PRFactoryWorkItems(
         {
             return;
         }
-        var offered = await client.PollAsync(repositories.Select(r => r.Id), machineId, ct, Math.Min(free, 10));
+        var offered = new List<PRFactoryWorkItem>();
+        if (repositories.Count > 0)
+        {
+            offered.AddRange(await client.PollAsync(repositories.Select(r => r.Id), machineId, ct, Math.Min(free, 10)));
+        }
+        if (allowRepoLess && offered.Count < free)
+        {
+            offered.AddRange((await client.PollAsync([], machineId, ct, Math.Min(free - offered.Count, 10)))
+                .Where(i => i.RepositoryId is null));
+        }
         foreach (var item in offered)
         {
-            if (item.Id == Guid.Empty || teams.Get(server, item.Id) is not null)
+            if (item.Id == Guid.Empty || teams.Get(server, item.Id) is not null
+                || item.RepositoryId is null && !allowRepoLess)
             {
                 continue;
             }
@@ -233,19 +244,21 @@ public sealed partial class PRFactoryWorkItems(
             return;
         }
         var repo = repositories.SingleOrDefault(r => r.Id == item.RepositoryId);
-        if (repo is null)
+        if (item.RepositoryId is not null && repo is null
+            || item.RepositoryId is null && (workspaces is null || workspaceRoot is null
+                || !allowRepoLess && workspaces.Get(WorkspaceKey(item.Id)) is null))
         {
             await FinishAsync(team, item, false, "repository has no approved local mapping", null, ct);
             return;
         }
         var plan = item.TeamPlan;
         var members = (plan?.Members ?? []).Where(m => !m.IsLead).OrderBy(m => m.Order).ToArray();
-        var externalNames = repo.ExternalMembers ?? [];
+        var externalNames = repo?.ExternalMembers ?? [];
         if (members.Any(m => m.Name == "lead") || members.Select(m => m.Name).Distinct(StringComparer.Ordinal).Count() != members.Length
             || members.Any(m => string.IsNullOrWhiteSpace(m.Name) || m.MaxIterations is < 1)
             || (plan is not null && (plan.MaxConcurrentChildren < 0 || plan.FreeRoomCeiling < 0)))
         {
-            await FinishAsync(team, item, false, "invalid team recipe", repo.Directory, ct);
+            await FinishAsync(team, item, false, "invalid team recipe", repo?.Directory, ct);
             return;
         }
         if (MapBackend(item.AgentType) is null || members.Any(m => !externalNames.Contains(m.Name, StringComparer.Ordinal)
@@ -253,7 +266,7 @@ public sealed partial class PRFactoryWorkItems(
             || externalNames.Any(name => !members.Any(m => m.Name == name))
             || (externalNames.Length > 0 && externalTeam is null))
         {
-            await FinishAsync(team, item, false, "unsupported agent backend", repo.Directory, ct);
+            await FinishAsync(team, item, false, "unsupported agent backend", repo?.Directory, ct);
             return;
         }
         // The recipe's free room is reserved for later command-driven turns. This slice submits
@@ -262,7 +275,7 @@ public sealed partial class PRFactoryWorkItems(
         var maxChildren = plan is null ? 0 : Math.Min(plan.MaxConcurrentChildren, managedMembers.Length);
         if (managedMembers.Length > 0 && maxChildren == 0)
         {
-            await FinishAsync(team, item, false, "team recipe permits no concurrent children", repo.Directory, ct);
+            await FinishAsync(team, item, false, "team recipe permits no concurrent children", repo?.Directory, ct);
             return;
         }
         WorkspaceSnapshot? workspace = null;
@@ -275,11 +288,11 @@ public sealed partial class PRFactoryWorkItems(
             catch (InvalidOperationException ex)
             {
                 // Identity mismatch, missing continuation SHA or an unreachable branch: fail visibly, keep files.
-                await FinishAsync(team, item, false, $"workspace preparation failed: {ex.Message}", repo.Directory, ct);
+                await FinishAsync(team, item, false, $"workspace preparation failed: {ex.Message}", repo?.Directory, ct);
                 return;
             }
         }
-        string Cwd(string member) => workspace is null ? repo.Directory
+        string Cwd(string member) => workspace is null ? repo!.Directory
             : member == "lead" ? workspace.LeadPath : workspace.Members.Single(m => m.Name == member).Path;
         JobRecord? lead;
         try
@@ -289,7 +302,7 @@ public sealed partial class PRFactoryWorkItems(
         }
         catch (PRFactoryJobSubmissionException ex)
         {
-            await FinishAsync(team, item, false, ex.Message, repo.Directory, ct);
+            await FinishAsync(team, item, false, ex.Message, repo?.Directory, ct);
             return;
         }
         if (lead is null)
@@ -332,7 +345,7 @@ public sealed partial class PRFactoryWorkItems(
             }
             catch (PRFactoryJobSubmissionException ex)
             {
-                await FinishAsync(team, item, false, ex.Message, repo.Directory, ct);
+                await FinishAsync(team, item, false, ex.Message, repo?.Directory, ct);
                 return;
             }
             if (child is null)
@@ -396,7 +409,7 @@ public sealed partial class PRFactoryWorkItems(
         {
             if (waitFailed)
             {
-                await FinishAsync(team, item, false, $"human wait {blocking.QuestionId} {blocking.Status}: {blocking.Error}", repo.Directory, ct);
+                await FinishAsync(team, item, false, $"human wait {blocking.QuestionId} {blocking.Status}: {blocking.Error}", repo?.Directory, ct);
             }
             return; // A question is open: the answer resumes the saved session before completion.
         }
@@ -408,7 +421,7 @@ public sealed partial class PRFactoryWorkItems(
             return;
         }
         await FinishAsync(team, item, failed is null || !waitForManaged && lead.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation,
-            failed?.ReasonCode ?? "job failed", repo.Directory, ct,
+            failed?.ReasonCode ?? "job failed", repo?.Directory, ct,
             lead.ResultText ?? (!waitForManaged ? "External members completed their work; replies are in the agent stream." : null));
     }
 
@@ -545,7 +558,7 @@ public sealed partial class PRFactoryWorkItems(
 
     string WorkspaceKey(Guid id) => $"{server}|{id:D}";
 
-    async Task<WorkspaceSnapshot> PrepareWorkspaceAsync(PRFactoryWorkItem item, RepositoryMapping repo,
+    async Task<WorkspaceSnapshot> PrepareWorkspaceAsync(PRFactoryWorkItem item, RepositoryMapping? repo,
         PRFactoryTeamMember[] members, CancellationToken ct)
     {
         var key = WorkspaceKey(item.Id);
@@ -558,13 +571,19 @@ public sealed partial class PRFactoryWorkItems(
                 saved.Remote, saved.BaseBranch, saved.PublishBranch, saved.ReadOnly, names));
         }
         ct.ThrowIfCancellationRequested();
+        if (item.RepositoryId is null)
+        {
+            return await workspaces.PrepareAsync(new WorkspaceRequest(key, root, null, null, null, null, null,
+                item.ReadOnly, names));
+        }
+        if (repo is null) { throw new InvalidOperationException("Repository mapping missing."); }
         var projectInit = string.Equals(item.TicketSource, "ProjectInit", StringComparison.OrdinalIgnoreCase);
         // Same naming as PRFactory's InitBranchNaming when an older server omits PublishBranch.
         var publish = item.PublishBranch is { Length: > 0 } explicitBranch ? explicitBranch.Trim()
             : projectInit && item.TicketKey is { Length: > 0 } ticketKey ? $"init/{ticketKey.Trim()}" : $"prfactory/{item.Id}";
         // Older servers send ProjectInit's own publish branch without a SHA; resume it as before.
         var startFrom = projectInit && item.StartFromBranch == publish && item.StartCommitSha is null ? null : item.StartFromBranch;
-        return await workspaces.PrepareAsync(new WorkspaceRequest(key, root, item.RepositoryId.ToString("D"), repo.Directory,
+        return await workspaces.PrepareAsync(new WorkspaceRequest(key, root, item.RepositoryId.Value.ToString("D"), repo.Directory,
             repo.Remote ?? await TeamWorkspace.OriginAsync(repo.Directory),
             item.BaseSnapshot?.Branch ?? repo.BaseBranch ?? await TeamWorkspace.DefaultBranchAsync(repo.Directory),
             publish, item.ReadOnly, names, PriorBranch: item.Continuation?.Branch,
@@ -779,6 +798,36 @@ public sealed partial class PRFactoryWorkItems(
                 teams.FreezeArtefacts(server, item.Id, null, error);
             }
         }
+        var pendingBlobs = success ? teams.PendingAttachments(server, item.Id) : null;
+        var supportsBlobs = success && await client.SupportsBlobsAsync(ct);
+        if (pendingBlobs is { Count: > 0 } && !supportsBlobs)
+        {
+            throw new HttpRequestException("Server blob capability unavailable while frozen attachments are pending");
+        }
+        if (supportsBlobs)
+        {
+            try
+            {
+                var pending = pendingBlobs;
+                if (pending is null)
+                {
+                    var uploads = await PRFactoryAttachments.CollectAsync(team, item,
+                        cwd ?? throw new InvalidDataException("Missing attachment workspace"), receipt, ct);
+                    teams.FreezeAttachments(server, item.Id, uploads);
+                    pending = teams.PendingAttachments(server, item.Id)!;
+                }
+                foreach (var upload in pending)
+                {
+                    await Guard(item.Id, () => client.UploadAttachmentAsync(item.Id, upload, ct), ct);
+                    teams.AttachmentUploaded(server, item.Id, upload.ClientKey);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException)
+            {
+                (success, error) = (false, $"Cannot upload attachments: {ex.Message}");
+                teams.FreezeArtefacts(server, item.Id, null, error);
+            }
+        }
         if (success)
         {
             // The server treats resultMarkdown as a replacement document for several phases.
@@ -794,7 +843,7 @@ public sealed partial class PRFactoryWorkItems(
             }
             // Owned workspaces report only the verified public branch; the internal atf/team branch never leaves.
             var (branch, commit) = receipt is not null ? (receipt.Intent.PublishBranch, receipt.Intent.HeadSha)
-                : workspace is not null || item.ReadOnly || cwd is null ? (null, null) : (JobWorktree.Branch(cwd), JobWorktree.Head(cwd));
+                : item.RepositoryId is null || workspace is not null || item.ReadOnly || cwd is null ? (null, null) : (JobWorktree.Branch(cwd), JobWorktree.Head(cwd));
             var publication = receipt is null ? null : new PRFactoryRemotePublication(true, branch!, commit!, true);
             await Guard(item.Id, () => client.CompleteAsync(item.Id, item.LeaseToken, result, ct, branch, commit, publication), ct);
             StopManagedJobs(item.Id);

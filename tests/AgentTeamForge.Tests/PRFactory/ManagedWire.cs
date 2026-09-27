@@ -10,6 +10,7 @@ static class ManagedWire
     public static HttpResponseMessage? Reply(HttpRequestMessage request)
     {
         var path = request.RequestUri!.AbsolutePath;
+        if (path == "/api/work-item-blobs/capabilities") { return new(HttpStatusCode.NotFound); }
         if (path.EndsWith("/agent-commands", StringComparison.Ordinal))
         {
             return new(HttpStatusCode.OK) { Content = new StringContent("{\"commands\":[]}", Encoding.UTF8, "application/json") };

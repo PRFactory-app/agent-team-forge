@@ -11,7 +11,8 @@ namespace AgentTeamForge.Host.Features.PRFactory;
 // Remote/BaseBranch pin the approved origin URL and base; when absent they are read from the checkout once and recorded.
 public sealed record RepositoryMapping(Guid Id, string Directory, string[]? ExternalMembers = null,
     string? Remote = null, string? BaseBranch = null);
-public sealed record PRFactorySettings(string Url, RepositoryMapping[] Repositories);
+public sealed record PRFactorySettings(string Url, RepositoryMapping[] Repositories,
+    bool TenantWideToken = false, bool RepoLess = true);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, WriteIndented = true)]
 [JsonSerializable(typeof(PRFactorySettings))]
@@ -47,6 +48,7 @@ public static class PRFactoryConnection
                     return 0;
                 }
                 Console.WriteLine($"PRFactory enabled: {settings.Url}");
+                Console.WriteLine($"Repo-less intake: {(settings.TenantWideToken && settings.RepoLess ? "enabled (declared tenant-wide token)" : "disabled")}");
                 foreach (var repository in settings.Repositories)
                 {
                     Console.WriteLine($"{repository.Id:D}={repository.Directory}");
@@ -120,7 +122,15 @@ public static class PRFactoryConnection
             }
             mappings.Add(new RepositoryMapping(id, path));
         }
-        if (mappings.Count == 0)
+        var tenantWide = options.GetValueOrDefault("token-scope") == "tenant-wide";
+        var repoLess = options.GetValueOrDefault("repo-less") != "false";
+        if (options.TryGetValue("token-scope", out var scope) && scope is not ("tenant-wide" or "repository")
+            || options.TryGetValue("repo-less", out var enabled) && enabled is not ("true" or "false"))
+        {
+            Console.Error.WriteLine("error: --token-scope tenant-wide|repository and --repo-less true|false");
+            return 64;
+        }
+        if (mappings.Count == 0 && !(tenantWide && repoLess))
         {
             return InvalidMapping();
         }
@@ -152,7 +162,7 @@ public static class PRFactoryConnection
             mappings[index] = mappings[index] with { ExternalMembers = [.. mappings[index].ExternalMembers ?? [], spec[(split + 1)..]] };
         }
 
-        var settings = new PRFactorySettings(uri.GetLeftPart(UriPartial.Path).TrimEnd('/'), [.. mappings]);
+        var settings = new PRFactorySettings(uri.GetLeftPart(UriPartial.Path).TrimEnd('/'), [.. mappings], tenantWide, repoLess);
         // Publish the token first; a daemon racing this write sees either the old
         // configuration or the new token, and never a partial private file.
         WritePrivate(Path.Combine(state.Path, TokenName), Encoding.UTF8.GetBytes(token));
@@ -178,7 +188,8 @@ public static class PRFactoryConnection
         }
         var settings = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(path), PRFactorySettingsJson.Default.PRFactorySettings);
         if (settings is null || !Uri.TryCreate(settings.Url, UriKind.Absolute, out var url) || url.Scheme != Uri.UriSchemeHttps
-            || url.AbsolutePath != "/" || settings.Repositories is not { Length: > 0 }
+            || url.AbsolutePath != "/" || settings.Repositories is null
+            || settings.Repositories.Length == 0 && !(settings.TenantWideToken && settings.RepoLess)
             || settings.Repositories.Any(r => r.Id == Guid.Empty || !System.IO.Directory.Exists(r.Directory)
                 || r.ExternalMembers is { } names && names.Any(n => !System.Text.RegularExpressions.Regex.IsMatch(n, "^[A-Za-z0-9_-]{1,64}$"))))
         {

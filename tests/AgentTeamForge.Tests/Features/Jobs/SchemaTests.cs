@@ -23,6 +23,9 @@ public sealed class SchemaTests
         {
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE prfactory_attachments;
+                DROP TABLE prfactory_attachment_batches;
+                DELETE FROM schema_migrations WHERE version=23;
                 DROP TABLE prfactory_human_stream;
                 DROP TABLE human_waits;
                 DROP TABLE prfactory_publications;
@@ -43,7 +46,7 @@ public sealed class SchemaTests
         using var check = upgraded.OpenConnection();
         using var query = check.CreateCommand();
         query.CommandText = "SELECT max(version) FROM schema_migrations";
-        Assert.Equal(22L, query.ExecuteScalar());
+        Assert.Equal(23L, query.ExecuteScalar());
         query.CommandText = "PRAGMA foreign_key_check";
         using var violations = query.ExecuteReader();
         Assert.False(violations.Read());
@@ -167,6 +170,9 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE prfactory_attachments;
+                DROP TABLE prfactory_attachment_batches;
+                DELETE FROM schema_migrations WHERE version=23;
                 DROP TABLE prfactory_human_stream;
                 DROP INDEX human_waits_open_member;
                 DROP TABLE human_waits;
@@ -251,6 +257,9 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE prfactory_attachments;
+                DROP TABLE prfactory_attachment_batches;
+                DELETE FROM schema_migrations WHERE version=23;
                 DROP TABLE prfactory_human_stream;
                 DROP INDEX human_waits_open_member;
                 DROP TABLE human_waits;
