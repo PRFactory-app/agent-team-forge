@@ -169,7 +169,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     : MapExternal(external.ReadLead(request.LeadSessionId, request.Workspace, request.SinceSeq, request.Limit,
                         request.FromAgent, request.Full, request.MaxChars));
             case IpcProtocol.JobSubmit:
-                var submitWake = LeadWake(request);
+                var (submitWakeKey, submitWakeGeneration) = LeadWake(request);
                 return Accepted(accept.Execute(new SubmitJobRequest(request.IdempotencyKey ?? string.Empty, request.Instruction ?? string.Empty, request.Behavior, request.Hold)
                 {
                     Backend = request.Backend,
@@ -183,11 +183,11 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     TimeoutSeconds = request.TimeoutSeconds,
                     QueueTtlSeconds = request.QueueTtlSeconds,
                     LeadSessionId = request.LeadSessionId,
-                    WakeKey = submitWake.Key,
-                    WakeGeneration = submitWake.Generation,
+                    WakeKey = submitWakeKey,
+                    WakeGeneration = submitWakeGeneration,
                 }));
             case IpcProtocol.JobFollowUp:
-                var followUpWake = LeadWake(request);
+                var (followUpWakeKey, followUpWakeGeneration) = LeadWake(request);
                 return Accepted(followUp.Execute(new FollowUpRequest(request.JobId ?? string.Empty, request.Instruction ?? string.Empty, request.IdempotencyKey ?? string.Empty)
                 {
                     TimeoutSeconds = request.TimeoutSeconds,
@@ -198,8 +198,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     ReplaceIfIdle = request.ReplaceIfIdle,
                     Model = request.Model,
                     Effort = request.Effort,
-                    WakeKey = followUpWake.Key,
-                    WakeGeneration = followUpWake.Generation,
+                    WakeKey = followUpWakeKey,
+                    WakeGeneration = followUpWakeGeneration,
                 }));
             case IpcProtocol.JobStop:
                 return Map(stop.Execute(request.JobId ?? string.Empty, request.Interrupt));
