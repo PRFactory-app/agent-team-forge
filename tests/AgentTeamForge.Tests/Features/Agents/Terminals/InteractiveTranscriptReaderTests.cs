@@ -13,6 +13,8 @@ public sealed class InteractiveTranscriptReaderTests
     static string ClaudeAssistant(string text, string? stop) =>
         $$$"""{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":{{{(stop is null ? "null" : "\"" + stop + "\"")}}},"content":[{"type":"text","text":"{{{text}}}"}]}}""";
     const string ClaudeApiError = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","isApiErrorMessage":true,"error":"authentication_failed","message":{"role":"assistant","model":"<synthetic>","stop_reason":"end_turn","content":[{"type":"text","text":"Not logged in · Please run /login"}]}}""";
+    const string ClaudeConnectionLost = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","isApiErrorMessage":true,"error":"server_error","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"API Error: Connection lost mid-response."}]}}""";
+    const string ClaudeTurnDuration = """{"type":"system","subtype":"turn_duration","durationMs":1000,"isMeta":false,"sessionId":"claude-native"}""";
     const string ClaudeThinkingEnd = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"x"}]}}""";
     const string ClaudeToolResult = """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}""";
     const string ClaudeBackground = """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"Running in background"}]},"toolUseResult":{"backgroundTaskId":"task-1"}}""";
@@ -131,6 +133,24 @@ public sealed class InteractiveTranscriptReaderTests
         Assert.Null(retried?.ApiError);
         Assert.True(retried?.Completed);
         Assert.Equal("retry succeeded", retried?.Message);
+    }
+
+    [Fact]
+    public void Claude_transient_api_error_waits_longer_until_the_turn_has_ended()
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Claude);
+        // Real shape: Claude may continue on its own seconds after this record.
+        File.WriteAllLines(file, [ClaudeUser(Marker), ClaudeConnectionLost]);
+        var open = reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError;
+        Assert.Equal("agent_api_error", open?.Code);
+        Assert.False(open?.TurnEnded);
+        Assert.True(open?.QuietWindow >= TimeSpan.FromSeconds(30));
+
+        File.AppendAllLines(file, [ClaudeTurnDuration]);
+        var ended = reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError;
+        Assert.True(ended?.TurnEnded);
+        Assert.Equal(TimeSpan.FromSeconds(1), ended?.QuietWindow);
     }
 
     public static TheoryData<InteractiveAgentKind, string[]> Unbound => new()

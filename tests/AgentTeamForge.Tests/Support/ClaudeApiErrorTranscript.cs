@@ -25,13 +25,14 @@ internal sealed class ClaudeApiErrorTranscript : IDisposable
     public InteractiveTranscriptReader Reader { get; }
 
     public void Write(string correlation, string error = "authentication_failed", string message = "Not logged in · Please run /login",
-        bool endTurn = false)
+        bool endTurn = false, bool turnEnded = false)
     {
         var stop = endTurn ? "\"stop_reason\":\"end_turn\"," : "";
         File.WriteAllLines(_file,
         [
             $$$"""{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"atf-corr:{{{correlation}}}"}}""",
             $$$"""{"type":"assistant","isSidechain":false,"sessionId":"claude-native","isApiErrorMessage":true,"error":"{{{error}}}","message":{"role":"assistant","model":"<synthetic>",{{{stop}}}"content":[{"type":"text","text":"{{{message}}}"}]}}""",
+            .. turnEnded ? ["""{"type":"system","subtype":"turn_duration","durationMs":1000,"isMeta":false,"sessionId":"claude-native"}"""] : Array.Empty<string>(),
         ]);
     }
 

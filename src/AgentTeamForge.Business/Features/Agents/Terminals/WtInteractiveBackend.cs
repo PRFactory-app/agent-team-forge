@@ -210,7 +210,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
                         _apiErrorProgressCount = output.Progress.Count;
                         _apiErrorSince = DateTimeOffset.UtcNow;
                     }
-                    if (DateTimeOffset.UtcNow - _apiErrorSince >= TimeSpan.FromSeconds(1))
+                    if (DateTimeOffset.UtcNow - _apiErrorSince >= apiError.QuietWindow)
                     {
                         yield return new BackendEvidence.AgentError(apiError.Code, apiError.Message);
                         yield break;

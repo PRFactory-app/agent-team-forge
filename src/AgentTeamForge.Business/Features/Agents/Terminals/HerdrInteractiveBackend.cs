@@ -216,7 +216,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                         _apiErrorProgressCount = output.Progress.Count;
                         _apiErrorSince = DateTimeOffset.UtcNow;
                     }
-                    if (DateTimeOffset.UtcNow - _apiErrorSince >= TimeSpan.FromSeconds(1))
+                    if (DateTimeOffset.UtcNow - _apiErrorSince >= apiError.QuietWindow)
                     {
                         yield return new BackendEvidence.AgentError(apiError.Code, apiError.Message);
                         yield break;
@@ -388,6 +388,15 @@ internal sealed record InteractiveTranscript(string SessionId, string? Message, 
     public IReadOnlyList<string> Progress => Messages ?? [];
 }
 
-internal sealed record InteractiveApiError(string Code, string Message);
+/// <summary>
+/// A Claude API-error record ending the transcript. Claude can still continue the turn on its own
+/// (e.g. seconds after "Connection lost mid-response"), so a non-login error is terminal only once
+/// the turn has ended (a turn_duration record follows it) or the transcript stays quiet for longer.
+/// A login error is synthetic and never retried.
+/// </summary>
+internal sealed record InteractiveApiError(string Code, string Message, bool TurnEnded = false)
+{
+    public TimeSpan QuietWindow => TurnEnded || Code == "agent_login_required" ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(30);
+}
 
 internal sealed record NativeTranscriptBinding(string SessionId, string Path);

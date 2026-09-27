@@ -265,6 +265,10 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                             completed = CompletedTurn(root, kind) && backgroundTools.Count == 0 && backgroundTasks.Count == 0;
                             apiError = ApiError(root);
                         }
+                        else if (apiError is not null && Str(root, "type") == "system" && Str(root, "subtype") == "turn_duration")
+                        {
+                            apiError = apiError with { TurnEnded = true };
+                        }
                     }
                     else { completed |= CompletedTurn(root, kind); }
                     if (AssistantText(root, kind) is { } text)

@@ -17,7 +17,7 @@ public sealed class HerdrInteractiveBackendTests
         using var transcript = new ClaudeApiErrorTranscript();
         var job = f.Submit("herdr-api-error");
         var claim = f.Store.BeginNextAttempt()!;
-        transcript.Write(claim.Correlation, "overloaded_error", "Claude is overloaded");
+        transcript.Write(claim.Correlation, "overloaded_error", "Claude is overloaded", turnEnded: true);
         var backend = new HerdrInteractiveBackend(new FakeControl(), transcript.Reader, InteractiveAgentKind.Claude, Path.GetTempPath());
         using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
 
