@@ -16,6 +16,73 @@ namespace AgentTeamForge.Tests.Features.WebConsole;
 public sealed class WebConsoleScenarios
 {
     [Fact]
+    public async Task Two_lead_sessions_render_as_live_teams_in_an_isolated_browser()
+    {
+        if (!OperatingSystem.IsLinux() || !File.Exists("/usr/bin/chromium"))
+        {
+            return;
+        }
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        var port = FreePort();
+        ConfigurePort(rig.StateDir, port);
+        await rig.StartDaemonAsync();
+        var (_, first) = await rig.StartBridgeAsync("web-first");
+        var (_, second) = await rig.StartBridgeAsync("web-second");
+        var firstSession = (await SpikeRig.CallAsync(first, "session_info", [])).Session!;
+        var secondSession = (await SpikeRig.CallAsync(second, "session_info", [])).Session!;
+        Assert.NotEqual(firstSession.SessionId, secondSession.SessionId);
+        foreach (var (bridge, key) in new[] { (first, "web-one"), (second, "web-two") })
+        {
+            var submitted = await SpikeRig.CallAsync(bridge, "submit_job", new()
+            {
+                ["backend"] = "fake",
+                ["idempotency_key"] = key,
+                ["instruction"] = key,
+                ["hold"] = true,
+            });
+            Assert.True(submitted.Ok);
+        }
+        var (exit, output, _) = await rig.RunToExitAsync(["web", "--state-dir", rig.StateDir]);
+        Assert.Equal(0, exit);
+        var url = output.Trim()["url ".Length..];
+        using var http = new HttpClient { BaseAddress = new Uri(url) };
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", new Uri(url).Fragment["#token=".Length..]);
+        var listed = await Bounded.Until(async () =>
+        {
+            var json = await http.GetStringAsync("api/jobs", TestContext.Current.CancellationToken);
+            var page = JsonSerializer.Deserialize(json, IpcJson.Default.IpcResponse)?.Page;
+            return page?.Jobs.Count(j => j.LeadSessionId is not null) == 2 ? page : null;
+        }, "two web teams");
+        Assert.Equal(2, listed.Jobs.Select(j => j.LeadSessionId).Distinct().Count());
+
+        var chromium = new ProcessStartInfo("/usr/bin/chromium")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (var arg in new[]
+        {
+            "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+            "--virtual-time-budget=7000", "--dump-dom", "--user-data-dir=" + Path.Combine(rig.StateDir, "browser"), url,
+        })
+        {
+            chromium.ArgumentList.Add(arg);
+        }
+        using var browser = Process.Start(chromium)!;
+        var dom = browser.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+        var stderr = browser.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+        await browser.WaitForExitAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(0, browser.ExitCode);
+        Assert.Contains("Lead " + firstSession.SessionId[..8], await dom, StringComparison.Ordinal);
+        Assert.Contains("Lead " + secondSession.SessionId[..8], await dom, StringComparison.Ordinal);
+        Assert.Contains("class=\"team-toggle\"", await dom, StringComparison.Ordinal);
+        Assert.Contains("class=\"team-content\"", await dom, StringComparison.Ordinal);
+        _ = await stderr;
+    }
+
+    [Fact]
     public async Task Web_console_lists_gets_and_follows_up_through_the_daemon()
     {
         using var rig = new SpikeRig();

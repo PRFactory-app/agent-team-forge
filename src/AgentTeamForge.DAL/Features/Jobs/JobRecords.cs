@@ -83,6 +83,11 @@ public sealed record AttemptClaim(JobRecord Job, string RunId, long Generation, 
 
 public sealed record RunRef(string JobId, string RunId, long Generation, string Correlation);
 
+public sealed record NativeCodexAttempt(string JobId, string ThreadId, string CodexHome, string Correlation, string? SubmissionId, string State = "sent")
+{
+    public bool Unresolved => State is "sent" or "received";
+}
+
 public sealed record CancelOutcome(JobRecord? Job, bool WasRunning, bool Changed);
 
 public sealed record EventRecord(long Seq, string JobId, string? RunId, string Kind);
@@ -109,4 +114,5 @@ public sealed record JobSummaryRecord(string JobId, string Status, string? Reaso
     public string? LeadSessionId { get; init; }
     public string? LeadWorkspace { get; init; }
     public string? TargetAgent { get; init; }
+    public bool Connector { get; init; }
 }

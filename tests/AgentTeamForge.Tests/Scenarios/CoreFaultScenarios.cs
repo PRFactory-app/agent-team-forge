@@ -53,7 +53,8 @@ public sealed class CoreFaultScenarios
 
         await Bounded.Until(() => daemon.HasExited, "daemon to stop after a dispatcher fault");
         Assert.NotEqual(0, daemon.ExitCode);
-        Assert.Contains(rig.DaemonLog, l => l.Contains("dispatcher_halted", StringComparison.Ordinal));
+        await Bounded.Until(() => rig.DaemonLog.Any(l => l.Contains("dispatcher_halted", StringComparison.Ordinal)),
+            "dispatcher halt log to drain");
         // The next client call starts a fresh daemon; the failed dispatcher
         // never remains available to accept work.
         try

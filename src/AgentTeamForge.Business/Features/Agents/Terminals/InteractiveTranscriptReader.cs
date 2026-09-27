@@ -21,6 +21,25 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
     const int MaxTranscriptBytes = 32 * 1024 * 1024;
     const int MaxResultChars = 32 * 1024;
 
+    /// <summary>Scan only the frozen Codex thread, including after daemon restart.</summary>
+    internal static InteractiveTranscript? ReadCodexThread(string home, string thread, string correlation)
+    {
+        var sessions = Path.Combine(home, "sessions");
+        if (!Directory.Exists(sessions)) { return null; }
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(sessions, "rollout-*-" + thread + ".jsonl", SearchOption.AllDirectories))
+            {
+                if (HeaderId(path, InteractiveAgentKind.Codex) == thread && IsParent(path, InteractiveAgentKind.Codex) == true)
+                {
+                    return Parse(path, InteractiveAgentKind.Codex, "atf-corr:" + correlation);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        return null;
+    }
+
     public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started)
     {
         if (launch.NativeTranscript is { } retained)

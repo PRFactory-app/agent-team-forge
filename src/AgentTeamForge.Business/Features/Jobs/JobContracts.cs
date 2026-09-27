@@ -105,7 +105,10 @@ public sealed record JobView(string JobId, string Status, string? Result, string
     public string? WorktreeBranch { get; init; }
 }
 
-public sealed record JobDelivery(string State, string? RunId, string? SubmittedAt, string? AcknowledgedAt);
+public sealed record JobDelivery(string State, string? RunId, string? SubmittedAt, string? AcknowledgedAt)
+{
+    public string? NativeSubmissionId { get; init; }
+}
 
 public sealed record JobResult(JobView? Job, string? Outcome, string? Error)
 {

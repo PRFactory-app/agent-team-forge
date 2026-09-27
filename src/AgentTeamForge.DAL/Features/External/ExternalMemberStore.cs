@@ -15,6 +15,7 @@ public sealed record JoinedMember(string SessionId, string Name, string MemberTo
 {
     public string JoinPrompt => $"Joined the AgentTeamForge external team as {Name}. This team is separate from Codex built-in collaboration. Save member_token from this response. Call mcp__agentteamforge__external_read(member_token=...) to read work, mcp__agentteamforge__external_send(member_token=..., text=...) to reply, and mcp__agentteamforge__leave_team(member_token=...) only when finished permanently.";
 }
+public sealed record ExternalMemberSummary(string LeadSessionId, string Name, string JoinedAt, string Workspace);
 public sealed record ExternalMessage(long Seq, string From, string Text, string CreatedAt, bool? Truncated = null, int? FullLen = null)
 {
     public string Ts => CreatedAt;
@@ -395,6 +396,28 @@ public sealed class ExternalMemberStore(JobDatabase database)
             names.Add(reader.GetString(0));
         }
         return names;
+    }
+
+    public IReadOnlyList<ExternalMemberSummary> ActiveMcpMembers()
+    {
+        using var db = database.OpenConnection();
+        using var command = db.CreateCommand();
+        command.CommandText = """
+            SELECT t.lead_session_id,m.name,m.ticket_used_at,s.workspace
+            FROM external_members m JOIN external_teams t ON t.team_id=m.team_id
+            JOIN lead_sessions s ON s.session_id=t.lead_session_id AND s.closed_at IS NULL
+            WHERE t.lead_session_id IS NOT NULL AND t.closed_at IS NULL
+              AND m.active=1 AND NOT EXISTS (
+                SELECT 1 FROM jobs j WHERE m.name='child-'||j.job_id AND j.lead_session_id=t.lead_session_id)
+            ORDER BY m.ticket_used_at DESC LIMIT 500
+            """;
+        using var reader = command.ExecuteReader();
+        var members = new List<ExternalMemberSummary>();
+        while (reader.Read())
+        {
+            members.Add(new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+        }
+        return members;
     }
 
     static long NextSenderSeq(SqliteConnection db, SqliteTransaction tx, string teamId, string recipient, string sender)

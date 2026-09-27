@@ -186,6 +186,8 @@ public sealed class WebConsoleServer : IAsyncDisposable
                 Status = request.Query["status"].Count == 0 ? null : request.Query["status"].ToString(),
                 Cursor = request.Query["cursor"].Count == 0 ? null : request.Query["cursor"].ToString(),
                 OrderByActivity = true,
+                IncludeConnector = true,
+                Limit = ListJobs.MaxPageSize,
             },
             ("GET", ["config"]) => new IpcRequest { Op = IpcProtocol.JobCapabilities },
             ("GET", ["settings", "tiers"]) => new IpcRequest { Op = IpcProtocol.TierSettingsGet },
@@ -193,10 +195,11 @@ public sealed class WebConsoleServer : IAsyncDisposable
             ("GET", ["settings", "herdr-placement"]) => new IpcRequest { Op = IpcProtocol.HerdrPlacementGet },
             ("PUT", ["settings", "herdr-placement"]) => await ReadHerdrPlacementAsync(ctx),
             ("POST", ["jobs"]) => await ReadSubmitAsync(ctx),
-            ("GET", ["jobs", var id]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobGet, JobId = id },
+            ("GET", ["jobs", var id]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobGet, JobId = id, IncludeConnector = true },
             ("GET", ["jobs", var id, "output"]) when ValidId(id) => new IpcRequest
             {
                 Op = IpcProtocol.JobOutput,
+                IncludeConnector = true,
                 JobId = id,
                 Offset = long.TryParse(request.Query["offset"], out var offset) && offset >= 0 ? offset : 0,
                 MaxBytes = int.TryParse(request.Query["max_bytes"], out var max) && max is > 0 and <= 65536 ? max : 65536,
@@ -204,6 +207,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
             ("GET", ["jobs", var id, "activity"]) when ValidId(id) => new IpcRequest
             {
                 Op = IpcProtocol.JobActivity,
+                IncludeConnector = true,
                 JobId = id,
                 AfterCursor = long.TryParse(request.Query["after_cursor"], out var after) && after >= 0 ? after : 0,
                 Limit = int.TryParse(request.Query["limit"], out var count) && count is > 0 and <= JobActivity.MaxPageSize ? count : 20,
