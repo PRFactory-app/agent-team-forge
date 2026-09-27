@@ -982,7 +982,8 @@
         row.append(chips, state);
         open.append(row);
         if (j.startup) {
-          open.append(element('span', 'card-activity', 'Startup: ' + j.startup.phase + ' · ' + j.startup.elapsed_seconds + 's'));
+          const startup = j.startup.no_marker_since_launch ? 'no state marker since launch' : j.startup.phase;
+          open.append(element('span', 'card-activity', 'Startup: ' + startup + ' · ' + j.startup.elapsed_seconds + 's'));
           if (j.startup.hint) open.append(element('span', 'card-activity', j.startup.hint));
         }
         if (preview) open.append(element('span', 'card-activity', '› ' + preview));

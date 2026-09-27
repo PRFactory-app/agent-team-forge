@@ -2,7 +2,9 @@ using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
+using AgentTeamForge.Host.Transport;
 using AgentTeamForge.Tests.Support;
+using System.Text.Json;
 
 namespace AgentTeamForge.Tests.Features.Jobs;
 
@@ -56,7 +58,8 @@ public sealed class StartupProgressTests
     public void Slow_start_hint_is_diagnostic_only(string backend, bool hasHint)
     {
         using var f = new JobFixture();
-        var job = f.Submit("slow");
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, [backend]);
+        var job = accept.Execute(new SubmitJobRequest("slow", "hello", null, false) { Backend = backend }).Job!;
         var claim = f.Store.BeginNextAttempt()!;
         using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={f.DatabasePath}"))
         {
@@ -69,7 +72,20 @@ public sealed class StartupProgressTests
         var progress = StartupProgress.Read(f.Store, job.JobId, JobStatus.Running, backend, null)!;
         Assert.Equal("starting", progress.Phase);
         Assert.InRange(progress.ElapsedSeconds, 60, 65);
+        Assert.Equal(hasHint, progress.NoMarkerSinceLaunch);
         Assert.Equal(hasHint, progress.Hint is not null);
+        if (hasHint)
+        {
+            Assert.Contains("No state marker since launch", progress.Hint);
+            var get = f.Get().Execute(job.JobId).Job!;
+            var listed = f.List().Execute(new()).Page!;
+            Assert.True(get.Startup!.NoMarkerSinceLaunch);
+            Assert.True(listed.Jobs.Single().Startup!.NoMarkerSinceLaunch);
+            using var getJson = JsonDocument.Parse(JsonSerializer.Serialize(new IpcResponse(true, Job: get), IpcJson.Default.IpcResponse));
+            using var listJson = JsonDocument.Parse(JsonSerializer.Serialize(new IpcResponse(true, Page: listed), IpcJson.Default.IpcResponse));
+            Assert.True(getJson.RootElement.GetProperty("job").GetProperty("startup").GetProperty("no_marker_since_launch").GetBoolean());
+            Assert.True(listJson.RootElement.GetProperty("page").GetProperty("jobs")[0].GetProperty("startup").GetProperty("no_marker_since_launch").GetBoolean());
+        }
         Assert.Equal(JobStatus.Running, f.Store.GetJob(job.JobId)!.Status);
         Assert.False(f.Store.IsSessionFenced(job.JobId));
         var stale = new RunRef(job.JobId, claim.RunId, claim.Generation + 1, claim.Correlation);
