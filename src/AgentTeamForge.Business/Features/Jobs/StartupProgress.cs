@@ -9,6 +9,7 @@ public sealed record StartupProgress(string Phase, string StartedAt, string? Rea
 {
     internal static StartupProgress? Read(JobStore store, string jobId, string status, string? backend, string? reason)
     {
+        if (status != JobStatus.Running) { return null; }
         IReadOnlyList<RunRecord> runs;
         try { runs = store.GetRuns(jobId); }
         catch (StorageException) { return null; } // Diagnostics must not hide the job itself.
@@ -16,6 +17,7 @@ public sealed record StartupProgress(string Phase, string StartedAt, string? Rea
         if (run?.StartedAt is not { } started) { return null; }
         var phase = run.AcknowledgedAt is not null || run.Acked ? "acknowledged"
             : run.SubmittedAt is not null ? "submitted" : run.ReadyAt is not null ? "ready" : "starting";
+        if (phase == "acknowledged") { return null; }
         var end = run.AcknowledgedAt ?? run.FinishedAt;
         var elapsed = Math.Max(0, (long)((end is null ? DateTimeOffset.UtcNow : DateTimeOffset.Parse(end)) - DateTimeOffset.Parse(started)).TotalSeconds);
         var command = backend is "claude" or "codex" or "pi" ? backend : null;

@@ -84,7 +84,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         return Admit(Operation, request.IdempotencyKey, request.Instruction, options, backend,
             cwd, null, request.WakeKey, request.WakeGeneration, request.Worktree, baseCommit,
             timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds, leadSessionId: request.LeadSessionId,
-            targetAgent: request.TargetAgent);
+            targetAgent: request.TargetAgent ?? backend + "-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(request.IdempotencyKey)))[..8]);
     }
 
     /// <summary>Optional job timeout and queue TTL: whole seconds, at most one day.</summary>
