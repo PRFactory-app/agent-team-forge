@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using AgentTeamForge.Business.Features.Processes;
 using AgentTeamForge.Business.Features.Agents.Backends;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
@@ -55,7 +56,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
             Environment.ProcessPath ?? throw new IOException("atf executable path unavailable"), _codexHome), Encoding.UTF8, cancellationToken);
         File.SetUnixFileMode(wrapper, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         var start = LaunchInfo(provider, kittyAddress, kittyBinary, wrapper, launch.AgentName);
-        using var launcher = Process.Start(start) ?? throw new IOException("terminal launcher did not start");
+        using var launcher = NonInteractiveProcess.Start(start) ?? throw new IOException("terminal launcher did not start");
         var error = launcher.StandardError.ReadToEndAsync(cancellationToken);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(12));
@@ -249,7 +250,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
                 info.ArgumentList.Add(arg);
             }
 
-            using var process = Process.Start(info);
+            using var process = NonInteractiveProcess.Start(info);
             if (process is null)
             {
                 return false;

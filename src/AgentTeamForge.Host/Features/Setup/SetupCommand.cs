@@ -1,5 +1,6 @@
 using AgentTeamForge.DAL.Files;
 using System.Diagnostics;
+using AgentTeamForge.Business.Features.Processes;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -296,7 +297,6 @@ public static class SetupCommand
             var service = new ProcessStartInfo("systemctl")
             {
                 UseShellExecute = false,
-                RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             };
@@ -304,8 +304,7 @@ public static class SetupCommand
             service.ArgumentList.Add("start");
             service.ArgumentList.Add("agentteamforge.service");
             DaemonEnvironment.Scrub(service.Environment);
-            using var starter = Process.Start(service) ?? throw new InvalidOperationException("systemctl launch failed");
-            starter.StandardInput.Close();
+            using var starter = NonInteractiveProcess.Start(service) ?? throw new InvalidOperationException("systemctl launch failed");
             var output = starter.StandardOutput.ReadToEndAsync();
             var error = starter.StandardError.ReadToEndAsync();
             await starter.WaitForExitAsync();
@@ -565,7 +564,7 @@ public static class SetupCommand
             info.ArgumentList.Add("-NoProfile");
             info.ArgumentList.Add("-Command");
             info.ArgumentList.Add($"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine");
-            using var query = Process.Start(info);
+            using var query = NonInteractiveProcess.Start(info);
             if (query is null)
             {
                 return false;
@@ -854,7 +853,7 @@ public static class SetupCommand
 
         try
         {
-            using var process = Process.Start(info) ?? throw new InvalidOperationException($"Cannot start {tool}");
+            using var process = NonInteractiveProcess.Start(info) ?? throw new InvalidOperationException($"Cannot start {tool}");
             var stdout = process.StandardOutput.ReadToEndAsync();
             var stderr = process.StandardError.ReadToEndAsync();
             process.WaitForExit();

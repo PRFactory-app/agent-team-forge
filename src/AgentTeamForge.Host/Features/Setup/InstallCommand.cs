@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using AgentTeamForge.Business.Features.Processes;
 
 namespace AgentTeamForge.Host.Features.Setup;
 
@@ -56,7 +57,7 @@ public static class InstallCommand
             start.ArgumentList.Add(stateDir);
         }
 
-        using var process = Process.Start(start);
+        using var process = NonInteractiveProcess.Start(start);
         if (windows)
         {
             if (process is null)

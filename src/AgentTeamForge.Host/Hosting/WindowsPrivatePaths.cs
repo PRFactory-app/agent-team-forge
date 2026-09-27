@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
+using AgentTeamForge.Business.Features.Processes;
 using Microsoft.Win32.SafeHandles;
 
 namespace AgentTeamForge.Host.Hosting;
@@ -122,7 +123,7 @@ internal static partial class WindowsPrivatePaths
         {
             info.ArgumentList.Add(arg);
         }
-        using var process = Process.Start(info) ?? throw new StateDirectoryException("state_dir_acl_failed");
+        using var process = NonInteractiveProcess.Start(info) ?? throw new StateDirectoryException("state_dir_acl_failed");
         var output = process.StandardOutput.ReadToEndAsync();
         var error = process.StandardError.ReadToEndAsync();
         if (!process.WaitForExit(5000))
