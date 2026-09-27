@@ -101,13 +101,19 @@ public sealed class FollowUpJobTests
         using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
         var attempt = Task.Run(() => dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None), TestContext.Current.CancellationToken);
         await Bounded.Until(() => f.Store.GetJob(parent.JobId)!.SessionId == "race-session", "session evidence");
-        var followUp = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept(), dispatcher.InterruptRunning);
+        // Let the cancelled run finish cleanup before its interrupt callback.
+        // This used to miss the active-run map and leave the session fenced.
+        var followUp = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept(), id =>
+        {
+            finish.Set();
+            attempt.GetAwaiter().GetResult();
+            dispatcher.InterruptRunning(id);
+        });
         var pending = Task.Run(() => followUp.Execute(new FollowUpRequest(parent.JobId, "after", "child") { Interrupt = true }), TestContext.Current.CancellationToken);
-        finish.Set();
         var child = await pending;
         await attempt.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
         Assert.Equal("accepted", child.Outcome);
-        Assert.Contains(f.Store.GetJob(parent.JobId)!.Status, new[] { JobStatus.Completed, JobStatus.Cancelled });
+        Assert.Equal(JobStatus.Cancelled, f.Store.GetJob(parent.JobId)!.Status);
         Assert.Equal("race-session", f.Store.GetJob(parent.JobId)!.SessionId);
         var resumed = Agent("unused");
         using var next = new DispatchJob(f.Store, resumed, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });

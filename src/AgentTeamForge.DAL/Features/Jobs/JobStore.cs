@@ -154,7 +154,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             Execute(connection, tx, """
                 INSERT INTO wake_jobs(job_id, target_key)
                 SELECT $id, target_key FROM wake_targets
-                WHERE target_key=$key AND generation=$generation
+                WHERE target_key=$key AND generation=$generation AND active=1
                 """, ("$id", jobId), ("$key", job.WakeTargetKey), ("$generation", job.WakeGeneration.Value));
         }
         var interrupted = parent?.Status == JobStatus.Running ? parent.JobId : null;

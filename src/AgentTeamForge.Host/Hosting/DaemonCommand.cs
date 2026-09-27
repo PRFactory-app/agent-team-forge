@@ -244,20 +244,36 @@ public static class DaemonCommand
                         dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership).Execute).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
             });
-        await Task.WhenAny(serving, dispatching);
+        var firstStopped = await Task.WhenAny(serving, dispatching);
 
-        // The dispatcher only returns on its own when halted or faulted; it closed
-        // the shared admission gate at that instant, so later submits get
-        // daemon_unhealthy. Stop the listener and exit unhealthy; restart recovery
-        // quarantines the run and queued work admitted before the halt runs then.
+        // Stop admission before tearing down either service. A serving fault
+        // must be reported as such, including its stack in daemon.log.
         var halted = !lifetime.IsCancellationRequested;
         if (halted)
         {
-            Log($"error: dispatcher_halted reason={dispatcher.HaltReason ?? "dispatcher_fault"}; admission stopped");
+            if (firstStopped == serving)
+            {
+                admission.Close("daemon_unhealthy");
+                Log(serving.IsFaulted
+                    ? $"error: serving_halted reason=serving_fault; admission stopped: {serving.Exception!.GetBaseException()}"
+                    : "error: serving_halted reason=serving_stopped; admission stopped");
+            }
+            else
+            {
+                Log($"error: dispatcher_halted reason={dispatcher.HaltReason ?? "dispatcher_fault"}; admission stopped");
+            }
             lifetime.Cancel();
         }
 
-        await serving;
+        try { await serving; }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            halted = true;
+            if (firstStopped != serving)
+            {
+                Log($"error: serving_halted reason=serving_fault; admission stopped: {ex}");
+            }
+        }
         await waking;
         await pruning;
         await prfactory;
@@ -273,7 +289,7 @@ public static class DaemonCommand
         catch (Exception ex)
         {
             halted = true;
-            Log($"error: dispatcher_halted reason=dispatcher_fault ({ex.GetType().Name})");
+            Log($"error: dispatcher_halted reason=dispatcher_fault: {ex}");
         }
         foreach (var backend in interactiveBackends)
         {
