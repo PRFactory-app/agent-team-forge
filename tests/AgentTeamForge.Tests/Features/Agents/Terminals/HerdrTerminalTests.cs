@@ -32,7 +32,10 @@ public class HerdrTerminalTests
     private static HerdrTerminal Terminal(FakeHerdr fake, IReadOnlyDictionary<string, string?>? env = null) =>
         new(new HerdrTerminalOptions
         {
-            Environment = env ?? Desktop,
+            Environment = new Dictionary<string, string?>(env ?? Desktop)
+            {
+                ["HERDR_CONFIG_PATH"] = Path.Combine(Path.GetTempPath(), "atf-herdr-unit", "config.toml"),
+            },
             SessionPrefix = "atf-test-",
             StartupTimeout = TimeSpan.FromMilliseconds(400),
             PollInterval = TimeSpan.FromMilliseconds(10),
@@ -134,6 +137,60 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task SharedPlacement_CreatesRepoWorkspaceOnceAndReusesItUnderConcurrentSpawns()
+    {
+        var fake = new FakeHerdr { SharedRunning = true, SharedWorkspaceInitiallyAbsent = true, WorkspaceListDelay = TimeSpan.FromMilliseconds(80) };
+        var terminal = Terminal(fake);
+        var session = await terminal.ExistingSessionAsync("default", CancellationToken.None);
+        var first = terminal.OpenAgentTabAsync(session, "agent-a", "/work", Bootstrap, CancellationToken.None);
+        var second = terminal.OpenAgentTabAsync(session, "agent-b", "/work", Bootstrap, CancellationToken.None);
+        await Task.WhenAll(first, second);
+
+        Assert.Single(fake.Calls, c => c.Args is ["workspace", "create", ..]);
+        Assert.Single(fake.Calls, c => c.Args is ["tab", "create", ..]);
+        Assert.Contains(fake.Calls, c => c.Args is ["tab", "rename", _, "agent-a"] or ["tab", "rename", _, "agent-b"]);
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["session", "stop" or "delete", ..]);
+    }
+
+    [Fact]
+    public void WorkspaceLookup_ChoosesLowestNumberAndRefusesUnreadableListing()
+    {
+        var listing = JsonNode.Parse("""{"result":{"workspaces":[{"label":"repo","workspace_id":"late","number":8},{"label":"repo","workspace_id":"early","number":2}]}}""")!;
+        Assert.Equal("early", HerdrTerminal.ResolveWorkspace(listing, "repo"));
+        Assert.Throws<HerdrLaunchException>(() => HerdrTerminal.ResolveWorkspace(JsonNode.Parse("""{"result":{"workspaces":[{"label":"repo"}]}}""")!, "repo"));
+    }
+
+    [Fact]
+    public async Task UnreadableWorkspaceListingNeverCreatesWorkspace()
+    {
+        var fake = new FakeHerdr { SharedRunning = true, UnreadableWorkspaceList = true };
+        var terminal = Terminal(fake);
+        var session = await terminal.ExistingSessionAsync("default", CancellationToken.None);
+        await Assert.ThrowsAsync<HerdrLaunchException>(() => terminal.OpenAgentTabAsync(session, "agent-a", "/work", Bootstrap, CancellationToken.None));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["workspace", "create", ..]);
+    }
+
+    [Fact]
+    public void WorkspaceLabel_UsesMainCheckoutForWorktree()
+    {
+        using var state = new TempStateDir();
+        var repo = state.File("sample-repo");
+        Directory.CreateDirectory(repo);
+        static void Git(params string[] args)
+        {
+            var psi = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true };
+            foreach (var arg in args) { psi.ArgumentList.Add(arg); }
+            using var process = Process.Start(psi)!;
+            Assert.True(process.WaitForExit(5000) && process.ExitCode == 0, process.StandardError.ReadToEnd());
+        }
+        Git("init", repo);
+        Git("-C", repo, "-c", "user.name=ATF", "-c", "user.email=atf@example.invalid", "commit", "--allow-empty", "-m", "init");
+        var worktree = state.File("another-folder");
+        Git("-C", repo, "worktree", "add", "--detach", worktree);
+        Assert.Equal("sample-repo", HerdrTerminal.WorkspaceLabel(worktree));
+    }
+
+    [Fact]
     public async Task SharedTabPinsRelativeCodexHomeEvenWhenServerHasAnotherEnvironment()
     {
         using var state = new AgentTeamForge.Tests.Support.TempStateDir();
@@ -166,7 +223,14 @@ public class HerdrTerminalTests
     public async Task Agent_start_failure_is_no_effect_only_with_verified_cleanup(bool cleanupFails)
     {
         using var state = new AgentTeamForge.Tests.Support.TempStateDir();
-        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, AgentStartFails = true, PaneCloseFails = cleanupFails };
+        var fake = new FakeHerdr
+        {
+            SharedRunning = true,
+            BootstrapFromTab = true,
+            AgentStartFails = true,
+            PaneCloseFails = cleanupFails,
+            SharedWorkspaceLabel = Path.GetFileName(state.Path)
+        };
         var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", state.Path, null, null, state.File("herdr/bootstrap"))
         { JobId = "job-failed", HerdrPlacement = "herdr-session:default" };
         var error = await Record.ExceptionAsync(() =>
@@ -195,7 +259,7 @@ public class HerdrTerminalTests
     public async Task SharedPlacement_RestartStopUsesDurablePaneRecord()
     {
         using var state = new AgentTeamForge.Tests.Support.TempStateDir();
-        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true };
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, SharedWorkspaceLabel = Path.GetFileName(state.Path) };
         var terminal = Terminal(fake);
         var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("herdr/bootstrap"))
         { JobId = "job-shared", HerdrPlacement = "herdr-session:default" };
@@ -571,6 +635,68 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task RealHerdr_DefaultSessionResolvesReadOnly()
+    {
+        Assert.SkipUnless(Environment.GetEnvironmentVariable("ATF_HERDR_DEFAULT_READONLY") == "1", "read-only default-session check");
+        var seed = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
+            .ToDictionary(e => (string)e.Key, e => (string?)e.Value, StringComparer.Ordinal);
+        var terminal = new HerdrTerminal(new HerdrTerminalOptions { Environment = seed });
+        var session = await terminal.ExistingSessionAsync("default", TestContext.Current.CancellationToken);
+        Assert.True(session.Shared);
+        Assert.EndsWith("/herdr.sock", session.SocketPath, StringComparison.Ordinal);
+        Assert.True(session.ServerPid > 0);
+    }
+
+    [Fact]
+    public async Task RealHerdr_TwoRepositoriesShareSessionWithTwoWorkspaces()
+    {
+        var name = Environment.GetEnvironmentVariable("ATF_HERDR_PLACEMENT_SMOKE_SESSION");
+        Assert.SkipUnless(!string.IsNullOrEmpty(name), "set ATF_HERDR_PLACEMENT_SMOKE_SESSION to a scratch session started by this test operator");
+        using var state = new TempStateDir();
+        var seed = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
+            .ToDictionary(e => (string)e.Key, e => (string?)e.Value, StringComparer.Ordinal);
+        var terminal = new HerdrTerminal(new HerdrTerminalOptions { Environment = seed });
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        var session = await terminal.ExistingSessionAsync(name!, cts.Token);
+        var createdSessions = new List<OwnedHerdrSession>();
+        var jobIds = new List<string>();
+        try
+        {
+            foreach (var repoName in new[] { "placement-one", "placement-two" })
+            {
+                var repo = state.File(repoName);
+                Directory.CreateDirectory(repo);
+                var psi = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true };
+                psi.ArgumentList.Add("init");
+                psi.ArgumentList.Add(repo);
+                using var git = Process.Start(psi)!;
+                Assert.True(git.WaitForExit(5000) && git.ExitCode == 0, git.StandardError.ReadToEnd());
+                var bootstrap = state.File("herdr/" + repoName + ".bootstrap");
+                Directory.CreateDirectory(Path.GetDirectoryName(bootstrap)!);
+                File.WriteAllText(bootstrap, repoName);
+                var jobId = "job-" + repoName;
+                var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, repoName + "-agent", repo, null, null, bootstrap) { JobId = jobId };
+                var binding = await terminal.OpenAgentTabAsync(session, launch.AgentName, repo, bootstrap, cts.Token,
+                    onCreated: created => { createdSessions.Add(created); HerdrOwnedSessions.Save(launch, created); });
+                jobIds.Add(jobId);
+                Assert.Equal(session.SessionName, binding.Session.SessionName);
+                Assert.Null(await terminal.VerifyBindingAsync(binding, cts.Token));
+                Assert.Equal(session.SessionName, HerdrOwnedSessions.Location(state.Path, jobId)?.Session);
+            }
+            var listed = await terminal.RunOwnedAsync(session, cts.Token, "workspace", "list");
+            var workspaces = (JsonArray)listed["result"]!["workspaces"]!;
+            Assert.Equal(2, workspaces.Count);
+            Assert.Equal(["placement-one", "placement-two"], workspaces.Select(w => w!["label"]!.GetValue<string>()).Order(StringComparer.Ordinal));
+            Assert.True(new HerdrAgentControl(terminal).StopJobs(state.Path, jobIds));
+            Assert.True((await terminal.ExistingSessionAsync(name!, cts.Token)).Shared);
+        }
+        finally
+        {
+            foreach (var created in createdSessions) { await terminal.StopOwnedSessionAsync(created, CancellationToken.None); }
+        }
+    }
+
+    [Fact]
     public async Task RealHerdr_SharedTabLeavesSessionRunning()
     {
         Assert.SkipUnless(Environment.GetEnvironmentVariable("ATF_HERDR_INTEGRATION") == "1", "isolated Herdr integration is opt-in");
@@ -639,6 +765,10 @@ public class HerdrTerminalTests
 
         public bool Preexisting { get; init; }
         public bool SharedRunning { get; init; }
+        public bool SharedWorkspaceInitiallyAbsent { get; init; }
+        public bool UnreadableWorkspaceList { get; init; }
+        public TimeSpan WorkspaceListDelay { get; init; }
+        public string SharedWorkspaceLabel { get; init; } = "work";
         public bool TabReplaced { get; set; }
 
         public bool Installed { get; init; } = true;
@@ -672,6 +802,7 @@ public class HerdrTerminalTests
         ulong _shellStart = 88;
         string _terminal = "term_a";
         bool _paneGone;
+        bool _workspaceCreated;
 
         public void Replace(Replacement replacement)
         {
@@ -692,28 +823,46 @@ public class HerdrTerminalTests
             }
         }
 
-        public Task<CapturedProcess> CaptureAsync(ProcessStartInfo psi, TimeSpan timeout, int maxStdoutBytes, int maxStderrBytes, CancellationToken cancellationToken)
+        public async Task<CapturedProcess> CaptureAsync(ProcessStartInfo psi, TimeSpan timeout, int maxStdoutBytes, int maxStderrBytes, CancellationToken cancellationToken)
         {
             string[] args = [.. psi.ArgumentList];
             Calls.Add(new(args, new Dictionary<string, string?>(psi.Environment)));
-            return Task.FromResult(args switch
+            if (args is ["workspace", "list"] && WorkspaceListDelay > TimeSpan.Zero) { await Task.Delay(WorkspaceListDelay, cancellationToken); }
+            return args switch
             {
                 ["--version"] => Installed ? Ok("herdr 0.8.2") : new CapturedProcess(false, 127, "", false, "not found", false),
                 ["session", "list", "--json"] => FloodSessionList ? new CapturedProcess(false, 0, "{", true, "", false) : Ok(SessionList()),
-                ["workspace", "create", ..] => Fault == SpawnFault.WorkspaceCreateFails ? Err("workspace_failed") : Ok("""{"result":{"workspace":{"workspace_id":"w1","label":"x"}}}"""),
-                ["workspace", "list"] => Ok(new JsonObject { ["result"] = new JsonObject { ["workspaces"] = new JsonArray(new JsonObject { ["workspace_id"] = "w1", ["label"] = Label(), }) } }.ToJsonString()),
+                ["workspace", "create", ..] => CreateWorkspace(),
+                ["workspace", "list"] => WorkspaceList(),
+                ["tab", "rename", ..] => Ok("{}"),
                 ["tab", "create", ..] => Ok("""{"result":{"root_pane":{"pane_id":"w1:p2","tab_id":"w1:t2","terminal_id":"term_a"},"tab":{"tab_id":"w1:t2"}}}"""),
                 ["tab", "get", "w1:t2"] => Ok(new JsonObject { ["result"] = new JsonObject { ["tab"] = new JsonObject { ["tab_id"] = "w1:t2", ["workspace_id"] = TabReplaced ? "other" : "w1" } } }.ToJsonString()),
                 ["pane", "close", "w1:p2"] => PaneCloseFails ? Err("close_failed") : Ok("{}"),
                 ["pane", "get", "w1:p2"] => _paneGone ? Err("pane_not_found") : Ok(new JsonObject { ["result"] = new JsonObject { ["pane"] = new JsonObject { ["pane_id"] = "w1:p2", ["tab_id"] = "w1:t2", ["terminal_id"] = _terminal } } }.ToJsonString()),
                 ["pane", "process-info", "--pane", "w1:p2"] => Ok("""{"result":{"process_info":{"pane_id":"w1:p2","shell_pid":""" + ShellPid + "}}}"),
+                ["pane", "process-info", "--pane", "w1:p1"] => Ok("""{"result":{"process_info":{"pane_id":"w1:p1","shell_pid":""" + ShellPid + "}}}"),
                 ["session", "stop" or "delete", ..] => Ok("{}"),
                 ["agent", "start", ..] => AgentStartFails ? Err("agent_not_ready") : Ok("{}"),
                 ["agent", "read", ..] => Ok(Screen ?? "› Ask Codex\n? for shortcuts\n❯ Try a task\nbypass permissions on\n──────\n──────\n/tmp/work"),
                 ["agent", "get", ..] => Ok("{\"result\":{\"agent\":{\"status\":\"" + (AgentStatuses.TryDequeue(out var status) ? status : "idle") + "\"}}}"),
                 ["--session", _, "agent", "prompt", ..] => PromptResponse ?? Ok("""{"result":{"type":"agent_prompted"}}"""),
                 _ => Err("unexpected " + string.Join(' ', args)),
-            });
+            };
+        }
+
+        CapturedProcess CreateWorkspace()
+        {
+            if (Fault == SpawnFault.WorkspaceCreateFails) { return Err("workspace_failed"); }
+            _workspaceCreated = true;
+            return Ok("""{"result":{"workspace":{"workspace_id":"w1","label":"x"},"root_pane":{"pane_id":"w1:p1","tab_id":"w1:t1","terminal_id":"term_a"},"tab":{"tab_id":"w1:t1"}}}""");
+        }
+
+        CapturedProcess WorkspaceList()
+        {
+            if (UnreadableWorkspaceList) { return Ok("""{"result":{"workspaces":"unreadable"}}"""); }
+            JsonArray workspaces = SharedWorkspaceInitiallyAbsent && !_workspaceCreated ? []
+                : [new JsonObject { ["workspace_id"] = "w1", ["label"] = _name is null && !_workspaceCreated ? SharedWorkspaceLabel : Label(), ["number"] = 1 }];
+            return Ok(new JsonObject { ["result"] = new JsonObject { ["workspaces"] = workspaces } }.ToJsonString());
         }
 
         public string? Screen { get; init; }

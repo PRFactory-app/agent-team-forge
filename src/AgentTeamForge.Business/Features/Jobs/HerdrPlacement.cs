@@ -47,17 +47,24 @@ public sealed class HerdrPlacement(string statePath, Action<string>? log = null)
     {
         try
         {
-            if (!File.Exists(path)) { return "own-session"; }
+            if (!File.Exists(path)) { return ConfiguredDefault(); }
             var value = JsonSerializer.Deserialize(File.ReadAllText(path), HerdrPlacementJson.Default.HerdrPlacementFile)?.Placement;
             if (Valid(value)) { return value!; }
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
         {
             log?.Invoke($"warning: ignoring unreadable {path}: {e.Message}");
-            return "own-session";
+            return ConfiguredDefault();
         }
-        log?.Invoke($"warning: ignoring invalid {path}; using own-session");
-        return "own-session";
+        log?.Invoke($"warning: ignoring invalid {path}; using configured Herdr session");
+        return ConfiguredDefault();
+    }
+
+    static string ConfiguredDefault()
+    {
+        var name = Environment.GetEnvironmentVariable("ATF_HERDR_SESSION")?.Trim();
+        var placement = "herdr-session:" + (string.IsNullOrEmpty(name) ? "default" : name);
+        return Valid(placement) ? placement : "herdr-session:default";
     }
 }
 
