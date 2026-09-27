@@ -192,6 +192,10 @@ public sealed class WakeTests
         Assert.False(CodexQueueWake.HasSubmissionId(""));
         Assert.False(CodexQueueWake.HasSubmissionId("{\"status\":\"ok\"}"));
         Assert.True(CodexQueueWake.HasSubmissionId("{\"submission_id\":\"queued-123\"}"));
+        // Verbatim codex-cli 0.157.1 stdout.
+        const string real = "Queued message 01a0e232-13f4-7e00-9ca4-31d3154ede83 for thread 01a0e231-f050-7442-9454-9252aad0242f.\n";
+        Assert.True(CodexQueueWake.HasSubmissionId(real, "01a0e231-f050-7442-9454-9252aad0242f"));
+        Assert.False(CodexQueueWake.HasSubmissionId(real, "11111111-1111-4111-8111-111111111111"));
     }
 
     [Fact]

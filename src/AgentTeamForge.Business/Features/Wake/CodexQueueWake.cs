@@ -8,7 +8,7 @@ using Microsoft.Data.Sqlite;
 namespace AgentTeamForge.Business.Features.Wake;
 
 /// <summary>Port of verify_codex_thread and CodexMemberWake queue transport.</summary>
-public sealed class CodexQueueWake(Func<WakeRegistration, bool>? verify = null,
+public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify = null,
     Func<WakeRegistration, string, CancellationToken, Task<bool>>? queue = null) : IWakePoster
 {
     readonly Func<WakeRegistration, bool> verifyThread = verify ?? VerifyCodexThread;
@@ -116,7 +116,7 @@ public sealed class CodexQueueWake(Func<WakeRegistration, bool>? verify = null,
                 var stderr = process.StandardError.ReadToEndAsync(deadline.Token);
                 await process.WaitForExitAsync(deadline.Token);
                 await Task.WhenAll(stdout, stderr);
-                return process.ExitCode == 0 && HasSubmissionId(await stdout);
+                return process.ExitCode == 0 && HasSubmissionId(await stdout, target.Address);
             }
             catch (OperationCanceledException)
             {
@@ -134,10 +134,21 @@ public sealed class CodexQueueWake(Func<WakeRegistration, bool>? verify = null,
         }
     }
 
-    public static bool HasSubmissionId(string output)
+    /// <summary>
+    /// codex 0.157 prints "Queued message &lt;id&gt; for thread &lt;thread&gt;."; a JSON submission_id is also accepted.
+    /// Exit 0 without an id is not proof that the notice was queued.
+    /// </summary>
+    public static bool HasSubmissionId(string output, string? thread = null)
     {
-        foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        foreach (var raw in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
+            var line = raw.Trim();
+            var text = QueuedLine().Match(line);
+            if (text.Success)
+            {
+                if (thread is null || text.Groups[2].Value == thread) { return true; }
+                continue;
+            }
             try
             {
                 using var document = JsonDocument.Parse(line);
@@ -152,4 +163,7 @@ public sealed class CodexQueueWake(Func<WakeRegistration, bool>? verify = null,
         }
         return false;
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^Queued message (\S+) for thread (\S+?)\.?$")]
+    private static partial System.Text.RegularExpressions.Regex QueuedLine();
 }

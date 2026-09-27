@@ -232,8 +232,9 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     {
                         return new IpcResponse(false, JobErrors.InvalidRequest);
                     }
-                    if (request.JobId is not null && (jobStore?.GetJob(request.JobId) is not { Backend: "codex" } spawned
-                        || spawned.SessionId != request.WakeAddress || request.WakeKind != "codex"
+                    // Only a Codex thread ID is self-reported; Claude sockets and Pi hosts come from the host process.
+                    if (request.JobId is not null && request.WakeKind == "codex" && (jobStore?.GetJob(request.JobId) is not { Backend: "codex" } spawned
+                        || spawned.SessionId != request.WakeAddress
                         || sessions is null || request.LeadSessionId is null || request.Workspace is null
                         || !sessions.IsManagedChild(request.LeadSessionId, request.Workspace, request.JobId)))
                     {

@@ -172,6 +172,17 @@ public sealed class LeadSessionTests
         Assert.False(endpoint.Handle(request).Ok);
         Assert.True(endpoint.Handle(request with { WakeKey = "codex:" + secondThread, WakeAddress = secondThread }).Ok);
         Assert.False(endpoint.Handle(request with { LeadSessionId = first.SessionId }).Ok);
+        // A managed Claude child's socket comes from its host process, not a self-reported thread.
+        Assert.True(endpoint.Handle(request with
+        {
+            LeadSessionId = first.SessionId,
+            JobId = firstJob,
+            WakeKey = "claude:/tmp/child.sock",
+            WakeKind = "claude",
+            WakeAddress = "/tmp/child.sock",
+            WakeSecret = "token",
+            WakeHome = null
+        }).Ok);
     }
 
     [Fact]
