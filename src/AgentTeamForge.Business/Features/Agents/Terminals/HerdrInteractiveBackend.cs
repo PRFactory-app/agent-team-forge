@@ -237,7 +237,11 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 }
                 if (!acknowledged)
                 {
-                    if (DateTimeOffset.UtcNow >= confirmationDeadline)
+                    if (status == InteractiveAgentStatus.Unverified)
+                    {
+                        confirmationDeadline = DateTimeOffset.UtcNow.Add(startupTimeout);
+                    }
+                    else if (DateTimeOffset.UtcNow >= confirmationDeadline)
                     {
                         yield return new BackendEvidence.ProtocolError("interactive_delivery_not_confirmed");
                         yield break;
@@ -365,7 +369,7 @@ internal sealed record InteractiveLaunch(InteractiveAgentKind Kind, string Agent
     }
 }
 
-internal enum InteractiveAgentStatus { Idle, Working, Done, Blocked, Unknown, Gone }
+internal enum InteractiveAgentStatus { Idle, Working, Done, Blocked, Unknown, Unverified, Gone }
 
 internal interface IHerdrAgentControl
 {
