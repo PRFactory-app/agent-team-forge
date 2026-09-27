@@ -30,7 +30,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
             throw new BackendNotStartedException("Terminal.app launcher is unavailable");
         }
         var executable = kind switch { InteractiveAgentKind.Claude => "claude", InteractiveAgentKind.Codex => "codex", _ => "pi" };
-        if (FindExecutable(executable) is null)
+        if (FindExecutable(executable) is not { } binary || !IsExecutable(binary))
         {
             throw new BackendNotStartedException($"{executable} is unavailable");
         }
@@ -48,6 +48,8 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
         {
             throw new IOException("terminal ownership sidecar already exists");
         }
+        var startError = Path.ChangeExtension(wrapper, ".start-error");
+        if (File.Exists(startError)) { File.Delete(startError); }
 
         await File.WriteAllTextAsync(wrapper, WrapperText(launch, prompt, sidecar,
             Environment.ProcessPath ?? throw new IOException("atf executable path unavailable"), _codexHome), Encoding.UTF8, cancellationToken);
@@ -61,14 +63,14 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
         {
             while (true)
             {
-                if (TryReadSidecar(sidecar) is { } identity && DarwinProcess.CreationToken(identity.Pid) == identity.Token)
+                if (TryReadSidecar(sidecar) is { } identity)
                 {
+                    if (DarwinProcess.CreationToken(identity.Pid) != identity.Token) { return; }
                     _tabs[launch.AgentName] = new(identity.Pid, identity.Token, wrapper, sidecar);
                     await Task.Delay(TimeSpan.FromSeconds(1), deadline.Token);
                     if (!IsAlive(launch))
                     {
-                        _tabs.TryRemove(launch.AgentName, out _);
-                        throw new IOException("terminal agent exited during startup");
+                        return;
                     }
                     return;
                 }
@@ -90,11 +92,32 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
     public bool IsAlive(InteractiveLaunch launch) =>
         _tabs.TryGetValue(launch.AgentName, out var tab) && DarwinProcess.CreationToken(tab.Pid) == tab.Token;
 
+    public string? StartFailure(InteractiveLaunch launch)
+    {
+        var error = Path.ChangeExtension(launch.BootstrapPath, ".start-error");
+        try
+        {
+            var file = new FileInfo(error);
+            if (file.Exists && file.LinkTarget is null && file.Length <= 4096)
+            {
+                return "interactive agent could not start: " + File.ReadAllText(error).Trim();
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        return null;
+    }
+
+    public bool WrapperExited(InteractiveLaunch launch) =>
+        TryReadSidecar(Path.ChangeExtension(launch.BootstrapPath, ".pid")) is { } identity
+        && DarwinProcess.CreationToken(identity.Pid) != identity.Token;
+
     public void StopOwned(InteractiveLaunch launch)
     {
         if (!_tabs.TryGetValue(launch.AgentName, out var tab))
         {
-            return;
+            var sidecar = Path.ChangeExtension(launch.BootstrapPath, ".pid");
+            if (TryReadSidecar(sidecar) is not { } identity) { return; }
+            tab = new(identity.Pid, identity.Token, launch.BootstrapPath, sidecar);
         }
         if (DarwinProcess.CreationToken(tab.Pid) == tab.Token)
         {
@@ -112,7 +135,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
         _tabs.TryRemove(launch.AgentName, out _);
         if (DarwinProcess.CreationToken(tab.Pid) != tab.Token)
         {
-            try { File.Delete(tab.Sidecar); File.Delete(tab.Wrapper); }
+            try { File.Delete(tab.Sidecar); File.Delete(tab.Wrapper); File.Delete(Path.ChangeExtension(tab.Wrapper, ".start-error")); }
             catch (IOException) { }
         }
     }
@@ -148,7 +171,8 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
     internal static string WrapperText(InteractiveLaunch launch, string prompt, string sidecar, string atfBinary, string? codexHome = null)
     {
         var args = WtTabControl.AgentArguments(launch, prompt);
-        var command = string.Join(' ', new[] { FindExecutable(args[0]) ?? args[0] }.Concat(args.Skip(1)).Select(ShellQuote));
+        var executable = FindExecutable(args[0]) ?? args[0];
+        var command = string.Join(' ', new[] { executable }.Concat(args.Skip(1)).Select(ShellQuote));
         var trust = InteractiveAgentCommand.WorkspaceTrustEnvironment(launch.Kind);
         var identityNames = string.Join(' ', LaunchEnvironment.IdentityNames);
         var identityPrefixes = string.Join('|', LaunchEnvironment.IdentityPrefixes);
@@ -162,6 +186,10 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
             "cd " + ShellQuote(launch.WorkingDirectory) + "\n" +
             "export ATF_RUN_CORRELATION=" + ShellQuote(launch.AgentName) + "\n" +
             ShellQuote(atfBinary) + " terminal-token --pid \"$$\" --sidecar " + ShellQuote(sidecar) + "\n" +
+            "if [ ! -x " + ShellQuote(executable) + " ]; then\n" +
+            "  printf '%s\\n' 'agent executable is unavailable' > " + ShellQuote(Path.ChangeExtension(sidecar, ".start-error")) + "\n" +
+            "  exit 0\n" +
+            "fi\n" +
             "exec " + command + "\n";
     }
 
@@ -249,6 +277,15 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
             }
         }
         return null;
+    }
+
+    static bool IsExecutable(string path)
+    {
+        try
+        {
+            return (File.GetUnixFileMode(path) & (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
     }
 
     static (int Pid, ulong Token)? TryReadSidecar(string path)

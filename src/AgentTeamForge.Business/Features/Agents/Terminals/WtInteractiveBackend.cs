@@ -131,6 +131,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
         bool _stopped;
         readonly Lock _lifetime = new();
         string? _sessionId = request.ResumeSessionId;
+        string? _notStartedError;
         int _loggedMessages;
         public int? ProcessId => tabs.ProcessId(launch);
 
@@ -141,6 +142,10 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
             try
             {
                 await tabs.StartAsync(launch, prompt, cancellationToken);
+            }
+            catch (BackendNotStartedException ex)
+            {
+                _notStartedError = ex.Message;
             }
             catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
             {
@@ -157,6 +162,11 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
             if (session is not null)
             {
                 yield return new BackendEvidence.Session(request.Correlation, session);
+            }
+            if (_notStartedError is { } notStarted)
+            {
+                yield return new BackendEvidence.NotStarted(notStarted);
+                yield break;
             }
 
             while (true)
@@ -190,6 +200,21 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
                 }
                 if (!acknowledged)
                 {
+                    // Only a recorded start error proves the agent never ran. A wrapper that
+                    // exited without one may have run the agent (the prompt is in its argv),
+                    // so that turn is uncertain and must be reconciled.
+                    var exited = tabs.WrapperExited(launch);
+                    if (tabs.StartFailure(launch) is { } failure)
+                    {
+                        tabs.StopOwned(launch);
+                        yield return new BackendEvidence.LaunchFailed(failure);
+                        yield break;
+                    }
+                    if (exited && transcripts.Read(launch, "atf-corr:" + request.Correlation, started) is null)
+                    {
+                        yield return new BackendEvidence.ProtocolError("interactive_agent_exited");
+                        yield break;
+                    }
                     if (DateTimeOffset.UtcNow >= confirmationDeadline)
                     {
                         yield return new BackendEvidence.ProtocolError("interactive_delivery_not_confirmed");
@@ -243,6 +268,8 @@ internal interface IWtTabControl
     void Preflight(InteractiveAgentKind kind);
     Task StartAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken);
     bool IsAlive(InteractiveLaunch launch);
+    string? StartFailure(InteractiveLaunch launch);
+    bool WrapperExited(InteractiveLaunch launch);
     int? ProcessId(InteractiveLaunch launch);
     void StopOwned(InteractiveLaunch launch);
 }
