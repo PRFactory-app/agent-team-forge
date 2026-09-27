@@ -2,7 +2,11 @@ using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Features.Sessions;
+using AgentTeamForge.DAL.Features.External;
+using AgentTeamForge.Business.Features.External;
+using AgentTeamForge.Host.Features.Jobs;
 using AgentTeamForge.Host.Features.Wake;
+using AgentTeamForge.Host.Transport;
 using AgentTeamForge.Tests.Support;
 using System.Net.Sockets;
 using System.Text;
@@ -107,9 +111,11 @@ public sealed class WakeTests
         Finish(fixture, target, "one");
         var time = DateTimeOffset.UtcNow;
         var poster = new FakePoster((_, _) => false);
-        var coordinator = new WakeCoordinator(store, poster, _ => { }, () => time, TimeSpan.Zero);
+        var failures = new List<string>();
+        var coordinator = new WakeCoordinator(store, poster, failures.Add, () => time, TimeSpan.Zero);
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
         Assert.Single(poster.Attempts);
+        Assert.Contains(failures, line => line.Contains("wake post rejected:") && line.Contains("source=jobs"));
         time += TimeSpan.FromSeconds(1);
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
         Assert.Single(poster.Attempts);
@@ -124,6 +130,51 @@ public sealed class WakeTests
         }
 
         Assert.Equal(TimeSpan.FromMinutes(5), backoff.Delay);
+    }
+
+    [Fact]
+    public async Task Legacy_lead_wake_is_rebound_to_a_live_bridge_for_external_messages_and_jobs()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/wake", "parent=1");
+        var team = new ExternalTeam(new ExternalMemberStore(fixture.Database), wake);
+        var legacy = wake.Register("claude:/tmp/123.sock", "claude", "/tmp/123.sock", "", "");
+        sessions.BindWake(lead.SessionId, legacy.Key, legacy.Generation);
+        var ticket = team.CreateTicket(lead.SessionId, lead.Workspace, "visitor", null).Ticket!;
+        var member = team.Join(lead.SessionId, ticket.Token).Member!;
+        Assert.True(team.Send(member.MemberToken, "reply").Ok);
+        var job = fixture.Accept().Execute(new SubmitJobRequest("legacy-job", "work", null, false)
+        { LeadSessionId = lead.SessionId, WakeKey = legacy.Key, WakeGeneration = legacy.Generation });
+        Assert.True(job.Error is null, job.Error);
+        var claim = fixture.Store.BeginNextAttempt()!;
+        Assert.True(fixture.Store.Complete(new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "done"));
+
+        var target = new IpcRequest
+        {
+            Op = IpcProtocol.WakeRegister,
+            WakeKey = "claude:hash",
+            WakeKind = "claude",
+            WakeAddress = legacy.Address,
+            WakeSecret = "token",
+            WakeHome = "123"
+        };
+        var oldStatus = wake.Status(lead.SessionId);
+        Assert.False(oldStatus.Usable);
+        Assert.True(JobsMcpBridge.NeedsWakeRegistration(oldStatus, target, legacy.Generation));
+        var current = wake.Register(target.WakeKey!, target.WakeKind!, target.WakeAddress!, target.WakeSecret!, target.WakeHome!);
+        sessions.BindWake(lead.SessionId, current.Key, current.Generation);
+        Assert.Equal(current.Key, wake.Status(lead.SessionId).Key);
+        Assert.False(JobsMcpBridge.NeedsWakeRegistration(wake.Status(lead.SessionId), target, current.Generation));
+        Assert.Equal(current.Key, Assert.Single(wake.PendingExternal()).Target.Key);
+        Assert.Equal(current.Key, Assert.Single(wake.Pending()).Target.Key);
+        var poster = new FakePoster();
+        await new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero)
+            .TickAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, poster.Attempts.Count);
+        Assert.Contains(poster.Attempts, attempt => attempt.Notice.Contains("external message(s)"));
+        Assert.Contains(poster.Attempts, attempt => attempt.Notice.Contains("completed job(s)"));
     }
 
     [Fact]

@@ -53,6 +53,9 @@ public sealed class ClaudeMemberWakeTests
         Assert.Null(HostSessionWake.ForClaudeChannel((124, "claude"), socket, "secret", "macos"));
         var host = HostSessionWake.ForClaudeChannel((123, "claude"), socket, "secret", "macos");
         Assert.NotNull(host);
+        Assert.True(HostSessionWake.OwnsClaudeChannel(host, (123, "claude"), socket, "secret", "macos"));
+        Assert.False(HostSessionWake.OwnsClaudeChannel(host, (456, "claude"), socket, "secret", "macos"));
+        Assert.False(HostSessionWake.OwnsClaudeChannel(host, (123, "claude"), socket, "changed", "macos"));
         var supplied = new IpcRequest { Op = IpcProtocol.ExternalSetWake, WakeAddress = "untrusted", WakeSecret = "untrusted" };
         var bound = JobsMcpBridge.ClaudeMemberWake(supplied, host);
         Assert.Equal(socket, bound.WakeAddress);

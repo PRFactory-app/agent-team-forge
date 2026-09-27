@@ -71,6 +71,15 @@ public static class HostSessionWake
         };
     }
 
+    internal static bool OwnsClaudeChannel(IpcRequest registered, (int Pid, string Kind)? host,
+        string? address, string? token, string? platform = null)
+    {
+        var current = ForClaudeChannel(host, address, token, platform);
+        return current is not null && registered.WakeKey == current.WakeKey
+            && registered.WakeAddress == current.WakeAddress && registered.WakeSecret == current.WakeSecret
+            && registered.WakeHome == current.WakeHome;
+    }
+
     /// <summary>Same-user, self-reported thread ID as in the reference; Codex does not always pass it to MCP servers.</summary>
     public static IpcRequest? ForCodexThread(string? thread, string? home)
     {
