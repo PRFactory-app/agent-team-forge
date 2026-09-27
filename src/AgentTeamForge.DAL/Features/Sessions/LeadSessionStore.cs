@@ -91,6 +91,17 @@ public sealed class LeadSessionStore(JobDatabase database)
 
     public bool Exists(string id, string workspace) => Info(id, workspace) is not null;
 
+    public bool IsManagedChild(string id, string workspace, string jobId)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM lead_sessions WHERE session_id=$id AND workspace=$workspace AND binding_key=$binding AND closed_at IS NULL";
+        command.Parameters.AddWithValue("$id", id);
+        command.Parameters.AddWithValue("$workspace", workspace);
+        command.Parameters.AddWithValue("$binding", "managed-child:" + jobId);
+        return (long)command.ExecuteScalar()! == 1;
+    }
+
     /// <summary>Explicitly close a lead. Joined tokens are revoked in the same transaction.</summary>
     public bool Close(string id, string workspace)
     {
@@ -130,18 +141,18 @@ public sealed class LeadSessionStore(JobDatabase database)
         command.Transaction = tx;
         command.CommandText = """
             UPDATE lead_sessions SET wake_key=$key WHERE session_id=$id AND closed_at IS NULL
-            AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
+            AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation AND active=1);
             UPDATE external_teams SET wake_key=$key WHERE lead_session_id=$id AND closed_at IS NULL
-            AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
+            AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation AND active=1);
             UPDATE wake_jobs SET target_key=$key, read_at=NULL WHERE job_id IN
                 (SELECT job_id FROM jobs WHERE lead_session_id=$id)
-                AND read_at IS NULL AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
+                AND read_at IS NULL AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation AND active=1);
             INSERT INTO wake_jobs(job_id,target_key)
                 SELECT j.job_id,$key FROM jobs j WHERE j.lead_session_id=$id
                 AND NOT EXISTS (SELECT 1 FROM wake_jobs w WHERE w.job_id=j.job_id)
-                AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
+                AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation AND active=1);
             UPDATE external_messages SET wake_key=$key WHERE team_id=$id AND recipient='lead'
-                AND read_at IS NULL AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation);
+                AND read_at IS NULL AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation AND active=1);
             """;
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$key", key);

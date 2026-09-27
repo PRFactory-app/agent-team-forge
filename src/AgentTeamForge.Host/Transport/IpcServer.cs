@@ -1,4 +1,5 @@
 using System.Net.Sockets;
+using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
 using AgentTeamForge.Business;
@@ -43,40 +44,12 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
 
     public async Task ServeAsync(Socket listener, CancellationToken daemonLifetime)
     {
-        while (!daemonLifetime.IsCancellationRequested)
-        {
-            Socket client;
-            try
-            {
-                client = await listener.AcceptAsync(daemonLifetime);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-
-            if (!_slots.Wait(0, CancellationToken.None))
-            {
-                client.Dispose();
-                continue;
-            }
-
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await HandleConnectionAsync(client, daemonLifetime);
-                }
-                finally
-                {
-                    client.Dispose();
-                    _slots.Release();
-                }
-            }, CancellationToken.None);
-        }
+        await ServeAcceptedAsync(ct => listener.AcceptAsync(ct).AsTask(),
+            client => HandleConnectionAsync(client, daemonLifetime), daemonLifetime);
     }
 
     /// <summary>Windows transport: same-user pipe plus the existing credential hello.</summary>
+    [SupportedOSPlatform("windows")]
     public async Task ServeWindowsAsync(CancellationToken daemonLifetime)
     {
         if (!OperatingSystem.IsWindows())
@@ -84,17 +57,96 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
             throw new PlatformNotSupportedException("named pipe transport requires Windows");
         }
 
-        while (!daemonLifetime.IsCancellationRequested)
+        await ServeAcceptedAsync(async ct =>
         {
             var pipe = WindowsPipe.CreateServer(socketPath);
-            try { await pipe.WaitForConnectionAsync(daemonLifetime); }
-            catch (OperationCanceledException) { pipe.Dispose(); return; }
-            if (!_slots.Wait(0, CancellationToken.None)) { pipe.Dispose(); continue; }
-            _ = Task.Run(async () =>
+            try
             {
-                try { await HandleStreamAsync(pipe, peerAuthorized: true, daemonLifetime); }
-                finally { pipe.Dispose(); _slots.Release(); }
-            }, CancellationToken.None);
+                await pipe.WaitForConnectionAsync(ct);
+                return pipe;
+            }
+            catch
+            {
+                pipe.Dispose();
+                throw;
+            }
+        }, pipe => HandleStreamAsync(pipe, peerAuthorized: true, daemonLifetime), daemonLifetime);
+    }
+
+    // Both transports use this loop. A failed accept owns no connection; a
+    // failed handler owns only its connection, never the serving task.
+    // A squatted pipe, a disposed listener or a long unbroken failure streak is
+    // fatal: the serving task faults and the daemon exits unhealthy.
+    internal async Task ServeAcceptedAsync<T>(Func<CancellationToken, Task<T>> accept,
+        Func<T, Task> handleConnection, CancellationToken daemonLifetime, int maxConsecutiveFailures = 60) where T : IDisposable
+    {
+        var retryDelay = 25;
+        var failures = 0;
+        var lastFullLog = DateTime.MinValue;
+        while (!daemonLifetime.IsCancellationRequested)
+        {
+            T connection;
+            try
+            {
+                connection = await accept(daemonLifetime);
+            }
+            catch (Exception) when (daemonLifetime.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex) when (ex is not (OutOfMemoryException or UnauthorizedAccessException or ObjectDisposedException))
+            {
+                if (++failures >= maxConsecutiveFailures)
+                {
+                    throw new IOException($"ipc accept failed {failures} times in a row", ex);
+                }
+                // Full stack at most once a minute; a hostile or broken client
+                // must not fill daemon.log.
+                if (DateTime.UtcNow - lastFullLog >= TimeSpan.FromMinutes(1))
+                {
+                    lastFullLog = DateTime.UtcNow;
+                    log($"ipc accept failed: {ex}");
+                }
+                else
+                {
+                    log($"ipc accept failed: {ex.GetType().Name}: {ex.Message}");
+                }
+                try { await Task.Delay(retryDelay, daemonLifetime); }
+                catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested) { return; }
+                retryDelay = Math.Min(retryDelay * 2, 1000);
+                continue;
+            }
+
+            retryDelay = 25;
+            failures = 0;
+            if (!_slots.Wait(0, CancellationToken.None))
+            {
+                connection.Dispose();
+                continue;
+            }
+
+            try
+            {
+                _ = Task.Run(async () =>
+                {
+                    try { await handleConnection(connection); }
+                    catch (Exception ex) when (ex is not OutOfMemoryException)
+                    {
+                        log($"ipc connection failed: {ex}");
+                    }
+                    finally
+                    {
+                        connection.Dispose();
+                        _slots.Release();
+                    }
+                }, CancellationToken.None);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                connection.Dispose();
+                _slots.Release();
+                log($"ipc connection launch failed: {ex}");
+            }
         }
     }
 

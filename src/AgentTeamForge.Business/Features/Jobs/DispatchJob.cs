@@ -148,6 +148,31 @@ public sealed class DispatchJob : IDisposable
             catch (ObjectDisposedException) { }
             CloseInterruptedIfUnclaimed(jobId);
         }
+        else
+        {
+            // The cancelled run may have finished cleanup after the acceptance
+            // commit but before this callback. Headless descendants can outlive
+            // that cleanup, so verify their run markers before releasing the fence.
+            try
+            {
+                var job = store.GetJob(jobId);
+                if (job?.Status != JobStatus.Cancelled) { return; }
+                if (backends.Resolve(job.Backend) is not HerdrInteractiveBackend)
+                {
+                    var runs = store.GetRuns(jobId);
+                    var correlations = runs.Select(run => run.Correlation).ToArray();
+                    OrphanedBackendProcess.TerminateMarked(correlations);
+                    if (OrphanedBackendProcess.HasMarkedProcess(correlations,
+                        [.. runs.Where(run => run.BackendPid.HasValue).Select(run => run.BackendPid!.Value)])) { return; }
+                }
+                store.ReconcileStoppedJob(jobId);
+            }
+            catch (Exception ex)
+            {
+                log($"session reconciliation failed for {jobId}: {ex.Message}");
+                Halt("terminal_write_failed");
+            }
+        }
     }
 
     internal void CloseInterruptedIfUnclaimed(string jobId)

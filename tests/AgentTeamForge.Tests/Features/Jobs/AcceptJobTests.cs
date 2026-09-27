@@ -46,6 +46,27 @@ public sealed class AcceptJobTests
     }
 
     [Fact]
+    public void Unnamed_real_jobs_get_a_stable_backend_name_in_the_list_projection()
+    {
+        using var f = new JobFixture(testProfile: false);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, ["codex"]);
+        var request = new SubmitJobRequest("unnamed", "work", null, false) { Backend = "codex" };
+        var first = accept.Execute(request).Job!;
+        var retry = accept.Execute(request).Job!;
+        var name = f.List().Execute(new()).Page!.Jobs.Single().TargetAgent;
+
+        Assert.Equal(first.JobId, retry.JobId);
+        Assert.Matches("^codex-[0-9a-f]{8}$", name);
+        Assert.NotEqual(JobFixture.Operator.Agent, name);
+        Assert.Equal(name, f.Store.GetJob(first.JobId)!.TargetAgent);
+        // The fingerprint still uses the principal's agent, so retries of jobs accepted before derived names match.
+        Assert.Equal(first.JobId, accept.Execute(request with { TargetAgent = JobFixture.Operator.Agent }).Job!.JobId);
+
+        var named = accept.Execute(request with { IdempotencyKey = "named", TargetAgent = "reviewer" }).Job!;
+        Assert.Equal("reviewer", f.Store.GetJob(named.JobId)!.TargetAgent);
+    }
+
+    [Fact]
     public void Same_key_with_different_meaning_is_a_conflict_without_side_effects()
     {
         using var f = new JobFixture();
