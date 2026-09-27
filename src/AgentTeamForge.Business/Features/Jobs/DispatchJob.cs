@@ -538,7 +538,10 @@ public sealed class DispatchJob : IDisposable
             var noEffects = blocked is not null || ex.InnerException is BackendNotStartedException && backendRun is null;
             var reason = blocked?.Reason ?? (noEffects ? "backend_not_started" : ex.Reason);
             var message = ex.InnerException!.Message;
-            if (ex.InnerException.InnerException is not null) { message += ": " + ex.InnerException.GetBaseException().Message; }
+            if (ex.InnerException.InnerException is not null && !message.Contains(ex.InnerException.GetBaseException().Message, StringComparison.Ordinal))
+            {
+                message += ": " + ex.InnerException.GetBaseException().Message;
+            }
             log($"backend failure for {run.RunId}: {reason}: {message}");
             active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
             End(run, noEffects ? JobStatus.Failed : JobStatus.NeedsReconciliation, reason,
