@@ -30,6 +30,12 @@ public static class DaemonCommand
 {
     public static async Task<int> RunAsync(StateDirectory state, string? crashAt, string? failAt)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            // The old shell launcher set this before exec; keep private defaults for
+            // daemon-created files even when the invoking client has a loose umask.
+            _ = Native.umask(0x3F); // 077
+        }
         if (OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("ATF_DAEMON_LOG") is { } logPath)
         {
             var log = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
