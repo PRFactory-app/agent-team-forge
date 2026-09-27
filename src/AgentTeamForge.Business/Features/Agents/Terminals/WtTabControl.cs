@@ -187,12 +187,18 @@ internal sealed class WtTabControl : IWtTabControl
     {
         if (TryIdentity(tab.Pid) == tab.Created)
         {
-            // Only the recorded wrapper is safe to terminate by PID. Its own
-            // kill-on-close job takes the agent tree down with it.
-            KillOwnedWrapper(tab);
-            for (var i = 0; i < 50 && TryIdentity(tab.Pid) == tab.Created; i++)
+            // Ending the recorded agent lets the wrapper close its kill-on-close job
+            // (taking descendants down) and exit 0, which closes its tab. Killing the
+            // wrapper is the fallback; its job handle closes with it.
+            if (TryReadOwned(Path.ChangeExtension(tab.Wrapper, ".agent"), tab.Wrapper) is { } agent)
             {
-                Thread.Sleep(100);
+                KillIfSame(agent.Pid, agent.Created);
+                WaitForExit(tab);
+            }
+            if (TryIdentity(tab.Pid) == tab.Created)
+            {
+                KillIfSame(tab.Pid, tab.Created);
+                WaitForExit(tab);
             }
         }
         if (TryIdentity(tab.Pid) == tab.Created)
@@ -204,6 +210,7 @@ internal sealed class WtTabControl : IWtTabControl
         try { File.Delete(tab.Wrapper); } catch (IOException) { }
         try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".prompt.txt")); } catch (IOException) { }
         try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".job")); } catch (IOException) { }
+        try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".agent")); } catch (IOException) { }
         try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".hook.ps1")); } catch (IOException) { }
         try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".hook.cmd")); } catch (IOException) { }
         return true;
@@ -266,7 +273,7 @@ internal sealed class WtTabControl : IWtTabControl
             "$start.UseShellExecute = $false",
             // The wrapper owns this handle. Closing it kills the agent and descendants
             // even if the wrapper is terminated by a daemon crash or atf stop.
-            WindowsAgentJobScript,
+            WindowsAgentJobScript.Replace("__AGENT_SIDECAR__", Quote(Path.ChangeExtension(sidecar, ".agent")), StringComparison.Ordinal),
             "exit 0"
         };
         if (InteractiveAgentCommand.WorkspaceTrustEnvironment(launch.Kind) is { } trust)
@@ -295,7 +302,7 @@ internal sealed class WtTabControl : IWtTabControl
         using System.Runtime.InteropServices;
         public static class AtfAgentJob {
             [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
-            public static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+            public static extern IntPtr CreateJobObject(IntPtr attributes, IntPtr name);
             [DllImport("kernel32.dll", SetLastError=true)]
             public static extern bool SetInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint length);
             [DllImport("kernel32.dll", SetLastError=true)]
@@ -305,7 +312,7 @@ internal sealed class WtTabControl : IWtTabControl
         }
         '@
         $native = Add-Type -TypeDefinition $source -PassThru
-        $job = $native::CreateJobObject([IntPtr]::Zero, $null)
+        $job = $native::CreateJobObject([IntPtr]::Zero, [IntPtr]::Zero)
         if ($job -eq [IntPtr]::Zero) { throw 'agent job creation failed' }
         try {
             $size = if ([IntPtr]::Size -eq 8) { 144 } else { 112 }
@@ -319,10 +326,13 @@ internal sealed class WtTabControl : IWtTabControl
                 }
             } finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($memory) }
             $agent = [System.Diagnostics.Process]::Start($start)
-            if (-not $native::AssignProcessToJobObject($job, $agent.Handle)) {
+            if (-not $native::AssignProcessToJobObject($job, $agent.Handle) -and -not $agent.HasExited) {
                 $agent.Kill()
                 throw 'agent job assignment failed'
             }
+            try {
+                ($agent.Id.ToString() + '|' + $agent.StartTime.ToUniversalTime().Ticks) | Out-File -FilePath __AGENT_SIDECAR__ -Encoding ascii
+            } catch { }
             $agent.WaitForExit()
         } finally { [void]$native::CloseHandle($job) }
         """;
@@ -539,13 +549,22 @@ internal sealed class WtTabControl : IWtTabControl
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { return null; }
     }
 
-    static void KillOwnedWrapper(OwnedTab tab)
+    static void WaitForExit(OwnedTab tab)
+    {
+        for (var i = 0; i < 50 && TryIdentity(tab.Pid) == tab.Created; i++)
+        {
+            Thread.Sleep(100);
+        }
+    }
+
+    // Terminates only this process (never a tree), and only while its start time still matches.
+    static void KillIfSame(int pid, DateTime created)
     {
         try
         {
-            using var process = Process.GetProcessById(tab.Pid);
+            using var process = Process.GetProcessById(pid);
             var started = process.StartTime.ToUniversalTime();
-            if (started == tab.Created)
+            if (started == created)
             {
                 process.Kill();
             }

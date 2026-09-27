@@ -136,6 +136,14 @@ public sealed class WtInteractiveBackendTests
         Assert.Contains("if (-not $native::AssignProcessToJobObject", wrapper);
         Assert.Contains("$agent.Kill()", wrapper);
         Assert.Contains("finally { [void]$native::CloseHandle($job) }", wrapper);
+        // PowerShell only ends a here-string at a line-initial '@; a stray indent breaks every launch.
+        Assert.Matches(@"\$source = @'\r?\n", wrapper);
+        Assert.Matches(@"\n'@\r?\n", wrapper);
+        // A $null argument would reach a .NET string parameter as "" rather than NULL.
+        Assert.Contains("CreateJobObject([IntPtr]::Zero, [IntPtr]::Zero)", wrapper);
+        // The agent identity lets stop end the agent first so the wrapper exits 0 and its tab closes.
+        Assert.Contains("Out-File -FilePath 'C:\\state\\tab.agent' -Encoding ascii", wrapper);
+        Assert.DoesNotContain("__AGENT_SIDECAR__", wrapper);
         Assert.EndsWith("exit 0\r\n", wrapper);
     }
 
