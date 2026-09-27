@@ -79,7 +79,11 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
         catch (IOException) { return false; }
     }
 
-    static async Task<bool> QueueAsync(WakeRegistration target, string notice, CancellationToken cancellationToken)
+    static async Task<bool> QueueAsync(WakeRegistration target, string notice, CancellationToken cancellationToken) =>
+        await SubmitAsync(target.Address, target.Home, notice, cancellationToken) is not null;
+
+    /// <summary>Returns the carrier's submission id, or null when no receipt was proven.</summary>
+    public static async Task<string?> SubmitAsync(string thread, string home, string message, CancellationToken cancellationToken)
     {
         try
         {
@@ -94,19 +98,19 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
                 RedirectStandardInput = true,
                 WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
             };
-            start.ArgumentList.Add("queue"); start.ArgumentList.Add("--thread"); start.ArgumentList.Add(target.Address);
-            start.ArgumentList.Add("--message"); start.ArgumentList.Add(notice);
+            start.ArgumentList.Add("queue"); start.ArgumentList.Add("--thread"); start.ArgumentList.Add(thread);
+            start.ArgumentList.Add("--message"); start.ArgumentList.Add(message);
             foreach (var key in start.Environment.Keys.Where(key => key.StartsWith("AGENT_", StringComparison.Ordinal)
                 || key is "CLAUDE_CODE_MESSAGING_SOCKET" or "CLAUDE_CODE_MESSAGING_TOKEN" or "WIN_AGENT_TEAMS_SESSION_DIR").ToArray())
             {
                 start.Environment.Remove(key);
             }
 
-            start.Environment["CODEX_HOME"] = target.Home;
+            start.Environment["CODEX_HOME"] = home;
             using var process = Process.Start(start);
             if (process is null)
             {
-                return false;
+                return null;
             }
 
             process.StandardInput.Close();
@@ -116,7 +120,7 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
                 var stderr = process.StandardError.ReadToEndAsync(deadline.Token);
                 await process.WaitForExitAsync(deadline.Token);
                 await Task.WhenAll(stdout, stderr);
-                return process.ExitCode == 0 && HasSubmissionId(await stdout, target.Address);
+                return process.ExitCode == 0 ? SubmissionId(await stdout, thread) : null;
             }
             catch (OperationCanceledException)
             {
@@ -125,12 +129,12 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
                     process.Kill(entireProcessTree: true);
                 }
 
-                return false;
+                return null;
             }
         }
         catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception or OperationCanceledException or BackendNotStartedException)
         {
-            return false;
+            return null;
         }
     }
 
@@ -139,6 +143,9 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
     /// Exit 0 without an id is not proof that the notice was queued.
     /// </summary>
     public static bool HasSubmissionId(string output, string? thread = null)
+        => SubmissionId(output, thread) is not null;
+
+    public static string? SubmissionId(string output, string? thread = null)
     {
         foreach (var raw in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -146,7 +153,7 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
             var text = QueuedLine().Match(line);
             if (text.Success)
             {
-                if (thread is null || text.Groups[2].Value == thread) { return true; }
+                if (thread is null || text.Groups[2].Value == thread) { return text.Groups[1].Value; }
                 continue;
             }
             try
@@ -156,12 +163,12 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
                     && document.RootElement.TryGetProperty("submission_id", out var id)
                     && id.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(id.GetString()))
                 {
-                    return true;
+                    return id.GetString();
                 }
             }
             catch (JsonException) { }
         }
-        return false;
+        return null;
     }
 
     [System.Text.RegularExpressions.GeneratedRegex(@"^Queued message (\S+) for thread (\S+?)\.?$")]

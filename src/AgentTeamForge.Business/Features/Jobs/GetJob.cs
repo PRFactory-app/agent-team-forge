@@ -58,7 +58,10 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal)
             : job.Status == JobStatus.Completed ? "result_observed"
             : run is not null ? "unconfirmed"
             : job.Status == JobStatus.Queued ? "pending" : "not_started";
-        return new JobDelivery(state, run?.RunId, run?.SubmittedAt, run?.AcknowledgedAt);
+        return new JobDelivery(state, run?.RunId, run?.SubmittedAt, run?.AcknowledgedAt)
+        {
+            NativeSubmissionId = store.NativeAttempt(job.JobId)?.SubmissionId ?? store.NativeSubmissionId(job.JobId)
+        };
     }
 
     internal static JobView ToView(JobRecord job) => new(job.JobId, job.Status, job.ResultText, job.ReasonCode, job.Attempts)

@@ -23,6 +23,8 @@ public sealed class SchemaTests
         {
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE native_codex_attempts;
+                DELETE FROM schema_migrations WHERE version=24;
                 DROP TABLE prfactory_attachments;
                 DROP TABLE prfactory_attachment_batches;
                 DELETE FROM schema_migrations WHERE version=23;
@@ -46,7 +48,7 @@ public sealed class SchemaTests
         using var check = upgraded.OpenConnection();
         using var query = check.CreateCommand();
         query.CommandText = "SELECT max(version) FROM schema_migrations";
-        Assert.Equal(23L, query.ExecuteScalar());
+        Assert.Equal(24L, query.ExecuteScalar());
         query.CommandText = "PRAGMA foreign_key_check";
         using var violations = query.ExecuteReader();
         Assert.False(violations.Read());
@@ -170,6 +172,8 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE native_codex_attempts;
+                DELETE FROM schema_migrations WHERE version=24;
                 DROP TABLE prfactory_attachments;
                 DROP TABLE prfactory_attachment_batches;
                 DELETE FROM schema_migrations WHERE version=23;
@@ -257,6 +261,8 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE native_codex_attempts;
+                DELETE FROM schema_migrations WHERE version=24;
                 DROP TABLE prfactory_attachments;
                 DROP TABLE prfactory_attachment_batches;
                 DELETE FROM schema_migrations WHERE version=23;

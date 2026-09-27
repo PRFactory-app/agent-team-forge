@@ -96,7 +96,13 @@ uncertain job for reconciliation.
 
 Follow-ups are new jobs that resume the parent's native session in the same
 backend and worktree. Deferred follow-ups may be accepted while the parent
-is queued or running; dispatch waits for its turn and backend cleanup.
+is queued or running. A verified live Linux Codex TUI receives a follow-up of
+at most 16 KiB through `codex queue`, including while its turn is busy. The
+submission ID is stored on the job, and the frozen thread's native user record
+settles the delivery fence. The job still waits for the turn's completion.
+An unresolved native attempt blocks all further follow-ups to
+that thread, even after a daemon restart. Dead or unverifiable sessions, larger
+prompts and Pi use the usual resume path. No wake hooks are used.
 `interrupt=true` cancels the running parent turn and accepts the new job
 atomically. Queued follow-ups remain durable across restart; a fenced
 parent is reported as `parent_needs_reconciliation`.

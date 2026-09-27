@@ -110,6 +110,14 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 : new Conflict();
         }
 
+        if (Scalar(connection, tx, """
+            SELECT count(*) FROM native_codex_attempts n JOIN jobs j ON j.job_id=n.job_id
+            WHERE n.state='sent' AND j.principal=$p AND j.team=$t AND j.target_agent=$a
+            """, ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent)) > 0)
+        {
+            return new ParentNotReady();
+        }
+
         var active = Scalar(connection, tx, "SELECT count(*) FROM jobs WHERE status IN ('queued','running')");
         if (active >= queueLimit)
         {
@@ -130,6 +138,13 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             var deferred = job.DeferParent && parent.Status is JobStatus.Queued or JobStatus.Running;
             if ((!deferred && parent.SessionId is null) || SessionFenced(connection, tx, parent.JobId) || !(deferred || parent.Status is JobStatus.Completed or JobStatus.Cancelled
                 || (job.InterruptParent ? parent.Status == JobStatus.Running : parent.Status is JobStatus.Failed or JobStatus.NeedsReconciliation)))
+            {
+                return new ParentNotReady();
+            }
+            // N5 is checked in the acceptance transaction, including replacements and
+            // ordinary resume attempts. An uncertain queue call may still present later.
+            if (parent.SessionId is { } thread && Scalar(connection, tx,
+                "SELECT count(*) FROM native_codex_attempts WHERE thread_id=$thread AND state='sent'", ("$thread", thread)) > 0)
             {
                 return new ParentNotReady();
             }
@@ -274,6 +289,105 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
         tx.Commit();
         return new AttemptClaim(GetJob(connection, null, jobId)!, runId, generation, correlation);
+    });
+
+    /// <summary>Commit the native fence and run before invoking codex queue.</summary>
+    public AttemptClaim? BeginNativeCodexAttempt(Func<JobRecord, bool> live, string codexHome, Func<string, bool>? eligible = null) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        var candidates = new List<JobRecord>();
+        using (var command = Command(connection, tx, $"SELECT {JobColumns} FROM jobs j JOIN dispatch_intents i ON i.job_id=j.job_id WHERE i.state='unattempted' AND j.status='queued' AND (j.queue_deadline IS NULL OR j.queue_deadline>$now) AND instr(j.options,';native_codex=1')>0 ORDER BY i.created_at,i.rowid", ("$now", Now())))
+        using (var reader = command.ExecuteReader())
+        {
+            while (reader.Read()) { candidates.Add(ReadJob(reader)); }
+        }
+        foreach (var job in candidates)
+        {
+            if (eligible is not null && !eligible(job.JobId)) { continue; }
+            if (job.ParentJobId is not { } parentId || GetJob(connection, tx, parentId) is not { SessionId: { } thread } parent
+                || parent.Backend != "codex" || SessionFenced(connection, tx, parentId)
+                || Scalar(connection, tx, "SELECT count(*) FROM native_codex_attempts WHERE thread_id=$thread AND state='sent'", ("$thread", thread)) > 0
+                || Scalar(connection, tx, """
+                    SELECT count(*) FROM native_codex_attempts n JOIN jobs k ON k.job_id=n.job_id
+                    WHERE n.state='sent' AND k.principal=$p AND k.team=$t AND k.target_agent=$a
+                    """, ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent)) > 0
+                || !live(parent)) { continue; }
+            var runId = "run_" + Guid.CreateVersion7().ToString("N");
+            var correlation = Guid.NewGuid().ToString("N");
+            var now = Now();
+            Execute(connection, tx, "UPDATE dispatch_intents SET state='attempted' WHERE job_id=$id", ("$id", job.JobId));
+            Execute(connection, tx, "INSERT INTO runs(run_id,job_id,generation,correlation,state,started_at) VALUES ($run,$id,1,$corr,'started',$now)",
+                ("$run", runId), ("$id", job.JobId), ("$corr", correlation), ("$now", now));
+            Execute(connection, tx, "UPDATE jobs SET status='running',session_id=$thread,updated_at=$now WHERE job_id=$id",
+                ("$id", job.JobId), ("$thread", thread), ("$now", now));
+            Execute(connection, tx, "INSERT INTO native_codex_attempts(job_id,thread_id,codex_home,correlation,state,created_at) VALUES ($id,$thread,$home,$corr,'sent',$now)",
+                ("$id", job.JobId), ("$thread", thread), ("$home", codexHome), ("$corr", correlation), ("$now", now));
+            Execute(connection, tx, "INSERT INTO events(job_id,run_id,kind,created_at) VALUES ($id,$run,'attempt_started',$now)",
+                ("$id", job.JobId), ("$run", runId), ("$now", now));
+            tx.Commit();
+            return new AttemptClaim(GetJob(connection, null, job.JobId)!, runId, 1, correlation);
+        }
+        return null;
+    });
+
+    public NativeCodexAttempt? NativeAttempt(string jobId) => Read(connection =>
+    {
+        using var command = Command(connection, null, "SELECT job_id,thread_id,codex_home,correlation,submission_id FROM native_codex_attempts WHERE job_id=$id AND state<>'settled'", ("$id", jobId));
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? new NativeCodexAttempt(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.IsDBNull(4) ? null : reader.GetString(4)) : null;
+    });
+
+    public string? NativeSubmissionId(string jobId) => Read(connection =>
+    {
+        using var command = Command(connection, null, "SELECT submission_id FROM native_codex_attempts WHERE job_id=$id", ("$id", jobId));
+        return command.ExecuteScalar() as string;
+    });
+
+    public IReadOnlyList<NativeCodexAttempt> UnresolvedNativeAttempts() => Read(connection =>
+    {
+        using var command = Command(connection, null, "SELECT job_id,thread_id,codex_home,correlation,submission_id FROM native_codex_attempts WHERE state<>'settled'");
+        using var reader = command.ExecuteReader();
+        var rows = new List<NativeCodexAttempt>();
+        while (reader.Read()) { rows.Add(new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.IsDBNull(4) ? null : reader.GetString(4))); }
+        return (IReadOnlyList<NativeCodexAttempt>)rows;
+    });
+
+    public void RecordNativeSubmission(string jobId, string correlation, string submissionId) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        Execute(connection, tx, "UPDATE native_codex_attempts SET submission_id=coalesce(submission_id,$ref) WHERE job_id=$id AND correlation=$corr",
+            ("$ref", submissionId), ("$id", jobId), ("$corr", correlation));
+        tx.Commit();
+        return 0;
+    });
+
+    /// <summary>The native user record proves presentation and releases N5.</summary>
+    public void RecordNativeReceipt(string jobId, string correlation) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        if (Execute(connection, tx, "UPDATE native_codex_attempts SET state='received' WHERE job_id=$id AND correlation=$corr AND state='sent'",
+            ("$id", jobId), ("$corr", correlation)) == 1)
+        {
+            Execute(connection, tx, "UPDATE runs SET acked=1,acknowledged_at=coalesce(acknowledged_at,$now) WHERE job_id=$id AND correlation=$corr",
+                ("$id", jobId), ("$corr", correlation), ("$now", Now()));
+        }
+        tx.Commit();
+        return 0;
+    });
+
+    public bool SettleNativeAttempt(string jobId, string correlation, string result) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        if (Execute(connection, tx, "UPDATE native_codex_attempts SET state='settled' WHERE job_id=$id AND correlation=$corr AND state<>'settled'",
+            ("$id", jobId), ("$corr", correlation)) != 1) { return false; }
+        var now = Now();
+        Execute(connection, tx, "UPDATE runs SET state='completed',acked=1,acknowledged_at=coalesce(acknowledged_at,$now),finished_at=$now WHERE job_id=$id AND correlation=$corr",
+            ("$id", jobId), ("$corr", correlation), ("$now", now));
+        Execute(connection, tx, "UPDATE jobs SET status='completed',session_fenced=0,reason_code=NULL,result_text=$result,updated_at=$now WHERE job_id=$id",
+            ("$id", jobId), ("$result", result), ("$now", now));
+        Execute(connection, tx, "INSERT INTO events(job_id,kind,created_at) VALUES ($id,'completed',$now)", ("$id", jobId), ("$now", now));
+        tx.Commit();
+        return true;
     });
 
     /// <summary>Diagnostic evidence only; never changes job state.</summary>

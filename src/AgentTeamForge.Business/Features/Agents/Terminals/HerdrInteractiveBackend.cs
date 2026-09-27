@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
@@ -15,6 +16,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     readonly InteractiveAgentKind _kind;
     readonly string _stateRoot;
     readonly RetainedSessions _liveSessions;
+    readonly ConcurrentDictionary<string, InteractiveLaunch> _nativeSessions = new();
     internal Lock SessionStopGate { get; } = new();
     readonly TimeSpan _settleTimeout;
     readonly TimeSpan _startupTimeout;
@@ -49,7 +51,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             var (model, effort) = InteractiveLaunch.Selection(request.Options);
             if (live.Model == model && live.Effort == effort)
             {
-                return new Run(_control, _transcripts, request, live with { StartupProgress = request.StartupProgress, LiveReuse = true }, started, _settleTimeout, _startupTimeout, RememberSession);
+                return new Run(_control, _transcripts, request, live with { StartupProgress = request.StartupProgress, LiveReuse = true }, started, _settleTimeout, _startupTimeout, RememberSession, BindNativeSession);
             }
             _control.StopOwned(live);
         }
@@ -69,10 +71,25 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         {
             throw new InvalidOperationException("interactive agent launch is uncertain: " + e.Message, e);
         }
-        return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout, RememberSession);
+        return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout, RememberSession, BindNativeSession);
     }
 
     void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
+
+    void BindNativeSession(string sessionId, InteractiveLaunch launch) => _nativeSessions[sessionId] = launch;
+
+    public bool HasLiveCodexSession(string sessionId)
+    {
+        if (_kind != InteractiveAgentKind.Codex || !_nativeSessions.TryGetValue(sessionId, out var launch)
+            || launch.NativeTranscript is not { SessionId: var bound } || bound != sessionId) { return false; }
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult()
+                is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Working or InteractiveAgentStatus.Done;
+        }
+        catch (Exception ex) when (ex is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
+    }
 
     public bool HasIdleSession(string sessionId) => _liveSessions.IsAlive(sessionId, launch =>
     {
@@ -121,7 +138,8 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     }
 
     sealed class Run(IHerdrAgentControl control, IInteractiveTranscriptReader transcripts, BackendRequest request,
-        InteractiveLaunch launch, DateTimeOffset started, TimeSpan settleTimeout, TimeSpan startupTimeout, Action<string, InteractiveLaunch> rememberSession) : IBackendRun
+        InteractiveLaunch launch, DateTimeOffset started, TimeSpan settleTimeout, TimeSpan startupTimeout, Action<string, InteractiveLaunch> rememberSession,
+        Action<string, InteractiveLaunch> bindNativeSession) : IBackendRun
     {
         bool _agentExited;
         bool _promptReturned;
@@ -166,6 +184,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             var session = request.ResumeSessionId;
             if (session is not null)
             {
+                bindNativeSession(session, launch);
                 yield return new BackendEvidence.Session(request.Correlation, session);
             }
             // Only the native completion record of this correlated turn completes the job;
@@ -206,6 +225,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 {
                     session = nativeId;
                     _sessionId = nativeId;
+                    bindNativeSession(nativeId, launch);
                     yield return new BackendEvidence.Session(request.Correlation, nativeId);
                 }
                 if (output?.ApiError is { } apiError && session is not null)

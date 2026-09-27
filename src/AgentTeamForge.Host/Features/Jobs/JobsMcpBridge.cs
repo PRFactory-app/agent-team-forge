@@ -94,7 +94,7 @@ public static class JobsMcpBridge
     const string TicketSchema = """{"type":"object","properties":{"name":{"type":"string"},"note":{"type":"string"}},"required":["name"]}""";
     const string JoinSchema = """{"type":"object","properties":{"session_id":{"type":"string"},"token":{"type":"string"}},"required":["session_id","token"]}""";
     const string MemberSendSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"text":{"type":"string"}},"required":["member_token","text"]}""";
-    const string LeadSendSchema = """{"type":"object","properties":{"to":{"type":"string","default":"team-lead"},"text":{"type":"string"}},"required":["text"]}""";
+    const string LeadSendSchema = """{"type":"object","properties":{"to":{"type":"string","default":"team-lead"},"job_id":{"type":"string","description":"Managed child job to follow up."},"text":{"type":"string"},"idempotency_key":{"type":"string","description":"Required with job_id; reuse on retry."}},"required":["text"]}""";
     const string MemberReadSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"from_agent":{"type":"string"},"since_seq":{"type":"integer","minimum":0},"full":{"type":"boolean"},"limit":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0}},"required":["member_token"]}""";
     const string LeadReadSchema = """{"type":"object","properties":{"from_agent":{"type":"string"},"since_seq":{"type":"integer","minimum":0},"full":{"type":"boolean"},"limit":{"type":"integer","minimum":0,"maximum":10000},"max_chars":{"type":"integer","minimum":0}}}""";
     const string HumanInputSchema = """{"type":"object","properties":{"question":{"type":"string"},"idempotency_key":{"type":"string","description":"Stable key for this question; reuse it when retrying."}},"required":["question","idempotency_key"]}""";
@@ -218,7 +218,7 @@ public static class JobsMcpBridge
             new() { Name = "get_job", Description = "Read a job's status, result output and native session_id.", InputSchema = Parse(GetSchema) },
             new() { Name = "get_job_output", Description = "Read live stdout/stderr log bytes from a job, starting at an absolute offset. Use next_offset to continue.", InputSchema = Parse(OutputSchema) },
             new() { Name = "stop_job", Description = "Cancel a queued or running job. A finished job is returned unchanged.", InputSchema = Parse(GetSchema) },
-            new() { Name = "follow_up", Description = "Resume a job's native agent session. Busy turns queue durably by default; interrupt=true cancels the current turn first. Set defer=false to refuse busy parents.", InputSchema = Parse(FollowUpSchema) },
+            new() { Name = "follow_up", Description = "Send a new turn to a job's native agent session. A live Codex TUI queues it even while busy; other busy turns wait durably. interrupt=true cancels the current turn first; defer=false refuses a busy parent.", InputSchema = Parse(FollowUpSchema) },
             new() { Name = "list_backends", Description = "Discover configured backends, model choices, cached native models, effective tiers and launch mode on this daemon.", InputSchema = Parse(EmptySchema) },
             new() { Name = "interrupt_job", Description = "Interrupt a turn without sending another prompt. The native session remains resumable with follow_up or revive_agent.", InputSchema = Parse(GetSchema) },
             new() { Name = "revive_agent", Description = "Resume a dead or finished agent using its recorded native session, backend and worktree. Requires a new instruction and idempotency key; uncertain live sessions remain fenced.", InputSchema = Parse(FollowUpSchema) },
@@ -237,7 +237,7 @@ public static class JobsMcpBridge
             new() { Name = "external_read", Description = "Read this member's inbox using member_token and an optional cursor.", InputSchema = Parse(MemberReadSchema) },
             new() { Name = "external_set_wake", Description = "Register native member notices: kind=claude uses this host’s own channel; kind=codex uses codex_thread_id. Pass an empty codex_thread_id without kind to clear. No hooks are installed.", InputSchema = Parse(MemberWakeSchema) },
             new() { Name = "leave_team", Description = "Revoke this external membership without stopping its process.", InputSchema = Parse(LeaveSchema) },
-            new() { Name = "send_message", Description = "Send a durable message to your ATF parent (team-lead, managed children only) or a joined external member of your own lead session. Use follow_up for managed downstream work. This tool does not reach win-agent-teams members.", InputSchema = Parse(LeadSendSchema) },
+            new() { Name = "send_message", Description = "Send to your ATF parent or a joined external member with to=..., or send managed downstream work with job_id=... and idempotency_key=.... A live Codex child receives managed work through codex queue. This tool does not reach win-agent-teams members.", InputSchema = Parse(LeadSendSchema) },
             new() { Name = "read_messages", Description = "Read durable messages from external members of this lead session.", InputSchema = Parse(LeadReadSchema) },
             new() { Name = "job_submit", Description = "Durably submit a job to the AgentTeamForge daemon (spike).", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "job_get", Description = "Read a job's committed state and result (spike).", InputSchema = Parse(GetSchema) },
@@ -494,7 +494,16 @@ public static class JobsMcpBridge
             "external_read" => (new IpcRequest { Op = IpcProtocol.ExternalRead, MemberToken = String(args, "member_token"), FromAgent = String(args, "from_agent"), SinceSeq = Long(args, "since_seq"), Full = args.TryGetValue("full", out var full) && full.ValueKind == JsonValueKind.True, Limit = Integer(args, "limit"), MaxChars = Integer(args, "max_chars") }, null),
             "external_set_wake" => (new IpcRequest { Op = IpcProtocol.ExternalSetWake, MemberToken = String(args, "member_token"), CodexThreadId = String(args, "codex_thread_id"), WakeHome = NonEmpty(String(args, "codex_home")) ?? NonEmpty(Environment.GetEnvironmentVariable("CODEX_HOME")) ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex") }, null),
             "leave_team" => (new IpcRequest { Op = IpcProtocol.ExternalLeave, MemberToken = String(args, "member_token") }, null),
-            "send_message" => (new IpcRequest { Op = IpcProtocol.ExternalLeadSend, MemberName = String(args, "to") ?? "team-lead", Text = String(args, "text") }, null),
+            "send_message" => String(args, "job_id") is { } managedJob
+                ? (new IpcRequest
+                {
+                    Op = IpcProtocol.JobFollowUp,
+                    JobId = managedJob,
+                    Instruction = String(args, "text"),
+                    IdempotencyKey = String(args, "idempotency_key"),
+                    Defer = true
+                }, null)
+                : (new IpcRequest { Op = IpcProtocol.ExternalLeadSend, MemberName = String(args, "to") ?? "team-lead", Text = String(args, "text") }, null),
             "read_messages" => (new IpcRequest { Op = IpcProtocol.ExternalLeadRead, FromAgent = String(args, "from_agent"), SinceSeq = Long(args, "since_seq"), Full = args.TryGetValue("full", out var leadFull) && leadFull.ValueKind == JsonValueKind.True, Limit = Integer(args, "limit"), MaxChars = Integer(args, "max_chars") }, null),
             _ => (null, IpcProtocol.UnknownOp),
         };

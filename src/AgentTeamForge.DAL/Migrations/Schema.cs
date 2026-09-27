@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 23;
+    public const int CurrentVersion = 24;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -300,7 +300,19 @@ static class Schema
             FOREIGN KEY(server, work_item_id) REFERENCES prfactory_attachment_batches(server, work_item_id));
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23];
+    internal const string V24 = """
+        CREATE TABLE native_codex_attempts(
+            job_id TEXT PRIMARY KEY REFERENCES jobs(job_id),
+            thread_id TEXT NOT NULL,
+            codex_home TEXT NOT NULL,
+            correlation TEXT NOT NULL,
+            submission_id TEXT,
+            state TEXT NOT NULL CHECK(state IN ('sent','received','settled')),
+            created_at TEXT NOT NULL);
+        CREATE INDEX native_codex_unresolved ON native_codex_attempts(thread_id, state);
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused
