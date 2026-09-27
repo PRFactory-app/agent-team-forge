@@ -256,8 +256,8 @@ internal sealed class WtTabControl : IWtTabControl
             "$start.Arguments = " + Quote(arguments),
             "$start.WorkingDirectory = " + Quote(launch.WorkingDirectory),
             "$start.UseShellExecute = $false",
-            // The wrapper owns this handle. Closing it kills the agent and descendants
-            // even if the wrapper is terminated by a daemon crash or atf stop.
+            // The wrapper owns this handle. Closing the tab or stopping the
+            // recorded agent kills its descendants without daemon ownership.
             WindowsAgentJobScript.Replace("__AGENT_SIDECAR__", Quote(Path.ChangeExtension(sidecar, ".agent")), StringComparison.Ordinal)
                 .Replace("__START_ERROR__", Quote(Path.ChangeExtension(sidecar, ".start-error")), StringComparison.Ordinal),
             "exit 0"

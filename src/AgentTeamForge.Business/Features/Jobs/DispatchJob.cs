@@ -484,9 +484,10 @@ public sealed class DispatchJob : IDisposable
             }
             catch (OperationCanceledException)
             {
-                // Process start cannot be cancelled. A late start may exist: it is
-                // terminated when it returns, never delivered to, never replaced.
-                TerminateLateStart(starting, run, daemonLifetime.IsCancellationRequested && backend is HerdrInteractiveBackend);
+                // Process start cannot be cancelled. A late interactive terminal
+                // session still belongs to the quarantined attempt after shutdown.
+                TerminateLateStart(starting, run, daemonLifetime.IsCancellationRequested
+                    && backend is HerdrInteractiveBackend or WtInteractiveBackend);
                 if (!daemonLifetime.IsCancellationRequested && !stopRequested.IsCancellationRequested)
                 {
                     End(run, JobStatus.NeedsReconciliation, "backend_start_timeout");

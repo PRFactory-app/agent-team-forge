@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Business.Features.Recovery;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Tests.Support;
@@ -410,6 +411,17 @@ public sealed class WtInteractiveBackendTests
             Assert.Null(WtInteractiveBackend.FindRecoveredLaunch(root, InteractiveAgentKind.Codex, "missing-job"));
         }
         finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void RestartQuarantinesRunningWtJobForVerifiedStop()
+    {
+        using var fixture = new JobFixture();
+        var job = fixture.Submit("wt-restart");
+        _ = fixture.Store.BeginNextAttempt();
+        var quarantined = new RecoverOnStartup(fixture.NewStore()).Execute();
+        Assert.Contains(job.JobId, quarantined);
+        Assert.Equal(JobStatus.NeedsReconciliation, fixture.Store.GetJob(job.JobId)?.Status);
     }
 
     [Fact]
