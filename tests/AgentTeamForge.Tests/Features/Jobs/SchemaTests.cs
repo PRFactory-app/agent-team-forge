@@ -23,6 +23,10 @@ public sealed class SchemaTests
         {
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE prfactory_wip_releases;
+                DROP TABLE prfactory_wip;
+                DROP TABLE prfactory_base_refresh;
+                DELETE FROM schema_migrations WHERE version=27;
                 DROP TABLE native_claude_attempts;
                 DELETE FROM schema_migrations WHERE version=26;
                 DROP TABLE native_codex_attempts;
@@ -52,7 +56,7 @@ public sealed class SchemaTests
         using var check = upgraded.OpenConnection();
         using var query = check.CreateCommand();
         query.CommandText = "SELECT max(version) FROM schema_migrations";
-        Assert.Equal(26L, query.ExecuteScalar());
+        Assert.Equal(27L, query.ExecuteScalar());
         query.CommandText = "PRAGMA foreign_key_check";
         using var violations = query.ExecuteReader();
         Assert.False(violations.Read());
@@ -176,6 +180,10 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE prfactory_wip_releases;
+                DROP TABLE prfactory_wip;
+                DROP TABLE prfactory_base_refresh;
+                DELETE FROM schema_migrations WHERE version=27;
                 DROP TABLE native_claude_attempts;
                 DELETE FROM schema_migrations WHERE version=26;
                 DROP TABLE native_codex_attempts;
@@ -269,6 +277,10 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE prfactory_wip_releases;
+                DROP TABLE prfactory_wip;
+                DROP TABLE prfactory_base_refresh;
+                DELETE FROM schema_migrations WHERE version=27;
                 DROP TABLE native_claude_attempts;
                 DELETE FROM schema_migrations WHERE version=26;
                 DROP TABLE native_codex_attempts;

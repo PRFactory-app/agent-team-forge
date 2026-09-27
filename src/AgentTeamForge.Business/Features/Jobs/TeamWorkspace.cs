@@ -15,11 +15,36 @@ public sealed class TeamWorkspace(PRFactoryWorkspaceStore store) : IDisposable
     static readonly TimeSpan GitTimeout = TimeSpan.FromMinutes(10);
     public void Dispose() => gate.Dispose();
 
-    internal static async Task<string> Git(string cwd, params string[] args) =>
+    public static async Task<string> Git(string cwd, params string[] args) =>
         await JobWorktree.GitAsync(cwd, GitTimeout, CancellationToken.None, args) ??
         throw new InvalidOperationException($"Git {args[0]} failed; workspace retained.");
 
     public WorkspaceSnapshot? Get(string key) => store.Get(key);
+
+    /// <summary>Before the first turn, align idle child checkouts with the refreshed lead tip.</summary>
+    public async Task AlignChildrenAsync(WorkspaceSnapshot workspace, string refreshedHead)
+    {
+        if (workspace.RepositoryPath is null || !JobWorktree.IsCommitSha(refreshedHead))
+        {
+            throw new InvalidOperationException("Refreshed Git head is required.");
+        }
+        await gate.WaitAsync();
+        try
+        {
+            foreach (var member in workspace.Members)
+            {
+                var current = await Git(member.Path, "rev-parse", "HEAD");
+                if (current == refreshedHead) { continue; }
+                if (current != workspace.StartingSha
+                    || (await Git(member.Path, "status", "--porcelain", "--untracked-files=all")).Length != 0)
+                {
+                    throw new InvalidOperationException("Child workspace changed before base refresh; retained for reconciliation.");
+                }
+                await Git(member.Path, "reset", "--hard", refreshedHead);
+            }
+        }
+        finally { gate.Release(); }
+    }
 
     /// <summary>The mapped checkout's configured origin; recorded once, then required to stay identical.</summary>
     public static Task<string> OriginAsync(string repository) => Git(repository, "remote", "get-url", "origin");
@@ -140,7 +165,18 @@ public sealed class TeamWorkspace(PRFactoryWorkspaceStore store) : IDisposable
         {
             throw new InvalidOperationException("Continuation requires an authoritative starting SHA.");
         }
-        return await Fetch(repo, branch, expected);
+        var fetched = await Fetch(repo, branch, expected);
+        if (branch.StartsWith("wip/", StringComparison.Ordinal))
+        {
+            // Handover adoption is tied to the remote branch's exact verified tip.
+            var remote = await Git(repo, "ls-remote", "--heads", "origin", "refs/heads/" + branch);
+            var fields = remote.Split('\t');
+            if (fields.Length != 2 || !fields[0].Equals(expected, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("WIP handover branch does not match the server-recorded SHA.");
+            }
+        }
+        return fetched;
     }
 
     static async Task<string> Fetch(string repo, string branch, string? expected = null)

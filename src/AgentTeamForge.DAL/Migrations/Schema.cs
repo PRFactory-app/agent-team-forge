@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 26;
+    public const int CurrentVersion = 27;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -335,7 +335,23 @@ static class Schema
         CREATE INDEX native_claude_unresolved ON native_claude_attempts(session_id, state);
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26];
+    /// <summary>v27: recoverable phase refresh and WIP/handover receipts.</summary>
+    internal const string V27 = """
+        CREATE TABLE prfactory_base_refresh (
+            workspace_key TEXT PRIMARY KEY REFERENCES prfactory_workspaces(workspace_key),
+            original_sha TEXT NOT NULL, current_base_sha TEXT NOT NULL,
+            action TEXT NOT NULL, state TEXT NOT NULL);
+        CREATE TABLE prfactory_wip (
+            workspace_key TEXT PRIMARY KEY REFERENCES prfactory_workspaces(workspace_key),
+            branch TEXT NOT NULL, head_sha TEXT NOT NULL, remote_old_sha TEXT,
+            state TEXT NOT NULL, receipt TEXT);
+        CREATE TABLE prfactory_wip_releases (
+            workspace_key TEXT PRIMARY KEY REFERENCES prfactory_workspaces(workspace_key),
+            release_id TEXT NOT NULL, verified_wip_sha TEXT NOT NULL,
+            acknowledged_at TEXT NOT NULL);
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

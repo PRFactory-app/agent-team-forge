@@ -2,6 +2,7 @@ using System.Diagnostics;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
+using AgentTeamForge.Host.Features.PRFactory;
 using AgentTeamForge.Tests.Support;
 using Microsoft.Data.Sqlite;
 
@@ -9,6 +10,196 @@ namespace AgentTeamForge.Tests.PRFactory;
 
 public sealed class WorkspaceTests
 {
+    [Fact]
+    public async Task Moving_base_refreshes_clean_owned_lead_without_touching_mapped_checkout()
+    {
+        using var f = new WorkspaceFixture();
+        var workspace = await f.Workspaces.PrepareAsync(f.Request);
+        var moved = Commit(f.Repo, "later.txt", "later");
+        Git(f.Repo, "push", "origin", "main");
+        var result = await new PhaseBaseFreshness(new PRFactoryHandoverStore(f.Db)).EnsureFreshAsync(workspace);
+        await f.Workspaces.AlignChildrenAsync(workspace, result.HeadSha!);
+        Assert.Equal("Fetched", result.Action);
+        Assert.Equal(moved, JobWorktree.Head(workspace.LeadPath));
+        Assert.All(workspace.Members, member => Assert.Equal(moved, JobWorktree.Head(member.Path)));
+        Assert.Equal(moved, JobWorktree.Head(f.Repo));
+        Assert.Equal("later", File.ReadAllText(Path.Combine(workspace.LeadPath, "later.txt")));
+    }
+
+    [Fact]
+    public async Task Moving_base_conflict_aborts_rebase_and_restores_lead_head()
+    {
+        using var f = new WorkspaceFixture();
+        var workspace = await f.Workspaces.PrepareAsync(f.Request);
+        var original = Commit(workspace.LeadPath, "base.txt", "lead edit");
+        Commit(f.Repo, "base.txt", "remote edit");
+        Git(f.Repo, "push", "origin", "main");
+        var result = await new PhaseBaseFreshness(new PRFactoryHandoverStore(f.Db)).EnsureFreshAsync(workspace);
+        Assert.Equal("ConflictStopped", result.Action);
+        Assert.Contains("base.txt", result.ConflictingPaths);
+        Assert.Equal(original, JobWorktree.Head(workspace.LeadPath));
+        Assert.Equal("lead edit", File.ReadAllText(Path.Combine(workspace.LeadPath, "base.txt")));
+        Assert.False(Directory.Exists(Path.Combine(Git(workspace.LeadPath, "rev-parse", "--git-dir"), "rebase-merge")));
+    }
+
+    [Fact]
+    public async Task Approved_plan_basis_drift_stops_before_mutating_checkout()
+    {
+        using var f = new WorkspaceFixture();
+        var workspace = await f.Workspaces.PrepareAsync(f.Request);
+        Commit(f.Repo, "later.txt", "later");
+        Git(f.Repo, "push", "origin", "main");
+        var result = await new PhaseBaseFreshness(new PRFactoryHandoverStore(f.Db))
+            .EnsureFreshAsync(workspace, f.BaseSha);
+        Assert.False(result.AgentMayRun);
+        Assert.Equal(f.BaseSha, JobWorktree.Head(workspace.LeadPath));
+    }
+
+    [Fact]
+    public async Task Pending_rebase_after_crash_is_aborted_and_original_commit_is_retained()
+    {
+        using var f = new WorkspaceFixture();
+        var workspace = await f.Workspaces.PrepareAsync(f.Request);
+        var original = Commit(workspace.LeadPath, "base.txt", "lead edit");
+        var moved = Commit(f.Repo, "base.txt", "remote edit");
+        Git(f.Repo, "push", "origin", "main");
+        var handovers = new PRFactoryHandoverStore(f.Db);
+        handovers.BeginRefresh(new(workspace.Key, original, moved, "Rebased", "pending"));
+        await JobWorktree.GitAsync(workspace.LeadPath, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken,
+            "rebase", "--onto", moved, f.BaseSha, workspace.InternalBranch!);
+        var result = await new PhaseBaseFreshness(handovers).EnsureFreshAsync(workspace);
+        Assert.Equal("ConflictStopped", result.Action);
+        Assert.Equal(original, JobWorktree.Head(workspace.LeadPath));
+        Assert.Equal("restored", handovers.Refresh(workspace.Key)!.State);
+    }
+
+    [Fact]
+    public async Task Wip_tip_is_adopted_at_exact_sha_from_second_state_root()
+    {
+        using var f = new WorkspaceFixture();
+        var first = await f.Workspaces.PrepareAsync(f.Request);
+        var committed = Commit(first.LeadPath, "work.txt", "saved");
+        var firstStore = new PRFactoryHandoverStore(f.Db);
+        var publisher = new WipPublisher(firstStore, async (_, effect, _) => { await effect(); return true; });
+        var branch = WipPublisher.BranchName("Machine One", "PRF-7");
+        var published = await publisher.PublishAsync(Guid.NewGuid(), first, branch, (_, sha) => Task.FromResult("receipt:" + sha),
+            ct: TestContext.Current.CancellationToken);
+        Assert.Equal(committed, published.HeadSha);
+        using var secondRoot = new TempStateDir();
+        var secondRepo = Directory.CreateDirectory(secondRoot.File("repo")).FullName;
+        Git(secondRepo, "init", "-b", "main");
+        Git(secondRepo, "remote", "add", "origin", f.Remote);
+        var secondDb = JobDatabase.Create(secondRoot.File("jobs.db"), TimeSpan.FromSeconds(2));
+        using var second = new TeamWorkspace(new PRFactoryWorkspaceStore(secondDb));
+        var adopted = await second.PrepareAsync(f.Request with
+        {
+            Key = "second:item",
+            OwnedRoot = secondRoot.File("owned"),
+            RepositoryPath = secondRepo,
+            StartFromBranch = branch,
+            StartCommitSha = committed
+        });
+        Assert.Equal(committed, adopted.StartingSha);
+        Assert.Equal("saved", File.ReadAllText(Path.Combine(adopted.LeadPath, "work.txt")));
+        var newer = Commit(first.LeadPath, "other.txt", "later");
+        Git(first.LeadPath, "push", "--force", "origin", newer + ":refs/heads/" + branch);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => second.PrepareAsync(f.Request with
+        {
+            Key = "third:item",
+            OwnedRoot = secondRoot.File("owned"),
+            RepositoryPath = secondRepo,
+            StartFromBranch = branch,
+            StartCommitSha = committed
+        }));
+    }
+
+    [Fact]
+    public async Task Dirty_release_is_refused_and_old_server_without_capability_is_not_called()
+    {
+        using var f = new WorkspaceFixture();
+        var workspace = await f.Workspaces.PrepareAsync(f.Request);
+        var calls = 0;
+        using var http = PRFactoryClient.CreateHttpClient("https://example.test", "token", new StubHandler(request =>
+        {
+            calls++;
+            return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new System.Net.Http.StringContent("{\"capabilities\":[\"base-wip-v1\"]}")
+            };
+        }));
+        var client = new PRFactoryClient(http);
+        File.WriteAllText(Path.Combine(workspace.LeadPath, "dirty.txt"), "uncommitted");
+        var item = new PRFactoryWorkItem { Id = Guid.NewGuid(), RepositoryId = Guid.NewGuid(), LeaseToken = Guid.NewGuid() };
+        var handover = new PRFactoryHandover(client, new PRFactoryHandoverStore(f.Db), Permit);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => handover.ReleaseAsync(item, workspace, Guid.NewGuid(), "job", "move", () => true, TestContext.Current.CancellationToken));
+        Assert.Equal(1, calls);
+        using var oldHttp = PRFactoryClient.CreateHttpClient("https://example.test", "token", new StubHandler(_ =>
+            new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.NotFound)));
+        var oldHandover = new PRFactoryHandover(new PRFactoryClient(oldHttp), new PRFactoryHandoverStore(f.Db), Permit);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => oldHandover.ReleaseAsync(item, workspace, Guid.NewGuid(), "job", "move", () => true, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Lost_release_reply_retries_same_identity_and_cleanup_waits_for_receipt()
+    {
+        using var f = new WorkspaceFixture();
+        var workspace = await f.Workspaces.PrepareAsync(f.Request);
+        var handoverStore = new PRFactoryHandoverStore(f.Db);
+        var item = new PRFactoryWorkItem { Id = Guid.NewGuid(), RepositoryId = Guid.NewGuid(), LeaseToken = Guid.NewGuid() };
+        var publisher = new WipPublisher(handoverStore, async (_, effect, _) => { await effect(); return true; });
+        var branch = WipPublisher.BranchName("Machine One", "PRF-7");
+        var head = JobWorktree.Head(workspace.LeadPath)!;
+        await Assert.ThrowsAsync<HttpRequestException>(() => publisher.PublishAsync(item.Id, workspace, branch,
+            (_, _) => throw new HttpRequestException("lost report reply"), ct: TestContext.Current.CancellationToken));
+        Assert.Equal(head, Git(f.Repo, "ls-remote", "--heads", "origin", "refs/heads/" + branch).Split('\t')[0]);
+        var wip = await publisher.PublishAsync(item.Id, workspace, branch, (_, _) => Task.FromResult("server-receipt"),
+            ct: TestContext.Current.CancellationToken);
+        Assert.Equal("reported", wip.State);
+        var releaseId = $"{item.Id:D}:{item.LeaseToken:D}:{head}";
+        var releaseCalls = 0;
+        using var http = PRFactoryClient.CreateHttpClient("https://example.test", "token", new StubHandler(request =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("capabilities", StringComparison.Ordinal))
+            {
+                return new(System.Net.HttpStatusCode.OK) { Content = new System.Net.Http.StringContent("{\"capabilities\":[\"base-wip-v1\"]}") };
+            }
+
+            releaseCalls++;
+            if (releaseCalls == 1)
+            {
+                throw new HttpRequestException("lost release reply");
+            }
+
+            return new(System.Net.HttpStatusCode.OK)
+            {
+                Content = new System.Net.Http.StringContent("{\"released\":true,\"releaseId\":\"" + releaseId
+                    + "\",\"verifiedWipSha\":\"" + head + "\"}")
+            };
+        }));
+        var handover = new PRFactoryHandover(new PRFactoryClient(http), handoverStore, Permit);
+        var machine = Guid.NewGuid();
+        await Assert.ThrowsAsync<HttpRequestException>(() => handover.ReleaseAsync(item, workspace, machine, "job", "move", () => true, TestContext.Current.CancellationToken));
+        Assert.Null(handoverStore.Release(workspace.Key));
+        var acknowledged = await handover.ReleaseAsync(item, workspace, machine, "job", "move", () => true, TestContext.Current.CancellationToken);
+        Assert.Equal(releaseId, acknowledged.ReleaseId);
+        Assert.Equal(2, releaseCalls);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => handover.CleanupReleasedAsync(workspace, () => false, TimeSpan.Zero));
+        await handover.CleanupReleasedAsync(workspace, () => true, TimeSpan.Zero);
+        Assert.False(Directory.Exists(workspace.Root));
+        Assert.True(Directory.Exists(f.Repo));
+    }
+
+    sealed class StubHandler(Func<System.Net.Http.HttpRequestMessage, System.Net.Http.HttpResponseMessage> send) : System.Net.Http.HttpMessageHandler
+    {
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request,
+            CancellationToken cancellationToken) => Task.FromResult(send(request));
+    }
+
+    static async Task<bool> Permit(Guid _, Func<Task> effect, CancellationToken __)
+    {
+        await effect();
+        return true;
+    }
     [Fact]
     public async Task Default_is_fetched_not_dirty_checkout_and_restart_uses_recorded_sha()
     {

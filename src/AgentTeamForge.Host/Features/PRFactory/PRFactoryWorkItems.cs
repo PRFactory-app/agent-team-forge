@@ -16,7 +16,7 @@ public sealed partial class PRFactoryWorkItems(
     PRFactoryAuthority? authority = null, PRFactoryWorkspace? workspaces = null, string? workspaceRoot = null,
     AccountAdmission? accounts = null, int maxAcceptedTeams = 10, PRFactoryPublicationStore? publications = null,
     PRFactoryInteraction? interaction = null, HumanWaitStore? humanWaits = null,
-    bool allowRepoLess = false)
+    bool allowRepoLess = false, PRFactoryHandoverStore? handovers = null)
 {
     // Parked turns share one account binding per backend until configured accounts exist.
     public const string DefaultAccount = "default";
@@ -304,6 +304,13 @@ public sealed partial class PRFactoryWorkItems(
             return;
         }
         WorkspaceSnapshot? workspace = null;
+        var baseWip = handovers is not null && item.RepositoryId is not null
+            && await client.SupportsBaseWipAsync(ct);
+        if (!baseWip && handovers is not null
+            && (handovers.Refresh(WorkspaceKey(item.Id)) is not null || handovers.Wip(WorkspaceKey(item.Id)) is not null))
+        {
+            throw new HttpRequestException("PRFactory base-wip-v1 capability disappeared during accepted work.");
+        }
         if (workspaces is not null)
         {
             try
@@ -315,6 +322,38 @@ public sealed partial class PRFactoryWorkItems(
                 // Identity mismatch, missing continuation SHA or an unreachable branch: fail visibly, keep files.
                 await FinishAsync(team, item, false, $"workspace preparation failed: {ex.Message}", repo?.Directory, ct);
                 return;
+            }
+        }
+        if (baseWip && workspace is { RepositoryPath: not null }
+            && teams.MemberJob(server, item.Id, "lead", 0) is null)
+        {
+            BaseFreshnessResult freshness = null!;
+            await Guard(item.Id, async () => freshness = await new PhaseBaseFreshness(handovers!)
+                .EnsureFreshAsync(workspace, item.PlanBasisCommitSha), ct);
+            if (item.LeaseToken is not Guid lease || item.RepositoryId is not Guid repository)
+            {
+                throw new InvalidOperationException("Base refresh lacks accepted repository identity.");
+            }
+
+            if (freshness.ConflictingPaths.Length > 0)
+            {
+                await Guard(item.Id, () => client.ReportBaseConflictAsync(item.Id,
+                    new([repository], freshness.ConflictingPaths, lease), ct), ct);
+            }
+
+            var action = freshness.Action switch { "Fetched" => 1, "Rebased" => 2, "ConflictStopped" => 3, _ => 0 };
+            await Guard(item.Id, () => client.ReportFreshnessAsync(item.Id,
+                new(lease, repository, freshness.AgentMayRun ? freshness.CurrentBaseSha : freshness.RecordedBaseSha,
+                    workspace.InternalBranch!, freshness.HeadSha, 0,
+                    freshness.AgentMayRun ? null : "Base drift requires a checkpoint or conflict resolution",
+                    workspace.BaseBranch!, freshness.CurrentBaseSha, freshness.CommitsBehind, action), ct), ct);
+            if (!freshness.AgentMayRun)
+            {
+                return;
+            }
+            if (freshness.HeadSha is { } refreshedHead)
+            {
+                await Guard(item.Id, () => workspaces!.AlignChildrenAsync(workspace, refreshedHead), ct);
             }
         }
         string Cwd(string member) => workspace is null ? repo!.Directory
@@ -386,6 +425,40 @@ public sealed partial class PRFactoryWorkItems(
         await AdvanceCommandsAsync(item, ct);
         await AdvanceHumanWaitsAsync(item, ct);
         var outputDrained = await UploadManagedAsync(item, ct);
+        if (baseWip && workspace is { RepositoryPath: not null } && handovers is not null
+            && team.MachineId is Guid machine && team.AtfJobId is { Length: > 0 } atfJob
+            && item.LeaseToken is Guid wipLease && item.RepositoryId is Guid wipRepo)
+        {
+            var publisher = new WipPublisher(handovers, async (id, effect, token) =>
+            {
+                await Guard(id, effect, token);
+                return true;
+            });
+            var branch = WipPublisher.BranchName(Environment.MachineName,
+                item.TicketKey ?? throw new InvalidOperationException("WIP ticket key missing."));
+            try
+            {
+                await publisher.PublishAsync(item.Id, workspace, branch, async (wipBranch, head) =>
+                {
+                    var countText = await TeamWorkspace.Git(workspace.LeadPath, "rev-list", "--count", workspace.BaseSha + ".." + head);
+                    var report = new PRFactoryWipReport(wipLease, machine, atfJob, wipRepo, workspace.BaseSha!,
+                        wipBranch, head, int.Parse(countText, System.Globalization.CultureInfo.InvariantCulture), true, null,
+                        $"{item.Id:D}:{head}");
+                    string? receipt = null;
+                    await Guard(item.Id, async () => receipt = await client.ReportWipAsync(item.Id, report, ct), ct);
+                    return receipt!;
+                }, allowRewrite: handovers.Refresh(workspace.Key)?.Action == "Rebased", ct);
+            }
+            catch (WipPushException ex)
+            {
+                var countText = await TeamWorkspace.Git(workspace.LeadPath, "rev-list", "--count", workspace.BaseSha + ".." + ex.HeadSha);
+                await Guard(item.Id, () => client.ReportWipFailureAsync(item.Id,
+                    new(wipLease, machine, atfJob, wipRepo, workspace.BaseSha!, ex.Branch, ex.HeadSha,
+                        int.Parse(countText, System.Globalization.CultureInfo.InvariantCulture), false, ex.Message,
+                        $"{item.Id:D}:{ex.HeadSha}"), ct), ct);
+                throw;
+            }
+        }
         allJobs = [.. teams.ManagedMembers(server, item.Id).GroupBy(m => m.Member)
             .Select(g => getJob(g.Last().JobId)!)];
         lead = allJobs.First(j => j.JobId == teams.ManagedMembers(server, item.Id).Last(m => m.Member == "lead").JobId);

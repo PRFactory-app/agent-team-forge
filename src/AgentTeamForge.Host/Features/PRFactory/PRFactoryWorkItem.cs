@@ -30,6 +30,8 @@ public sealed class PRFactoryWorkItem
     public string? StartCommitSha { get; set; }
     public PRFactoryWorkspaceRevision? Continuation { get; set; }
     public PRFactoryWorkspaceRevision? BaseSnapshot { get; set; }
+    // base-wip-v1: approved plan basis for this repository; a moved base requires server checkpoint.
+    public string? PlanBasisCommitSha { get; set; }
     public string? PublishBranch { get; set; }
     public DateTimeOffset? ExpiresAt { get; set; }
     // Repository set/default base are carried in ContextJson by the worker contract.

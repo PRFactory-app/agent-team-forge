@@ -48,7 +48,7 @@ public sealed partial class PRFactoryClient(HttpClient httpClient)
     // owned work; completion carries a pushed, ls-remote-verified branch for remote-only PR creation.
     // Not yet: human-wait-v1, readiness-parking-v1 (no auth/model probes),
     // multi-repo-v1.
-    public static readonly string[] Capabilities = ["authority-disposition-v1", "remote-publication-v1", "workspace-continuity-v1", "blob-attachments-v1"];
+    public static readonly string[] Capabilities = ["authority-disposition-v1", "remote-publication-v1", "workspace-continuity-v1", "blob-attachments-v1", "base-wip-v1"];
     bool legacyLogged;
     public enum AcceptanceResult { Confirmed, NotFound, Conflict }
     /// <summary>Server disposition: accepted, completed, cancelled, revoked or reconciliation-needed.</summary>

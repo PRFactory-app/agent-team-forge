@@ -181,9 +181,32 @@ question records can still be resumed and streamed; ATF maps their internal
 statuses to PRFactory's coarse lifecycle values.
 
 Registration advertises `authority-disposition-v1`, `remote-publication-v1`,
-`workspace-continuity-v1` and `blob-attachments-v1`.
+`workspace-continuity-v1`, `blob-attachments-v1` and `base-wip-v1`.
 Not advertised yet: `human-wait-v1` (needs the server's `questionId` wire), readiness probes,
 external-member human waits and multi-repository work.
+
+## Base freshness and WIP handover
+
+ATF discovers `base-wip-v1` through `GET /api/worker/capabilities`. When it is
+absent, ATF does not call the legacy WIP, base-conflict or release routes. The
+current PRFactory server does not yet advertise this capability. Its required
+wire additions are recorded in the slice contract before server rollout.
+
+For a capable server, the daemon fetches the claimed base branch before the
+lead's first turn. A clean lead with no commits moves to the new base; a lead
+with committed work rebases. A durable original HEAD lets a restart abort and
+restore an interrupted rebase. Conflicts stop dispatch, retain files and are
+reported with repository-relative paths. The repository-result reports the
+recorded and current base SHAs and refresh action.
+
+The daemon pushes the committed lead tip to `wip/<machine-slug>/<ticket-key>`
+when it changes and at phase end, then records a server-verified receipt.
+Dirty buffers are never represented by that receipt. A release requires clean
+lead and child workspaces, a matching WIP receipt and an explicit server
+acknowledgement bound to the acceptance identity. An adopting host verifies
+that its requested WIP branch tip equals the exact server-provided SHA before
+dispatch. Cleanup of owned, inactive worktrees requires both receipts and a
+retention interval; ordinary phase completion does not erase them.
 
 ## Phase artefacts
 
