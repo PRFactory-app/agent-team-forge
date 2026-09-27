@@ -134,6 +134,13 @@ public class HerdrTerminalTests
         fake.TabReplaced = true;
         await Assert.ThrowsAsync<HerdrLaunchException>(() => terminal.StopOwnedSessionAsync(session, CancellationToken.None));
         Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
+
+        // After a Herdr restart the recorded tab died with its server: stop succeeds and touches nothing.
+        fake.TabReplaced = false;
+        fake.Replace(Replacement.ServerRestarted);
+        var calls = fake.Calls.Count;
+        await terminal.StopOwnedSessionAsync(session, CancellationToken.None);
+        Assert.Equal(calls, fake.Calls.Count);
     }
 
     [Fact]

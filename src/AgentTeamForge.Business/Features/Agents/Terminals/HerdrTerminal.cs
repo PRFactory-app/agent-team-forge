@@ -231,7 +231,8 @@ public sealed class HerdrTerminal
         Directory.CreateDirectory(root);
         var digest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(label)))[..16];
         var lockPath = Path.Combine(root, $"win-agent-teams-{session.SessionName}.ws-{digest}.lock");
-        var descriptor = OpenLockFile(lockPath, 2 | (OperatingSystem.IsMacOS() ? 0x200 : 0x40), 0x180);
+        // O_RDWR | O_CREAT | O_CLOEXEC: herdr children spawned while the lock is held must not inherit it.
+        var descriptor = OpenLockFile(lockPath, 2 | (OperatingSystem.IsMacOS() ? 0x200 | 0x1000000 : 0x40 | 0x80000), 0x180);
         if (descriptor < 0) { throw new HerdrLaunchException($"could not open Herdr workspace lock: errno {Marshal.GetLastPInvokeError()}"); }
         using var guard = new SafeFileHandle((IntPtr)descriptor, ownsHandle: true);
         var lockWait = Stopwatch.StartNew();
@@ -379,7 +380,13 @@ public sealed class HerdrTerminal
         {
             throw new HerdrLaunchException("shared tab ownership record is incomplete");
         }
-        if (ServerProblem(session) is { } problem) { throw new HerdrLaunchException("teardown refused: " + problem); }
+        if (ServerProblem(session) is { } problem)
+        {
+            // Panes die with their server. Once the recorded server is gone (restart or reboot) nothing of ours
+            // can remain in the session, and its reused tab ids belong to someone else: close nothing.
+            if (_runner.Identity(session.ServerPid)?.StartTicks != session.ServerStartTicks) { return; }
+            throw new HerdrLaunchException("teardown refused: " + problem);
+        }
         JsonNode tab;
         JsonNode pane;
         try
