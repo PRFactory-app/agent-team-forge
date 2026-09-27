@@ -732,7 +732,8 @@ public sealed partial class PRFactoryWorkItems(
         // All intended heads are frozen durably before the first remote mutation.
         foreach (var (entry, workspace, request) in requests)
         {
-            if (entry.ReadOnly && (JobWorktree.Head(workspace.LeadPath) != workspace.BaseSha
+            // A read-only checkout may start from a continuation branch; only changes after that start count.
+            if (entry.ReadOnly && (JobWorktree.Head(workspace.LeadPath) != workspace.StartingSha
                 || (await TeamWorkspace.Git(workspace.LeadPath, "status", "--porcelain", "--untracked-files=all")).Length != 0))
             {
                 throw new InvalidOperationException($"Read-only repository {entry.Name} changed; local output retained.");

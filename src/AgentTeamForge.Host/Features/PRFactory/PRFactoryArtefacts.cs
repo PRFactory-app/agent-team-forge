@@ -74,11 +74,20 @@ internal static partial class PRFactoryArtefacts
             {
                 var head = JobWorktree.Head(path);
                 var paths = await JobWorktree.TrackedPathsAsync(path, ct);
-                if (head is null || paths is null) { throw new InvalidDataException($"Planning repository {name} has no committed basis."); }
+                if (head is null || paths is null)
+                {
+                    // Single-repository planning keeps its pre-multi-repo behaviour: no basis, no failure.
+                    // A partial multi-repository basis would misstate coverage, so that case fails.
+                    if (planRepositories is null) { break; }
+                    throw new InvalidDataException($"Planning repository {name} has no committed basis.");
+                }
                 repositories.Add(new(id, name, JobWorktree.Branch(path), head, paths));
             }
-            files.Add(new("plan-basis.json", JsonSerializer.Serialize(new PRFactoryPlanBasis(repositories),
-                PRFactoryWorkItemJson.Default.PRFactoryPlanBasis), "plan-basis"));
+            if (repositories.Count > 0)
+            {
+                files.Add(new("plan-basis.json", JsonSerializer.Serialize(new PRFactoryPlanBasis(repositories),
+                    PRFactoryWorkItemJson.Default.PRFactoryPlanBasis), "plan-basis"));
+            }
         }
         return files;
     }

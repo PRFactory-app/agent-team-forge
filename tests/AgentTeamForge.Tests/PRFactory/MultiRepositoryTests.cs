@@ -55,6 +55,89 @@ public sealed class MultiRepositoryTests
         Assert.Contains("base.txt", results[^1].Result.ConflictingPaths);
         Assert.Equal(originalPrimary, JobWorktree.Head(new PRFactoryWorkspaceStore(h.Database).Get(key)!.LeadPath));
         Assert.Equal(localSecondary, JobWorktree.Head(second.LeadPath));
+        // The rolled-back primary must not be reported as refreshed.
+        Assert.False(results[0].Result.AgentMayRun);
+        Assert.Equal("None", results[0].Result.Action);
+        Assert.Equal(originalPrimary, results[0].Result.HeadSha);
+    }
+
+    [Fact]
+    public async Task Interrupted_refresh_recovery_never_resets_a_switched_lead_branch()
+    {
+        var item = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            Type = "Implementation",
+            RepositoryId = Guid.NewGuid(),
+            LeaseToken = Guid.NewGuid(),
+            AgentType = PRFactoryAgentType.Codex,
+            Prompt = "Edit both"
+        };
+        using var h = new ChainHarness(item);
+        h.AddSecondary(Guid.NewGuid());
+        await h.TickAsync();
+        var key = $"{ChainServer.Url}|{item.Id:D}";
+        var store = new PRFactoryRepositorySetStore(h.Database);
+        var sets = new PRFactoryRepositorySet(store, new PRFactoryWorkspace(h.Workspaces),
+            new PRFactoryWorkspaceStore(h.Database), new PRFactoryHandoverStore(h.Database));
+        var lead = new PRFactoryWorkspaceStore(h.Database).Get(key)!;
+        store.BeginRefresh(key, [new(key, lead.BaseSha!, lead.StartingSha!, lead.StartingSha!, lead.BaseSha)]);
+        ChainHarness.Git(lead.LeadPath, "checkout", "-b", "someone-else");
+        var foreign = ChainHarness.Commit(lead.LeadPath, "foreign.txt", "not ATF's");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => sets.RecoverRefreshAsync(key));
+        Assert.Equal(foreign, ChainHarness.Git(lead.LeadPath, "rev-parse", "refs/heads/someone-else"));
+        Assert.Equal("pending", store.Refresh(key)!.State);
+    }
+
+    [Fact]
+    public async Task Read_only_secondary_started_from_continuation_is_skipped_not_refused()
+    {
+        var item = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            Type = "Implementation",
+            RepositoryId = Guid.NewGuid(),
+            LeaseToken = Guid.NewGuid(),
+            AgentType = PRFactoryAgentType.Codex,
+            Prompt = "Edit primary, read secondary"
+        };
+        using var h = new ChainHarness(item);
+        var secondaryId = Guid.NewGuid();
+        h.AddSecondary(secondaryId);
+        ChainHarness.Git(h.SecondaryRepo!, "checkout", "-b", "prior");
+        var prior = ChainHarness.Commit(h.SecondaryRepo!, "prior.txt", "earlier phase");
+        ChainHarness.Git(h.SecondaryRepo!, "push", "origin", "prior");
+        ChainHarness.Git(h.SecondaryRepo!, "checkout", "main");
+        h.Server.Item.ContextJson = "{\"repositories\":{\"secondary\":[{\"id\":\"" + secondaryId.ToString("D")
+            + "\",\"cloneUrl\":\"" + h.SecondaryRemote + "\",\"defaultBranch\":\"main\",\"readOnly\":true,"
+            + "\"startFromBranch\":\"prior\",\"startCommitSha\":\"" + prior + "\"}]}}";
+        await h.TickAsync();
+        h.RunQueued(job => ChainHarness.Commit(job.Cwd!, "primary.txt", "changed"));
+        await h.TickAsync();
+        var outcomes = Assert.Single(h.Server.Completions).GetProperty("repositoryResults");
+        var secondary = outcomes.EnumerateArray().Single(r => r.GetProperty("repositoryId").GetGuid() == secondaryId);
+        Assert.Equal(1, secondary.GetProperty("pushState").GetInt32());
+        Assert.Equal("read-only repository", secondary.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task Single_repository_planning_without_committed_basis_still_completes()
+    {
+        using var dir = new AgentTeamForge.Tests.Support.TempStateDir();
+        var item = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            Type = "Planning",
+            RepositoryId = Guid.NewGuid(),
+            TicketArtefactFolder = "docs/PRF-8"
+        };
+        Directory.CreateDirectory(Path.Combine(dir.Path, "docs/PRF-8"));
+        File.WriteAllText(Path.Combine(dir.Path, "docs/PRF-8/plan.md"), "Plan");
+        var files = await PRFactoryArtefacts.CollectAsync(item, dir.Path, null, CancellationToken.None);
+        Assert.Contains(files, f => f.FileName == "plan.md");
+        Assert.DoesNotContain(files, f => f.Kind == "plan-basis");
+        await Assert.ThrowsAsync<InvalidDataException>(() => PRFactoryArtefacts.CollectAsync(item, dir.Path, null,
+            CancellationToken.None, [(item.RepositoryId!.Value, "primary", dir.Path)]));
     }
 
     [Fact]

@@ -9,7 +9,8 @@ public sealed record RepositorySetMember(string Id, string Name, string Remote, 
     string? StartFromBranch = null, string? StartCommitSha = null, string? PublishBranch = null,
     string? PlanBasisCommitSha = null);
 public sealed record RepositorySetSnapshot(string WorkspaceKey, RepositorySetMember[] Members, string ManifestPath);
-public sealed record RepositoryRefreshOriginal(string WorkspaceKey, string BaseSha, string StartingSha, string HeadSha);
+public sealed record RepositoryRefreshOriginal(string WorkspaceKey, string BaseSha, string StartingSha, string HeadSha,
+    string? CurrentBaseSha = null);
 public sealed record RepositoryRefreshBatch(string WorkspaceKey, RepositoryRefreshOriginal[] Originals, string State);
 
 [JsonSerializable(typeof(RepositorySetSnapshot))]

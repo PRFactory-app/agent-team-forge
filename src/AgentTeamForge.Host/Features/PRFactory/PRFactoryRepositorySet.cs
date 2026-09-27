@@ -28,16 +28,41 @@ public sealed class PRFactoryRepositorySet(PRFactoryRepositorySetStore store, PR
             {
                 try { await TeamWorkspace.Git(workspace.LeadPath, "rebase", "--abort"); }
                 catch (InvalidOperationException) { /* No rebase was in progress. */ }
+                // Never move a branch ATF does not own: a switched lead is retained for reconciliation.
+                await RequireBranch(workspace.LeadPath, workspace.InternalBranch!);
                 await TeamWorkspace.Git(workspace.LeadPath, "reset", "--hard", original.HeadSha);
             }
+            // Before the first turn children only hold ATF's own alignment to the refreshed tip.
             foreach (var member in workspace.Members.Where(m => Directory.Exists(m.Path)))
             {
+                var head = await TeamWorkspace.Git(member.Path, "rev-parse", "HEAD");
+                if (head == original.StartingSha) { continue; }
+                await RequireBranch(member.Path, member.Branch!);
+                if (original.CurrentBaseSha is null || !await IsAncestor(member.Path, original.CurrentBaseSha, head)
+                    || (await TeamWorkspace.Git(member.Path, "status", "--porcelain", "--untracked-files=all")).Length != 0)
+                {
+                    throw new InvalidOperationException("Child workspace changed during base refresh; retained for reconciliation.");
+                }
                 await TeamWorkspace.Git(member.Path, "reset", "--hard", original.StartingSha);
             }
             workspaceStore.RestoreBase(original.WorkspaceKey, original.BaseSha, original.StartingSha);
             handovers.FinishRefresh(original.WorkspaceKey, "restored");
         }
         store.FinishRefresh(key, "restored");
+    }
+
+    static async Task<bool> IsAncestor(string cwd, string ancestor, string head)
+    {
+        try { await TeamWorkspace.Git(cwd, "merge-base", "--is-ancestor", ancestor, head); return true; }
+        catch (InvalidOperationException) { return false; }
+    }
+
+    static async Task RequireBranch(string cwd, string branch)
+    {
+        if (await TeamWorkspace.Git(cwd, "symbolic-ref", "HEAD") != "refs/heads/" + branch)
+        {
+            throw new InvalidOperationException("Workspace branch changed; retained for reconciliation.");
+        }
     }
 
     public async Task<IReadOnlyList<(RepositorySetMember Entry, BaseFreshnessResult Result)>> RefreshAsync(
@@ -87,7 +112,7 @@ public sealed class PRFactoryRepositorySet(PRFactoryRepositorySetStore store, PR
                     "None", JobWorktree.Head(workspace.LeadPath), [], false)));
             }
             originals.Add(new(entry.WorkspaceKey, workspace.BaseSha!, workspace.StartingSha!,
-                JobWorktree.Head(workspace.LeadPath)!));
+                JobWorktree.Head(workspace.LeadPath)!, observed[entry.WorkspaceKey]));
         }
         if (drift.Count > 0) { return drift; }
         store.BeginRefresh(set.WorkspaceKey, [.. originals]);
@@ -102,7 +127,11 @@ public sealed class PRFactoryRepositorySet(PRFactoryRepositorySetStore store, PR
                 if (!result.AgentMayRun)
                 {
                     await RecoverRefreshAsync(set.WorkspaceKey);
-                    return results;
+                    // Earlier repositories were rolled back to their recorded base; never report their refresh.
+                    return [.. results.Select(r => r.Item2.AgentMayRun
+                        ? (r.Item1, r.Item2 with { Action = "None",
+                            HeadSha = originals.Single(o => o.WorkspaceKey == r.Item1.WorkspaceKey).HeadSha, AgentMayRun = false })
+                        : r)];
                 }
             }
             store.FinishRefresh(set.WorkspaceKey, "done");
