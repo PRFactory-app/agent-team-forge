@@ -68,18 +68,22 @@ package and in `atf --version` comes from the tag.
   (`SHA256SUMS-osx-arm64` on macOS), then runs the extracted binary. Linux also
   runs the published scenario smoke.
 - A `windows-latest` job publishes `atf-VERSION-win-x64.zip` with
-  `SHA256SUMS-win-x64` and separate debug symbols. Windows AOT cannot be
-  cross-compiled from Linux.
+  `install.ps1`, `SHA256SUMS-win-x64` and separate debug symbols. Windows AOT
+  cannot be cross-compiled from Linux.
 - Bundles contain the native executable and its native libraries (including
   SQLite); no .NET runtime is needed on the target. Linux builds on Ubuntu
   24.04 (glibc 2.39) and links only `libc`, `libm` and the loader.
-- The workflow uploads artifacts; publishing the GitHub release is a separate,
-  owner-approved step. A CI build is not platform validation (see
+- After the Linux job passes, the workflow publishes the GitHub release for
+  the tag; the macOS and Windows tester assets attach when their jobs finish.
+  A CI build is not platform validation (see
   [platform status](docs/platform-status.md)).
 - `install.sh` installs payloads into
   `~/.local/share/agentteamforge/releases/VERSION` and links
   `~/.local/bin/atf`. Local test install:
   `sh install.sh --archive atf-VERSION-<rid>.tar.gz --checksum SHA256SUMS`.
+- `install.ps1` installs Windows payloads under the user's
+  `.local\share\agentteamforge` directory and adds its `bin` directory to the
+  user PATH. The Windows installer and runtime still need platform validation.
 
 ### Testing against a running daemon safely
 

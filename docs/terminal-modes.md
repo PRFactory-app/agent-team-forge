@@ -5,7 +5,8 @@ never switches to another mode on its own
 ([ADR 0004](adr/0004-explicit-launch-mode.md)).
 
 Submit and follow-up instructions accept up to 65,536 UTF-16 characters by
-default. In Linux Herdr mode, a real-agent prompt above 120 KiB UTF-8 is
+default; IPC accepts 2 MiB frames. In Linux Herdr mode, a real-agent prompt
+above 120 KiB UTF-8 is
 rejected before acceptance because Herdr passes it as one CLI argument. Long
 Windows Terminal prompts are handed to the agent through a private prompt
 file when they exceed the command-line limit; this path awaits Windows

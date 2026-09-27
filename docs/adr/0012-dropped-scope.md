@@ -32,6 +32,6 @@ notices follow once the license is chosen.
 ## Consequences
 
 - The remaining open work is tracked as issues, not planning documents:
-  Windows re-validation, Claude wake on Windows/macOS, Claude Desktop member
-  wake, `install.ps1`, and the win-agent-teams parity gaps listed in the
+  Windows re-validation (including the new installer), Claude wake on
+  Windows/macOS, Claude Desktop member wake, and the win-agent-teams parity gaps listed in the
   [migration guide](../migrating-from-win-agent-teams.md).

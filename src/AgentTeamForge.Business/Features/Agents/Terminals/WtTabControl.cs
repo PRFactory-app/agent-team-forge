@@ -328,7 +328,10 @@ internal sealed class WtTabControl : IWtTabControl
         } finally { [void]$native::CloseHandle($job) }
         """;
 
-    internal static IReadOnlyList<string> AgentArguments(InteractiveLaunch launch, string prompt)
+    internal static IReadOnlyList<string> AgentArguments(InteractiveLaunch launch, string prompt) =>
+        AgentArguments(launch, prompt, OperatingSystem.IsWindows());
+
+    internal static IReadOnlyList<string> AgentArguments(InteractiveLaunch launch, string prompt, bool windowsCommandLine)
     {
         var executable = launch.Kind switch
         {
@@ -353,15 +356,22 @@ internal sealed class WtTabControl : IWtTabControl
         var command = args[0];
         if (command.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
         {
-            args.Add(ShimPrompt(launch.Kind, Path.ChangeExtension(launch.BootstrapPath, ".prompt.txt")));
+            args.Add(ShimPrompt(launch.Kind, Path.ChangeExtension(launch.BootstrapPath, ".prompt.txt"), prompt));
             WindowsCliLaunch.EnsureCmdSafe(args);
             return args;
         }
         args.Add(launch.Kind == InteractiveAgentKind.Pi && prompt.Length > 0 && prompt[0] is '@' or '/' or '-'
             || launch.Kind == InteractiveAgentKind.Codex && prompt.StartsWith('-', StringComparison.Ordinal)
             ? "\n" + prompt : prompt);
+        if (windowsCommandLine && CommandLine(args).Length > MaxWindowsCommandLineChars)
+        {
+            // CreateProcess caps the whole command line at 32 Ki chars; hand a long prompt over in its private file.
+            args[^1] = ShimPrompt(launch.Kind, Path.ChangeExtension(launch.BootstrapPath, ".prompt.txt"), prompt);
+        }
         return args;
     }
+
+    internal const int MaxWindowsCommandLineChars = 32_000;
 
     internal static void EnsureInteractiveCodexNative(InteractiveAgentKind kind, string binary)
     {
@@ -420,8 +430,13 @@ internal sealed class WtTabControl : IWtTabControl
         return quoted.Append('\\', backslashes * 2).Append('"').ToString();
     }));
 
-    internal static string ShimPrompt(InteractiveAgentKind kind, string path) => kind == InteractiveAgentKind.Pi
-        ? "@" + path : "Read the complete task in this UTF-8 file and follow it: " + path;
+    /// <summary>Points the agent at the prompt file. Pi inlines @file content; others need the correlation marker inline to bind the turn.</summary>
+    internal static string ShimPrompt(InteractiveAgentKind kind, string path, string prompt = "")
+    {
+        if (kind == InteractiveAgentKind.Pi) { return "@" + path; }
+        var marker = prompt.LastIndexOf("[AgentTeamForge correlation id: ", StringComparison.Ordinal);
+        return "Read the complete task in this UTF-8 file and follow it: " + path + (marker < 0 ? "" : " " + prompt[marker..].TrimEnd());
+    }
 
     internal static IReadOnlyList<string> CodexHookArguments(string launcher)
     {

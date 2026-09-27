@@ -16,7 +16,7 @@ those machines).
 
 | Feature | Linux | Windows | macOS |
 | --- | --- | --- | --- |
-| Install, setup, doctor, uninstall | Tested (`install.sh`) | Manual unzip of the release bundle; no `install.ps1` yet | Untested (`install.sh`) |
+| Install, setup, doctor, uninstall | Tested (`install.sh`) | `install.ps1` added; installer flow untested on Windows | Untested (`install.sh`) |
 | Headless Claude Code / Codex | Tested | Untested | Untested |
 | Headless Pi | Tested | Untested (Pi not installed on the test VM) | Untested |
 | Interactive agents | Herdr: tested | Windows Terminal (`wt`): Claude and Codex tested; see open items | Terminal.app / kitty: untested |
@@ -56,7 +56,7 @@ locked; `atf stop` printed raw `taskkill` output.
 - Re-run the Windows matrix on the current release, including Pi.
 - Claude native wake on Windows and macOS (currently poll `get_job`).
 - Wake for a Claude Desktop external member (currently poll `external_read`).
-- `install.ps1` for Windows.
+- Validate `install.ps1` and upgrade/uninstall on Windows.
 - First macOS run by a volunteer, including Terminal.app tab placement.
 - win-agent-teams parity gaps: see the
   [migration guide](migrating-from-win-agent-teams.md).

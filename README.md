@@ -22,11 +22,19 @@ tabs, or in a small web console.
 curl -fsSL https://github.com/PRFactory-app/agent-team-forge/releases/latest/download/install.sh | sh
 ```
 
+Windows PowerShell 5.1 or newer (Windows x64 tester build):
+
+```powershell
+irm https://github.com/PRFactory-app/agent-team-forge/releases/latest/download/install.ps1 | iex
+```
+
 **2. Set up.** Choose visible agents (Herdr) or background agents (headless):
 
 ```sh
 ~/.local/bin/atf setup --mode herdr      # or: --mode headless
 ```
+
+On Windows, open a new PowerShell window and run `atf setup --mode wt`.
 
 This connects `atf` to the Claude Code, Codex and Pi clients you have installed.
 Reload them afterwards. `atf doctor` checks everything.
