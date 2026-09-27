@@ -95,15 +95,16 @@ public sealed class BranchPublisher(PRFactoryPublicationStore store, Publication
 
     // Git status already honours .gitignore, .git/info/exclude and core.excludesFile.
     // Only discard untracked build output: a tracked change always requires a commit.
+    // Names that also hold real source (bin/, build/, dist/, coverage/, obj/) are left to
+    // the repository's own ignore rules, so a forgotten source file there still blocks.
     internal static bool IsGeneratedUntracked(string porcelain)
     {
         if (!porcelain.StartsWith("?? ", StringComparison.Ordinal)) { return false; }
         var path = porcelain[3..].Trim('"').Replace('\\', '/');
         var parts = path.Split('/');
         if (parts[..^1].Any(part => part is "__pycache__" or ".pytest_cache" or "node_modules" or
-                "bin" or "obj" or ".venv" or "dist" or "build" or ".mypy_cache" or
-                ".ruff_cache" or ".tox" or ".nox" or ".next" or ".turbo" or
-                ".parcel-cache" or "coverage" or "htmlcov")) { return true; }
+                ".venv" or ".mypy_cache" or ".ruff_cache" or ".tox" or ".nox" or ".next" or
+                ".turbo" or ".parcel-cache" or "htmlcov")) { return true; }
         var name = parts[^1];
         return name.EndsWith(".pyc", StringComparison.OrdinalIgnoreCase) ||
             name is ".coverage" or "coverage.xml" or "lcov.info" ||

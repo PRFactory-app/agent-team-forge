@@ -99,6 +99,24 @@ public sealed class BranchPublisherTests
         Assert.Equal("", await rig.RemoteHead());
     }
 
+    [Fact]
+    public async Task Untracked_source_under_build_or_bin_still_blocks_publication()
+    {
+        using var rig = await Rig.Create();
+        var cwd = rig.Request.LeadPath;
+        Directory.CreateDirectory(Path.Combine(cwd, "build"));
+        File.WriteAllText(Path.Combine(cwd, "build", "Build.cs"), "source");
+        Directory.CreateDirectory(Path.Combine(cwd, "bin"));
+        File.WriteAllText(Path.Combine(cwd, "bin", "deploy.sh"), "source");
+        using var publisher = rig.Publisher();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => publisher.PublishAsync(rig.Request, TestContext.Current.CancellationToken));
+
+        Assert.Contains("build/Build.cs", error.Message, StringComparison.Ordinal);
+        Assert.Contains("bin/deploy.sh", error.Message, StringComparison.Ordinal);
+        Assert.Equal("", await rig.RemoteHead());
+    }
+
     [Theory]
     [InlineData("gitignore")]
     [InlineData("info-exclude")]
