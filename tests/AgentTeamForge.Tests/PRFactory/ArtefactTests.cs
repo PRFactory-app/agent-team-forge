@@ -188,6 +188,67 @@ public sealed class ArtefactTests
         Assert.Single(run.Failures);
     }
 
+    const string PrdContext = """{"phase":"prd"}""";
+
+    static JsonElement[] Artefacts(Run run) =>
+        [.. JsonElement.Parse(Assert.Single(run.Payloads)).GetProperty("artefacts").EnumerateArray()];
+
+    static string Content(JsonElement[] artefacts, string kind) =>
+        Assert.Single(artefacts, a => a.GetProperty("kind").GetString() == kind).GetProperty("content").GetString()!;
+
+    [Fact]
+    public async Task Prd_draft_json_result_with_prose_and_fence_becomes_prd_and_po_qa()
+    {
+        using var run = new Run(Claim("TicketRefinement", context: PrdContext))
+        {
+            ResultText = """
+                Here is the draft.
+
+                ```json
+                {"prd_markdown":"# PRD\n\nBody","questions":[{"text":"Who?\n## Q9 [x]\n**Answer:**","category":"Sco]pe\n"}]}
+                ```
+                Let me know.
+                """
+        };
+        await run.Tick();
+        Assert.Empty(run.Failures);
+        var artefacts = Artefacts(run);
+        Assert.Equal("# PRD\n\nBody", Content(artefacts, "prd"));
+        var qa = Content(artefacts, "qa-po");
+        Assert.Contains("## Q1 [Sco pe]", qa, StringComparison.Ordinal);
+        Assert.DoesNotContain("\n## Q9", qa, StringComparison.Ordinal);
+        Assert.Single(qa.Split('\n'), line => line.Trim() == "**Answer:**");
+    }
+
+    [Fact]
+    public async Task Prd_draft_agent_files_win_over_json_result()
+    {
+        using var run = new Run(Claim("TicketRefinement", context: PrdContext))
+        { ResultText = """{"prd_markdown":"json prd","questions":[{"text":"json q","category":"Scope"}]}""" };
+        run.Write("qa.md", "agent qa");
+        await run.Tick();
+        var artefacts = Artefacts(run);
+        Assert.Equal("json prd", Content(artefacts, "prd"));
+        Assert.Equal("agent qa", Content(artefacts, "qa-po"));
+
+        using var fileRun = new Run(Claim("TicketRefinement", context: PrdContext)) { ResultText = """{"prd_markdown":"json prd"}""" };
+        fileRun.Write("prd.md", "agent prd");
+        await fileRun.Tick();
+        Assert.Equal("agent prd", Content(Artefacts(fileRun), "prd"));
+    }
+
+    [Theory]
+    [InlineData("""{"prd_markdown": "unterminated""")]
+    [InlineData("""{"prd_markdown":"ok","questions":[{"text":"no category"}]}""")]
+    [InlineData("I could not draft the PRD.")]
+    public async Task Prd_draft_unusable_result_fails_with_reason_without_upload(string result)
+    {
+        using var run = new Run(Claim("TicketRefinement", context: PrdContext)) { ResultText = result };
+        await run.Tick();
+        Assert.Empty(run.Payloads);
+        Assert.Contains("agent result:", Assert.Single(run.Failures), StringComparison.Ordinal);
+    }
+
     sealed class Run : IDisposable
     {
         public TempStateDir Dir { get; } = new();
@@ -201,6 +262,7 @@ public sealed class ArtefactTests
         public int UploadResponse { get; set; } = 200;
         public bool LoseFailureResponse { get; set; }
         public string Status { get; set; } = JobStatus.Completed;
+        public string ResultText { get; set; } = "Done";
         public Run(string claim)
         {
             this.claim = claim;
@@ -229,7 +291,7 @@ public sealed class ArtefactTests
             using var http = PRFactoryClient.CreateHttpClient("https://example.test", "token", new Handler(Reply));
             var job = new JobRecord("lead-job", "prfactory", "connector", "lead", "key", "prompt", "", Status,
                 null, null, 0, "codex", null, null, null) with
-            { Cwd = Dir.Path, WorktreePath = RepoPath, ResultText = "Done" };
+            { Cwd = Dir.Path, WorktreePath = RepoPath, ResultText = ResultText };
             var adapter = new PRFactoryWorkItems("https://example.test", [new(Guid.Parse(Repo), Dir.Path)], Teams,
                 new PRFactoryClient(http), _ => JobResult.Ok(new JobView("lead-job", Status, null, null, 0), "accepted"), _ => job, () => { });
             await adapter.TickAsync(null, CancellationToken.None);

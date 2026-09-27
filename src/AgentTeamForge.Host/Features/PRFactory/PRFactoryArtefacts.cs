@@ -1,9 +1,10 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using AgentTeamForge.Business.Features.Jobs;
 
 namespace AgentTeamForge.Host.Features.PRFactory;
 
-internal static class PRFactoryArtefacts
+internal static partial class PRFactoryArtefacts
 {
     // Below PRFactory's default request body limit; the whole request is frozen in SQLite.
     internal const long MaxUploadBytes = 20 * 1024 * 1024;
@@ -39,22 +40,26 @@ internal static class PRFactoryArtefacts
         }
         // PRFactory's built-in Phase 0 draft prompt asks for JSON on stdout rather than files.
         // Materialize that contract into the same artefacts as its local worker so the normal
-        // upload and checkpoint validation still apply.
-        if (item.Type == "TicketRefinement" && IsPrdDraft(item) && !files.Any(f => f.Kind == "prd")
-            && TryPrdResult(resultText, out var prd, out var questions))
+        // upload and checkpoint validation still apply. Files the agent wrote itself win.
+        string? resultError = null;
+        if (item.Type == "TicketRefinement" && IsPrdDraft(item) && !files.Any(f => f.Kind == "prd"))
         {
-            files.Add(new("prd.md", prd, "prd"));
-            if (questions.Count > 0)
+            if (TryPrdResult(resultText, out var prd, out var questions, out resultError))
             {
-                var qa = "# Product-owner questions\n\n" + string.Join("\n\n", questions.Select((q, i) =>
-                    $"## Q{i + 1} [{q.Category}]\n\n{q.Text}\n\n**Answer:**"));
-                files.Add(new("qa.md", qa + "\n", "qa-po"));
+                files.Add(new("prd.md", prd, "prd"));
+                if (questions.Count > 0 && !files.Any(f => f.Kind == "qa-po"))
+                {
+                    var qa = "# Product-owner questions\n\n" + string.Join("\n\n", questions.Select((q, i) =>
+                        $"## Q{i + 1} [{q.Category}]\n\n{q.Text}\n\n**Answer:**"));
+                    files.Add(new("qa.md", qa + "\n", "qa-po"));
+                }
             }
         }
         var required = RequiredKinds(item);
         if (required.Length > 0 && !files.Any(f => required.Contains(f.Kind, StringComparer.OrdinalIgnoreCase)))
         {
-            throw new InvalidDataException($"{item.Type} requires {string.Join(" or ", required)} output in {item.TicketArtefactFolder}; found: {string.Join(", ", files.Select(f => f.FileName))}");
+            throw new InvalidDataException($"{item.Type} requires {string.Join(" or ", required)} output in {item.TicketArtefactFolder}; found: {string.Join(", ", files.Select(f => f.FileName))}"
+                + (resultError is null ? "" : $"; agent result: {resultError}"));
         }
         if (item.ExpectedOutput is { Length: > 0 } expected && !files.Any(f => string.Equals(f.FileName, expected, StringComparison.OrdinalIgnoreCase)))
         {
@@ -80,45 +85,63 @@ internal static class PRFactoryArtefacts
             return context.RootElement.TryGetProperty("phase", out var phase)
                 && phase.GetString() == "prd";
         }
-        catch (JsonException) { return false; }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException) { return false; }
     }
 
-    static bool TryPrdResult(string? resultText, out string prd, out List<(string Text, string Category)> questions)
+    static bool TryPrdResult(string? resultText, out string prd, out List<(string Text, string Category)> questions, out string? error)
     {
         prd = string.Empty;
         questions = [];
-        if (string.IsNullOrWhiteSpace(resultText)) { return false; }
-        var json = resultText.Trim();
-        if (json.StartsWith("```", StringComparison.Ordinal))
+        error = "no JSON object with a non-empty string prd_markdown";
+        if (string.IsNullOrWhiteSpace(resultText)) { error = "empty"; return false; }
+        // Agents wrap the object in a fence and add prose around it; try the strictest reading first.
+        var text = resultText.Trim();
+        var candidates = new List<string> { text };
+        candidates.AddRange(Fence().Matches(text).Select(m => m.Groups[1].Value));
+        if (text.IndexOf('{') is var open and >= 0 && text.LastIndexOf('}') is var close && close > open)
+        { candidates.Add(text[open..(close + 1)]); }
+        foreach (var candidate in candidates)
         {
-            var firstLine = json.IndexOf('\n');
-            var closing = json.LastIndexOf("```", StringComparison.Ordinal);
-            if (firstLine < 0 || closing <= firstLine) { return false; }
-            json = json[(firstLine + 1)..closing].Trim();
-        }
-        try
-        {
-            using var document = JsonDocument.Parse(json);
-            var root = document.RootElement;
-            if (!root.TryGetProperty("prd_markdown", out var value) || value.ValueKind != JsonValueKind.String)
-            { return false; }
-            prd = value.GetString() ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(prd)) { return false; }
-            if (root.TryGetProperty("questions", out var array) && array.ValueKind == JsonValueKind.Array)
+            try
             {
-                foreach (var question in array.EnumerateArray())
+                using var document = JsonDocument.Parse(candidate);
+                var root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("prd_markdown", out var value)
+                    || value.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(value.GetString()))
+                { continue; }
+                var parsed = new List<(string Text, string Category)>();
+                if (root.TryGetProperty("questions", out var array) && array.ValueKind == JsonValueKind.Array)
                 {
-                    var text = question.GetProperty("text").GetString();
-                    var category = question.GetProperty("category").GetString();
-                    if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(category)) { return false; }
-                    questions.Add((text, category));
+                    foreach (var question in array.EnumerateArray())
+                    {
+                        var q = parsed.Count + 1;
+                        if (question.ValueKind != JsonValueKind.Object
+                            || !question.TryGetProperty("text", out var t) || t.ValueKind != JsonValueKind.String
+                            || !question.TryGetProperty("category", out var c) || c.ValueKind != JsonValueKind.String)
+                        { error = $"question {q} needs string text and category"; return false; }
+                        // Keep each question inside PRFactory's "## Q<n> [<Category>]" / "**Answer:**" grammar.
+                        var category = string.Join(' ', c.GetString()!.Split(['[', ']', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                        var body = string.Join('\n', t.GetString()!.Trim().Replace("\r\n", "\n").Split('\n')
+                            .Select(line => QaControlLine().IsMatch(line) ? "\\" + line.TrimStart() : line));
+                        if (category.Length == 0 || body.Length == 0) { error = $"question {q} has empty text or category"; return false; }
+                        parsed.Add((body, category));
+                    }
                 }
+                prd = value.GetString()!;
+                questions = parsed;
+                error = null;
+                return true;
             }
-            return true;
+            catch (JsonException) { }
         }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException)
-        { return false; }
+        return false;
     }
+
+    [GeneratedRegex(@"^```[^\n]*\n(.*?)^```", RegexOptions.Multiline | RegexOptions.Singleline)]
+    private static partial Regex Fence();
+
+    [GeneratedRegex(@"^\s*(##\s*Q|\*\*Answer:\*\*\s*$)", RegexOptions.IgnoreCase)]
+    private static partial Regex QaControlLine();
 
     static string RepositoryName(PRFactoryWorkItem item, string cwd)
     {
