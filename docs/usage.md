@@ -53,9 +53,12 @@ this branch") or call the MCP tools directly:
 4. **Follow up** on a finished job with
    `follow_up(job_id=..., instruction=..., idempotency_key="task-1-b")`. It
    resumes the same native agent session, backend and worktree. Add
-   `interrupt=true` to replace a running turn. Without it, a follow-up to a
-   busy job returns `parent_not_ready`.
-5. **Stop** a queued or running job with `stop_job(job_id=...)`.
+   `interrupt=true` to replace a running turn. Otherwise the prompt queues
+   durably behind a busy turn; `defer=false` instead returns `parent_not_ready`.
+5. **Stop** a queued or running job with `stop_job(job_id=...)`. Use
+   `interrupt_job` to interrupt without another prompt, `stop_agent` to
+   close an idle retained agent, and `revive_agent` to resume a dead session
+   with a new instruction and idempotency key.
 
 Other `submit_job` options:
 
@@ -67,11 +70,14 @@ Other `submit_job` options:
 - `timeout_s` (1–86400): cancel with reason `timeout` that long after the job
   starts. `queue_ttl_s`: cancel with reason `queue_ttl` if not started in time.
 - `name`: agent name for the web console card.
+- `expected_outputs`: output-path metadata retained in `get_job` (not file verification).
 - `herdr_placement`: `own-session` or `herdr-session:<name>` (Herdr mode).
 
 MCP tools for managed jobs: `submit_job`, `get_job`, `get_job_output`,
-`follow_up`, `list_jobs`, `stop_job`, `session_info`, `resume_session`,
-`register_codex_wake`. Coming from win-agent-teams? See the
+`get_job_activity`, `follow_up`, `list_jobs`, `list_backends`, `stop_job`,
+`stop_agent`, `interrupt_job`, `revive_agent`, `session_info`, `resume_session`,
+`register_codex_wake`. `list_backends` reports executable availability and
+model/tier choices. `get_job.delivery` exposes durable delivery evidence. Coming from win-agent-teams? See the
 [migration guide](migrating-from-win-agent-teams.md).
 
 ### Several leads and restarts

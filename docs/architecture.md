@@ -94,9 +94,12 @@ finished the turn. Only the correlated native completion record makes a job
 `completed`; a crash between attempt start and that evidence leaves an
 uncertain job for reconciliation.
 
-Follow-ups are new jobs whose parent holds a native session ID; they resume
-that session in the same backend and worktree. `interrupt=true` cancels the
-running parent turn and accepts the new job atomically.
+Follow-ups are new jobs that resume the parent's native session in the same
+backend and worktree. Deferred follow-ups may be accepted while the parent
+is queued or running; dispatch waits for its turn and backend cleanup.
+`interrupt=true` cancels the running parent turn and accepts the new job
+atomically. Queued follow-ups remain durable across restart; a fenced
+parent is reported as `parent_needs_reconciliation`.
 
 ## Crash guarantees
 
