@@ -35,7 +35,7 @@ lead agent (Claude Code / Codex / Pi)
   lazily if needed. MCP stdout carries protocol only; diagnostics go to stderr.
 - **CLI** (`atf client …`, `setup`, `doctor`, `prune`, `web`, `prfactory`):
   short-lived clients over the same IPC.
-- **Agents** are external programs: Claude Code, Codex and Pi. ATF has no model
+- **Agents** are external programs: Claude Code, Codex, Pi, Cursor CLI and Factory Droid. ATF has no model
   loop of its own.
 
 ## Projects
@@ -130,6 +130,8 @@ runs with permissions bypassed ([ADR 0006](adr/0006-bypass-permissions.md)).
 | Claude Code | `claude -p --output-format stream-json` | TUI in the selected terminal | `--resume <session>` |
 | Codex | `codex exec --json` | TUI; trusts the checkout for that invocation only | `exec resume` / `resume` |
 | Pi | `pi -p --mode json` | TUI | `--continue` in the original session directory |
+| Cursor CLI | `cursor-agent -p --output-format json --force` | Headless only | `--resume <session-id>` |
+| Factory Droid | `droid exec --output-format json --skip-permissions-unsafe` | Headless only | `--session-id <session-id>` |
 | fake | Test backend for scenarios and demos | — | — |
 
 Notes from backend research:
@@ -141,6 +143,13 @@ Notes from backend research:
   uses it for wake notices, not for steering a busy human turn.
 - Model catalogs are discovered from the backend CLIs and cached; an
   unavailable tier target is rejected at admission with an upgrade hint.
+- Cursor and Droid's JSON result supplies the native session ID and final text.
+  ATF refuses follow-up if no native session was bound. Cursor supports MCP
+  through `.cursor/mcp.json` and Droid through its project/user MCP config, but
+  neither has a verified per-run MCP config flag. ATF does not write those
+  configuration files, so its managed-child MCP routing is unavailable for
+  these two backends. Setup and doctor detect their binaries without registering
+  MCP with them.
 
 ## Terminals
 

@@ -7,6 +7,8 @@ public sealed class BackendCatalog
     public const string Claude = "claude";
     public const string Codex = "codex";
     public const string Pi = "pi";
+    public const string Cursor = "cursor";
+    public const string Droid = "droid";
 
     readonly Dictionary<string, Func<IJobBackend>> _factories = [];
 
@@ -34,6 +36,8 @@ public sealed class BackendCatalog
             catalog.Register(Claude, () => new ClaudeCodeBackend());
             catalog.Register(Codex, () => new CodexExecBackend());
             catalog.Register(Pi, () => new PiBackend());
+            catalog.Register(Cursor, () => new CursorCliBackend());
+            catalog.Register(Droid, () => new DroidBackend());
         }
 
         return catalog;

@@ -326,7 +326,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
         var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebSubmitBody);
         if (body is not
             {
-                Backend: "claude" or "codex" or "pi", Instruction: { Length: > 0 and <= MaxInstructionChars } instruction,
+                Backend: "claude" or "codex" or "pi" or "cursor" or "droid", Instruction: { Length: > 0 and <= MaxInstructionChars } instruction,
                 IdempotencyKey: { Length: > 0 and <= MaxKeyChars } key, Cwd: { Length: > 0 and <= 4096 } cwd
             }
             || string.IsNullOrWhiteSpace(instruction) || !Path.IsPathFullyQualified(cwd) || !Directory.Exists(cwd)

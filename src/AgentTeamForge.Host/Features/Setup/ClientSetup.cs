@@ -134,6 +134,15 @@ internal static class ClientSetup
         {
             Console.Out.WriteLine("pi: skipped (not installed)");
         }
+        // Cursor and Droid are managed headless agents. Their MCP commands edit
+        // user/project configuration, so setup only detects them here.
+        foreach (var (client, binaryName) in new[] { ("cursor", "cursor-agent"), ("droid", "droid") })
+        {
+            var (code, version) = run(binaryName, ["--version"]);
+            Console.Out.WriteLine(code == 127 ? $"{client}: skipped (not installed)"
+                : code == 0 ? $"{client}: available ({BoundedError(version)}; headless-only)"
+                : $"{client}: found but version check failed ({BoundedError(version)})");
+        }
         if (installed == 0)
         {
             Console.Out.WriteLine($"{(apply ? "Setup succeeded, but no" : "No")} agent clients were found. Install and log in to Claude, Codex, or Pi, then rerun atf setup.");

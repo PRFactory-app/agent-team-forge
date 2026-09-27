@@ -24,8 +24,8 @@ public static class JobsMcpBridge
         """;
 
     const string SubmitProperties = """
-          "backend":{"type":"string","enum":["claude","codex","pi","fake"],"description":"Agent CLI the daemon runs for this job."},
-          "model":{"type":"string","description":"Codex/pi capability tier: cheapest, low, medium, high, xhigh, max; pi also has medium-fast. Tier mappings are configurable; read the effective table in session_info or the web console Settings view. Claude: haiku, sonnet, opus (default), fable; fast/balanced/powerful aliases. Raw model slugs pass through. Retired pi high-fast errors; use high."},
+          "backend":{"type":"string","enum":["claude","codex","pi","cursor","droid","fake"],"description":"Agent CLI the daemon runs for this job. Cursor and Droid require headless launch mode."},
+          "model":{"type":"string","description":"Codex/pi/cursor/droid capability tier: cheapest, low, medium, high, xhigh, max; pi also has medium-fast. Tier mappings are configurable; read the effective table in session_info or Settings. Claude: haiku, sonnet, opus (default), fable. Raw model slugs pass through."},
           "effort":{"type":"string","description":"Explicit effort for Claude or a raw/blank Codex/pi model. A capability tier owns its effort and ignores this override."},
           "herdr_placement":{"type":"string","description":"Optional Herdr placement: own-session or herdr-session:<running session name>. Omit to use the daemon's global default."},
           "expected_outputs":{"type":"array","items":{"type":"string"},"maxItems":100,"description":"Expected output paths retained as metadata; does not verify files."},
@@ -82,7 +82,7 @@ public static class JobsMcpBridge
     const string ListSchema = """
         {"type":"object","properties":{
           "status":{"type":"string","enum":["queued","running","completed","failed","needs_reconciliation","cancelled"]},
-          "backend":{"type":"string","enum":["fake","claude","codex","pi"]},
+          "backend":{"type":"string","enum":["fake","claude","codex","pi","cursor","droid"]},
           "since":{"type":"string","description":"Include jobs accepted at or after this ISO 8601 time."},
           "limit":{"type":"integer","minimum":1,"maximum":50,"description":"Page size; default 20."},
           "cursor":{"type":"string","description":"next_cursor from the previous page."},
@@ -193,7 +193,7 @@ public static class JobsMcpBridge
         }
         var tools = new List<Tool>
         {
-            new() { Name = "submit_job", Description = "Durably submit a task to an agent (claude, codex or pi) run by the AgentTeamForge daemon. Read get_job for the result; registered native wake provides best-effort notices.", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
+            new() { Name = "submit_job", Description = "Durably submit a task to an agent (claude, codex, pi, cursor or droid) run by the AgentTeamForge daemon. Read get_job for the result; registered native wake provides best-effort notices.", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "get_job", Description = "Read a job's status, result output and native session_id.", InputSchema = Parse(GetSchema) },
             new() { Name = "get_job_output", Description = "Read live stdout/stderr log bytes from a job, starting at an absolute offset. Use next_offset to continue.", InputSchema = Parse(OutputSchema) },
             new() { Name = "stop_job", Description = "Cancel a queued or running job. A finished job is returned unchanged.", InputSchema = Parse(GetSchema) },

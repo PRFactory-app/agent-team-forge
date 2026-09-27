@@ -11,7 +11,7 @@ public sealed record TierSetting(string Backend, string Tier, string Model, stri
 /// <summary>Private, per-state-directory capability tier overrides.</summary>
 public sealed class TierMap
 {
-    static readonly string[] Backends = ["codex", "pi"];
+    static readonly string[] Backends = ["codex", "pi", "cursor", "droid"];
     readonly string _path;
     readonly Func<string, IReadOnlyCollection<string>> _catalog;
     readonly Lock _gate = new();
@@ -75,11 +75,13 @@ public sealed class TierMap
 
     public static IReadOnlyList<string> Efforts(string backend) => backend == "pi"
         ? ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
-        : backend == "codex" ? ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] : [];
+        : backend == "codex" ? ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+        : backend == "droid" ? ["none", "dynamic", "off", "minimal", "low", "medium", "high", "xhigh", "max"]
+        : backend == "cursor" ? ["none"] : [];
 
     static bool ValidNames(string backend, string tier) => ModelSelection.TierNames(backend).Contains(tier, StringComparer.Ordinal);
     static bool ValidEffort(string backend, string effort) => backend == "pi"
-        ? PiThinking.Valid(effort) : backend == "codex" && Efforts(backend).Contains(effort);
+        ? PiThinking.Valid(effort) : Efforts(backend).Contains(effort);
 
     public void Change(string? backend, string? tier, string? model, string? effort, bool resetAll = false)
     {
@@ -95,11 +97,12 @@ public sealed class TierMap
                 throw new ArgumentException("Invalid model or effort");
             }
             var known = _catalog(backend!);
-            if (known.Count > 0 && !(backend == "pi"
+            if (known.Count > 0 && !(backend == "cursor" && model == "auto") && !(backend == "pi"
                 ? known.Any(candidate => candidate.Split('/', 2)[^1] == model.Split('/', 2)[^1])
                 : known.Contains(model)))
             {
                 var hint = backend == "codex" ? "npm install -g @openai/codex@latest"
+                    : backend == "cursor" ? "run cursor-agent --list-models or check account access"
                     : "npm install -g @earendil-works/pi-coding-agent@latest";
                 throw new ArgumentException($"Model '{model}' is not available for {backend} on this machine. Upgrade {backend}: {hint}");
             }

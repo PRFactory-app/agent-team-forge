@@ -99,6 +99,16 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
         Assert.Matches("^codex-[0-9a-f]{8}$", request.TargetAgent);
     }
 
+    [Theory]
+    [InlineData("cursor")]
+    [InlineData("droid")]
+    public async Task New_agent_accepts_headless_only_backends(string backend)
+    {
+        var body = new WebSubmitBody(backend, "do work", backend + "-key", Environment.CurrentDirectory, "low");
+        Assert.Equal(HttpStatusCode.OK, (await Send(Submit(body))).Status);
+        Assert.Equal(backend, Assert.Single(_forwarded).Backend);
+    }
+
     [Fact]
     public async Task New_agent_can_attach_to_a_lead_with_its_registered_workspace()
     {

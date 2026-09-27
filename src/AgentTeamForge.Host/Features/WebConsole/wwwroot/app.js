@@ -148,8 +148,8 @@
     setPlacementControls('settings', defaultPlacement);
     const select = $('new-agent-backend');
     select.replaceChildren();
-    for (const backend of (r?.backends || []).filter(name => ['claude', 'codex', 'pi'].includes(name))) {
-      const option = element('option', '', ({ claude: 'Claude Code', codex: 'Codex', pi: 'Pi' })[backend]);
+    for (const backend of (r?.backends || []).filter(name => ['claude', 'codex', 'pi', 'cursor', 'droid'].includes(name))) {
+      const option = element('option', '', ({ claude: 'Claude Code', codex: 'Codex', pi: 'Pi', cursor: 'Cursor CLI', droid: 'Factory Droid' })[backend]);
       option.value = backend;
       select.append(option);
     }
@@ -214,9 +214,9 @@
   function renderTierSettings(catalog) {
     const target = $('tier-settings');
     target.replaceChildren();
-    for (const backend of ['codex', 'pi']) {
+    for (const backend of ['codex', 'pi', 'cursor', 'droid']) {
       const section = element('section', 'tier-backend');
-      section.append(element('h3', '', backend === 'codex' ? 'Codex' : 'Pi'));
+      section.append(element('h3', '', ({ codex: 'Codex', pi: 'Pi', cursor: 'Cursor CLI', droid: 'Factory Droid' })[backend]));
       const table = element('table', 'tier-table');
       const head = element('thead');
       const headings = element('tr');
@@ -241,7 +241,8 @@
         const effortCell = element('td'); effortCell.dataset.label = 'Effort';
         const effort = element('select'); effort.setAttribute('aria-label', `${backend} ${row.tier} effort`);
         const levels = backend === 'pi' ? ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
-          : ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+          : backend === 'droid' ? ['none', 'dynamic', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+          : backend === 'cursor' ? ['none'] : ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
         for (const value of levels) { const option = element('option', '', value); option.value = value; effort.append(option); }
         effort.value = row.effort; effortCell.append(effort); tr.append(effortCell);
         const defaults = element('td', 'tier-default', `${row.default_model} / ${row.default_effort}`);

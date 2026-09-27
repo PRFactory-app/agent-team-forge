@@ -15,6 +15,9 @@ public sealed class ManagedChildContext(JobStore jobs, ExternalTeam teams, strin
     {
         var root = jobs.GetJob(request.JobId)!;
         while (root.ParentJobId is { } parent) { root = jobs.GetJob(parent)!; }
+        // These CLIs read MCP from user/project files and have no per-run config flag.
+        // Do not write into the checkout or the operator's CLI configuration.
+        if (root.Backend is BackendCatalog.Cursor or BackendCatalog.Droid) { return request; }
         if (jobs.LeadForJob(root.JobId) is not { } lead) { return request; }
         var directory = Path.Combine(stateRoot, "managed-children", root.JobId);
         PrivateFiles.CreateDirectory(directory);

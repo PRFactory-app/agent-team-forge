@@ -61,7 +61,7 @@ public sealed class BackendModelDiscovery
 
     IReadOnlyCollection<string> Discover(string backend)
     {
-        if (backend is not ("codex" or "pi"))
+        if (backend is not ("codex" or "pi" or "cursor"))
         {
             return [];
         }
@@ -70,7 +70,7 @@ public sealed class BackendModelDiscovery
         var started = false;
         try
         {
-            process.StartInfo = new ProcessStartInfo(_binary(backend))
+            process.StartInfo = new ProcessStartInfo(_binary(backend == "cursor" ? "cursor-agent" : backend))
             {
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
@@ -102,6 +102,12 @@ public sealed class BackendModelDiscovery
                 return [.. output.Split('\n').Select(line => line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
                     .Where(parts => parts.Length > 1 && parts[0] is not ("provider" or "No") && parts[1] != "model")
                     .Select(parts => parts[1])];
+            }
+            if (backend == "cursor")
+            {
+                return [.. output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(line => line.Trim().TrimStart('-', '*', ' '))
+                    .Where(line => line.Length > 0 && line.Length < 128 && !line.Contains(' '))];
             }
 
             using var document = JsonDocument.Parse(output);
