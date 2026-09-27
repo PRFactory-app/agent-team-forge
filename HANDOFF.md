@@ -26,7 +26,7 @@ reports 76/76 tests, 22/22 published Native AOT scenarios and 1/1 published demo
 on a clean rerun; the first run hit an intermittent 21/22 published-scenario
 failure that remains under investigation. These are source-bound results, not live status.
 
-Use the root commands in [README](README.md#run-the-bounded-checkpoint):
+Use the root commands in [CONTRIBUTING](CONTRIBUTING.md#build-test-and-verify):
 `./scripts/demo.sh` for the fake scenario, `./scripts/verify.sh` for full gates.
 Scripts discover the isolated `.tools/dotnet11/dotnet` through Git's common
 directory, including linked worktrees, or accept an explicit `DOTNET` override.

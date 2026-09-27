@@ -44,7 +44,7 @@ were fixed in place; this ledger is only an index. No entry is runtime evidence.
 | S4 | **Accepted.** The PoC has a separate host/child bridge startup and memory budget; M0 verifies MCP tool registration under trim/AOT and source generation if needed. See [measurement targets](poc.md#83-metrics-and-preliminary-budgets) and roadmap M0. |
 | S5 | **Accepted.** v1 selects conservative human-wins/foreign-busy: automatic follow-ups pause until explicit reconciled idle. See [interactive evidence contract](terminal-modes.md#interactive-evidence-contract) and T15. |
 | S6 | **Accepted.** Codex lead wake/catch-up is explicitly unverified and cannot inherit Claude L07 evidence. See [PoC live matrix](poc.md#7-live-matrix) and roadmap M3 support matrix. |
-| S7 | **Accepted.** Canonical order is HANDOFF → AGENTS/README → terminal modes → plan → PoC → roadmap → review/resolutions. See [README reading order](../README.md#reading-order) and [handoff](../HANDOFF.md#3-read-in-this-order). |
+| S7 | **Accepted.** Canonical order is HANDOFF → AGENTS/README → terminal modes → plan → PoC → roadmap → review/resolutions. See [documentation map](../CONTRIBUTING.md#documentation-map) and [handoff](../HANDOFF.md#3-read-in-this-order). |
 
 ## Independent re-review and final clarifications
 

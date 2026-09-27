@@ -22,7 +22,7 @@ Host → Business → DAL plus tests, targeting .NET 11 RC1.
 | Promotion to `main` | Done at `d7d24ae` |
 
 See the [combined gate record](spikes/canonical-wave-integration.md) for exact
-inputs and evidence, and [README commands](../README.md#run-the-bounded-checkpoint)
+inputs and evidence, and [CONTRIBUTING commands](../CONTRIBUTING.md#build-test-and-verify)
 for SDK discovery, verification and demo execution. This document update does
 not rerun or independently approve those runtime gates.
 
