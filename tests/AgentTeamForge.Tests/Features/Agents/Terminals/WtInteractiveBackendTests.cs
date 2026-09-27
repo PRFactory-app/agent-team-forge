@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Nodes;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.Jobs;
@@ -166,6 +167,62 @@ public sealed class WtInteractiveBackendTests
         Assert.DoesNotContain("-match '^(CLAUDE_CODE_", wrapper);
         Assert.DoesNotContain("'CLAUDE_CODE_GIT_BASH_PATH'", wrapper);
         Assert.Contains("$start.Arguments = ", wrapper);
+    }
+
+    [Theory]
+    [InlineData(InteractiveAgentKind.Claude, "--resume")]
+    [InlineData(InteractiveAgentKind.Codex, "resume")]
+    [InlineData(InteractiveAgentKind.Pi, "--continue")]
+    public void ManagedWtLaunchAndResumeCarryPrivateMcpConfig(InteractiveAgentKind kind, string resumeFlag)
+    {
+        using var state = new TempStateDir();
+        var root = Path.Combine(state.Path, "state with spaces");
+        var configPath = ManagedChildContext.ConfigPath(root, "job-first");
+        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+        var config = new JsonObject
+        {
+            ["mcpServers"] = new JsonObject
+            {
+                [ManagedChildContext.ServerName] = new JsonObject
+                {
+                    ["command"] = @"C:\Program Files\ATF\atf.exe",
+                    ["args"] = new JsonArray("mcp", "--state-dir", root, "--managed-context", Path.Combine(root, "parent context.json")),
+                },
+            },
+        }.ToJsonString();
+        File.WriteAllText(configPath, config);
+        var followConfig = ManagedChildContext.ConfigPath(root, "job-follow");
+        Directory.CreateDirectory(Path.GetDirectoryName(followConfig)!);
+        File.WriteAllText(followConfig, config);
+        var initial = new InteractiveLaunch(kind, "atffirst", root, null, Path.Combine(root, "pi"),
+            Path.Combine(root, "wt", "first.launch.ps1"))
+        { JobId = "job-first" };
+        var follow = initial with
+        {
+            AgentName = "atffollow",
+            ResumeSessionId = "native-1",
+            BootstrapPath = Path.Combine(root, "wt", "follow.launch.ps1"),
+            JobId = "job-follow"
+        };
+
+        foreach (var launch in new[] { initial, follow })
+        {
+            var args = WtTabControl.AgentArguments(launch, "task");
+            var expected = ManagedChildContext.Arguments(kind.ToString().ToLowerInvariant(),
+                ManagedChildContext.ConfigPath(root, launch.JobId!));
+            Assert.Equal(expected, args.Skip(1).Take(expected.Count));
+            if (kind == InteractiveAgentKind.Codex)
+            {
+                var serverArgs = Assert.Single(args, arg => arg.StartsWith("mcp_servers.agentteamforge.args=", StringComparison.Ordinal));
+                Assert.Contains(Path.Combine(root, "parent context.json"), serverArgs);
+                Assert.Contains("\\\"mcp\\\"", WtTabControl.CommandLine([serverArgs]));
+                Assert.Contains("\\\"mcp\\\"", WindowsCliLaunch.ShimArgument(serverArgs));
+            }
+            else { Assert.Contains(ManagedChildContext.ConfigPath(root, launch.JobId!), args); }
+            var wrapper = Encoding.UTF8.GetString(WtTabControl.WrapperBytes(launch, "task", Path.Combine(root, "wt", "tab.pid")));
+            if (kind == InteractiveAgentKind.Pi) { Assert.Contains("$env:PI_MCP_CONFIG_MODE = 'exclusive'", wrapper); }
+        }
+        Assert.Contains(resumeFlag, WtTabControl.AgentArguments(follow, "task"));
     }
 
     [Theory]

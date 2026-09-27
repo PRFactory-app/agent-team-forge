@@ -25,6 +25,9 @@ public abstract record BackendEvidence
 
     public sealed record ProtocolError(string Code) : BackendEvidence;
 
+    /// <summary>CLI rejected its arguments before a turn began; no job effect occurred.</summary>
+    public sealed record NotStarted(string Details) : BackendEvidence;
+
     public sealed record EndOfOutput : BackendEvidence;
 }
 
