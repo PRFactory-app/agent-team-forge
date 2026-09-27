@@ -7,6 +7,22 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 public sealed class CodexPathsTests
 {
     [Fact]
+    public void MissingDefaultIsResolvedForReadersButNotExportedToCodex()
+    {
+        using var state = new TempStateDir();
+        var env = new Dictionary<string, string?> { ["HOME"] = state.Path };
+        string? Read(string name) => env.GetValueOrDefault(name);
+        var expected = Path.Combine(state.Path, ".codex");
+
+        Assert.Equal(expected, CodexPaths.Home(Read, state.Path));
+        Assert.Null(CodexPaths.LaunchHome(Read, state.Path));
+        Directory.CreateDirectory(expected);
+        Assert.Equal(expected, CodexPaths.LaunchHome(Read, state.Path));
+        env["CODEX_HOME"] = "explicit-missing";
+        Assert.Equal(Path.Combine(state.Path, "explicit-missing"), CodexPaths.LaunchHome(Read, state.Path));
+    }
+
+    [Fact]
     public void WindowsKeyAsciiLowercasesDriveAndUncWithoutChangingUnicode()
     {
         Assert.Equal(@"c:\code\new dir", CodexPaths.WindowsKey(@"C:\Code\New Dir"));
