@@ -101,7 +101,9 @@ at most 16 KiB through `codex queue`, including while its turn is busy. The
 submission ID is stored on the job, and the frozen thread's native user record
 settles the delivery fence. The job still waits for the turn's completion.
 An unresolved native attempt blocks all further follow-ups to
-that thread, even after a daemon restart. Dead or unverifiable sessions, larger
+that thread and agent name, even after a daemon restart. `stop_job` on that
+job releases the fence; the queued message may still run. If `codex queue`
+never started, the turn falls back to resume. Dead or unverifiable sessions, larger
 prompts and Pi use the usual resume path. No wake hooks are used.
 `interrupt=true` cancels the running parent turn and accepts the new job
 atomically. Queued follow-ups remain durable across restart; a fenced

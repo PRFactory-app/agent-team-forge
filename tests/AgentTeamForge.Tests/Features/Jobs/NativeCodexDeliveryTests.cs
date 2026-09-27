@@ -1,5 +1,6 @@
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Tests.Support;
@@ -141,5 +142,88 @@ public sealed class NativeCodexDeliveryTests
         await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
         Assert.Equal("thread-dead", backend.Started[1].ResumeSessionId);
         Assert.Null(fixture.Store.NativeSubmissionId(child.JobId));
+    }
+
+    static async Task<(JobFixture Fixture, BackendCatalog Catalog, JobView Parent, ScriptedBackend Backend)> CompletedParent(string thread)
+    {
+        var fixture = new JobFixture();
+        var backend = new ScriptedBackend(request =>
+        [
+            new BackendEvidence.Session(request.Correlation, thread),
+            new BackendEvidence.Result(request.Correlation, "done")
+        ]);
+        var catalog = Catalog(backend);
+        var parent = Accept(fixture, catalog).Execute(new SubmitJobRequest("parent", "work", null, false)
+        { Backend = BackendCatalog.Codex, TargetAgent = "sameagent" }).Job!;
+        using var dispatcher = new DispatchJob(fixture.Store, catalog, fixture.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
+        return (fixture, catalog, parent, backend);
+    }
+
+    [Fact]
+    public async Task Stop_releases_an_unresolved_native_fence_without_resending()
+    {
+        var (fixture, catalog, parent, _) = await CompletedParent("thread-stuck");
+        using var _fixture = fixture;
+        var follow = new FollowUpJob(fixture.Store, JobFixture.Operator, Accept(fixture, catalog));
+        var child = follow.Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+        var submits = 0;
+        using var dispatcher = new DispatchJob(fixture.Store, catalog, fixture.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { })
+        {
+            SubmitNativeCodex = (_, _, _, _) => { submits++; return Task.FromResult(new CodexSubmission(true, null)); }
+        };
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home")!, CancellationToken.None);
+        Assert.Equal(JobStatus.NeedsReconciliation, fixture.Store.GetJob(child.JobId)!.Status);
+        Assert.Equal(JobErrors.ParentNotReady, follow.Execute(new FollowUpRequest(parent.JobId, "retry", "retry")).Error);
+
+        var stop = new StopJob(fixture.Store, JobFixture.Operator, dispatcher.CancelRunning, releaseNative: dispatcher.ReleaseNative);
+        Assert.Equal("native_released", stop.Execute(child.JobId).Outcome);
+        Assert.Equal(JobStatus.Cancelled, fixture.Store.GetJob(child.JobId)!.Status);
+        Assert.False(fixture.Store.IsSessionFenced(child.JobId));
+        Assert.Equal("released", fixture.Store.NativeAttempt(child.JobId)!.State);
+        Assert.Empty(fixture.Store.UnresolvedNativeAttempts());
+        Assert.NotNull(follow.Execute(new FollowUpRequest(parent.JobId, "retry", "retry")).Job);
+        Assert.Equal(1, submits);
+    }
+
+    [Fact]
+    public async Task Codex_queue_that_never_started_reverts_to_resume()
+    {
+        var (fixture, catalog, parent, backend) = await CompletedParent("thread-nocodex");
+        using var _fixture = fixture;
+        var child = new FollowUpJob(fixture.Store, JobFixture.Operator, Accept(fixture, catalog))
+            .Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+        using var dispatcher = new DispatchJob(fixture.Store, catalog, fixture.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { })
+        {
+            SubmitNativeCodex = (_, _, _, _) => Task.FromResult(new CodexSubmission(false, null))
+        };
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home")!, CancellationToken.None);
+        var reverted = fixture.Store.GetJob(child.JobId)!;
+        Assert.Equal(JobStatus.Queued, reverted.Status);
+        Assert.DoesNotContain("native_codex", reverted.Options);
+        Assert.Empty(fixture.Store.UnresolvedNativeAttempts());
+
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
+        Assert.Equal("thread-nocodex", backend.Started[1].ResumeSessionId);
+        Assert.Equal(JobStatus.Completed, fixture.Store.GetJob(child.JobId)!.Status);
+    }
+
+    [Fact]
+    public async Task Ordinary_resume_waits_for_an_unresolved_native_attempt_on_the_thread()
+    {
+        var (fixture, catalog, parent, _) = await CompletedParent("thread-order");
+        using var _fixture = fixture;
+        var follow = new FollowUpJob(fixture.Store, JobFixture.Operator, Accept(fixture, catalog));
+        var large = follow.Execute(new FollowUpRequest(parent.JobId, new string('x', 17_000), "large")).Job!;
+        var native = follow.Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+        var claim = fixture.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home")!;
+        Assert.Equal(native.JobId, claim.Job.JobId);
+        // An interrupt of the native job clears its own session fence; N5 must still hold.
+        fixture.Store.Cancel(native.JobId, JobFixture.Operator.Principal, JobFixture.Operator.Team, interrupt: true);
+        fixture.Store.ReconcileStoppedJob(native.JobId);
+        Assert.Null(fixture.Store.BeginNextAttempt());
+
+        fixture.Store.RecordNativeReceipt(native.JobId, claim.Correlation);
+        Assert.Equal(large.JobId, fixture.Store.BeginNextAttempt()!.Job.JobId);
     }
 }

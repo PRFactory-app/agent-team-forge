@@ -2,10 +2,14 @@ using System.Diagnostics;
 using System.Text.Json;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
+using AgentTeamForge.Business.Features.Processes;
 using AgentTeamForge.DAL.Features.Wake;
 using Microsoft.Data.Sqlite;
 
 namespace AgentTeamForge.Business.Features.Wake;
+
+/// <summary>Started=false proves no codex process ran, so nothing can be presented.</summary>
+public sealed record CodexSubmission(bool Started, string? SubmissionId);
 
 /// <summary>Port of verify_codex_thread and CodexMemberWake queue transport.</summary>
 public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify = null,
@@ -80,22 +84,23 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
     }
 
     static async Task<bool> QueueAsync(WakeRegistration target, string notice, CancellationToken cancellationToken) =>
-        await SubmitAsync(target.Address, target.Home, notice, cancellationToken) is not null;
+        (await SubmitAsync(target.Address, target.Home, notice, cancellationToken)).SubmissionId is not null;
 
-    /// <summary>Returns the carrier's submission id, or null when no receipt was proven.</summary>
-    public static async Task<string?> SubmitAsync(string thread, string home, string message, CancellationToken cancellationToken)
+    /// <summary>
+    /// Returns the carrier's submission id, or null when no receipt was proven.
+    /// Only a codex process that never started proves nothing was queued.
+    /// </summary>
+    public static async Task<CodexSubmission> SubmitAsync(string thread, string home, string message, CancellationToken cancellationToken)
     {
+        Process? process;
         try
         {
-            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            deadline.CancelAfter(TimeSpan.FromSeconds(15));
             var executable = OperatingSystem.IsWindows() ? WtTabControl.WindowsAgentBinary("codex") : "codex";
             var start = new ProcessStartInfo(executable)
             {
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                RedirectStandardInput = true,
                 WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
             };
             start.ArgumentList.Add("queue"); start.ArgumentList.Add("--thread"); start.ArgumentList.Add(thread);
@@ -107,34 +112,46 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
             }
 
             start.Environment["CODEX_HOME"] = home;
-            using var process = Process.Start(start);
-            if (process is null)
-            {
-                return null;
-            }
+            process = NonInteractiveProcess.Start(start);
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or BackendNotStartedException)
+        {
+            return new(false, null);
+        }
+        catch (IOException)
+        {
+            return new(true, null);
+        }
+        if (process is null)
+        {
+            return new(false, null);
+        }
 
-            process.StandardInput.Close();
+        using (process)
+        {
             try
             {
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                deadline.CancelAfter(TimeSpan.FromSeconds(15));
                 var stdout = process.StandardOutput.ReadToEndAsync(deadline.Token);
                 var stderr = process.StandardError.ReadToEndAsync(deadline.Token);
                 await process.WaitForExitAsync(deadline.Token);
                 await Task.WhenAll(stdout, stderr);
-                return process.ExitCode == 0 ? SubmissionId(await stdout, thread) : null;
+                return new(true, process.ExitCode == 0 ? SubmissionId(await stdout, thread) : null);
             }
             catch (OperationCanceledException)
             {
-                if (!process.HasExited)
+                try
                 {
-                    process.Kill(entireProcessTree: true);
+                    if (!process.HasExited) { process.Kill(entireProcessTree: true); }
                 }
-
-                return null;
+                catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+                return new(true, null);
             }
-        }
-        catch (Exception ex) when (ex is IOException or System.ComponentModel.Win32Exception or OperationCanceledException or BackendNotStartedException)
-        {
-            return null;
+            catch (IOException)
+            {
+                return new(true, null);
+            }
         }
     }
 

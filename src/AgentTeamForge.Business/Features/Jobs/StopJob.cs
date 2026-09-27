@@ -5,7 +5,7 @@ using AgentTeamForge.DAL.Sqlite;
 namespace AgentTeamForge.Business.Features.Jobs;
 
 /// <summary>Commits cancellation before asking the dispatcher to stop its owned backend run.</summary>
-public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<string> cancelRunning, Action<string>? closeUnclaimedFollowUp = null, Func<JobRecord, bool>? stopReconciled = null, Action<JobRecord>? forgetReconciledOwnership = null, Action<string>? interruptRunning = null)
+public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<string> cancelRunning, Action<string>? closeUnclaimedFollowUp = null, Func<JobRecord, bool>? stopReconciled = null, Action<JobRecord>? forgetReconciledOwnership = null, Action<string>? interruptRunning = null, Func<JobRecord, bool>? releaseNative = null)
 {
     public JobResult Execute(string jobId) => Execute(jobId, false);
 
@@ -22,6 +22,11 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
             if (current is null || current.Principal != principal.Principal || current.Team != principal.Team)
             {
                 return JobResult.Fail(JobErrors.NotFound);
+            }
+            // A native Codex turn owns no process here; stopping releases its N5 fence.
+            if (!interrupt && releaseNative?.Invoke(current) == true)
+            {
+                return JobResult.Ok(GetJob.ToView(store.GetJob(jobId)!), "native_released");
             }
             if (current.Status == JobStatus.NeedsReconciliation)
             {

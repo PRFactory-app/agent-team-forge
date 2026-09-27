@@ -208,7 +208,7 @@ public static class DaemonCommand
         var claudeMailbox = new ClaudeWakeMailbox();
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
             new ListJobs(store, profile.Bound, jobLogs),
-            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning, dispatcher.ReleaseNative), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
             new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
             (token, question, key) => PRFactoryInteraction.RequestFromManagedChild(humanWait, store, authorityRows,
                 externalTeam.ManagedChildName(token), question, key));
@@ -244,7 +244,8 @@ public static class DaemonCommand
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path, claudeMailbox), Log).RunAsync(lifetime.Token);
         var pruning = profile.AutoPrune ? RunPruneAsync(prune, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
         var connectorStop = new StopJob(store, connectorPrincipal,
-            dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership);
+            dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership,
+            releaseNative: dispatcher.ReleaseNative);
         var connectorStopAgent = new StopAgent(store, connectorPrincipal, backends);
         // The daemon is the sole writer of team workspaces; the singleton serializes Git mutations.
         using var teamWorkspaces = new TeamWorkspace(new PRFactoryWorkspaceStore(database));

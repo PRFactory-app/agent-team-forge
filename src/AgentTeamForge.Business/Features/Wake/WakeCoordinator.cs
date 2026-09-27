@@ -19,7 +19,7 @@ public sealed class WakeBackoff
     public void Reset() { Delay = TimeSpan.Zero; Until = default; }
 }
 
-/// <summary>Polls only committed terminal rows. Wake success does not consume them.</summary>
+/// <summary>Polls committed terminal rows and unacknowledged interactive parks.</summary>
 public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<string> log,
     Func<DateTimeOffset>? clock = null, TimeSpan? coalesce = null, TimeSpan? renotify = null)
 {
@@ -51,12 +51,12 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
 
     public async Task TickAsync(CancellationToken cancellationToken = default)
     {
-        var pending = store.Pending().Concat(store.PendingExternal());
+        var pending = store.Pending().Concat(store.PendingExternal()).Concat(store.PendingParks());
         var active = new HashSet<string>(StringComparer.Ordinal);
         foreach (var snapshot in pending)
         {
             var target = snapshot.Target;
-            var stateKey = target.Key + (snapshot.External ? ":external" : ":jobs");
+            var stateKey = target.Key + (snapshot.ParkJobId is not null ? ":park:" + snapshot.ParkJobId : snapshot.External ? ":external" : ":jobs");
             active.Add(stateKey);
             if (!states.TryGetValue(stateKey, out var state) || state.Generation != target.Generation)
             {
@@ -69,7 +69,7 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
                 continue;
             }
 
-            var expired = snapshot.LastSuccess is not null && current - snapshot.LastSuccess >= renotifyWindow;
+            var expired = snapshot.ParkJobId is null && snapshot.LastSuccess is not null && current - snapshot.LastSuccess >= renotifyWindow;
             if (snapshot.Outstanding && !expired)
             {
                 continue;
@@ -89,7 +89,9 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
             using var routing = await WakeRoutingGate.EnterAsync(cancellationToken);
             if (!store.IsCurrent(target)) { continue; }
             // Notice-only: job IDs and result content stay in get_job.
-            var notice = snapshot.External
+            var notice = snapshot.ParkJobId is not null
+                ? "[AgentTeamForge wake] An interactive agent is idle without a native completion. Call mcp__agentteamforge__list_jobs and mcp__agentteamforge__get_job."
+                : snapshot.External
                 ? $"[AgentTeamForge wake] {snapshot.Unread} external message(s) await reading. Call mcp__agentteamforge__external_read or mcp__agentteamforge__read_messages."
                 : $"[AgentTeamForge wake] {snapshot.Unread} completed job(s) await reading. Call mcp__agentteamforge__list_jobs and mcp__agentteamforge__get_job.";
             bool posted;
@@ -108,7 +110,7 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
             {
                 if (!posted)
                 {
-                    log($"wake post rejected: kind={target.Kind} target={target.Key} source={(snapshot.External ? "external" : "jobs")}");
+                    log($"wake post rejected: kind={target.Kind} target={target.Key} source={(snapshot.ParkJobId is not null ? "park" : snapshot.External ? "external" : "jobs")}");
                 }
                 state.Backoff.Failed(now());
             }

@@ -2,6 +2,10 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Security.Cryptography;
+using System.Text;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
@@ -49,8 +53,8 @@ public sealed record OwnedHerdrSession(string SessionName, string SocketPath, in
 public sealed record HerdrTabBinding(OwnedHerdrSession Session, string TabId, string PaneId, string TerminalId, int ShellPid, ulong ShellStartTicks);
 
 /// <summary>
-/// Unix interactive terminal provider: owns one fresh Herdr session per call to
-/// <see cref="StartSessionAsync"/> and opens one visible tab per agent. Every CLI call is bounded in
+/// Unix interactive terminal provider: binds to an existing session by default and opens one visible
+/// tab per agent. Every CLI call is bounded in
 /// time and output. Failures never stop, delete or close anything whose ownership is unproven.
 /// Starting the agent TUI inside the tab belongs to the backend slices.
 /// </summary>
@@ -137,11 +141,7 @@ public sealed class HerdrTerminal
         {
             throw new HerdrLaunchException($"Herdr session '{name}' is not running as one identifiable server");
         }
-        var workspaces = await OwnedAsync(socket, cancellationToken, "workspace", "list");
-        var workspace = (workspaces["result"]?["workspaces"] as JsonArray)?.OfType<JsonObject>()
-            .Select(w => Text(w["workspace_id"])).FirstOrDefault(id => id is not null)
-            ?? throw new HerdrLaunchException($"Herdr session '{name}' has no workspace for a new tab");
-        return new(name, socket, server.Pid, server.StartTicks, "", workspace) { Shared = true };
+        return new(name, socket, server.Pid, server.StartTicks, "", "") { Shared = true };
     }
 
     public string? CheckExistingSession(string name)
@@ -169,7 +169,7 @@ public sealed class HerdrTerminal
             throw new HerdrLaunchException("refusing to open a tab: " + problem);
         }
 
-        var args = new List<string> { "tab", "create", "--workspace", session.WorkspaceId, "--cwd", cwd, "--label", label,
+        var args = new List<string> { "--cwd", cwd, "--label", label,
             "--env", BootstrapVariable + "=" + bootstrapFile, "--no-focus" };
         // Shared Herdr sessions may have been started with another CODEX_HOME.
         if (Env("CODEX_HOME") is { } codexHome) { args.AddRange(["--env", "CODEX_HOME=" + codexHome]); }
@@ -183,7 +183,15 @@ public sealed class HerdrTerminal
             // enable a sandbox or touch telemetry. The bypass warning is skipped via --settings.
             args.AddRange(["--env", trust.Name + "=" + trust.Value]);
         }
-        var created = await OwnedAsync(session.SocketPath, cancellationToken, [.. args]);
+        JsonNode created;
+        if (session.Shared)
+        {
+            (session, created) = await CreateSharedTabAsync(session, cwd, label, args, cancellationToken);
+        }
+        else
+        {
+            created = await OwnedAsync(session.SocketPath, cancellationToken, ["tab", "create", "--workspace", session.WorkspaceId, .. args]);
+        }
         var tab = Str(created, "result", "root_pane", "tab_id");
         var pane = Str(created, "result", "root_pane", "pane_id");
         var terminal = Str(created, "result", "root_pane", "terminal_id");
@@ -213,6 +221,101 @@ public sealed class HerdrTerminal
         }
     }
 
+    async Task<(OwnedHerdrSession Session, JsonNode Created)> CreateSharedTabAsync(OwnedHerdrSession session, string cwd, string tabLabel,
+        List<string> args, CancellationToken cancellationToken)
+    {
+        var label = WorkspaceLabel(cwd);
+        // Use the reference lock name and flock so ATF and win-agent-teams serialize workspace creation.
+        var config = Env("HERDR_CONFIG_PATH");
+        var root = !string.IsNullOrEmpty(config) ? Path.GetDirectoryName(Path.GetFullPath(config))! : Path.Combine(Home(), ".config", "herdr");
+        Directory.CreateDirectory(root);
+        var digest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(label)))[..16];
+        var lockPath = Path.Combine(root, $"win-agent-teams-{session.SessionName}.ws-{digest}.lock");
+        // O_RDWR | O_CREAT | O_CLOEXEC: herdr children spawned while the lock is held must not inherit it.
+        var descriptor = OpenLockFile(lockPath, 2 | (OperatingSystem.IsMacOS() ? 0x200 | 0x1000000 : 0x40 | 0x80000), 0x180);
+        if (descriptor < 0) { throw new HerdrLaunchException($"could not open Herdr workspace lock: errno {Marshal.GetLastPInvokeError()}"); }
+        using var guard = new SafeFileHandle((IntPtr)descriptor, ownsHandle: true);
+        var lockWait = Stopwatch.StartNew();
+        while (Flock(descriptor, 2 | 4) != 0)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            if (error != (OperatingSystem.IsMacOS() ? 35 : 11) || lockWait.Elapsed >= _options.CommandTimeout)
+            {
+                throw new HerdrLaunchException($"could not lock Herdr workspace {label}: errno {error}");
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(100, cancellationToken);
+        }
+        try
+        {
+            var workspace = ResolveWorkspace(await OwnedAsync(session.SocketPath, cancellationToken, "workspace", "list"), label);
+            if (workspace is not null)
+            {
+                var tab = await OwnedAsync(session.SocketPath, cancellationToken, ["tab", "create", "--workspace", workspace, .. args]);
+                return (session with { WorkspaceId = workspace }, tab);
+            }
+            var createArgs = new List<string>(args);
+            createArgs[createArgs.IndexOf("--label") + 1] = label;
+            var created = await OwnedAsync(session.SocketPath, cancellationToken, ["workspace", "create", .. createArgs]);
+            var id = Str(created, "result", "workspace", "workspace_id");
+            // A newly created workspace's root tab is this agent's tab.
+            var tabId = Text(created["result"]?["tab"]?["tab_id"]);
+            if (tabId is not null) { await OwnedAsync(session.SocketPath, cancellationToken, "tab", "rename", tabId, tabLabel); }
+            return (session with { WorkspaceId = id }, created);
+        }
+        finally { _ = Flock(descriptor, 8); }
+    }
+
+    [DllImport("libc", EntryPoint = "open", CharSet = CharSet.Ansi, SetLastError = true)]
+    static extern int OpenLockFile(string path, int flags, int mode);
+
+    [DllImport("libc", EntryPoint = "flock", SetLastError = true)]
+    static extern int Flock(int descriptor, int operation);
+
+    internal static string? ResolveWorkspace(JsonNode listing, string label)
+    {
+        if (listing["result"]?["workspaces"] is not JsonArray workspaces)
+        {
+            throw new HerdrLaunchException("Herdr workspace listing is unreadable");
+        }
+        var matches = new List<(int Number, string Id)>();
+        foreach (var node in workspaces)
+        {
+            if (node is not JsonObject workspace || Text(workspace["label"]) is not { } listedLabel)
+            {
+                throw new HerdrLaunchException("Herdr workspace listing is unreadable");
+            }
+            if (listedLabel != label) { continue; }
+            var id = Text(workspace["workspace_id"]);
+            if (string.IsNullOrEmpty(id)) { throw new HerdrLaunchException("Herdr workspace listing is unreadable"); }
+            var number = workspace["number"] is JsonValue value && value.TryGetValue<int>(out var n) ? n : int.MaxValue;
+            matches.Add((number, id));
+        }
+        return matches.OrderBy(m => m.Number).ThenBy(m => m.Id, StringComparer.Ordinal).FirstOrDefault().Id;
+    }
+
+    internal static string WorkspaceLabel(string cwd)
+    {
+        var name = Path.GetFileName(Path.TrimEndingDirectorySeparator(cwd));
+        try
+        {
+            var psi = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            foreach (var arg in new[] { "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir" }) { psi.ArgumentList.Add(arg); }
+            using var git = Process.Start(psi);
+            if (git is not null && !git.WaitForExit(3000)) { git.Kill(); }
+            else if (git is not null && git.ExitCode == 0)
+            {
+                var common = git.StandardOutput.ReadToEnd().Trim();
+                var directory = Path.GetFileName(Path.TrimEndingDirectorySeparator(common));
+                name = directory == ".git" ? Path.GetFileName(Path.GetDirectoryName(common)) ?? name
+                    : directory.EndsWith(".git", StringComparison.Ordinal) ? directory[..^4] : directory;
+            }
+        }
+        catch (Exception e) when (e is IOException or Win32Exception or InvalidOperationException) { }
+        var clean = new string([.. name.Where(c => !char.IsControl(c))]).Trim().TrimStart('-').Trim();
+        return clean.Length == 0 ? "agents" : clean[..Math.Min(clean.Length, 128)];
+    }
+
     /// <summary>Null when the binding still holds; otherwise why it is invalid (replaced, closed or restarted).</summary>
     public async Task<string?> VerifyBindingAsync(HerdrTabBinding binding, CancellationToken cancellationToken)
     {
@@ -235,6 +338,26 @@ public sealed class HerdrTerminal
             return $"pane {binding.PaneId} no longer hosts the bound terminal";
         }
         return _runner.Identity(binding.ShellPid)?.StartTicks == binding.ShellStartTicks ? null : "the bound pane shell process was replaced or exited";
+    }
+
+    internal bool HasUnverifiedLiveIdentity(HerdrTabBinding binding)
+    {
+        var server = _runner.Identity(binding.Session.ServerPid);
+        if (server is { } known && known.StartTicks != binding.Session.ServerStartTicks) { return false; }
+        if (server is null) { return PidMayBeAlive(binding.Session.ServerPid); }
+        return _runner.Identity(binding.ShellPid) is null && PidMayBeAlive(binding.ShellPid);
+    }
+
+    static bool PidMayBeAlive(int pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return !process.HasExited;
+        }
+        catch (ArgumentException) { return false; }
+        catch (Win32Exception) { return true; }
+        catch (InvalidOperationException) { return true; }
     }
 
     /// <summary>Stops and deletes the session only after proving ownership; refuses otherwise.</summary>
@@ -277,7 +400,13 @@ public sealed class HerdrTerminal
         {
             throw new HerdrLaunchException("shared tab ownership record is incomplete");
         }
-        if (ServerProblem(session) is { } problem) { throw new HerdrLaunchException("teardown refused: " + problem); }
+        if (ServerProblem(session) is { } problem)
+        {
+            // Panes die with their server. Once the recorded server is gone (restart or reboot) nothing of ours
+            // can remain in the session, and its reused tab ids belong to someone else: close nothing.
+            if (_runner.Identity(session.ServerPid)?.StartTicks != session.ServerStartTicks) { return; }
+            throw new HerdrLaunchException("teardown refused: " + problem);
+        }
         JsonNode tab;
         JsonNode pane;
         try

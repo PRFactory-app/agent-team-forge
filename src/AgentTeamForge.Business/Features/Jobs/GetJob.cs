@@ -60,7 +60,7 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal)
             : job.Status == JobStatus.Queued ? "pending" : "not_started";
         return new JobDelivery(state, run?.RunId, run?.SubmittedAt, run?.AcknowledgedAt)
         {
-            NativeSubmissionId = store.NativeAttempt(job.JobId)?.SubmissionId ?? store.NativeSubmissionId(job.JobId)
+            NativeSubmissionId = store.NativeSubmissionId(job.JobId)
         };
     }
 
