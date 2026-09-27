@@ -147,6 +147,26 @@ public sealed class AttachmentTests
     }
 
     [Fact]
+    public async Task Non_utf8_source_diff_is_sent_as_valid_utf8_text()
+    {
+        using var h = new ChainHarness(Item());
+        h.Server.BlobsSupported = true;
+        await h.TickAsync();
+        h.RunQueued(j =>
+        {
+            File.WriteAllBytes(Path.Combine(j.Cwd!, "legacy.txt"), [(byte)'c', (byte)'a', (byte)'f', 0xE9, (byte)'\n']); // Latin-1 "café"
+            ChainHarness.Git(j.Cwd!, "add", "legacy.txt");
+            ChainHarness.Commit(j.Cwd!, "feature.txt", "hello\n");
+        });
+        await h.TickAsync();
+        var blob = Assert.Single(h.Server.Blobs);
+        var text = new UTF8Encoding(false, true).GetString(blob.File);
+        Assert.Contains("+caf\uFFFD", text);
+        Assert.Contains("Non-UTF-8", blob.Fields["BinaryChangeSummary"]);
+        Assert.Single(h.Server.Completions);
+    }
+
+    [Fact]
     public async Task Conflict_is_a_persisted_failure_diagnostic()
     {
         using var h = new ChainHarness(Item(false)) { AllowRepoLess = true };

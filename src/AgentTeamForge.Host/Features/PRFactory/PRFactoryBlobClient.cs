@@ -20,10 +20,16 @@ public sealed partial class PRFactoryClient
             return false;
         }
         response.EnsureSuccessStatusCode();
-        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-        blobCapability = document.RootElement.TryGetProperty("capabilities", out var capabilities)
-            && capabilities.ValueKind == JsonValueKind.Array
-            && capabilities.EnumerateArray().Any(c => c.ValueKind == JsonValueKind.String && c.GetString() == "blob-attachments-v1");
+        // A non-JSON 200 (e.g. an HTML fallback page) is an older server, not a transient failure.
+        try
+        {
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            blobCapability = document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("capabilities", out var capabilities)
+                && capabilities.ValueKind == JsonValueKind.Array
+                && capabilities.EnumerateArray().Any(c => c.ValueKind == JsonValueKind.String && c.GetString() == "blob-attachments-v1");
+        }
+        catch (JsonException) { blobCapability = false; }
         return blobCapability.Value;
     }
 

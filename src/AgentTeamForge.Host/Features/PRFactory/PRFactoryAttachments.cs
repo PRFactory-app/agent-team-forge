@@ -57,12 +57,12 @@ internal static class PRFactoryAttachments
         {
             var intent = publication.Intent;
             var range = intent.BaseSha + "..." + intent.HeadSha;
-            var (patch, truncated) = await GitOutput(cwd, MaxFileBytes, ct, "diff", "--no-ext-diff", "--no-textconv", range, "--");
+            var (patch, truncated) = await GitOutput(cwd, MaxFileBytes, ct, "diff", "--no-color", "--no-ext-diff", "--no-textconv", range, "--");
             // Keep the truncated patch valid UTF-8 even when the limit bisects a code point.
+            var utf8 = new UTF8Encoding(false, true);
             if (truncated)
             {
                 var length = patch.Length;
-                var utf8 = new UTF8Encoding(false, true);
                 while (length > patch.Length - 4)
                 {
                     try { _ = utf8.GetCharCount(patch, 0, length); break; }
@@ -70,9 +70,23 @@ internal static class PRFactoryAttachments
                 }
                 if (length != patch.Length) { patch = patch[..length]; }
             }
-            var (stats, statsTruncated) = await GitOutput(cwd, 64 * 1024, ct, "diff", "--no-ext-diff", "--no-textconv", "--numstat", range, "--");
+            // The server only accepts NUL-free UTF-8 text; legacy-encoded sources are replaced lossily.
+            var lossy = false;
+            try { _ = utf8.GetCharCount(patch); lossy = Array.IndexOf(patch, (byte)0) >= 0; }
+            catch (DecoderFallbackException) { lossy = true; }
+            if (lossy)
+            {
+                patch = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(patch).Replace('\0', '\uFFFD'));
+                if (patch.Length > MaxFileBytes)
+                {
+                    var length = MaxFileBytes;
+                    while ((patch[length] & 0xC0) == 0x80) { length--; } // Cut before a continuation byte.
+                    (patch, truncated) = (patch[..length], true);
+                }
+            }
+            var (stats, statsTruncated) = await GitOutput(cwd, 64 * 1024, ct, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--numstat", range, "--");
             var binary = string.Join('\n', Encoding.UTF8.GetString(stats).Split('\n').Where(l => l.StartsWith("-\t-\t", StringComparison.Ordinal)));
-            var summary = (truncated ? "Patch truncated at 10 MiB. " : "")
+            var summary = (truncated ? "Patch truncated at 10 MiB. " : "") + (lossy ? "Non-UTF-8 bytes replaced. " : "")
                 + (binary.Length == 0 ? "No binary changes in scanned diff statistics." : binary)
                 + (statsTruncated ? "\nStatistics truncated." : "");
             if (summary.Length > 2000) { summary = summary[..1980] + "\nSummary truncated."; }
