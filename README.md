@@ -9,6 +9,9 @@ results are ready. Close the lead, lose the terminal or restart your
 session — the team keeps working. Watch the agents live in Herdr or terminal
 tabs, or in a small web console.
 
+**Free forever.** Working with a human team? Connect ATF to
+[PRFactory](https://app.prfactory.dev), its optional paid companion.
+
 ![AgentTeamForge web console showing one lead session and its agents](docs/images/web-console.png)
 
 ## Quickstart
@@ -68,13 +71,14 @@ team. More in the [quickstart guide](docs/quickstart.md).
 - **Windows x64:** being tested (Windows Terminal tabs).
 - **macOS arm64:** release built, untested — testers welcome.
 
-## Opt-in: PRFactory for human teams
+## Working with a human team? → PRFactory
 
-AgentTeamForge can connect to PRFactory so tasks your colleagues create and
-assign there are picked up by your agent team, with results posted back — human
-and agent teamwork without a separate tracker like Jira. It is off by default
-(`atf prfactory connect`). See the [connector plan](docs/plans/prfactory-connector.md)
-for what works today.
+AgentTeamForge is free forever and works fully on its own. When people on your
+team want to hand out work too, [PRFactory](https://app.prfactory.dev) is the
+optional paid companion that replaces Jira for this. Tasks your colleagues
+create and assign in PRFactory are picked up by your ATF agent team, and the
+results are posted back to the task. The connector is opt-in and off until you
+run `atf prfactory connect`.
 
 ## Learn more
 
