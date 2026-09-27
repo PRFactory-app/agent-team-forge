@@ -41,6 +41,17 @@ public sealed class MacTabControlTests
         Assert.Contains("if [ ! -x ", wrapper);
         Assert.Contains("/tmp/atf.start-error", wrapper);
         Assert.Contains("exec ", wrapper);
+        // A syntax error would break every launch.
+        if (OperatingSystem.IsWindows()) { return; }
+        var script = Path.Combine(state.Path, "wrapper.sh");
+        File.WriteAllText(script, wrapper);
+        var info = new ProcessStartInfo("bash") { RedirectStandardError = true };
+        info.ArgumentList.Add("-n");
+        info.ArgumentList.Add(script);
+        using var check = Process.Start(info)!;
+        var errors = check.StandardError.ReadToEnd();
+        Assert.True(check.WaitForExit(5000));
+        Assert.True(check.ExitCode == 0, errors);
     }
 
     [Fact]

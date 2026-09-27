@@ -182,11 +182,12 @@ internal sealed class WtTabControl : IWtTabControl
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-
-        var sidecar = Path.ChangeExtension(launch.BootstrapPath, ".pid");
-        return TryReadOwned(sidecar, launch.BootstrapPath) is { } tab && TryIdentity(tab.Pid) != tab.Created
-            ? "interactive wrapper exited before agent acknowledgement" : null;
+        return null;
     }
+
+    public bool WrapperExited(InteractiveLaunch launch) =>
+        TryReadOwned(Path.ChangeExtension(launch.BootstrapPath, ".pid"), launch.BootstrapPath) is { } tab
+        && TryIdentity(tab.Pid) != tab.Created;
 
     public void StopOwned(InteractiveLaunch launch)
     {

@@ -196,10 +196,19 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
                 }
                 if (!acknowledged)
                 {
+                    // Only a recorded start error proves the agent never ran. A wrapper that
+                    // exited without one may have run the agent (the prompt is in its argv),
+                    // so that turn is uncertain and must be reconciled.
+                    var exited = tabs.WrapperExited(launch);
                     if (tabs.StartFailure(launch) is { } failure)
                     {
                         tabs.StopOwned(launch);
                         yield return new BackendEvidence.LaunchFailed(failure);
+                        yield break;
+                    }
+                    if (exited && transcripts.Read(launch, "atf-corr:" + request.Correlation, started) is null)
+                    {
+                        yield return new BackendEvidence.ProtocolError("interactive_agent_exited");
                         yield break;
                     }
                     if (DateTimeOffset.UtcNow >= confirmationDeadline)
@@ -256,6 +265,7 @@ internal interface IWtTabControl
     Task StartAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken);
     bool IsAlive(InteractiveLaunch launch);
     string? StartFailure(InteractiveLaunch launch);
+    bool WrapperExited(InteractiveLaunch launch);
     int? ProcessId(InteractiveLaunch launch);
     void StopOwned(InteractiveLaunch launch);
 }

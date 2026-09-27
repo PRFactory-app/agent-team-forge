@@ -75,6 +75,26 @@ public sealed class WtInteractiveBackendTests
     }
 
     [Fact]
+    public async Task WrapperExitWithoutStartErrorIsUncertainAndFenced()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("wt-exited-wrapper");
+        var claim = f.Store.BeginNextAttempt()!;
+        // The agent may have run with the prompt in argv; its exit alone is not "no effect".
+        var tabs = new FakeTabs { Exited = true };
+        var backend = new WtInteractiveBackend(tabs, new FakeReader(null), InteractiveAgentKind.Claude,
+            Path.GetTempPath(), "wt", TimeSpan.FromMinutes(5));
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        await dispatcher.RunAttemptAsync(claim, TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+        var record = f.Store.GetJob(job.JobId)!;
+        Assert.Equal(JobStatus.NeedsReconciliation, record.Status);
+        Assert.Equal("interactive_agent_exited", record.ReasonCode);
+    }
+
+    [Fact]
     public void InvalidWindowsAgentImageIsRejectedBeforeTabLaunch()
     {
         using var state = new TempStateDir();
@@ -186,7 +206,8 @@ public sealed class WtInteractiveBackendTests
         var sidecar = Path.ChangeExtension(wrapper, ".pid");
         var tabs = new WtTabControl();
         File.WriteAllText(sidecar, $"{int.MaxValue}|{DateTime.UtcNow.Ticks}");
-        Assert.Equal("interactive wrapper exited before agent acknowledgement", tabs.StartFailure(launch));
+        Assert.True(tabs.WrapperExited(launch));
+        Assert.Null(tabs.StartFailure(launch));
         File.WriteAllText(Path.ChangeExtension(wrapper, ".start-error"), "bad image");
         Assert.Equal("interactive agent could not start: bad image", tabs.StartFailure(launch));
         tabs.StopOwned(launch);
@@ -473,7 +494,9 @@ public sealed class WtInteractiveBackendTests
             return Task.CompletedTask;
         }
         public bool IsAlive(InteractiveLaunch launch) => !Stopped;
+        public bool Exited { get; init; }
         public string? StartFailure(InteractiveLaunch launch) => Failure;
+        public bool WrapperExited(InteractiveLaunch launch) => Exited;
         public int? ProcessId(InteractiveLaunch launch) => Prompt.Length > 0 ? 4242 : null;
         public void StopOwned(InteractiveLaunch launch) => Stopped = true;
     }
@@ -490,6 +513,7 @@ public sealed class WtInteractiveBackendTests
         }
         public bool IsAlive(InteractiveLaunch launch) => Interlocked.Increment(ref _probes) > 2;
         public string? StartFailure(InteractiveLaunch launch) => null;
+        public bool WrapperExited(InteractiveLaunch launch) => false;
         public int? ProcessId(InteractiveLaunch launch) => Volatile.Read(ref _probes) > 2 ? 4242 : null;
         public void StopOwned(InteractiveLaunch launch) { }
     }

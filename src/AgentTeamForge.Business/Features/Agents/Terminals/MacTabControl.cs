@@ -104,11 +104,12 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-
-        var sidecar = Path.ChangeExtension(launch.BootstrapPath, ".pid");
-        return TryReadSidecar(sidecar) is { } identity && DarwinProcess.CreationToken(identity.Pid) != identity.Token
-            ? "interactive wrapper exited before agent acknowledgement" : null;
+        return null;
     }
+
+    public bool WrapperExited(InteractiveLaunch launch) =>
+        TryReadSidecar(Path.ChangeExtension(launch.BootstrapPath, ".pid")) is { } identity
+        && DarwinProcess.CreationToken(identity.Pid) != identity.Token;
 
     public void StopOwned(InteractiveLaunch launch)
     {
@@ -188,6 +189,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
             "if [ ! -x " + ShellQuote(executable) + " ]; then\n" +
             "  printf '%s\\n' 'agent executable is unavailable' > " + ShellQuote(Path.ChangeExtension(sidecar, ".start-error")) + "\n" +
             "  exit 0\n" +
+            "fi\n" +
             "exec " + command + "\n";
     }
 
