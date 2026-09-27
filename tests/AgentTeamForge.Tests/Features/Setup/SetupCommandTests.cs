@@ -94,7 +94,7 @@ public sealed class SetupCommandTests
         string? Env(string name) => values.GetValueOrDefault(name);
 
         var options = new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = state };
-        (int, string) NoCommands(string _, IReadOnlyList<string> __) => throw new InvalidOperationException("client invoked");
+        static (int, string) NoCommands(string _, IReadOnlyList<string> __) => throw new InvalidOperationException("client invoked");
         Assert.Equal(64, SetupCommand.Run(options, NoCommands, "/tmp/atf", homePath: home, clientEnvironment: Env));
         options["force"] = "true";
         Assert.Equal(64, SetupCommand.Run(options, NoCommands, "/tmp/atf", homePath: home, clientEnvironment: Env));
@@ -106,6 +106,19 @@ public sealed class SetupCommandTests
         Assert.Contains("CLAUDE_CONFIG_DIR", SetupCommand.ClientConfigProblem(state, home, force: true, Env));
         values["CLAUDE_CONFIG_DIR"] = Path.Combine(home, ".claude");
         Assert.Null(SetupCommand.ClientConfigProblem(state, home, force: true, Env));
+        Assert.Null(SetupCommand.ClientConfigProblem(Path.Combine(home, ".local", "state", "agentteamforge") + Path.DirectorySeparatorChar, home, force: false, Env));
+    }
+
+    [Fact]
+    public void TemporaryStateNeverRegistersInRealHomeEvenWithForce()
+    {
+        using var temp = new TempStateDir();
+        var state = temp.File("state");
+        var realHome = Path.Combine(Path.GetPathRoot(Path.GetTempPath())!, "home", "owner");
+        var options = new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = state, ["force"] = "true" };
+        static (int, string) NoCommands(string _, IReadOnlyList<string> __) => throw new InvalidOperationException("client invoked");
+        Assert.Equal(64, SetupCommand.Run(options, NoCommands, "/tmp/atf", homePath: realHome, clientEnvironment: _ => null));
+        Assert.False(Directory.Exists(state));
     }
 
     [Theory]
@@ -446,7 +459,7 @@ public sealed class SetupCommandTests
         Assert.Equal(0, InitCommand.Run(dir, testProfile: true, queueLimit: null, maxRuntimeSeconds: null));
 
         Assert.Equal(78, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = dir, ["force"] = "true" },
-            (_, _) => throw new InvalidOperationException(), "/tmp/atf"));
+            (_, _) => throw new InvalidOperationException(), "/tmp/atf", homePath: temp.File("home")));
         Assert.False(File.Exists(Path.Combine(dir, "launch-mode.json")));
     }
 

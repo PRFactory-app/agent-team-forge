@@ -126,6 +126,13 @@ public static class SetupCommand
 
         var unsafeBinary = UnsafeRegistrationPath(executable, home);
         var unsafeState = UnsafeRegistrationPath(dir, home);
+        // Temporary or worktree state belongs only in an isolated HOME; --force never overrides this.
+        if (!(autostart == "off" && !options.ContainsKey("mode")) && unsafeState is not null && UnsafeRegistrationPath(home, home) is null)
+        {
+            Console.Error.WriteLine($"error: setup would register {unsafeState} in the client configs of HOME={home}; --force cannot override this.");
+            Console.Error.WriteLine("For isolated tests, set HOME (and CODEX_HOME, CLAUDE_CONFIG_DIR) to a temporary directory as well.");
+            return 64;
+        }
         // Disabling autostart removes registrations only, so it never needs the guard.
         if (!(autostart == "off" && !options.ContainsKey("mode")) && !options.ContainsKey("force") && (unsafeBinary is not null || unsafeState is not null))
         {
@@ -233,8 +240,10 @@ public static class SetupCommand
         return null;
     }
 
-    static bool Within(string path, string root) => path.Equals(Path.TrimEndingDirectorySeparator(root), StringComparison.Ordinal)
-        || path.StartsWith(Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+    static readonly StringComparison PathComparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+    static bool Within(string path, string root) => path.Equals(Path.TrimEndingDirectorySeparator(root), PathComparison)
+        || path.StartsWith(Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar, PathComparison);
 
     internal static string ClientHome() => OperatingSystem.IsWindows()
         ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
@@ -247,7 +256,8 @@ public static class SetupCommand
         var defaultState = Path.GetFullPath(Path.Combine(
             environment("XDG_STATE_HOME") is { Length: > 0 } xdg ? xdg : Path.Combine(home, ".local", "state"),
             "agentteamforge"));
-        var nonDefault = Path.GetFullPath(stateDir) != defaultState;
+        var nonDefault = !Path.TrimEndingDirectorySeparator(Path.GetFullPath(stateDir))
+            .Equals(Path.TrimEndingDirectorySeparator(defaultState), PathComparison);
         if (nonDefault && !force)
         {
             return $"non-default state directory {stateDir} would change client registrations; use --force only with the intended client HOME";
