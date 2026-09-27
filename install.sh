@@ -2,10 +2,10 @@
 # User-scope Unix installer for the versioned AOT bundle.
 set -eu
 fail() { echo "atf installer: $*" >&2; exit 1; }
-usage() { echo 'usage: install.sh [--version VERSION] [--archive FILE] [--checksum FILE] [--release-url URL] [--state-dir DIR] | --uninstall [--purge] [--state-dir DIR]' >&2; exit 2; }
+usage() { echo 'usage: install.sh [--version VERSION] [--archive FILE] [--checksum FILE] [--release-url URL] [--state-dir DIR] | --uninstall [--purge] [--state-dir DIR] [--force]' >&2; exit 2; }
 # Everything runs inside main so a truncated `curl | sh` download executes nothing.
 main() {
-version= archive= checksum= release_url= uninstall= purge= state_dir=
+version= archive= checksum= release_url= uninstall= purge= state_dir= force=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --version|--archive|--checksum|--release-url|--state-dir)
@@ -17,6 +17,7 @@ while [ "$#" -gt 0 ]; do
       shift 2;;
     --uninstall) uninstall=1; shift;;
     --purge) purge=1; shift;;
+    --force) force=1; shift;;
     *) usage;;
   esac
 done
@@ -63,7 +64,11 @@ if [ -n "$uninstall" ]; then
   fi
   stop_current
   if [ -x "$root/current/atf" ]; then
-    "$root/current/atf" uninstall --teardown-only --state-dir "$state" || fail 'client teardown failed; installation left unchanged'
+    if [ -n "$force" ]; then
+      "$root/current/atf" uninstall --teardown-only --state-dir "$state" --force || fail 'client teardown failed; installation left unchanged'
+    else
+      "$root/current/atf" uninstall --teardown-only --state-dir "$state" || fail 'client teardown failed; installation left unchanged'
+    fi
   fi
   if [ -L "$bin" ]; then rm -- "$bin"; fi
   if [ -L "$root/current" ]; then rm -- "$root/current"; fi
@@ -94,7 +99,7 @@ if [ -n "$uninstall" ]; then
   echo 'atf uninstalled'
   exit 0
 fi
-[ -z "$purge" ] || usage
+[ -z "$purge$force" ] || usage
 version=${version#v}
 case "$version" in ''|*[!0-9A-Za-z.+-]*) [ -z "$version" ] || fail 'invalid version';; esac
 if [ -n "$archive" ]; then
