@@ -251,13 +251,13 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             case IpcProtocol.JobStopAgent:
                 if (stopAgent is null) { return new IpcResponse(false, JobErrors.BackendUnavailable); }
                 var stoppedAgent = stopAgent.Execute(request.JobId ?? string.Empty);
-                if (stoppedAgent.Error is null && stoppedAgent.Job is not null) { MarkWakeRead(request, stoppedAgent.Job.JobId); }
+                if (stoppedAgent.Error is null && stoppedAgent.Job is not null) { MarkWakeRead(request, stoppedAgent.Job.JobId, stoppedAgent.Job.Status); }
                 return Map(stoppedAgent);
             case IpcProtocol.JobGet:
                 var found = ReadJob(request);
                 if (found.Error is null && found.Job is not null)
                 {
-                    MarkWakeRead(request, request.JobId!);
+                    MarkWakeRead(request, found.Job.JobId, found.Job.Status);
                 }
                 return Map(WithLocation(found)) with { HerdrMode = herdrPlacement is not null };
             case IpcProtocol.JobOutput:
@@ -292,7 +292,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     IncludeConnector = request.IncludeConnector && request.LeadSessionId is null,
                 });
                 if (listed.Error is not null) { return new IpcResponse(false, listed.Error); }
-                foreach (var job in listed.Page!.Jobs) { MarkWakeRead(request, job.JobId); }
+                foreach (var job in listed.Page!.Jobs) { MarkWakeRead(request, job.JobId, job.Status); }
                 return new IpcResponse(true, Outcome: "listed", Page: WithLocations(listed.Page),
                     ExternalMembers: request.IncludeConnector ? externalMembers?.ActiveMcpMembers() : null);
             case IpcProtocol.JobPrune:
@@ -369,11 +369,11 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         request.LeadSessionId is not null && wakeStore?.Status(request.LeadSessionId) is { Registered: true, Key: { } key, Generation: { } generation }
             ? (key, generation) : (request.WakeKey, request.WakeGeneration);
 
-    void MarkWakeRead(IpcRequest request, string jobId)
+    void MarkWakeRead(IpcRequest request, string jobId, string observedStatus)
     {
         if (wakeStore is not null && LeadWake(request) is { Key: { } key, Generation: long generation })
         {
-            wakeStore.MarkRead(jobId, key, generation);
+            wakeStore.MarkRead(jobId, observedStatus, key, generation);
         }
     }
 

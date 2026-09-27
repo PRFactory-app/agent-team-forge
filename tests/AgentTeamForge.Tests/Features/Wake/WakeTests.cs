@@ -157,8 +157,25 @@ public sealed class WakeTests
         new StopJob(fixture.Store, JobFixture.Operator, _ => { }).Execute(job.JobId);
 
         Assert.Equal(1, Assert.Single(store.Pending()).Unread);
-        store.MarkRead(job.JobId, target.Key, target.Generation);
+        store.MarkRead(job.JobId, JobStatus.Cancelled, target.Key, target.Generation);
         Assert.Empty(store.Pending());
+    }
+
+    [Fact]
+    public void Completion_racing_a_read_of_the_running_job_stays_unread()
+    {
+        using var fixture = new JobFixture();
+        var store = new WakeStore(fixture.Database);
+        var target = store.Register("codex:race", "codex", "thread", "", "/tmp");
+        var job = fixture.Accept().Execute(new SubmitJobRequest("race", "work", null, false) { WakeKey = target.Key, WakeGeneration = target.Generation }).Job!;
+        var claim = fixture.Store.BeginNextAttempt()!;
+        var observed = fixture.Get().Execute(job.JobId).Job!; // get_job/list_jobs saw it running...
+
+        Assert.True(fixture.Store.Complete(new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "done"));
+        store.MarkRead(job.JobId, observed.Status, target.Key, target.Generation); // ...and marks after it completed.
+
+        Assert.Equal(JobStatus.Running, observed.Status);
+        Assert.Equal(1, Assert.Single(store.Pending()).Unread);
     }
 
     [Fact]
@@ -191,8 +208,8 @@ public sealed class WakeTests
         time += TimeSpan.FromSeconds(10);
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
         Assert.Single(poster.Attempts);
-        store.MarkRead(first, target.Key, target.Generation);
-        store.MarkRead(second, target.Key, target.Generation);
+        store.MarkRead(first, JobStatus.Completed, target.Key, target.Generation);
+        store.MarkRead(second, JobStatus.Completed, target.Key, target.Generation);
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
         Finish(fixture, target, "three");
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
@@ -462,9 +479,9 @@ public sealed class WakeTests
         time += TimeSpan.FromSeconds(2);
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
         Assert.Equal(current, Assert.Single(poster.Attempts).Target);
-        store.MarkRead(jobId, old.Key, old.Generation);
+        store.MarkRead(jobId, JobStatus.Completed, old.Key, old.Generation);
         Assert.Equal(1, store.Pending().Single().Unread);
-        store.MarkRead(jobId, current.Key, current.Generation);
+        store.MarkRead(jobId, JobStatus.Completed, current.Key, current.Generation);
         Assert.Empty(store.Pending());
     }
 

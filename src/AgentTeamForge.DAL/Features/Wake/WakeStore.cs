@@ -93,8 +93,10 @@ public sealed class WakeStore(JobDatabase database)
         command.ExecuteNonQuery();
     }
 
-    public void MarkRead(string jobId, string key, long generation)
+    /// <summary>Reads only a terminal state the caller saw: a completion racing a read of the running job still wakes.</summary>
+    public void MarkRead(string jobId, string observedStatus, string key, long generation)
     {
+        if (observedStatus is Jobs.JobStatus.Queued or Jobs.JobStatus.Running) { return; }
         using var connection = database.OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
