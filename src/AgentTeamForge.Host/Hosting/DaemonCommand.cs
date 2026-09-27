@@ -134,12 +134,6 @@ public static class DaemonCommand
             }
         }).Execute();
         Log($"recovery: quarantined {quarantined.Count} uncertain attempt(s)");
-        if (OperatingSystem.IsWindows())
-        {
-            // Not gated on the current mode: tabs from an earlier wt setup are still ours.
-            Log($"recovery: settled {WtInteractiveBackend.RecoverOwned(state.Path)} owned Windows tab(s)");
-        }
-
         var backendEnv = new Dictionary<string, string>();
         if (profile.TestProfile)
         {
@@ -293,6 +287,8 @@ public static class DaemonCommand
         }
         foreach (var backend in interactiveBackends)
         {
+            // Windows tabs retain their wrapper and PID sidecars for explicit stop after restart.
+            if (backend is WtInteractiveBackend) { continue; }
             try { backend.StopAllIdleSessions(); }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {

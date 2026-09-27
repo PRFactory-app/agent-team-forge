@@ -9,7 +9,6 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 /// <summary>Runs an interactive agent in an owned Windows Terminal tab.</summary>
 public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
 {
-    public static int RecoverOwned(string stateRoot) => WtTabControl.RecoverOwned(stateRoot);
     readonly IWtTabControl _tabs;
     readonly IInteractiveTranscriptReader _transcripts;
     readonly InteractiveAgentKind _kind;
@@ -80,9 +79,17 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
     bool TryRecoverLaunch(string jobId, out InteractiveLaunch launch)
     {
         launch = null!;
-        if (_tabs is not WtTabControl || _tabDirectory != "wt") { return false; }
-        var directory = Path.Combine(_stateRoot, "wt");
-        if (!Directory.Exists(directory)) { return false; }
+        if (_tabs is not WtTabControl || _tabDirectory != "wt" ||
+            FindRecoveredLaunch(_stateRoot, _kind, jobId) is not { } found) { return false; }
+        launch = found;
+        _jobs[jobId] = launch;
+        return true;
+    }
+
+    internal static InteractiveLaunch? FindRecoveredLaunch(string stateRoot, InteractiveAgentKind kind, string jobId)
+    {
+        var directory = Path.Combine(stateRoot, "wt");
+        if (!Directory.Exists(directory)) { return null; }
         foreach (var path in Directory.EnumerateFiles(directory, "atf*.launch.job"))
         {
             var file = new FileInfo(path);
@@ -95,13 +102,11 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
             var name = Path.GetFileName(path);
             if (!name.EndsWith(".launch.job", StringComparison.Ordinal)) { continue; }
             var agentName = name[..^".launch.job".Length];
-            launch = new InteractiveLaunch(_kind, agentName, _stateRoot, null, null,
+            return new InteractiveLaunch(kind, agentName, stateRoot, null, null,
                 Path.ChangeExtension(path, ".ps1"))
             { JobId = jobId };
-            _jobs[jobId] = launch;
-            return true;
         }
-        return false;
+        return null;
     }
 
     void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);

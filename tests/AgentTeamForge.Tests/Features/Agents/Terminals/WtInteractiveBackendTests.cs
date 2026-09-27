@@ -314,24 +314,34 @@ public sealed class WtInteractiveBackendTests
     }
 
     [Fact]
-    public void RecoveryStopsOnlyTabsWhosePidStillHasTheRecordedIdentity()
+    public void RestartFindsOnlyTheMatchingOwnedJob()
     {
         var root = Path.Combine(Path.GetTempPath(), "atf-wt-recovery-" + Guid.NewGuid().ToString("N"));
         var directory = Path.Combine(root, "wt");
         Directory.CreateDirectory(directory);
-        var created = new DateTime(638945424000000000, DateTimeKind.Utc);
         try
         {
-            File.WriteAllText(Path.Combine(directory, "atfvalid.pid"), $"4242|{created.Ticks}");
-            File.WriteAllText(Path.Combine(directory, "atfstale.pid"), $"5252|{created.Ticks}");
-            var stopped = new List<int>();
-            var count = WtTabControl.RecoverOwned(root,
-                pid => pid == 4242 ? created : created.AddSeconds(1),
-                tab => { stopped.Add(tab.Pid); return true; });
-            Assert.Equal(1, count);
-            Assert.Equal([4242], stopped);
+            File.WriteAllText(Path.Combine(directory, "atfforeign.launch.job"), "other-job");
+            File.WriteAllText(Path.Combine(directory, "atfowned.launch.job"), "our-job");
+            var found = WtInteractiveBackend.FindRecoveredLaunch(root, InteractiveAgentKind.Codex, "our-job");
+            Assert.Equal("atfowned", found?.AgentName);
+            Assert.Equal(Path.Combine(directory, "atfowned.launch.ps1"), found?.BootstrapPath);
+            Assert.Null(WtInteractiveBackend.FindRecoveredLaunch(root, InteractiveAgentKind.Codex, "missing-job"));
         }
         finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void WindowsLaunchersRequestBreakawayButKeepWrapperCleanupLocal()
+    {
+        Assert.Equal(WindowsConsoleProcess.BreakawayFromJob | WindowsConsoleProcess.NewProcessGroup,
+            WindowsConsoleProcess.CreationFlags(newConsole: false));
+        Assert.Equal(WindowsConsoleProcess.BreakawayFromJob | WindowsConsoleProcess.NewProcessGroup | WindowsConsoleProcess.NewConsole,
+            WindowsConsoleProcess.CreationFlags(newConsole: true));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", "C:\\work", null, null, "C:\\state\\tab.ps1");
+        var wrapper = Encoding.UTF8.GetString(WtTabControl.WrapperBytes(launch, "task", "C:\\state\\tab.pid"));
+        Assert.Contains("finally { [void]$native::CloseHandle($job) }", wrapper);
+        Assert.Contains("Out-File -FilePath 'C:\\state\\tab.agent' -Encoding ascii", wrapper);
     }
 
     [Fact]

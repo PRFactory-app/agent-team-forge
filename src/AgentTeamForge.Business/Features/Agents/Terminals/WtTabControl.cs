@@ -58,7 +58,7 @@ internal sealed class WtTabControl : IWtTabControl
         }
         await File.WriteAllBytesAsync(wrapper, WrapperBytes(launch, prompt, sidecar, _codexHome), cancellationToken);
 
-        if (FindExecutable("wt.exe") is null)
+        if (FindExecutable("wt.exe") is not { } wt)
         {
             await StartConsoleAsync(launch, wrapper, sidecar, cancellationToken);
             return;
@@ -70,20 +70,16 @@ internal sealed class WtTabControl : IWtTabControl
             // Windows Terminal is MSIX-packaged; its tabs see a virtualized AppData\Local and cannot find the wrapper.
             throw new IOException($"state directory is under {localAppData}, which Windows Terminal tabs cannot read; use a --state-dir outside it");
         }
-        var start = new ProcessStartInfo("wt.exe") { UseShellExecute = false, CreateNoWindow = true };
-        foreach (var arg in new[] { "-w", "wt-atf", "nt", "--title", launch.AgentName,
-            "--suppressApplicationTitle", "--", "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", wrapper })
-        {
-            start.ArgumentList.Add(arg);
-        }
-        Process? launcher = null;
+        var args = new[] { "-w", "wt-atf", "nt", "--title", launch.AgentName,
+            "--suppressApplicationTitle", "--", "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", wrapper };
+        WindowsConsoleProcess? launcher = null;
         try
         {
-            try { launcher = Process.Start(start); }
+            try { launcher = WindowsConsoleProcess.Start(wt, args, newConsole: false); }
             catch (System.ComponentModel.Win32Exception) { }
             if (launcher is not null)
             {
-                await AwaitTabAsync(launch, wrapper, sidecar, launcher, cancellationToken);
+                await AwaitTabAsync(launch, wrapper, sidecar, () => (launcher.HasExited, launcher.HasExited ? launcher.ExitCode : 0), cancellationToken);
                 return;
             }
         }
@@ -105,14 +101,11 @@ internal sealed class WtTabControl : IWtTabControl
     async Task StartConsoleAsync(InteractiveLaunch launch, string wrapper, string sidecar, CancellationToken token)
     {
         WindowsConsoleProcess started;
-        try { started = WindowsConsoleProcess.Start(wrapper); }
+        try { started = WindowsConsoleProcess.StartConsole(wrapper); }
         catch (System.ComponentModel.Win32Exception ex) { throw new IOException("interactive console could not start", ex); }
         using var process = started;
         await AwaitTabAsync(launch, wrapper, sidecar, () => (process.HasExited, process.ExitCode), token);
     }
-
-    Task AwaitTabAsync(InteractiveLaunch launch, string wrapper, string sidecar, Process launcher, CancellationToken cancellationToken) =>
-        AwaitTabAsync(launch, wrapper, sidecar, () => (launcher.HasExited, launcher.HasExited ? launcher.ExitCode : 0), cancellationToken);
 
     async Task AwaitTabAsync(InteractiveLaunch launch, string wrapper, string sidecar, Func<(bool Exited, int Code)> status, CancellationToken cancellationToken)
     {
@@ -136,7 +129,6 @@ internal sealed class WtTabControl : IWtTabControl
             if (TryReadOwned(sidecar, wrapper) is { } tab && TryIdentity(tab.Pid) == tab.Created)
             {
                 _tabs[launch.AgentName] = tab;
-                WindowsTabJob.Assign(tab.Pid);
                 await Task.Delay(TimeSpan.FromSeconds(2), token);
                 if (!IsAlive(launch))
                 {
@@ -214,32 +206,6 @@ internal sealed class WtTabControl : IWtTabControl
         try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".hook.ps1")); } catch (IOException) { }
         try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".hook.cmd")); } catch (IOException) { }
         return true;
-    }
-
-    public static int RecoverOwned(string stateRoot) => OperatingSystem.IsWindows()
-        ? RecoverOwned(stateRoot, TryIdentity, StopOwned) : 0;
-
-    internal static int RecoverOwned(string stateRoot, Func<int, DateTime?> identity, Func<OwnedTab, bool> stop)
-    {
-        var directory = Path.Combine(stateRoot, "wt");
-        if (!Directory.Exists(directory))
-        {
-            return 0;
-        }
-        var count = 0;
-        foreach (var sidecar in Directory.EnumerateFiles(directory, "atf*.pid"))
-        {
-            var wrapper = Path.ChangeExtension(sidecar, ".ps1");
-            if (TryReadOwned(sidecar, wrapper) is not { } tab || identity(tab.Pid) != tab.Created)
-            {
-                continue;
-            }
-            if (stop(tab))
-            {
-                count++;
-            }
-        }
-        return count;
     }
 
     internal static byte[] WrapperBytes(InteractiveLaunch launch, string prompt, string sidecar, string? codexHome = null)

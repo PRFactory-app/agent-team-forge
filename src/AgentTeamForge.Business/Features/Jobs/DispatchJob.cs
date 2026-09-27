@@ -553,8 +553,8 @@ public sealed class DispatchJob : IDisposable
         }
         catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested)
         {
-            // Human-visible Herdr sessions outlive the daemon; restart quarantines them.
-            if (backends.Resolve(claim.Job.Backend) is not HerdrInteractiveBackend)
+            // Interactive terminal sessions outlive the daemon; restart quarantines them.
+            if (backends.Resolve(claim.Job.Backend) is not (HerdrInteractiveBackend or WtInteractiveBackend))
             {
                 active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
             }

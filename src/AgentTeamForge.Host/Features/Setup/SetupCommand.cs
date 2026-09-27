@@ -517,8 +517,7 @@ public static class SetupCommand
     {
         if (LockIsFree(state))
         {
-            var recovered = WtInteractiveBackend.RecoverOwned(state.Path);
-            Console.Out.WriteLine($"Daemon is not running. Settled {recovered} owned Windows tab(s).");
+            Console.Out.WriteLine("Daemon is not running.");
             return 0;
         }
         var pid = DaemonLock.ReadOwnerPid(state.LockFile);
@@ -530,11 +529,9 @@ public static class SetupCommand
         try
         {
             using var process = Process.GetProcessById(pid.Value);
-            // Settle owned agents first so their PowerShell wrappers close their tabs.
-            var recovered = WtInteractiveBackend.RecoverOwned(state.Path);
             process.Kill();
             process.WaitForExit(5000);
-            Console.Out.WriteLine($"Stopped daemon {pid.Value}. Settled {recovered} owned Windows tab(s).");
+            Console.Out.WriteLine($"Stopped daemon {pid.Value}.");
             return 0;
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
