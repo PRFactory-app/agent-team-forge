@@ -113,6 +113,7 @@ public static class JobsMcpBridge
     {
         string? parentMemberToken = null;
         string? childBinding = null;
+        var humanInputAvailable = true;
         if (managedContextPath is not null)
         {
             using var context = JsonDocument.Parse(StateDirectory.ReadPrivateFile(managedContextPath));
@@ -122,6 +123,8 @@ public static class JobsMcpBridge
             }
             parentMemberToken = context.RootElement.GetProperty("member_token").GetString();
             childBinding = context.RootElement.GetProperty("binding_key").GetString();
+            humanInputAvailable = !context.RootElement.TryGetProperty("human_input_available", out var available)
+                || available.GetBoolean();
         }
         var externalOnly = managedContextPath is null && Environment.GetEnvironmentVariable("ATF_EXTERNAL_ONLY") == "1";
         _ = StateDirectory.ReadPrivateFile(state.CredentialFile);
@@ -243,7 +246,7 @@ public static class JobsMcpBridge
             new() { Name = "job_get", Description = "Read a job's committed state and result (spike).", InputSchema = Parse(GetSchema) },
             new() { Name = "job_list", Description = "List your jobs' committed state, newest first, one bounded page at a time (read-only, spike).", InputSchema = Parse(ListSchema) },
         };
-        if (parentMemberToken is not null)
+        if (ShouldOfferHumanInput(parentMemberToken, humanInputAvailable))
         {
             tools.Add(new() { Name = "request_human_input", Description = "Ask the human owner a question that blocks your task. The question is saved durably; then END YOUR TURN. Never wait on stdin or an approval prompt. The answer resumes this same session in a new turn.", InputSchema = Parse(HumanInputSchema) });
         }
@@ -417,6 +420,8 @@ public static class JobsMcpBridge
         finally { await relayLifetime.CancelAsync(); await relay; }
         return 0;
     }
+
+    internal static bool ShouldOfferHumanInput(string? parentMemberToken, bool available) => parentMemberToken is not null && available;
 
     internal enum WakeRepair { Keep, Adopt, Register }
 

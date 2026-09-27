@@ -1,4 +1,5 @@
-using AgentTeamForge.Business.Features.Jobs;
+using System.Net;
+using AgentTeamForge.Host.Features.Jobs;
 using AgentTeamForge.Host.Features.PRFactory;
 
 namespace AgentTeamForge.Tests.PRFactory;
@@ -6,62 +7,66 @@ namespace AgentTeamForge.Tests.PRFactory;
 public sealed class HumanWaitChainTests
 {
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Question_ends_turn_answer_command_resumes_same_session_then_publishes_and_completes(bool repoLess)
+    [InlineData("ending_turn", "Waiting")]
+    [InlineData("waiting", "Waiting")]
+    [InlineData("answer_reserved", "Waiting")]
+    [InlineData("resumed", "Running")]
+    [InlineData("applied", "Running")]
+    [InlineData("failed", "Failed")]
+    [InlineData("cancelled", "Failed")]
+    public void Human_wait_wire_state_is_in_prfactory_lifecycle_enum(string internalStatus, string expected)
     {
-        using var h = new ChainHarness(new PRFactoryWorkItem
-        {
-            Id = Guid.NewGuid(),
-            Type = "Implementation",
-            TicketKey = "PRF-7",
-            RepositoryId = repoLess ? null : Guid.NewGuid(),
-            LeaseToken = Guid.NewGuid(),
-            AgentType = PRFactoryAgentType.Codex,
-            Prompt = "Implement",
-        })
-        { AllowRepoLess = repoLess };
-        await h.TickAsync();
-        var (lead, run) = h.StartOne();
-        Assert.Contains("request_human_input", lead.Instruction, StringComparison.Ordinal);
-
-        // The agent calls request_human_input (authenticated as its managed-child membership), then ends its turn.
-        var asked = PRFactoryInteraction.RequestFromManagedChild(h.HumanWait, h.Store, h.Authorities,
-            "child-" + lead.JobId, "Which database should I use?", "db-choice");
-        Assert.Null(asked.Error);
-        Assert.Equal(asked.Wait!.QuestionId, PRFactoryInteraction.RequestFromManagedChild(h.HumanWait, h.Store, h.Authorities,
-            "child-" + lead.JobId, "Which database should I use?", "db-choice").Wait!.QuestionId);
-        Assert.Equal(JobErrors.NotFound, PRFactoryInteraction.RequestFromManagedChild(h.HumanWait, h.Store, h.Authorities,
-            "child-" + Guid.NewGuid().ToString("N"), "spoofed", "k").Error);
-        Assert.True(h.Store.Complete(run, "Asked the owner; ending turn."));
-
-        await h.TickAsync();
-        Assert.Empty(h.Server.Completions); // An open question holds completion.
-        Assert.Contains(h.Server.Lines, l => l.RecordKind == "human-wait" && l.Text.Contains("Which database", StringComparison.Ordinal)
-            && l.Text.Contains("\"waiting\"", StringComparison.Ordinal));
-
-        var command = Guid.NewGuid();
-        h.Server.Commands.Add(new(command, "SendMessage", "lead", "Use Postgres", asked.Wait.QuestionId));
-        await h.TickAsync();
-        Assert.True(Assert.Single(h.Server.Acks).GetProperty("accepted").GetBoolean());
-        var resumed = Assert.Single(h.RunQueued(job =>
-        {
-            Assert.Equal(lead.JobId, job.ParentJobId); // Same saved session, same owned checkout.
-            Assert.Equal(lead.Cwd, job.Cwd);
-            Assert.Contains("Human answer: Use Postgres", job.Instruction, StringComparison.Ordinal);
-            if (repoLess) { File.WriteAllText(Path.Combine(job.Cwd!, "db.txt"), "postgres"); }
-            else { ChainHarness.Commit(job.Cwd!, "db.txt", "postgres"); }
-        }));
-        Assert.Equal("session-" + lead.JobId, h.Store.GetJob(lead.JobId)!.SessionId); // The session the follow-up resumes.
-
-        h.Server.Commands.Add(new(command, "SendMessage", "lead", "Use Postgres", asked.Wait.QuestionId)); // Redelivered.
-        await h.TickAsync();
-        Assert.Equal("applied", h.HumanWaits.Get(asked.Wait.QuestionId)!.Status);
-        Assert.Equal(2, h.Teams.MemberJobs(ChainServer.Url, h.Server.Item.Id).Count); // One answer turn only.
-        var completion = Assert.Single(h.Server.Completions);
-        if (repoLess) { Assert.Null(completion.GetProperty("resultCommitSha").GetString()); }
-        else { Assert.Equal(ChainHarness.Git(lead.Cwd!, "rev-parse", "HEAD"), completion.GetProperty("resultCommitSha").GetString()); }
-        Assert.Equal(completion.GetProperty("resultCommitSha").GetString(), h.RemoteHead("prfactory/" + h.Server.Item.Id));
-        Assert.Contains(h.Server.Lines, l => l.RecordKind == "human-wait" && l.Text.Contains("\"applied\"", StringComparison.Ordinal));
+        var accepted = new HashSet<string>(["Starting", "Running", "Waiting", "Idle", "Done", "Killed", "Failed", "Parked"]);
+        var state = PRFactoryWorkItems.HumanWaitLifecycle(internalStatus);
+        Assert.Equal(expected, state);
+        Assert.Contains(state, accepted);
     }
+
+    [Fact]
+    public async Task Prfactory_question_tool_is_gated_and_direct_call_does_not_create_a_wait()
+    {
+        using var h = NewHarness();
+        await h.TickAsync();
+        var (lead, _) = h.StartOne();
+        Assert.DoesNotContain("request_human_input", lead.Instruction, StringComparison.Ordinal);
+        Assert.DoesNotContain("human-wait-v1", PRFactoryClient.Capabilities);
+        Assert.False(JobsMcpBridge.ShouldOfferHumanInput("child-token", false));
+        Assert.True(JobsMcpBridge.ShouldOfferHumanInput("child-token", true));
+
+        var asked = PRFactoryInteraction.RequestFromManagedChild(h.Authorities, "child-" + lead.JobId);
+        Assert.Equal(PRFactoryInteraction.HumanInputUnavailable, asked.Error);
+        Assert.Contains("best judgement", asked.Error, StringComparison.Ordinal);
+        Assert.Contains("artefact", asked.Error, StringComparison.Ordinal);
+        Assert.Empty(h.HumanWaits.ForTeam(ChainServer.Url, h.Server.Item.Id));
+    }
+
+    [Fact]
+    public async Task Agent_stream_bad_request_reports_failure_once_instead_of_retrying_forever()
+    {
+        using var h = NewHarness();
+        h.Server.StreamRejection = HttpStatusCode.BadRequest;
+        await h.TickAsync();
+        h.RunQueued(_ => { });
+        await h.TickAsync();
+
+        Assert.Single(h.Server.Failures);
+        Assert.Contains("HTTP 400", h.Server.Failures[0], StringComparison.Ordinal);
+        Assert.Contains(h.Logs, log => log.Contains("agent-stream rejected (400)", StringComparison.Ordinal));
+        var posts = h.Server.StreamPosts;
+        await h.TickAsync();
+        Assert.Equal(posts, h.Server.StreamPosts);
+        Assert.Single(h.Server.Failures);
+    }
+
+    static ChainHarness NewHarness() => new(new PRFactoryWorkItem
+    {
+        Id = Guid.NewGuid(),
+        Type = "Implementation",
+        TicketKey = "PRF-7",
+        RepositoryId = Guid.NewGuid(),
+        LeaseToken = Guid.NewGuid(),
+        AgentType = PRFactoryAgentType.Codex,
+        Prompt = "Implement",
+        ReadOnly = true,
+    });
 }

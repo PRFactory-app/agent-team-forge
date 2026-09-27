@@ -34,7 +34,15 @@ public sealed class ManagedChildContext(JobStore jobs, ExternalTeam teams, strin
                 ["parent_session_id"] = lead.SessionId,
                 ["member_token"] = member.MemberToken,
                 ["binding_key"] = "managed-child:" + root.JobId,
+                ["human_input_available"] = root.Principal != "prfactory",
             });
+        }
+        else
+        {
+            // Existing managed sessions keep their token, but gain the current capability gate.
+            var existing = JsonNode.Parse(File.ReadAllText(contextPath))!.AsObject();
+            existing["human_input_available"] = root.Principal != "prfactory";
+            Write(contextPath, existing);
         }
         // Every follow-up points to the original membership and nested-lead binding.
         var configPath = ConfigPath(stateRoot, request.JobId);
