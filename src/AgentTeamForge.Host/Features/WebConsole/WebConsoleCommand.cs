@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using AgentTeamForge.Business.Features.Processes;
 using AgentTeamForge.Host.Features.Setup;
 using AgentTeamForge.Host.Hosting;
 
@@ -35,7 +36,8 @@ public static class WebConsoleCommand
             {
                 info.ArgumentList.Add(url);
             }
-            using var process = Process.Start(info) ?? throw new Win32Exception("browser opener unavailable");
+            using var process = (OperatingSystem.IsWindows() ? Process.Start(info) : NonInteractiveProcess.Start(info))
+                ?? throw new Win32Exception("browser opener unavailable");
             return 0;
         }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)

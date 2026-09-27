@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.Business.Features.Processes;
 
 namespace AgentTeamForge.Host.Features.PRFactory;
 
@@ -121,7 +122,7 @@ internal static class PRFactoryAttachments
         foreach (var arg in args) { start.ArgumentList.Add(arg); }
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromMinutes(2));
-        using var process = Process.Start(start) ?? throw new InvalidDataException("Cannot generate attachment diff");
+        using var process = NonInteractiveProcess.Start(start) ?? throw new InvalidDataException("Cannot generate attachment diff");
         try
         {
             var error = ReadCapped(process.StandardError.BaseStream, 2000, timeout.Token);

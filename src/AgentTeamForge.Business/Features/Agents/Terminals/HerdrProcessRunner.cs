@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Processes;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
@@ -38,7 +39,7 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout);
-        using var p = Process.Start(psi) ?? throw new InvalidOperationException($"could not start {psi.FileName}");
+        using var p = NonInteractiveProcess.Start(psi) ?? throw new InvalidOperationException($"could not start {psi.FileName}");
         var stdout = CaptureAsync(p.StandardOutput.BaseStream, maxStdoutBytes, deadline.Token);
         var stderr = CaptureAsync(p.StandardError.BaseStream, maxStderrBytes, deadline.Token);
         try
@@ -62,7 +63,7 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout);
-        using var p = Process.Start(psi) ?? throw new InvalidOperationException($"could not start {psi.FileName}");
+        using var p = NonInteractiveProcess.Start(psi) ?? throw new InvalidOperationException($"could not start {psi.FileName}");
         try
         {
             await p.WaitForExitAsync(deadline.Token);
