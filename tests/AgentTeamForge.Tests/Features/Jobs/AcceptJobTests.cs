@@ -59,6 +59,8 @@ public sealed class AcceptJobTests
         Assert.Matches("^codex-[0-9a-f]{8}$", name);
         Assert.NotEqual(JobFixture.Operator.Agent, name);
         Assert.Equal(name, f.Store.GetJob(first.JobId)!.TargetAgent);
+        // The fingerprint still uses the principal's agent, so retries of jobs accepted before derived names match.
+        Assert.Equal(first.JobId, accept.Execute(request with { TargetAgent = JobFixture.Operator.Agent }).Job!.JobId);
 
         var named = accept.Execute(request with { IdempotencyKey = "named", TargetAgent = "reviewer" }).Job!;
         Assert.Equal("reviewer", f.Store.GetJob(named.JobId)!.TargetAgent);

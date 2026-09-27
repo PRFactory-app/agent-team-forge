@@ -84,7 +84,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         return Admit(Operation, request.IdempotencyKey, request.Instruction, options, backend,
             cwd, null, request.WakeKey, request.WakeGeneration, request.Worktree, baseCommit,
             timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds, leadSessionId: request.LeadSessionId,
-            targetAgent: request.TargetAgent ?? backend + "-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(request.IdempotencyKey)))[..8]);
+            targetAgent: request.TargetAgent, defaultAgent: backend + "-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(request.IdempotencyKey)))[..8]);
     }
 
     /// <summary>Optional job timeout and queue TTL: whole seconds, at most one day.</summary>
@@ -111,7 +111,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
     internal JobResult Admit(string operation, string key, string instruction, string options, string backend, string? cwd, string? parentJobId,
         string? wakeKey = null, long? wakeGeneration = null, bool createWorktree = false, string? worktreeBase = null,
         string? worktreePath = null, string? worktreeBranch = null, int? timeoutSeconds = null, int? queueTtlSeconds = null,
-        bool interruptParent = false, Action<string>? cancelRunning = null, string? leadSessionId = null, string? targetAgent = null)
+        bool interruptParent = false, Action<string>? cancelRunning = null, string? leadSessionId = null, string? targetAgent = null, string? defaultAgent = null)
     {
         if (!admission.TryEnter())
         {
@@ -120,8 +120,9 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
 
         try
         {
-            var agent = targetAgent ?? principal.Agent;
-            string[] fields = [agent, instruction, options, backend, cwd ?? string.Empty, parentJobId ?? string.Empty];
+            // Unnamed jobs keep the principal in the fingerprint so retries of jobs accepted before derived names still match.
+            var agent = targetAgent ?? defaultAgent ?? principal.Agent;
+            string[] fields = [targetAgent ?? principal.Agent, instruction, options, backend, cwd ?? string.Empty, parentJobId ?? string.Empty];
             if (timeoutSeconds is not null || queueTtlSeconds is not null)
             {
                 // Only when set, so fingerprints of jobs accepted before these limits existed are unchanged.
