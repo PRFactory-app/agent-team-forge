@@ -56,7 +56,7 @@ If you intentionally test a temporary binary or state directory, setup requires
 use `atf start --state-dir DIR` or `atf mcp --state-dir DIR` instead.
 
 Linux arm64 and musl are not supported. macOS arm64 and Windows x64 remain
-tester-only until validated on those machines. See [quickstart](quickstart.md)
+tester-only until validated on those machines. See [usage](usage.md)
 for use, and `"$HOME/.local/bin/atf" uninstall` for removal. See
 [Upgrade and uninstall](#upgrade-and-uninstall).
 
@@ -81,7 +81,10 @@ Rerun the installer to upgrade. Rerunning the active version verifies its instal
 files and makes no changes. An upgrade stops the running daemon, so wait for jobs
 to finish first. It preserves the profile, launch mode, state, and stable MCP
 executable path; reload agent clients after an upgrade. If setup used a custom
-`--state-dir`, pass the same directory to the installer.
+`--state-dir`, pass the same directory to the installer. Back up the state
+directory before an upgrade that changes the database schema: switching back
+to an older binary does not roll back a migrated database. ATF has no restore
+command; restore from a backup is a manual operation with the daemon stopped.
 
 Run `"$HOME/.local/bin/atf" uninstall` (or `atf uninstall` on Windows) to remove
 the binaries, ATF-owned client registrations, Pi wake entry, and login

@@ -47,7 +47,7 @@
 ## Architecture
 
 - Target .NET 11 (`.tools/dotnet11/`, see
-  [research](docs/research/net11-process-api.md)); measure AOT, don't assume.
+  [ADR 0001](docs/adr/0001-dotnet-11-native-aot.md)); measure AOT, don't assume.
 - Solution `AgentTeamForge.slnx`, three production projects:
   **AgentTeamForge.Host → AgentTeamForge.Business → AgentTeamForge.DAL**
   (see [docs/architecture.md](docs/architecture.md)). Not Clean Architecture:
@@ -84,5 +84,6 @@
 - Documentation in English; conversation may be Swedish.
 - Stay within this repository. Don't kill processes you don't own.
 - Prefer type inference over explicit return types.
-- [HANDOFF.md](HANDOFF.md) has the document map; planning docs are not
+- The document map is in [CONTRIBUTING.md](CONTRIBUTING.md#documentation-map);
+  decisions are in [docs/adr](docs/adr/README.md). Planning docs are not
   evidence of working software.

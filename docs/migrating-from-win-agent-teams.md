@@ -3,8 +3,8 @@
 ATF coordinates durable **jobs**, not named members in a lead's team. Use
 `claude`, `codex`, or `pi` as the ATF backend name (`claude-code` in the
 reference becomes `claude`). Choose headless or Herdr at setup; see the
-[Linux quickstart](quickstart.md). This table reflects the current Linux MCP
-surface. **Landing** means work is in flight, not an available tool.
+[usage guide](usage.md). This table reflects the current Linux MCP
+surface.
 
 | win-agent-teams MCP tool or behavior | ATF equivalent | Difference |
 | --- | --- | --- |
@@ -12,20 +12,20 @@ surface. **Landing** means work is in flight, not an available tool.
 | `follow_up_agent` | `follow_up` | New job resumes the parent's native session, backend and worktree; use a new idempotency key. |
 | `follow_up_agent(replace_if_idle=...)` | None | No process replacement switch; `follow_up(interrupt=true)` can replace a running turn. |
 | Interrupt a running turn and continue | `follow_up(interrupt=true)` | Cancels the current turn with reason `interrupted`, then submits the new prompt in its session. |
-| `send_message` | `follow_up` for a managed job | No free-form lead/worker inbox. A job's result and native wake carry the reply. |
-| `read_messages` | `get_job`, `get_job_output` | Read committed result/status or live log; no inbox cursor. |
+| `send_message` | `follow_up` for a managed job | A managed child can also send a durable `send_message(to="team-lead")` upstream. The lead uses `read_messages` for those messages. |
+| `read_messages` | `get_job`, `get_job_output`, `read_messages` | Read managed job status/result or live log with the first two; `read_messages` reads child and external-member messages. |
 | `kill_agent` | `stop_job` | Cancels a queued/running job; keeps its durable history. |
 | `list_agents` | `list_jobs` | Page through job records, not live named processes. |
 | `agent_status` | `get_job` / `list_jobs` | Job status; no heartbeat or member binding row. |
 | `check_agent` | `get_job`, `get_job_output` | Status/result and progress log, not a transcript-state probe. |
 | `agent_watch_paths` | None needed | Native notice wakes a registered lead; no file watcher. |
-| `install_lead_wake` | `register_codex_wake` for Codex; setup for Claude | Codex reads `CODEX_THREAD_ID` from its shell. Claude inbound setup and Pi extension are in the quickstart. |
+| `install_lead_wake` | `register_codex_wake` for Codex; setup for Claude | Codex reads `CODEX_THREAD_ID` from its shell. Claude inbound setup and Pi extension are in the [usage guide](usage.md#native-wake). |
 | `install_member_wake` | None needed | ATF has no external-member inbox watcher. |
 | `list_backends` | None | Choose `claude`, `codex`, or `pi` from configured mode; no discovery MCP tool yet. |
 | `delivery_status` | `get_job`; retry with the same idempotency key if acceptance is uncertain | No separate delivery receipt tool. |
 | `deliver_pending` | None needed | The daemon dispatches accepted jobs; clients need not drain a send queue. |
-| `session_info` | `list_jobs` after reconnect | Daemon state survives the lead; multi-lead session info is **landing**. |
-| `resume_session` | None yet | Multi-lead/resume-session control is **landing**; existing jobs remain readable after reconnect. |
+| `session_info` | `session_info` | Shows this lead session and recoverable sessions in the same workspace. |
+| `resume_session` | `resume_session` | Adopts a prior lead session's jobs and unread wake notices after a restart. |
 | `create_join_ticket` | `create_join_ticket` | Issues a one-time ticket for this lead session, valid for ten minutes. Give the returned `join_prompt` to the manually started member. |
 | `join_team` | `join_team` | Exchanges the ticket for a member bearer token. A retry with the same ticket within its ten-minute TTL recovers the same membership and token; after expiry or leave it cannot reopen membership. Bad or expired tickets return `invalid_or_expired_token`. |
 | `external_send` | `external_send` | Persists a member message in the lead inbox. The lead uses `read_messages` to read it. |
@@ -37,9 +37,12 @@ surface. **Landing** means work is in flight, not an available tool.
 
 For a manually started member, configure a separate ATF MCP entry with `ATF_EXTERNAL_ONLY=1`. That entry exposes only `join_team`, `external_send`, `external_read`, `external_set_wake`, and `leave_team`, and does not create a lead session. Its bearer token grants access only to its joined lead's inbox. The regular lead entry exposes `send_message`, `read_messages`, `create_join_ticket`, and `close_team`.
 
-An in-daemon connector can own a team without an MCP lead session. `ExternalTeam.CreateActorTeam(ownerKey)` recovers a stable team ID, then `CreateTicketForTeam`, `SendToMember`, `ReadTeam`, `BindTeamWake`, and `CloseTeam` operate on that ID directly. The PRFactory adapter still needs to map a work item to an owner key, deliver server `SendMessage` commands to `SendToMember`, and upload member replies from `ReadTeam` to the agent stream with a persisted cursor. Those bindings are outside this slice.
+An in-daemon connector can own a team without an MCP lead session. PRFactory
+uses this path to map a work item to a stable team, deliver server messages
+to external members and upload replies from a persisted cursor. See the
+[connector guide](prfactory-connector.md) for its current server dependency.
 
-Standalone pause/interrupt without a follow-up and `revive` are **landing**.
+Standalone pause/interrupt without a follow-up and `revive` are not available.
 `stop_job` cancels a job without submitting a new prompt. Native wake is a
 notice, while `get_job` is the committed source of status and result.
 
