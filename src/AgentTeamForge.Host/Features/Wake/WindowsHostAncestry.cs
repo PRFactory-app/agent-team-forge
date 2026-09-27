@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using AgentTeamForge.Business.Features.Processes;
 
 namespace AgentTeamForge.Host.Features.Wake;
 
@@ -82,7 +83,7 @@ internal static unsafe partial class WindowsHostAncestry
         start.ArgumentList.Add($"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine");
         try
         {
-            using var process = Process.Start(start);
+            using var process = NonInteractiveProcess.Start(start);
             if (process is null)
             {
                 return null;

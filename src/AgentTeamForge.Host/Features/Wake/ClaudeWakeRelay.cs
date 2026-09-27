@@ -19,7 +19,13 @@ internal static class ClaudeWakeRelay
                 var response = await client.SendAsync(host with { Op = IpcProtocol.ClaudeWakeTake }, cancellationToken);
                 if (response.ClaudeNotice is { } offer)
                 {
-                    var posted = await poster.PostAsync(target, offer.Notice, cancellationToken);
+                    var currentHost = OperatingSystem.IsLinux() ? HostSessionWake.NearestHost()
+                        : OperatingSystem.IsWindows() ? WindowsHostAncestry.NearestHost() : MacHostAncestry.NearestHost();
+                    var owned = HostSessionWake.OwnsClaudeChannel(host, currentHost,
+                        Environment.GetEnvironmentVariable("CLAUDE_CODE_MESSAGING_SOCKET"),
+                        Environment.GetEnvironmentVariable("CLAUDE_CODE_MESSAGING_TOKEN"));
+                    if (!owned) { Console.Error.WriteLine("[atf-bridge] Claude wake channel owner changed"); }
+                    var posted = owned && await poster.PostAsync(target, offer.Notice, cancellationToken);
                     await client.SendAsync(host with { Op = IpcProtocol.ClaudeWakeComplete, NoticeId = offer.Id, NoticePosted = posted }, cancellationToken);
                 }
                 await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
@@ -27,6 +33,7 @@ internal static class ClaudeWakeRelay
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
             {
+                Console.Error.WriteLine($"[atf-bridge] Claude wake relay failed: {ex.GetType().Name}");
                 // No endpoint/token details in stderr. A failed relay never marks the durable inbox read.
                 try { await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken); }
                 catch (OperationCanceledException) { return; }

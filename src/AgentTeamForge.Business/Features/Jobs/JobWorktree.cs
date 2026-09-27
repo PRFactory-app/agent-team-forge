@@ -2,6 +2,7 @@ using AgentTeamForge.DAL.Files;
 using System.Diagnostics;
 using System.Text;
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.Business.Features.Processes;
 
 namespace AgentTeamForge.Business.Features.Jobs;
 
@@ -135,7 +136,7 @@ public static class JobWorktree
                 info.ArgumentList.Add(arg);
             }
 
-            using var process = Process.Start(info);
+            using var process = NonInteractiveProcess.Start(info);
             if (process is null)
             {
                 return null;
