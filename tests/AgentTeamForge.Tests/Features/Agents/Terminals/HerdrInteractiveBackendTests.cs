@@ -339,6 +339,26 @@ public sealed class HerdrInteractiveBackendTests
     }
 
     [Fact]
+    public async Task Dead_retained_tab_is_reopened_with_its_native_session()
+    {
+        using var state = new TempStateDir();
+        var control = new FakeControl();
+        var backend = new HerdrInteractiveBackend(control,
+            new FakeReader(new InteractiveTranscript("native-1", "finished", Completed: true)), InteractiveAgentKind.Claude, state.Path);
+        await using var first = backend.Start(new BackendRequest("parent", "first", "work", "") { WorkingDirectory = state.Path });
+        await first.DeliverAsync(CancellationToken.None);
+        await Collect(first);
+        await first.DisposeAsync();
+        Assert.True(backend.HasIdleSession("native-1"));
+        control.Status = InteractiveAgentStatus.Gone;
+        await using var revived = backend.Start(new BackendRequest("child", "second", "continue", "")
+        { WorkingDirectory = state.Path, ResumeSessionId = "native-1" });
+        Assert.Equal(2, control.Starts);
+        Assert.Equal("native-1", control.Launch!.ResumeSessionId);
+        Assert.False(control.Stopped);
+    }
+
+    [Fact]
     public async Task Binding_error_is_uncertain_without_acknowledgement_or_result()
     {
         var control = new FakeControl();
@@ -672,7 +692,7 @@ public sealed class HerdrInteractiveBackendTests
 
         public bool FailPrompt { get; init; }
         public bool FailStatus { get; init; }
-        public InteractiveAgentStatus Status { get; init; } = InteractiveAgentStatus.Done;
+        public InteractiveAgentStatus Status { get; set; } = InteractiveAgentStatus.Done;
         public Queue<InteractiveAgentStatus>? Statuses { get; init; }
         public bool Stopped { get; private set; }
 

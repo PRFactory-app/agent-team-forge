@@ -38,6 +38,7 @@ public sealed class StopAgentTests
     {
         public string? StoppedSession { get; private set; }
         public IBackendRun Start(BackendRequest request) => throw new InvalidOperationException("not dispatched");
+        public bool HasIdleSession(string sessionId) => StoppedSession is null && sessionId == "native-1";
         public bool StopIdleSession(string sessionId)
         {
             if (StoppedSession is not null || sessionId != "native-1")

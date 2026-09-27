@@ -198,12 +198,12 @@ public static class DaemonCommand
         var connectorSessions = new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
             new ListJobs(store, profile.Bound, jobLogs),
-            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
-            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement);
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
+            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement, launchMode);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
-            request => request.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp ? dispatcher.PauseClaims() : null);
+            request => request.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp or IpcProtocol.JobStop ? dispatcher.PauseClaims() : null);
 
         using var lifetime = new CancellationTokenSource();
         using var sigterm = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; lifetime.Cancel(); });

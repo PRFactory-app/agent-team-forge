@@ -345,7 +345,7 @@ public sealed class DispatchJob : IDisposable
                             return;
                         }
 
-                        claim = store.BeginNextAttempt();
+                        claim = store.BeginNextAttempt([.. _running.Keys]);
                     }
                 }
                 finally
@@ -663,6 +663,24 @@ public sealed class DispatchJob : IDisposable
         }
 
         resumeSessionId = store.GetJob(job.ParentJobId)?.SessionId;
+
+        if (resumeSessionId is not null && JobOptions.Read(job.Options, "replace_if_idle") == "0"
+            && backend is IInteractiveSessionStop interactive)
+        {
+            try
+            {
+                if (interactive.HasIdleSession(resumeSessionId))
+                {
+                    notStarted = "agent_idle_but_alive";
+                    return false;
+                }
+            }
+            catch (Exception ex) when (ex is HerdrLaunchException or IOException or UnauthorizedAccessException or OperationCanceledException)
+            {
+                notStarted = "idle_session_unverified";
+                return false;
+            }
+        }
 
         notStarted = "parent_session_missing";
         return resumeSessionId is not null;

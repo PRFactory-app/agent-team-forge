@@ -115,6 +115,8 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
 
     void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
 
+    public bool HasIdleSession(string sessionId) => _liveSessions.IsAlive(sessionId, _tabs.IsAlive);
+
     public bool StopIdleSession(string sessionId) => _liveSessions.Stop(sessionId);
 
     public void StopAllIdleSessions() => _liveSessions.StopAll();

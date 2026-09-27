@@ -13,6 +13,17 @@ internal sealed class RetainedSessions(Action<InteractiveLaunch> stop)
 
     public int Count { get { lock (_gate) { return _sessions.Count; } } }
 
+    public bool IsAlive(string sessionId, Func<InteractiveLaunch, bool> isAlive)
+    {
+        lock (_gate)
+        {
+            if (!_sessions.TryGetValue(sessionId, out var entry)) { return false; }
+            if (isAlive(entry.Launch)) { return true; }
+            _sessions.Remove(sessionId);
+            return false;
+        }
+    }
+
     public bool TryTake(string sessionId, out InteractiveLaunch launch)
     {
         lock (_gate)

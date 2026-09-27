@@ -1,31 +1,35 @@
 # Migrating from win-agent-teams to ATF
 
-ATF coordinates durable **jobs**, not named members in a lead's team. Use
+ATF coordinates durable **jobs**. Optional agent names label a sequence of turns;
+save the returned job IDs for follow-up and status. Use
 `claude`, `codex`, or `pi` as the ATF backend name (`claude-code` in the
 reference becomes `claude`). Choose headless or Herdr at setup; see the
 [Linux quickstart](quickstart.md). This table reflects the current Linux MCP
-surface. **Landing** means work is in flight, not an available tool.
+surface; tool names differ where ATF uses jobs instead of process records.
 
 | win-agent-teams MCP tool or behavior | ATF equivalent | Difference |
 | --- | --- | --- |
-| `spawn_agent` | `submit_job` | Returns a durable `job_id`; `cwd` and `worktree=true` are optional. No named child or tier selector. |
-| `follow_up_agent` | `follow_up` | New job resumes the parent's native session, backend and worktree; use a new idempotency key. |
-| `follow_up_agent(replace_if_idle=...)` | None | No process replacement switch; `follow_up(interrupt=true)` can replace a running turn. |
+| `spawn_agent` | `submit_job` | Returns a durable `job_id`; `cwd` and `worktree=true` are optional. Optional name; model accepts configured capability tiers. |
+| `follow_up_agent` | `follow_up` | New job resumes the parent's native session, backend and worktree; use a new idempotency key. Busy/queued parents defer by default; `defer=false` refuses busy parents. |
+| `follow_up_agent(replace_if_idle=...)` | `follow_up(replace_if_idle=...)` | Defaults true: reuse/relaunch a retained interactive session. False records `failed / agent_idle_but_alive` without sending a prompt to a live idle agent. Dead sessions still resume. |
+| Interrupt without a prompt | `interrupt_job` | Cancels the turn with reason `interrupted`; retains native session history for later resume. |
+| Revive a dead session | `revive_agent` | Same durable resume path as `follow_up`; provide job ID, instruction and idempotency key. |
+| `expected_outputs` | `submit_job(expected_outputs=[...])` | Paths persist as metadata and return in `get_job`; neither system verifies file contents. |
 | Interrupt a running turn and continue | `follow_up(interrupt=true)` | Cancels the current turn with reason `interrupted`, then submits the new prompt in its session. |
-| `send_message` | `follow_up` for a managed job | No free-form lead/worker inbox. A job's result and native wake carry the reply. |
-| `read_messages` | `get_job`, `get_job_output` | Read committed result/status or live log; no inbox cursor. |
-| `kill_agent` | `stop_job` | Cancels a queued/running job; keeps its durable history. |
+| `send_message` | `follow_up` downstream; `send_message(to="team-lead")` upstream | Managed children receive durable downstream turns and can send durable inbox replies to their parent. |
+| `read_messages` | `read_messages` | Cursor-based managed-child and external replies. `get_job` separately returns committed turn results. |
+| `kill_agent` | `stop_job` for active work; `stop_agent` for idle retained agents | Keeps durable history and stops only owned agents. |
 | `list_agents` | `list_jobs` | Page through job records, not live named processes. |
 | `agent_status` | `get_job` / `list_jobs` | Job status; no heartbeat or member binding row. |
-| `check_agent` | `get_job`, `get_job_output` | Status/result and progress log, not a transcript-state probe. |
+| `check_agent` | `get_job`, `get_job_output`, `get_job_activity` | Status, native session, startup diagnostics and cursor-based activity. List timestamps expose inactivity; no identical heartbeat/marker heuristics. |
 | `agent_watch_paths` | None needed | Native notice wakes a registered lead; no file watcher. |
 | `install_lead_wake` | `register_codex_wake` for Codex; setup for Claude | Codex reads `CODEX_THREAD_ID` from its shell. Claude inbound setup and Pi extension are in the quickstart. |
 | `install_member_wake` | None needed | ATF has no external-member inbox watcher. |
-| `list_backends` | None | Choose `claude`, `codex`, or `pi` from configured mode; no discovery MCP tool yet. |
+| `list_backends` | `list_backends` | Configured backends, executable availability, model choices, effective tiers, cached native models and launch mode. Availability checks PATH, not authentication. |
 | `delivery_status` | `get_job`; retry with the same idempotency key if acceptance is uncertain | No separate delivery receipt tool. |
 | `deliver_pending` | None needed | The daemon dispatches accepted jobs; clients need not drain a send queue. |
-| `session_info` | `list_jobs` after reconnect | Daemon state survives the lead; multi-lead session info is **landing**. |
-| `resume_session` | None yet | Multi-lead/resume-session control is **landing**; existing jobs remain readable after reconnect. |
+| `session_info` | `session_info` | Reports current and recoverable lead sessions and effective tiers. |
+| `resume_session` | `resume_session` | Adopts a previous lead session and its jobs. |
 | `create_join_ticket` | `create_join_ticket` | Issues a one-time ticket for this lead session, valid for ten minutes. Give the returned `join_prompt` to the manually started member. |
 | `join_team` | `join_team` | Exchanges the ticket for a member bearer token. A retry with the same ticket within its ten-minute TTL recovers the same membership and token; after expiry or leave it cannot reopen membership. Bad or expired tickets return `invalid_or_expired_token`. |
 | `external_send` | `external_send` | Persists a member message in the lead inbox. The lead uses `read_messages` to read it. |
@@ -39,9 +43,28 @@ For a manually started member, configure a separate ATF MCP entry with `ATF_EXTE
 
 An in-daemon connector can own a team without an MCP lead session. `ExternalTeam.CreateActorTeam(ownerKey)` recovers a stable team ID, then `CreateTicketForTeam`, `SendToMember`, `ReadTeam`, `BindTeamWake`, and `CloseTeam` operate on that ID directly. The PRFactory adapter still needs to map a work item to an owner key, deliver server `SendMessage` commands to `SendToMember`, and upload member replies from `ReadTeam` to the agent stream with a persisted cursor. Those bindings are outside this slice.
 
-Standalone pause/interrupt without a follow-up and `revive` are **landing**.
-`stop_job` cancels a job without submitting a new prompt. Native wake is a
-notice, while `get_job` is the committed source of status and result.
+## Deferred turns and recovery
+
+MCP `follow_up` and `revive_agent` default to `defer=true`. A busy or
+queued parent receives a durable child job immediately; the daemon waits
+until the parent ends and backend cleanup completes. Each accepted intent
+is claimed once. Repeating the same idempotency key recovers that job;
+changing its prompt or options returns `idempotency_conflict`.
+
+Queued turns survive daemon restarts. If the parent's turn was uncertain
+at restart, its session stays fenced and `get_job` on the queued child
+reports `parent_needs_reconciliation`. It is not silently replayed.
+Inspect the parent and reconcile/stop its owned agent before resuming;
+`stop_job` can cancel the deferred child, and `queue_ttl_s` bounds its wait.
+A terminal parent without a recorded native session makes the child fail
+with `parent_session_missing`; an expired native session reports
+`session_expired`.
+
+`interrupt_job` sends no follow-up. `revive_agent` uses the same backend,
+working directory and native session as its parent, including stopped
+headless agents. Uncertain live processes remain fenced. Herdr can retain
+or reopen a TUI; there is no headless fallback. Native wake is a notice,
+while `get_job` is the committed source of status and result.
 
 ## Orchestrator loop for skills
 

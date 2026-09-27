@@ -14,7 +14,7 @@ namespace AgentTeamForge.Host.Features.Jobs;
 public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, StopJob stop, DurabilityCheckpoints checkpoints, Action onAccepted,
     WakeStore? wakeStore = null, PruneJob? prune = null, JobLogs? logs = null, JobStore? jobStore = null, LeadSessionStore? sessions = null, ExternalTeam? external = null,
     StopAgent? stopAgent = null, IReadOnlyCollection<string>? configuredBackends = null, TierMap? tierMap = null,
-    BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null)
+    BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null, string? launchMode = null)
 {
     public IpcResponse Handle(IpcRequest request)
     {
@@ -106,7 +106,13 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         switch (request.Op)
         {
             case IpcProtocol.JobCapabilities:
-                return new IpcResponse(true, Outcome: "capabilities", Backends: configuredBackends ?? [], ModelOptions: ModelSelection.ConsoleOptions,
+                return new IpcResponse(true, Outcome: "capabilities", Backends: configuredBackends ?? [],
+                    BackendAvailability: BackendAvailability.Read(configuredBackends ?? []), LaunchMode: launchMode, ModelOptions: ModelSelection.ConsoleOptions,
+                    ModelCatalog: new Dictionary<string, IReadOnlyCollection<string>>
+                    {
+                        ["codex"] = modelDiscovery?.CachedModels("codex") ?? [],
+                        ["pi"] = modelDiscovery?.CachedModels("pi") ?? []
+                    },
                     Tiers: tierMap?.Settings(), HerdrPlacement: herdrPlacement?.Default, HerdrMode: herdrPlacement is not null);
             case IpcProtocol.HerdrPlacementGet:
                 return herdrPlacement is null ? new IpcResponse(false, JobErrors.InvalidRequest)
@@ -150,6 +156,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 {
                     Backend = request.Backend,
                     TargetAgent = request.TargetAgent,
+                    ExpectedOutputs = request.ExpectedOutputs,
                     Model = request.Model,
                     Effort = request.Effort,
                     HerdrPlacement = request.HerdrPlacement,
@@ -168,13 +175,15 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     QueueTtlSeconds = request.QueueTtlSeconds,
                     LeadSessionId = request.LeadSessionId,
                     Interrupt = request.Interrupt,
+                    Defer = request.Defer,
+                    ReplaceIfIdle = request.ReplaceIfIdle,
                     Model = request.Model,
                     Effort = request.Effort,
                     WakeKey = request.WakeKey,
                     WakeGeneration = request.WakeGeneration,
                 }));
             case IpcProtocol.JobStop:
-                return Map(stop.Execute(request.JobId ?? string.Empty));
+                return Map(stop.Execute(request.JobId ?? string.Empty, request.Interrupt));
             case IpcProtocol.JobStopAgent:
                 return stopAgent is null ? new IpcResponse(false, JobErrors.BackendUnavailable) : Map(stopAgent.Execute(request.JobId ?? string.Empty));
             case IpcProtocol.JobGet:

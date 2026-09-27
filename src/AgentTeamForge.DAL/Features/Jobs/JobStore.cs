@@ -86,6 +86,10 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return 0;
     });
 
+    public bool HasAcceptedKey(string principal, string team, string operation, string key) => Read(connection =>
+        Scalar(connection, null, "SELECT count(*) FROM jobs WHERE principal=$p AND team=$t AND operation=$o AND idempotency_key=$k",
+            ("$p", principal), ("$t", team), ("$o", operation), ("$k", key)) > 0);
+
     public string WorktreeRoot => Path.Combine(Path.GetDirectoryName(database.Path)!, "worktrees");
 
     /// <summary>
@@ -123,7 +127,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
             // Failed/needs_reconciliation parents were checked idle by the caller while
             // already terminal; an interrupt saw a running parent, so its later end is unchecked.
-            if (parent.SessionId is null || SessionFenced(connection, tx, parent.JobId) || !(parent.Status is JobStatus.Completed or JobStatus.Cancelled
+            var deferred = job.DeferParent && parent.Status is JobStatus.Queued or JobStatus.Running;
+            if ((!deferred && parent.SessionId is null) || SessionFenced(connection, tx, parent.JobId) || !(deferred || parent.Status is JobStatus.Completed or JobStatus.Cancelled
                 || (job.InterruptParent ? parent.Status == JobStatus.Running : parent.Status is JobStatus.Failed or JobStatus.NeedsReconciliation)))
             {
                 return new ParentNotReady();
@@ -157,7 +162,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 WHERE target_key=$key AND generation=$generation AND active=1
                 """, ("$id", jobId), ("$key", job.WakeTargetKey), ("$generation", job.WakeGeneration.Value));
         }
-        var interrupted = parent?.Status == JobStatus.Running ? parent.JobId : null;
+        var interrupted = job.InterruptParent && parent?.Status == JobStatus.Running ? parent.JobId : null;
         if (interrupted is not null)
         {
             // The child intent and stop_job's cancellation commit together. A
@@ -187,19 +192,24 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     /// running (the parent itself, a job holding that session, or another
     /// follow-up of a job holding it), so turns on one session never overlap.
     /// </summary>
-    public AttemptClaim? BeginNextAttempt() => Write(connection =>
+    public AttemptClaim? BeginNextAttempt(IReadOnlyCollection<string>? settlingJobs = null) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
-        var jobId = QueryString(connection, tx, """
+        // A terminal commit can precede backend disposal (retaining an interactive
+        // tab or reaping a headless child). The dispatcher still owns those turns.
+        var settling = settlingJobs?.Select((id, index) => ("$settling" + index, (object?)id)).ToArray() ?? [];
+        var settlingSql = settling.Length == 0 ? "0" : "k.job_id IN (" + string.Join(",", settling.Select(p => p.Item1)) + ")";
+        var jobId = QueryString(connection, tx, $"""
             SELECT i.job_id FROM dispatch_intents i JOIN jobs j ON j.job_id = i.job_id
             WHERE i.state='unattempted' AND j.status='queued'
+              AND NOT EXISTS (SELECT 1 FROM jobs p WHERE p.job_id=j.parent_job_id AND p.status='queued')
               AND (j.queue_deadline IS NULL OR j.queue_deadline > $now) AND NOT EXISTS (
-                SELECT 1 FROM jobs p JOIN jobs k ON (k.status='running' OR k.session_fenced=1)
+                SELECT 1 FROM jobs p JOIN jobs k ON (k.status='running' OR k.session_fenced=1 OR {settlingSql})
                 WHERE p.job_id = j.parent_job_id
                   AND k.backend=p.backend AND (k.job_id = p.job_id OR k.session_id = p.session_id OR EXISTS (
                       SELECT 1 FROM jobs q WHERE q.job_id = k.parent_job_id AND q.session_id = p.session_id)))
             ORDER BY i.created_at, i.rowid LIMIT 1
-            """, ("$now", Now()));
+            """, [("$now", Now()), .. settling]);
         if (jobId is null)
         {
             return null;
@@ -282,7 +292,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     }
 
     /// <summary>Atomically cancels queued or running work; terminal jobs are unchanged.</summary>
-    public CancelOutcome Cancel(string jobId, string principal, string team) => Cancel(jobId, principal, team, "stopped");
+    public CancelOutcome Cancel(string jobId, string principal, string team, bool interrupt = false) => Cancel(jobId, principal, team, interrupt ? "interrupted" : "stopped");
 
     /// <summary>The daemon's own cancellation (a job timeout), through the same path as a stop.</summary>
     public CancelOutcome CancelOwned(string jobId, string reason) => Cancel(jobId, null, null, reason);

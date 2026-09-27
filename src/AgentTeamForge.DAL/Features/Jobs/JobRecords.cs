@@ -26,6 +26,7 @@ public sealed record NewJob(
 
     public string? ParentJobId { get; init; }
     public bool InterruptParent { get; init; }
+    public bool DeferParent { get; init; }
 
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }

@@ -43,10 +43,16 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal)
         }
     }
 
-    JobView View(JobRecord job) => ToView(job) with { Startup = StartupProgress.Read(store, job.JobId, job.Status, job.Backend, job.ReasonCode) };
+    JobView View(JobRecord job) => ToView(job) with
+    {
+        ReasonCode = job.Status == JobStatus.Queued && job.ParentJobId is { } parent && store.IsSessionFenced(parent)
+            ? "parent_needs_reconciliation" : job.ReasonCode,
+        Startup = StartupProgress.Read(store, job.JobId, job.Status, job.Backend, job.ReasonCode)
+    };
 
     internal static JobView ToView(JobRecord job) => new(job.JobId, job.Status, job.ResultText, job.ReasonCode, job.Attempts)
     {
+        ExpectedOutputs = JobOptions.Read(job.Options, "expected_outputs")?.Split(',').Select(p => System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(p))).ToArray(),
         Backend = job.Backend,
         Model = JobOptions.Read(job.Options, "model"),
         Effort = JobOptions.Read(job.Options, "effort"),

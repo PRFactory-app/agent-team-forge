@@ -21,6 +21,7 @@ public sealed record SubmitJobRequest(string IdempotencyKey, string Instruction,
     /// <summary>Backend name from <see cref="Agents.Backends.BackendCatalog"/>; null means fake.</summary>
     public string? Backend { get; init; }
     public string? TargetAgent { get; init; }
+    public string[]? ExpectedOutputs { get; init; }
 
     public string? Model { get; init; }
     public string? Effort { get; init; }
@@ -49,6 +50,8 @@ public sealed record FollowUpRequest(string ParentJobId, string Instruction, str
     public string? Model { get; init; }
     public string? Effort { get; init; }
     public bool Interrupt { get; init; }
+    public bool Defer { get; init; }
+    public bool ReplaceIfIdle { get; init; } = true;
     public int? TimeoutSeconds { get; init; }
     public int? QueueTtlSeconds { get; init; }
 
@@ -79,6 +82,7 @@ public static class JobErrors
 /// <summary>The public view of a job. Never a raw storage record.</summary>
 public sealed record JobView(string JobId, string Status, string? Result, string? ReasonCode, int Attempts)
 {
+    public string[]? ExpectedOutputs { get; init; }
     public StartupProgress? Startup { get; init; }
     public string? Backend { get; init; }
     public string? Model { get; init; }

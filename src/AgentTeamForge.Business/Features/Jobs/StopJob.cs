@@ -5,9 +5,11 @@ using AgentTeamForge.DAL.Sqlite;
 namespace AgentTeamForge.Business.Features.Jobs;
 
 /// <summary>Commits cancellation before asking the dispatcher to stop its owned backend run.</summary>
-public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<string> cancelRunning, Action<string>? closeUnclaimedFollowUp = null, Func<JobRecord, bool>? stopReconciled = null, Action<JobRecord>? forgetReconciledOwnership = null)
+public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<string> cancelRunning, Action<string>? closeUnclaimedFollowUp = null, Func<JobRecord, bool>? stopReconciled = null, Action<JobRecord>? forgetReconciledOwnership = null, Action<string>? interruptRunning = null)
 {
-    public JobResult Execute(string jobId)
+    public JobResult Execute(string jobId) => Execute(jobId, false);
+
+    public JobResult Execute(string jobId, bool interrupt)
     {
         if (string.IsNullOrWhiteSpace(jobId) || jobId.Length > 64)
         {
@@ -31,7 +33,8 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
                 if (stopped.Changed) { forgetReconciledOwnership?.Invoke(current); }
                 return JobResult.Ok(GetJob.ToView(stopped.Job!), stopped.Changed ? "stopped" : "unchanged");
             }
-            var outcome = store.Cancel(jobId, principal.Principal, principal.Team);
+            if (interrupt && interruptRunning is null) { return JobResult.Fail(JobErrors.BackendUnavailable); }
+            var outcome = store.Cancel(jobId, principal.Principal, principal.Team, interrupt);
             if (outcome.Job is null)
             {
                 return JobResult.Fail(JobErrors.NotFound);
@@ -39,7 +42,7 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
 
             if (outcome.WasRunning)
             {
-                cancelRunning(jobId);
+                if (interrupt) { interruptRunning!(jobId); } else { cancelRunning(jobId); }
             }
             else if (outcome.Changed)
             {

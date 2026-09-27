@@ -44,7 +44,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         }
 
         var started = DateTimeOffset.UtcNow;
-        if (request.ResumeSessionId is { } resumeId && _liveSessions.TryTake(resumeId, out var live))
+        if (request.ResumeSessionId is { } resumeId && HasIdleSession(resumeId) && _liveSessions.TryTake(resumeId, out var live))
         {
             var (model, effort) = InteractiveLaunch.Selection(request.Options);
             if (live.Model == model && live.Effort == effort)
@@ -73,6 +73,12 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     }
 
     void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
+
+    public bool HasIdleSession(string sessionId) => _liveSessions.IsAlive(sessionId, launch =>
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult() != InteractiveAgentStatus.Gone;
+    });
 
     public bool StopIdleSession(string sessionId) => _liveSessions.Stop(sessionId);
 

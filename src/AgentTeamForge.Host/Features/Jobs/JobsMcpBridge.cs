@@ -28,6 +28,7 @@ public static class JobsMcpBridge
           "model":{"type":"string","description":"Codex/pi capability tier: cheapest, low, medium, high, xhigh, max; pi also has medium-fast. Tier mappings are configurable; read the effective table in session_info or the web console Settings view. Claude: haiku, sonnet, opus (default), fable; fast/balanced/powerful aliases. Raw model slugs pass through. Retired pi high-fast errors; use high."},
           "effort":{"type":"string","description":"Explicit effort for Claude or a raw/blank Codex/pi model. A capability tier owns its effort and ignores this override."},
           "herdr_placement":{"type":"string","description":"Optional Herdr placement: own-session or herdr-session:<running session name>. Omit to use the daemon's global default."},
+          "expected_outputs":{"type":"array","items":{"type":"string"},"maxItems":100,"description":"Expected output paths retained as metadata; does not verify files."},
           "instruction":{"type":"string","description":"Task for the agent."},
           "name":{"type":"string","description":"Optional name for this agent and its web console card."},
           "cwd":{"type":"string","description":"Absolute working directory for the agent (optional)."},
@@ -69,6 +70,8 @@ public static class JobsMcpBridge
           "job_id":{"type":"string","description":"Job whose native agent session is resumed."},
           "instruction":{"type":"string"},
           "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."},
+          "defer":{"type":"boolean","default":true,"description":"Queue durably behind a busy or queued parent. False refuses a busy parent."},
+          "replace_if_idle":{"type":"boolean","default":true,"description":"False refuses an idle live interactive agent; dead sessions can still be resumed."},
           "interrupt":{"type":"boolean","description":"If the parent is running, cancel its turn (reason interrupted) and run this prompt in the same session."},
           "model":{"type":"string","description":"Optional replacement model or capability tier. Codex/pi: cheapest, low, medium, high, xhigh, max; pi also has medium-fast. Mappings are configurable; read the effective table in session_info or the web console Settings view. Omit to inherit the resolved parent model."},
           "effort":{"type":"string","description":"Optional effort override; ignored when model is a capability tier. Omit to inherit the parent's effort."},
@@ -186,7 +189,12 @@ public static class JobsMcpBridge
             new() { Name = "get_job", Description = "Read a job's status, result output and native session_id.", InputSchema = Parse(GetSchema) },
             new() { Name = "get_job_output", Description = "Read live stdout/stderr log bytes from a job, starting at an absolute offset. Use next_offset to continue.", InputSchema = Parse(OutputSchema) },
             new() { Name = "stop_job", Description = "Cancel a queued or running job. A finished job is returned unchanged.", InputSchema = Parse(GetSchema) },
-            new() { Name = "follow_up", Description = "Resume a job's native agent session. A running job needs interrupt=true; otherwise follow_up returns parent_not_ready.", InputSchema = Parse(FollowUpSchema) },
+            new() { Name = "follow_up", Description = "Resume a job's native agent session. Busy turns queue durably by default; interrupt=true cancels the current turn first. Set defer=false to refuse busy parents.", InputSchema = Parse(FollowUpSchema) },
+            new() { Name = "list_backends", Description = "Discover configured backends, model choices, cached native models, effective tiers and launch mode on this daemon.", InputSchema = Parse(EmptySchema) },
+            new() { Name = "interrupt_job", Description = "Interrupt a turn without sending another prompt. The native session remains resumable with follow_up or revive_agent.", InputSchema = Parse(GetSchema) },
+            new() { Name = "revive_agent", Description = "Resume a dead or finished agent using its recorded native session, backend and worktree. Requires a new instruction and idempotency key; uncertain live sessions remain fenced.", InputSchema = Parse(FollowUpSchema) },
+            new() { Name = "stop_agent", Description = "Close an owned idle interactive agent. Use stop_job for an active turn.", InputSchema = Parse(GetSchema) },
+            new() { Name = "get_job_activity", Description = "Read structured progress with a monotonic after_cursor and bounded limit.", InputSchema = Parse("""{"type":"object","properties":{"job_id":{"type":"string"},"after_cursor":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"required":["job_id"]}""") },
             new() { Name = "list_jobs", Description = "List jobs, newest first, one bounded page at a time.", InputSchema = Parse(ListSchema) },
             new() { Name = "session_info", Description = "Report this lead's session and recoverable sessions in its workspace.", InputSchema = Parse(EmptySchema) },
             new() { Name = "resume_session", Description = "Adopt a prior lead session and its jobs after a restart.", InputSchema = Parse(ResumeSchema) },
@@ -352,6 +360,7 @@ public static class JobsMcpBridge
                 Instruction = String(args, "instruction"),
                 Backend = String(args, "backend"),
                 TargetAgent = String(args, "name"),
+                ExpectedOutputs = Strings(args, "expected_outputs"),
                 Model = String(args, "model"),
                 Effort = String(args, "effort"),
                 HerdrPlacement = String(args, "herdr_placement"),
@@ -365,13 +374,19 @@ public static class JobsMcpBridge
             "job_get" or "get_job" => (new IpcRequest { Op = IpcProtocol.JobGet, JobId = String(args, "job_id") }, null),
             "get_job_output" => (new IpcRequest { Op = IpcProtocol.JobOutput, JobId = String(args, "job_id"), Offset = Long(args, "offset"), MaxBytes = Integer(args, "max_bytes") }, null),
             "stop_job" => (new IpcRequest { Op = IpcProtocol.JobStop, JobId = String(args, "job_id") }, null),
-            "follow_up" => (new IpcRequest
+            "list_backends" => (new IpcRequest { Op = IpcProtocol.JobCapabilities }, null),
+            "interrupt_job" => (new IpcRequest { Op = IpcProtocol.JobStop, JobId = String(args, "job_id"), Interrupt = true }, null),
+            "stop_agent" => (new IpcRequest { Op = IpcProtocol.JobStopAgent, JobId = String(args, "job_id") }, null),
+            "get_job_activity" => (new IpcRequest { Op = IpcProtocol.JobActivity, JobId = String(args, "job_id"), AfterCursor = Long(args, "after_cursor"), Limit = Integer(args, "limit") }, null),
+            "follow_up" or "revive_agent" => (new IpcRequest
             {
                 Op = IpcProtocol.JobFollowUp,
                 JobId = String(args, "job_id"),
                 Instruction = String(args, "instruction"),
                 IdempotencyKey = String(args, "idempotency_key"),
                 Interrupt = args.TryGetValue("interrupt", out var interrupt) && interrupt.ValueKind == JsonValueKind.True,
+                Defer = !args.TryGetValue("defer", out var defer) || defer.ValueKind == JsonValueKind.True,
+                ReplaceIfIdle = !args.TryGetValue("replace_if_idle", out var replace) || replace.ValueKind == JsonValueKind.True,
                 Model = String(args, "model"),
                 Effort = String(args, "effort"),
                 TimeoutSeconds = Integer(args, "timeout_s"),
@@ -428,6 +443,11 @@ public static class JobsMcpBridge
 
     static string? String(IDictionary<string, JsonElement> args, string name) =>
         args.TryGetValue(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+
+    static string[]? Strings(IDictionary<string, JsonElement> args, string name) =>
+        !args.TryGetValue(name, out var value) ? null
+        : value.ValueKind == JsonValueKind.Array && value.EnumerateArray().All(x => x.ValueKind == JsonValueKind.String)
+            ? [.. value.EnumerateArray().Select(x => x.GetString()!)] : [""];
 
     static string? NonEmpty(string? value) => string.IsNullOrEmpty(value) ? null : value;
 

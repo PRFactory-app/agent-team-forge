@@ -29,6 +29,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
             || !FakeBehavior.All.Contains(behavior)
             || ((request.Hold || behavior != FakeBehavior.Complete) && !testProfile)
             || !ValidLimits(request.TimeoutSeconds, request.QueueTtlSeconds)
+            || request.ExpectedOutputs is { } outputs && (outputs.Length > 100 || outputs.Any(p => string.IsNullOrWhiteSpace(p) || p.Length > 4096))
             || !ValidOption(request.Model) || !ValidOption(request.Effort)
             || request.TargetAgent is not null && !ValidAgentName(request.TargetAgent)
             || !TryNormalizeCwd(request.Cwd, out var cwd))
@@ -58,6 +59,11 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         }
 
         var options = $"behavior={behavior};hold={(request.Hold ? 1 : 0)};worktree={(request.Worktree ? 1 : 0)}";
+        if (request.ExpectedOutputs is { Length: > 0 } paths)
+        {
+            options += ";expected_outputs=" + string.Join(",", paths.Select(p => Convert.ToBase64String(Encoding.UTF8.GetBytes(p))));
+        }
+
         if (selection.model is not null)
         {
             options += $";model={selection.model}";
@@ -111,7 +117,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
     internal JobResult Admit(string operation, string key, string instruction, string options, string backend, string? cwd, string? parentJobId,
         string? wakeKey = null, long? wakeGeneration = null, bool createWorktree = false, string? worktreeBase = null,
         string? worktreePath = null, string? worktreeBranch = null, int? timeoutSeconds = null, int? queueTtlSeconds = null,
-        bool interruptParent = false, Action<string>? cancelRunning = null, string? leadSessionId = null, string? targetAgent = null, string? defaultAgent = null)
+        bool interruptParent = false, Action<string>? cancelRunning = null, string? leadSessionId = null, string? targetAgent = null, string? defaultAgent = null, bool deferParent = false)
     {
         if (!admission.TryEnter())
         {
@@ -137,6 +143,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
                 Cwd = cwd,
                 ParentJobId = parentJobId,
                 InterruptParent = interruptParent,
+                DeferParent = deferParent,
                 CreateWorktree = createWorktree,
                 WorktreeBase = worktreeBase,
                 WorktreePath = worktreePath,
