@@ -47,6 +47,50 @@ public sealed class DispatchJobTests
         }
     }
 
+    [Fact]
+    public async Task Headless_reap_waits_for_concurrent_run_in_same_workspace()
+    {
+        // Cursor's worker-server is shared per project socket: the run that spawned
+        // it must not kill it while another run in that workspace may be using it.
+        if (!OperatingSystem.IsLinux()) { return; }
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var dir = Path.GetDirectoryName(state.File("x"))!;
+        var script = state.File("fake-cursor");
+        File.WriteAllText(script, "#!/bin/sh\n" +
+            "cat >/dev/null\n" +
+            "setsid sleep 300 </dev/null >/dev/null 2>&1 &\n" +
+            "if mkdir '" + dir + "/first' 2>/dev/null; then echo $! > '" + dir + "/held.pid'\n" +
+            "  while [ ! -e '" + dir + "/release' ]; do sleep 0.05; done\n" +
+            "else echo $! > '" + dir + "/done.pid'; fi\n" +
+            "echo '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\",\"session_id\":\"s\"}'\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        f.Submit("held");
+        var held = f.Store.BeginNextAttempt()!;
+        f.Submit("done");
+        var done = f.Store.BeginNextAttempt()!;
+        try
+        {
+            using var dispatcher = Dispatcher(f, new CursorCliBackend(script));
+            var heldRun = dispatcher.RunAttemptAsync(held, CancellationToken.None);
+            Assert.True(SpinWait.SpinUntil(() => File.Exists(Path.Combine(dir, "held.pid")), TimeSpan.FromSeconds(10)));
+            await dispatcher.RunAttemptAsync(done, CancellationToken.None);
+            var doneHelper = Pid(Path.Combine(dir, "done.pid"));
+            Assert.True(Alive(doneHelper));
+            File.WriteAllText(Path.Combine(dir, "release"), "");
+            await heldRun;
+            Assert.True(SpinWait.SpinUntil(() => !Alive(doneHelper) && !Alive(Pid(Path.Combine(dir, "held.pid"))),
+                TimeSpan.FromSeconds(5)));
+        }
+        finally
+        {
+            File.WriteAllText(Path.Combine(dir, "release"), "");
+            OrphanedBackendProcess.TerminateMarked([held.Correlation, done.Correlation]);
+        }
+    }
+
+    static int Pid(string file) => int.Parse(File.ReadAllText(file).Trim(), System.Globalization.CultureInfo.InvariantCulture);
+
     static bool Alive(int pid)
     {
         try

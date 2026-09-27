@@ -24,6 +24,8 @@ public sealed class DispatchJob : IDisposable
     readonly CancellationTokenSource _halted = new();
     readonly ConcurrentDictionary<string, ActiveRun> _running = new();
     readonly ConcurrentDictionary<string, IBackendRun> _reconciledWindows = new();
+    readonly Lock _reapGate = new();
+    readonly List<HeadlessRun> _headless = [];
     readonly SemaphoreSlim _claimGate = new(1, 1);
     readonly Lock _haltClaimGate = new();
     readonly JobStore store;
@@ -422,8 +424,10 @@ public sealed class DispatchJob : IDisposable
         var active = new ActiveRun(stopRequested);
         _running[run.JobId] = active;
         IBackendRun? backendRun = null;
+        HeadlessRun? headless = null;
         try
         {
+            headless = TrackHeadless(claim);
             // The deadline starts before any backend effect, so start and delivery are bounded too.
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, stopRequested.Token);
             // Interactive launch and native transcript confirmation can exceed the fake
@@ -611,7 +615,7 @@ public sealed class DispatchJob : IDisposable
         finally
         {
             // An interrupt kills before it cancels, so the turn can end first.
-            if (stopRequested.IsCancellationRequested || active.Terminated)
+            if (headless is null && (stopRequested.IsCancellationRequested || active.Terminated))
             {
                 // Descendants reparented away from the owned child escape a tree kill;
                 // this run's unique marker still identifies them.
@@ -626,14 +630,7 @@ public sealed class DispatchJob : IDisposable
                 _reconciledWindows[run.JobId] = backendRun;
             }
             else { await DisposeQuietly(backendRun); }
-            // A finished headless turn can leave helpers reparented to init (Cursor's
-            // worker-server is one example). The per-run marker and pidfd/creation
-            // token check identify only processes started by this attempt, even when
-            // the original CLI has exited or a descendant created a new session.
-            if (backends.Resolve(claim.Job.Backend) is not (HerdrInteractiveBackend or WtInteractiveBackend))
-            {
-                OrphanedBackendProcess.TerminateMarked([run.Correlation]);
-            }
+            if (headless is not null) { ReapHeadless(headless); }
             _running.TryRemove(run.JobId, out _);
             if (backendRun?.OwnedSessionStopped == true)
             {
@@ -742,6 +739,54 @@ public sealed class DispatchJob : IDisposable
             log($"owned turn interruption failed: {ex.GetType().Name}; stopping owned backend");
             TryTerminate(backendRun, jobId);
         }
+    }
+
+    sealed class HeadlessRun(string directory, string correlation)
+    {
+        public string Directory { get; } = directory;
+        public string Correlation { get; } = correlation;
+        public bool Finished;
+    }
+
+    HeadlessRun? TrackHeadless(AttemptClaim claim)
+    {
+        if (backends.Resolve(claim.Job.Backend) is HerdrInteractiveBackend or WtInteractiveBackend) { return null; }
+        var directory = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(claim.Job.WorktreePath ?? claim.Job.Cwd ?? Environment.CurrentDirectory));
+        var entry = new HeadlessRun(directory, claim.Correlation);
+        lock (_reapGate) { _headless.Add(entry); }
+        return entry;
+    }
+
+    /// <summary>
+    /// A finished headless turn can leave helpers reparented to init. The per-run
+    /// marker and pidfd/creation-token check identify only processes started by
+    /// this attempt. Some helpers are shared per workspace (Cursor's worker-server
+    /// listens on a per-project socket), so the reap waits until no other headless
+    /// run in an overlapping directory is still live.
+    /// </summary>
+    void ReapHeadless(HeadlessRun entry)
+    {
+        string[] due;
+        lock (_reapGate)
+        {
+            entry.Finished = true;
+            var live = _headless.Where(r => !r.Finished).ToList();
+            var ready = _headless.Where(r => r.Finished && !live.Any(l => Overlaps(l.Directory, r.Directory))).ToList();
+            _headless.RemoveAll(ready.Contains);
+            due = [.. ready.Select(r => r.Correlation)];
+        }
+        if (due.Length > 0) { OrphanedBackendProcess.TerminateMarked(due); }
+    }
+
+    static bool Overlaps(string a, string b) => Within(a, b) || Within(b, a);
+
+    static bool Within(string parent, string child)
+    {
+        var comparison = OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        return child.Equals(parent, comparison)
+            || child.StartsWith(parent + Path.DirectorySeparatorChar, comparison)
+            || parent == Path.GetPathRoot(parent);
     }
 
     sealed class ActiveRun(CancellationTokenSource stop)
