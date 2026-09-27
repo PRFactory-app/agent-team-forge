@@ -85,6 +85,7 @@ public static class JobErrors
 public sealed record JobView(string JobId, string Status, string? Result, string? ReasonCode, int Attempts)
 {
     public string[]? ExpectedOutputs { get; init; }
+    public JobDelivery? Delivery { get; init; }
     public StartupProgress? Startup { get; init; }
     public string? Backend { get; init; }
     public string? Model { get; init; }
@@ -103,6 +104,8 @@ public sealed record JobView(string JobId, string Status, string? Result, string
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }
 }
+
+public sealed record JobDelivery(string State, string? RunId, string? SubmittedAt, string? AcknowledgedAt);
 
 public sealed record JobResult(JobView? Job, string? Outcome, string? Error)
 {

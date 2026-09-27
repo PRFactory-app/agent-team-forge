@@ -26,7 +26,7 @@ surface; tool names differ where ATF uses jobs instead of process records.
 | `install_lead_wake` | `register_codex_wake` for Codex; setup for Claude | Codex reads `CODEX_THREAD_ID` from its shell. Claude inbound setup and Pi extension are in the quickstart. |
 | `install_member_wake` | None needed | ATF has no external-member inbox watcher. |
 | `list_backends` | `list_backends` | Configured backends, executable availability, model choices, effective tiers, cached native models and launch mode. Availability checks PATH, not authentication. |
-| `delivery_status` | `get_job`; retry with the same idempotency key if acceptance is uncertain | No separate delivery receipt tool. |
+| `delivery_status` | `get_job`; retry with the same idempotency key if acceptance is uncertain | The `delivery` field retains run ID and submission/acknowledgement timestamps, including after cancellation. Acceptance alone is not delivery. |
 | `deliver_pending` | None needed | The daemon dispatches accepted jobs; clients need not drain a send queue. |
 | `session_info` | `session_info` | Reports current and recoverable lead sessions and effective tiers. |
 | `resume_session` | `resume_session` | Adopts a previous lead session and its jobs. |
@@ -50,6 +50,10 @@ queued parent receives a durable child job immediately; the daemon waits
 until the parent ends and backend cleanup completes. Each accepted intent
 is claimed once. Repeating the same idempotency key recovers that job;
 changing its prompt or options returns `idempotency_conflict`.
+
+`get_job.delivery.state` is `pending`, `not_started`, `unconfirmed`,
+`acknowledged` (backend acknowledgement), or `result_observed`.
+Acknowledgement does not mean the task completed successfully.
 
 Queued turns survive daemon restarts. If the parent's turn was uncertain
 at restart, its session stays fenced and `get_job` on the queued child

@@ -115,6 +115,23 @@ public sealed class ManagedParityTests
     }
 
     [Fact]
+    public void Delivery_evidence_survives_restart_and_cancellation()
+    {
+        using var f = new JobFixture();
+        var parent = f.Submit("receipt");
+        Assert.Equal("pending", f.Get().Execute(parent.JobId).Job!.Delivery!.State);
+        var claim = f.Store.BeginNextAttempt()!;
+        Assert.Equal("unconfirmed", f.Get().Execute(parent.JobId).Job!.Delivery!.State);
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        f.Store.RecordBackendEvidence(run, null, acked: true);
+        f.Store.Cancel(parent.JobId, JobFixture.Operator.Principal, JobFixture.Operator.Team);
+        var receipt = new GetJob(f.NewStore(), JobFixture.Operator).Execute(parent.JobId).Job!.Delivery!;
+        Assert.Equal("acknowledged", receipt.State);
+        Assert.Equal(claim.RunId, receipt.RunId);
+        Assert.NotNull(receipt.AcknowledgedAt);
+    }
+
+    [Fact]
     public void Expected_paths_are_durable_and_part_of_idempotency()
     {
         using var f = new JobFixture();

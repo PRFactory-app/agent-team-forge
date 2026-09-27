@@ -17,16 +17,15 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal)
         try
         {
             job = store.GetJob(jobId);
+            // Another principal's job is indistinguishable from an unknown ID.
+            return job is null || job.Principal != principal.Principal || job.Team != principal.Team
+                ? JobResult.Fail(JobErrors.NotFound)
+                : JobResult.Ok(View(job), "found");
         }
         catch (StorageException ex)
         {
             return JobResult.Fail(JobErrors.FromStorage(ex));
         }
-
-        // Another principal's job is indistinguishable from an unknown ID.
-        return job is null || job.Principal != principal.Principal || job.Team != principal.Team
-            ? JobResult.Fail(JobErrors.NotFound)
-            : JobResult.Ok(View(job), "found");
     }
 
     /// <summary>Most recent jobs of the bound principal, without result text (keeps frames small).</summary>
@@ -47,8 +46,19 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal)
     {
         ReasonCode = job.Status == JobStatus.Queued && job.ParentJobId is { } parent && store.IsSessionFenced(parent)
             ? "parent_needs_reconciliation" : job.ReasonCode,
-        Startup = StartupProgress.Read(store, job.JobId, job.Status, job.Backend, job.ReasonCode)
+        Startup = StartupProgress.Read(store, job.JobId, job.Status, job.Backend, job.ReasonCode),
+        Delivery = Delivery(job)
     };
+
+    JobDelivery Delivery(JobRecord job)
+    {
+        var run = store.GetRuns(job.JobId).LastOrDefault();
+        var state = run?.Acked == true ? "acknowledged"
+            : job.Status == JobStatus.Completed ? "result_observed"
+            : run is not null ? "unconfirmed"
+            : job.Status == JobStatus.Queued ? "pending" : "not_started";
+        return new JobDelivery(state, run?.RunId, run?.SubmittedAt, run?.AcknowledgedAt);
+    }
 
     internal static JobView ToView(JobRecord job) => new(job.JobId, job.Status, job.ResultText, job.ReasonCode, job.Attempts)
     {

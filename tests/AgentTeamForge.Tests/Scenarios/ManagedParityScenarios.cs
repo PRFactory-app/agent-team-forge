@@ -35,6 +35,7 @@ public sealed class ManagedParityScenarios
         rig.Release(parentId);
         var second = await rig.WaitForStatusAsync(queued.Job.JobId, JobStatus.Completed);
         Assert.Equal(1, second.Job!.Attempts);
+        Assert.Equal("acknowledged", second.Job.Delivery!.State);
         Assert.Equal("fake-session-" + parentId, second.Job.SessionId);
         Assert.Equal(outputs, (await SpikeRig.CallAsync(client, "get_job", new() { ["job_id"] = parentId })).Job!.ExpectedOutputs);
 
