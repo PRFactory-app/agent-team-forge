@@ -52,7 +52,8 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal)
 
     JobDelivery Delivery(JobRecord job)
     {
-        var run = store.GetRuns(job.JobId).LastOrDefault();
+        var runs = store.GetRuns(job.JobId);
+        var run = runs.Count == 0 ? null : runs[^1];
         var state = run?.Acked == true ? "acknowledged"
             : job.Status == JobStatus.Completed ? "result_observed"
             : run is not null ? "unconfirmed"
