@@ -8,7 +8,7 @@ internal static class PRFactoryArtefacts
     // Below PRFactory's default request body limit; the whole request is frozen in SQLite.
     internal const long MaxUploadBytes = 20 * 1024 * 1024;
 
-    public static async Task<List<PRFactoryArtefactFile>> CollectAsync(PRFactoryWorkItem item, string cwd, CancellationToken ct)
+    public static async Task<List<PRFactoryArtefactFile>> CollectAsync(PRFactoryWorkItem item, string cwd, string? resultText, CancellationToken ct)
     {
         var files = new List<PRFactoryArtefactFile>();
         long total = 0;
@@ -37,6 +37,20 @@ internal static class PRFactoryArtefacts
                 }
             }
         }
+        // PRFactory's built-in Phase 0 draft prompt asks for JSON on stdout rather than files.
+        // Materialize that contract into the same artefacts as its local worker so the normal
+        // upload and checkpoint validation still apply.
+        if (item.Type == "TicketRefinement" && IsPrdDraft(item) && !files.Any(f => f.Kind == "prd")
+            && TryPrdResult(resultText, out var prd, out var questions))
+        {
+            files.Add(new("prd.md", prd, "prd"));
+            if (questions.Count > 0)
+            {
+                var qa = "# Product-owner questions\n\n" + string.Join("\n\n", questions.Select((q, i) =>
+                    $"## Q{i + 1} [{q.Category}]\n\n{q.Text}\n\n**Answer:**"));
+                files.Add(new("qa.md", qa + "\n", "qa-po"));
+            }
+        }
         var required = RequiredKinds(item);
         if (required.Length > 0 && !files.Any(f => required.Contains(f.Kind, StringComparer.OrdinalIgnoreCase)))
         {
@@ -56,6 +70,54 @@ internal static class PRFactoryArtefacts
             }
         }
         return files;
+    }
+
+    static bool IsPrdDraft(PRFactoryWorkItem item)
+    {
+        try
+        {
+            using var context = JsonDocument.Parse(item.ContextJson ?? "{}");
+            return context.RootElement.TryGetProperty("phase", out var phase)
+                && phase.GetString() == "prd";
+        }
+        catch (JsonException) { return false; }
+    }
+
+    static bool TryPrdResult(string? resultText, out string prd, out List<(string Text, string Category)> questions)
+    {
+        prd = string.Empty;
+        questions = [];
+        if (string.IsNullOrWhiteSpace(resultText)) { return false; }
+        var json = resultText.Trim();
+        if (json.StartsWith("```", StringComparison.Ordinal))
+        {
+            var firstLine = json.IndexOf('\n');
+            var closing = json.LastIndexOf("```", StringComparison.Ordinal);
+            if (firstLine < 0 || closing <= firstLine) { return false; }
+            json = json[(firstLine + 1)..closing].Trim();
+        }
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("prd_markdown", out var value) || value.ValueKind != JsonValueKind.String)
+            { return false; }
+            prd = value.GetString() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(prd)) { return false; }
+            if (root.TryGetProperty("questions", out var array) && array.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var question in array.EnumerateArray())
+                {
+                    var text = question.GetProperty("text").GetString();
+                    var category = question.GetProperty("category").GetString();
+                    if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(category)) { return false; }
+                    questions.Add((text, category));
+                }
+            }
+            return true;
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException)
+        { return false; }
     }
 
     static string RepositoryName(PRFactoryWorkItem item, string cwd)

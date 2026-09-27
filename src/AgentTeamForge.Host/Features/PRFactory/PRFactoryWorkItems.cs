@@ -797,7 +797,7 @@ public sealed partial class PRFactoryWorkItems(
             {
                 try
                 {
-                    var artefacts = await PRFactoryArtefacts.CollectAsync(item, cwd ?? throw new InvalidDataException("Missing lead worktree"), ct);
+                    var artefacts = await PRFactoryArtefacts.CollectAsync(item, cwd ?? throw new InvalidDataException("Missing lead worktree"), result, ct);
                     payload = JsonSerializer.Serialize(new PRFactoryArtefactRequest(artefacts, item.LeaseToken), PRFactoryWorkItemJson.Default.PRFactoryArtefactRequest);
                 }
                 catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException)
