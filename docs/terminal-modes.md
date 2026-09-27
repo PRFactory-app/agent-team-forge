@@ -1,5 +1,17 @@
 # Setup choices and interactive terminals
 
+## Prompt size
+
+Submit and follow-up instructions accept up to 65,536 UTF-16 characters by default.
+The web console uses the same limit; IPC accepts 2 MiB frames. Headless Claude,
+Codex and Pi receive prompts on stdin. Linux Herdr accepts prompt text only as
+a CLI argument, so ATF rejects a real-agent prompt above 120 KiB UTF-8 before
+accepting the job (leaving room under Linux's 128 KiB single-argument limit for
+the correlation marker). Windows native terminal agents use the command line,
+so ATF rejects real-agent prompts above 12,288 characters there. The macOS
+terminal path rejects above 120 KiB UTF-8; its runtime remains untested on macOS.
+These path-specific errors are returned to submit and follow-up callers.
+
 ## 1. Fixed user requirement
 
 During setup, the user must choose how agents are launched:

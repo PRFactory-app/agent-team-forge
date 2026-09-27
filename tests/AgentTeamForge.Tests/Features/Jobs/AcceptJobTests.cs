@@ -46,6 +46,20 @@ public sealed class AcceptJobTests
     }
 
     [Fact]
+    public void Long_instruction_is_stored_and_over_limit_is_rejected_clearly()
+    {
+        using var f = new JobFixture();
+        var instruction = new string('x', 20_000);
+        var accepted = f.Accept().Execute(new SubmitJobRequest("long", instruction, null, false));
+        var rejected = f.Accept().Execute(new SubmitJobRequest("too-long", new string('x', f.Limits.MaxInstructionChars + 1), null, false));
+
+        Assert.Equal("accepted", accepted.Outcome);
+        Assert.Equal(instruction, f.Store.GetJob(accepted.Job!.JobId)!.Instruction);
+        Assert.Equal(JobErrors.InstructionTooLong, rejected.Error);
+        Assert.Equal(1, f.Store.CountUnattemptedIntents());
+    }
+
+    [Fact]
     public void Unnamed_real_jobs_get_a_stable_backend_name_in_the_list_projection()
     {
         using var f = new JobFixture(testProfile: false);
@@ -127,7 +141,7 @@ public sealed class AcceptJobTests
     {
         using var f = new JobFixture();
         Assert.Equal(JobErrors.InvalidRequest, f.Accept().Execute(new SubmitJobRequest(key, instruction, behavior, hold)).Error);
-        Assert.Equal(JobErrors.InvalidRequest, f.Accept().Execute(new SubmitJobRequest("k", new string('x', f.Limits.MaxInstructionChars + 1), null, false)).Error);
+        Assert.Equal(JobErrors.InstructionTooLong, f.Accept().Execute(new SubmitJobRequest("k", new string('x', f.Limits.MaxInstructionChars + 1), null, false)).Error);
         Assert.Equal(0, f.Store.CountUnattemptedIntents());
     }
 
