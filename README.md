@@ -13,7 +13,7 @@ tabs, or in a small web console.
 
 ## Quickstart
 
-**1. Install** (latest release: [v0.0.2](https://github.com/PRFactory-app/agent-team-forge/releases)):
+**1. Install** the [latest release](https://github.com/PRFactory-app/agent-team-forge/releases):
 
 ```sh
 curl -fsSL https://github.com/PRFactory-app/agent-team-forge/releases/latest/download/install.sh | sh
