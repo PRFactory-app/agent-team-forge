@@ -124,6 +124,20 @@ public sealed class ClaudeCodeBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task Successful_result_wins_over_a_rejected_limit_event()
+    {
+        var backend = new ClaudeCodeBackend(FakeClaude("""
+            {"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790533200,"rateLimitType":"five_hour","isUsingOverage":true}}
+            {"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s-overage"}
+            """));
+
+        var evidence = await RunAsync(backend, new BackendRequest("j-overage", "c-overage", "work", ""));
+
+        Assert.Contains(new BackendEvidence.Result("c-overage", "done"), evidence);
+        Assert.DoesNotContain(evidence, e => e is BackendEvidence.AgentError);
+    }
+
+    [Fact]
     public async Task Allowed_limit_warning_does_not_fail_a_successful_turn()
     {
         var backend = new ClaudeCodeBackend(FakeClaude("""

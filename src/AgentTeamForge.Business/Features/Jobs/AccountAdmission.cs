@@ -12,9 +12,10 @@ public static partial class AccountLimitDetector
 {
     [GeneratedRegex(@"(?i)\b(?:you(?:'ve| have) hit your (?:usage )?limit|usage limit (?:reached|exceeded)|rate limit(?:ed)? (?:reached|exceeded)|out of usage)\b")]
     private static partial Regex ClaudeLimit();
-    [GeneratedRegex(@"(?i)\b(?:usage limit (?:reached|exceeded)|rate limit(?:ed)? (?:reached|exceeded)|too many requests|insufficient quota)\b")]
+    // Codex: "You've hit your usage limit."; pi's ChatGPT provider: "You have hit your ChatGPT usage limit".
+    [GeneratedRegex(@"(?i)\b(?:you(?:'ve| have) hit your (?:\w+ )?usage limit|usage limit (?:reached|exceeded)|rate limit(?:ed)? (?:reached|exceeded)|too many requests|insufficient quota)\b")]
     private static partial Regex CodexLimit();
-    [GeneratedRegex(@"(?i)\b(?:usage limit (?:reached|exceeded)|rate limit(?:ed)? (?:reached|exceeded)|too many requests|insufficient quota)\b")]
+    [GeneratedRegex(@"(?i)\b(?:you(?:'ve| have) hit your (?:\w+ )?usage limit|usage limit (?:reached|exceeded)|rate limit(?:ed)? (?:reached|exceeded)|too many requests|insufficient quota)\b")]
     private static partial Regex PiLimit();
     [GeneratedRegex(@"(?i)\b(?:resets? (?:at|on)\s+|reset_at[=:]\s*)(?<when>\d{4}-\d\d-\d\d\s*[T ]\s*\d\d:\d\d(?::\d\d)?(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)?)")]
     private static partial Regex ResetTime();
@@ -39,14 +40,15 @@ public static partial class AccountLimitDetector
         {
             return null;
         }
+        return new(backend, accountKey, "account_usage_limit", observedAt, reportedReset ?? ResetIn(errorText));
+    }
+
+    /// <summary>The absolute reset time an error text reports, if any.</summary>
+    public static DateTimeOffset? ResetIn(string? errorText)
+    {
         var match = ResetTime().Match(errorText ?? "");
-        var reset = reportedReset;
-        if (reset is null && match.Success && DateTimeOffset.TryParse(match.Groups["when"].Value,
-            CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed))
-        {
-            reset = parsed;
-        }
-        return new(backend, accountKey, "account_usage_limit", observedAt, reset);
+        return match.Success && DateTimeOffset.TryParse(match.Groups["when"].Value,
+            CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed) ? parsed : null;
     }
 }
 
@@ -65,13 +67,18 @@ public sealed class AccountAdmission(AccountWindowStore windows)
         return true;
     }
 
+    /// <summary>How long an intake block without a reported reset lasts; a still-limited account re-blocks on its next failure.</summary>
+    public static readonly TimeSpan UnknownResetBlock = TimeSpan.FromHours(1);
+
     /// <summary>Blocks new turns after a terminal limit failure, without scheduling this job for a same-session resume.</summary>
     public bool BlockIfLimited(string backend, string accountKey, string? errorCode, string? errorText,
         DateTimeOffset observedAt)
     {
         var signal = AccountLimitDetector.Inspect(backend, accountKey, errorCode, errorText, observedAt);
         if (signal is null) { return false; }
-        windows.Block(signal.Backend, signal.AccountKey, signal.Reason, signal.ObservedAt, signal.ResetsAt);
+        // Nothing resumes a failed job, so an unknown reset must not block the account indefinitely.
+        windows.Block(signal.Backend, signal.AccountKey, signal.Reason, signal.ObservedAt,
+            signal.ResetsAt ?? observedAt + UnknownResetBlock);
         return true;
     }
 

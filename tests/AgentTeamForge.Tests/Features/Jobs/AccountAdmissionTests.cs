@@ -34,6 +34,19 @@ public sealed class AccountAdmissionTests
     }
 
     [Fact]
+    public void Terminal_limit_without_reported_reset_blocks_for_a_bounded_window()
+    {
+        using var fixture = new JobFixture();
+        var now = DateTimeOffset.Parse("2026-09-27T18:04:00Z");
+        var admission = new AccountAdmission(new AccountWindowStore(fixture.Database));
+
+        Assert.True(admission.BlockIfLimited("codex", "default", "agent_rate_limited",
+            "You've hit your usage limit. Try again at 3:05 PM.", now));
+        Assert.False(admission.CanStart("codex", "default", now + AccountAdmission.UnknownResetBlock - TimeSpan.FromTicks(1)));
+        Assert.True(admission.CanStart("codex", "default", now + AccountAdmission.UnknownResetBlock));
+    }
+
+    [Fact]
     public void Quota_error_parks_original_job_without_failing_team_and_blocks_only_its_account()
     {
         using var fixture = new JobFixture();

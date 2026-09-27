@@ -574,9 +574,12 @@ public sealed class DispatchJob : IDisposable
                             if (store.RecordAccountLimit(run, limit.Details))
                             {
                                 ObserveAgentError(claim.Job.JobId, "agent_rate_limited", limit.Details);
-                                // The live TUI can resume after the reset; the ordinary turn deadline
-                                // must not quarantine it while it is waiting.
-                                deadline.CancelAfter(Timeout.InfiniteTimeSpan);
+                                // The live TUI can resume after the reset, so the turn deadline restarts
+                                // there; a TUI that never resumes is still quarantined (unknown or far
+                                // resets wait at most MaxAllowedRuntime).
+                                var wait = AccountLimitDetector.ResetIn(limit.Details) is { } reset
+                                    ? reset - DateTimeOffset.UtcNow : MaxAllowedRuntime;
+                                deadline.CancelAfter(TimeSpan.FromTicks(Math.Clamp(wait.Ticks, 0, MaxAllowedRuntime.Ticks)) + runtime);
                             }
                             break;
                         case BackendEvidence.NotStarted rejected:

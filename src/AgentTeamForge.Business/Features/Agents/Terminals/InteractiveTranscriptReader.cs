@@ -312,7 +312,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             || text?.Contains("Not logged in", StringComparison.OrdinalIgnoreCase) == true;
         var limited = error is "rate_limit" or "rate_limit_error" or "rate_limit_exceeded"
             || text?.Contains("monthly spend limit", StringComparison.OrdinalIgnoreCase) == true
-            || text?.Contains("session limit resets", StringComparison.OrdinalIgnoreCase) == true;
+            || text?.Contains("session limit", StringComparison.OrdinalIgnoreCase) == true;
         if (limited)
         {
             var observed = DateTimeOffset.TryParse(Str(root, "timestamp"), out var timestamp) ? timestamp : DateTimeOffset.UtcNow;
@@ -328,7 +328,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
 
     static DateTimeOffset? LocalReset(string? text, DateTimeOffset observed)
     {
-        var match = Regex.Match(text ?? "", @"session limit resets\s+(?<hour>\d{1,2}):(?<minute>\d\d)(?<meridiem>am|pm)\s+\((?<zone>[^)]+)\)",
+        var match = Regex.Match(text ?? "", @"\bresets?\s+(?:at\s+)?(?<hour>\d{1,2})(?::(?<minute>\d\d))?\s*(?<meridiem>am|pm)\s*\((?<zone>[^)]+)\)",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         if (!match.Success) { return null; }
         try
@@ -338,7 +338,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             var hour = int.Parse(match.Groups["hour"].Value) % 12
                 + (match.Groups["meridiem"].Value.Equals("pm", StringComparison.OrdinalIgnoreCase) ? 12 : 0);
             var reset = new DateTime(local.Year, local.Month, local.Day, hour,
-                int.Parse(match.Groups["minute"].Value), 0, DateTimeKind.Unspecified);
+                match.Groups["minute"].Success ? int.Parse(match.Groups["minute"].Value) : 0, 0, DateTimeKind.Unspecified);
             if (TimeZoneInfo.ConvertTimeToUtc(reset, zone) <= observed.UtcDateTime) { reset = reset.AddDays(1); }
             return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(reset, zone), TimeSpan.Zero);
         }

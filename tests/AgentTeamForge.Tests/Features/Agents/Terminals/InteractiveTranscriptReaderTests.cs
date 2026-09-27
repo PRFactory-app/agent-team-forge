@@ -168,6 +168,26 @@ public sealed class InteractiveTranscriptReaderTests
         Assert.True(error?.TurnEnded);
     }
 
+    [Theory]
+    // No minutes, rolls over to the next local day.
+    [InlineData("2026-09-27T21:00:00Z", "You've hit your session limit · resets 3pm (Europe/Berlin)", "2026-09-28T13:00:00")]
+    // Same local day, across the end of summer time (03:00 CET = 02:00Z).
+    [InlineData("2026-10-24T22:30:00Z", "Your limit will reset at 3am (Europe/Berlin)", "2026-10-25T02:00:00")]
+    [InlineData("2026-09-27T10:00:00Z", "You've hit your session limit · resets 12:30am (America/New_York)", "2026-09-28T04:30:00")]
+    public void Claude_limit_reset_times_are_resolved_in_their_zone(string observed, string text, string expectedUtc)
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Claude);
+        var limit = ClaudeUsageLimit.Replace("2026-09-27T18:04:31Z", observed)
+            .Replace("You've hit your monthly spend limit · your session limit resets 8:20pm (Europe/Berlin)", text);
+        File.WriteAllLines(file, [ClaudeUser(Marker), limit, ClaudeTurnDuration]);
+
+        var error = reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError;
+
+        Assert.Equal("agent_rate_limited", error?.Code);
+        Assert.Contains("resets at " + expectedUtc, error?.Message);
+    }
+
     public static TheoryData<InteractiveAgentKind, string[]> Unbound => new()
     {
         // Only a native user record binds the marker; echoes/metadata/partial lines never do.

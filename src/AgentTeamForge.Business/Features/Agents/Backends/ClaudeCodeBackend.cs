@@ -366,13 +366,14 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             yield return new BackendEvidence.Session(correlation, result.SessionId);
         }
 
-        if (rateLimited || apiError == "rate_limit")
-        {
-            yield return new BackendEvidence.AgentError("agent_rate_limited", RateLimitDetails(reset));
-        }
-        else if (result is { Type: "result", IsError: false, Result: { } text })
+        // A successful result wins: a rejected window can still be served by overage or a model fallback.
+        if (result is { Type: "result", IsError: false, Result: { } text })
         {
             yield return new BackendEvidence.Result(correlation, text);
+        }
+        else if (rateLimited || apiError == "rate_limit")
+        {
+            yield return new BackendEvidence.AgentError("agent_rate_limited", RateLimitDetails(reset));
         }
         else if (apiError is "authentication_failed" or "authentication_error" or "not_logged_in" or "unauthorized" or "invalid_api_key"
             || result.Result?.Contains("Not logged in", StringComparison.OrdinalIgnoreCase) == true)
