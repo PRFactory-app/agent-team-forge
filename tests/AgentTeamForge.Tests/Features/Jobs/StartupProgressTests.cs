@@ -49,13 +49,14 @@ public sealed class StartupProgressTests
         using var f = new JobFixture();
         var job = f.Submit("terminal");
         f.Store.BeginNextAttempt();
-        Assert.Null(StartupProgress.Read(f.Store, job.JobId, status, "codex", null));
+        Assert.Null(StartupProgress.Read(f.Store, job.JobId, status, "codex", null, interactive: true));
     }
 
     [Theory]
-    [InlineData("claude", true)]
-    [InlineData("fake", false)]
-    public void Slow_start_hint_is_diagnostic_only(string backend, bool hasHint)
+    [InlineData("claude", true, true)]
+    [InlineData("claude", false, false)]
+    [InlineData("fake", true, false)]
+    public void Slow_start_hint_is_diagnostic_only(string backend, bool interactive, bool hasHint)
     {
         using var f = new JobFixture();
         var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, [backend]);
@@ -69,7 +70,7 @@ public sealed class StartupProgressTests
             command.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.AddSeconds(-60).ToString("O"));
             command.ExecuteNonQuery();
         }
-        var progress = StartupProgress.Read(f.Store, job.JobId, JobStatus.Running, backend, null)!;
+        var progress = StartupProgress.Read(f.Store, job.JobId, JobStatus.Running, backend, null, interactive)!;
         Assert.Equal("starting", progress.Phase);
         Assert.InRange(progress.ElapsedSeconds, 60, 65);
         Assert.Equal(hasHint, progress.NoMarkerSinceLaunch);
@@ -77,8 +78,8 @@ public sealed class StartupProgressTests
         if (hasHint)
         {
             Assert.Contains("No state marker since launch", progress.Hint);
-            var get = f.Get().Execute(job.JobId).Job!;
-            var listed = f.List().Execute(new()).Page!;
+            var get = new GetJob(f.Store, JobFixture.Operator, interactive).Execute(job.JobId).Job!;
+            var listed = new ListJobs(f.Store, JobFixture.Operator, interactiveLaunch: interactive).Execute(new()).Page!;
             Assert.True(get.Startup!.NoMarkerSinceLaunch);
             Assert.True(listed.Jobs.Single().Startup!.NoMarkerSinceLaunch);
             using var getJson = JsonDocument.Parse(JsonSerializer.Serialize(new IpcResponse(true, Job: get), IpcJson.Default.IpcResponse));

@@ -12,6 +12,7 @@ public sealed class AgentEnvironmentFixtureTests
     [InlineData("CLAUDE_CODE_SSE_PORT", true)]
     [InlineData("ATF_TEST_TMP_ROOT", false)]
     [InlineData("ATF_KEEP_TMP", false)]
+    [InlineData("ATF_INTERACTIVE_STARTUP_TIMEOUT_SECONDS", false)]
     [InlineData("ATF_REAL_CODEX", false)]
     [InlineData("ATF_HERDR_INTEGRATION", false)]
     [InlineData("CLAUDE_CONFIG_DIR", false)]

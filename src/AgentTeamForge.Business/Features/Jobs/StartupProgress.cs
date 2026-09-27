@@ -9,7 +9,7 @@ public sealed record StartupProgress(string Phase, string StartedAt, string? Rea
 {
     public bool NoMarkerSinceLaunch { get; init; }
 
-    internal static StartupProgress? Read(JobStore store, string jobId, string status, string? backend, string? reason)
+    internal static StartupProgress? Read(JobStore store, string jobId, string status, string? backend, string? reason, bool interactive)
     {
         if (status != JobStatus.Running) { return null; }
         IReadOnlyList<RunRecord> runs;
@@ -23,7 +23,8 @@ public sealed record StartupProgress(string Phase, string StartedAt, string? Rea
         var end = run.AcknowledgedAt ?? run.FinishedAt;
         var elapsed = Math.Max(0, (long)((end is null ? DateTimeOffset.UtcNow : DateTimeOffset.Parse(end)) - DateTimeOffset.Parse(started)).TotalSeconds);
         var command = backend is "claude" or "codex" or "pi" ? backend : null;
-        var noMarker = command is not null && elapsed >= 45 && run.AcknowledgedAt is null && !run.Acked;
+        // Headless Claude acknowledges only when its turn ends, so silence there is normal.
+        var noMarker = interactive && command is not null && elapsed >= 45 && run.AcknowledgedAt is null && !run.Acked;
         var hint = noMarker
             ? $"No state marker since launch {elapsed}s ago. The agent may be waiting for setup, login or workspace trust; inspect its terminal. Missing evidence does not confirm delivery or failure."
             : reason switch

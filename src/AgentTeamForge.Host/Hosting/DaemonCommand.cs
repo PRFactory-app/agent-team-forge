@@ -206,8 +206,9 @@ public static class DaemonCommand
         var humanWaits = new HumanWaitStore(database);
         var humanWait = new HumanWait(humanWaits, store, connectorTeams, connectorPrincipal);
         var claudeMailbox = new ClaudeWakeMailbox();
-        var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
-            new ListJobs(store, profile.Bound, jobLogs),
+        var interactiveLaunch = launchMode is "herdr" or "terminal" or "wt";
+        var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound, interactiveLaunch), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
+            new ListJobs(store, profile.Bound, jobLogs, interactiveLaunch),
             new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
             new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
             (token, question, key) => PRFactoryInteraction.RequestFromManagedChild(humanWait, store, authorityRows,
