@@ -9,6 +9,27 @@ internal static class InteractiveAgentCommand
     internal static (string Name, string Value)? WorkspaceTrustEnvironment(InteractiveAgentKind kind) =>
         kind == InteractiveAgentKind.Claude ? ("CLAUDE_CODE_SANDBOXED", "1") : null;
 
+    internal static string? ManagedConfigPath(InteractiveLaunch launch)
+    {
+        if (launch.JobId is not { } jobId) { return null; }
+        var stateRoot = Path.GetDirectoryName(Path.GetDirectoryName(launch.BootstrapPath))!;
+        return ManagedChildContext.ConfigPath(stateRoot, jobId);
+    }
+
+    internal static IReadOnlyList<string> ManagedArguments(InteractiveLaunch launch, bool piShortApprove = false)
+    {
+        var args = new List<string>();
+        args.AddRange(ManagedChildContext.Arguments(launch.Kind switch
+        {
+            InteractiveAgentKind.Claude => "claude",
+            InteractiveAgentKind.Codex => "codex",
+            InteractiveAgentKind.Pi => "pi",
+            _ => throw new ArgumentOutOfRangeException(nameof(launch)),
+        }, ManagedConfigPath(launch)));
+        args.AddRange(Arguments(launch, piShortApprove));
+        return args;
+    }
+
     internal static IReadOnlyList<string> Arguments(InteractiveLaunch launch, bool piShortApprove = false)
     {
         var args = new List<string>();

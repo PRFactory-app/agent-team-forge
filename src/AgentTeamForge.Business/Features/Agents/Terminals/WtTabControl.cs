@@ -284,6 +284,10 @@ internal sealed class WtTabControl : IWtTabControl
             lines.Insert(2, home is null ? "Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue"
                 : "$env:CODEX_HOME = " + Quote(home));
         }
+        if (launch.Kind == InteractiveAgentKind.Pi && InteractiveAgentCommand.ManagedConfigPath(launch) is { } config && File.Exists(config))
+        {
+            lines.Insert(2, "$env:PI_MCP_CONFIG_MODE = 'exclusive'");
+        }
         if (args[0].EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
         {
             lines.RemoveRange(lines.Count - 8, 7);
@@ -306,7 +310,7 @@ internal sealed class WtTabControl : IWtTabControl
         };
         var args = new List<string>(executable);
         EnsureInteractiveCodexNative(launch.Kind, args[0]);
-        args.AddRange(InteractiveAgentCommand.Arguments(launch, piShortApprove: true));
+        args.AddRange(InteractiveAgentCommand.ManagedArguments(launch, piShortApprove: true));
         if (launch.Kind == InteractiveAgentKind.Codex && OperatingSystem.IsWindows())
         {
             // Hooks only feed the Windows tab state marker; elsewhere they would replace user hooks.
