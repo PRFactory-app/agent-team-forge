@@ -562,11 +562,13 @@ public sealed partial class PRFactoryWorkItems(
         // Same naming as PRFactory's InitBranchNaming when an older server omits PublishBranch.
         var publish = item.PublishBranch is { Length: > 0 } explicitBranch ? explicitBranch.Trim()
             : projectInit && item.TicketKey is { Length: > 0 } ticketKey ? $"init/{ticketKey.Trim()}" : $"prfactory/{item.Id}";
+        // Older servers send ProjectInit's own publish branch without a SHA; resume it as before.
+        var startFrom = projectInit && item.StartFromBranch == publish && item.StartCommitSha is null ? null : item.StartFromBranch;
         return await workspaces.PrepareAsync(new WorkspaceRequest(key, root, item.RepositoryId.ToString("D"), repo.Directory,
             repo.Remote ?? await TeamWorkspace.OriginAsync(repo.Directory),
             item.BaseSnapshot?.Branch ?? repo.BaseBranch ?? await TeamWorkspace.DefaultBranchAsync(repo.Directory),
             publish, item.ReadOnly, names, PriorBranch: item.Continuation?.Branch,
-            PriorSha: item.Continuation?.CommitSha, StartFromBranch: item.StartFromBranch,
+            PriorSha: item.Continuation?.CommitSha, StartFromBranch: startFrom,
             StartCommitSha: item.StartCommitSha, ProjectInit: projectInit,
             ExpectedBaseSha: item.BaseSnapshot?.CommitSha));
     }

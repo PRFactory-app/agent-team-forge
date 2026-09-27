@@ -146,19 +146,29 @@ public sealed class TeamWorkspace(PRFactoryWorkspaceStore store) : IDisposable
     static async Task<string> Fetch(string repo, string branch, string? expected = null)
     {
         await CheckBranch(repo, branch);
-        // FETCH_HEAD is shared with the user's checkout and other fetches.
-        // Keep an owned ref as both an unambiguous result and a recovery object pin.
-        var fetchedRef = "refs/atf/workspace-start/" + Guid.NewGuid().ToString("N");
-        await Git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "origin", "refs/heads/" + branch + ":" + fetchedRef);
-        var tip = await Git(repo, "rev-parse", "--verify", fetchedRef + "^{commit}");
-        if (expected is null) { return tip; }
-        if (!JobWorktree.IsCommitSha(expected))
+        if (expected is not null && !JobWorktree.IsCommitSha(expected))
         {
             throw new InvalidOperationException("Expected workspace SHA is invalid.");
         }
+        // FETCH_HEAD is shared with the user's checkout and other fetches.
+        // Keep an owned ref as both an unambiguous result and a recovery object pin.
+        var fetchedRef = "refs/atf/workspace-start/" + Guid.NewGuid().ToString("N");
+        string? tip = null;
         try
         {
-            await Git(repo, "merge-base", "--is-ancestor", expected, fetchedRef);
+            await Git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "origin", "refs/heads/" + branch + ":" + fetchedRef);
+            tip = await Git(repo, "rev-parse", "--verify", fetchedRef + "^{commit}");
+        }
+        catch (InvalidOperationException) when (expected is not null) { }
+        if (expected is null) { return tip!; }
+        expected = expected.ToLowerInvariant();
+        if (tip is not null && await IsAncestor(repo, expected, fetchedRef)) { return expected; }
+        // Branch moved, was force-pushed or deleted: fetch the exact commit from the remote. --refetch
+        // skips the local-object shortcut, so a commit that exists only in the user's checkout is refused.
+        try
+        {
+            await Git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "--refetch", "origin",
+                expected + ":refs/atf/workspace-start/" + Guid.NewGuid().ToString("N"));
         }
         catch (InvalidOperationException)
         {
@@ -166,6 +176,9 @@ public sealed class TeamWorkspace(PRFactoryWorkspaceStore store) : IDisposable
         }
         return expected;
     }
+
+    static async Task<bool> IsAncestor(string repo, string commit, string of) =>
+        await JobWorktree.GitAsync(repo, GitTimeout, CancellationToken.None, "merge-base", "--is-ancestor", commit, of) is not null;
 
     static void VerifySha(string? expected, string actual)
     {

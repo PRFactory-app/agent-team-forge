@@ -90,6 +90,25 @@ public sealed class WorkspaceWiringTests
     }
 
     [Fact]
+    public async Task Legacy_project_init_claim_resumes_its_publish_branch_without_a_start_sha()
+    {
+        var item = Item("Implementation");
+        item.TicketSource = "ProjectInit";
+        item.TicketKey = "NIM-1";
+        item.PublishBranch = "init/NIM-1";
+        item.StartFromBranch = "init/NIM-1";
+        using var h = new ChainHarness(item);
+        ChainHarness.Git(h.Repo, "checkout", "-b", "init/NIM-1");
+        var published = ChainHarness.Commit(h.Repo, "init.txt", "earlier step");
+        ChainHarness.Git(h.Repo, "push", "origin", "init/NIM-1");
+
+        await h.TickAsync();
+
+        Assert.Empty(h.Server.Failures);
+        Assert.Equal(published, h.Workspaces.Get($"{ChainServer.Url}|{h.Server.Item.Id:D}")!.StartingSha);
+    }
+
+    [Fact]
     public void Claim_wire_round_trips_workspace_continuity_fields()
     {
         const string json = """

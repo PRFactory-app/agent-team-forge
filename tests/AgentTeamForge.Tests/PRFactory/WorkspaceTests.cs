@@ -59,11 +59,36 @@ public sealed class WorkspaceTests
         Assert.Equal(handover, init.StartingSha);
         var firstInit = await f.Workspaces.PrepareAsync(f.Request with { Key = "new-init", ProjectInit = true, PublishBranch = "new-ticket" });
         Assert.Equal(f.BaseSha, firstInit.StartingSha);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Workspaces.PrepareAsync(request with { Key = "bad", PriorSha = handover }));
+        var localOnly = Commit(f.Repo, "local.txt", "never pushed");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Workspaces.PrepareAsync(request with { Key = "bad", PriorSha = localOnly }));
         await Assert.ThrowsAsync<InvalidOperationException>(() => f.Workspaces.PrepareAsync(request with { Key = "missing", PriorSha = null }));
         await Assert.ThrowsAsync<InvalidOperationException>(() => f.Workspaces.PrepareAsync(request with { Key = "missing-handover", PriorBranch = null, StartCommitSha = null }));
         await Assert.ThrowsAsync<InvalidOperationException>(() => f.Workspaces.PrepareAsync(f.Request with { Key = "remote", Remote = f.Remote + "-wrong" }));
         Assert.Null(f.Store.Get("remote"));
+    }
+
+    [Fact]
+    public async Task Exact_continuation_sha_is_fetched_after_force_push_or_branch_deletion()
+    {
+        using var f = new WorkspaceFixture();
+        Git(f.Repo, "checkout", "-b", "implementation");
+        var accepted = Commit(f.Repo, "code.txt", "accepted");
+        Git(f.Repo, "push", "origin", "implementation");
+        Git(f.Repo, "tag", "keep-remote-object", accepted);
+        Git(f.Repo, "push", "origin", "keep-remote-object");
+        Git(f.Repo, "reset", "--hard", f.BaseSha);
+        Commit(f.Repo, "rewritten.txt", "force-pushed");
+        Git(f.Repo, "push", "--force", "origin", "implementation");
+        // The user's checkout no longer has the commit; only the remote does.
+        Git(f.Repo, "tag", "-d", "keep-remote-object");
+        Git(f.Repo, "reflog", "expire", "--expire=now", "--all");
+        Git(f.Repo, "gc", "--prune=now", "--quiet");
+        var request = f.Request with { PriorBranch = "implementation", PriorSha = accepted };
+        var forced = await f.Workspaces.PrepareAsync(request with { Key = "forced" });
+        Assert.Equal(accepted, JobWorktree.Head(forced.LeadPath));
+        Git(f.Repo, "push", "origin", "--delete", "implementation");
+        var deleted = await f.Workspaces.PrepareAsync(request with { Key = "deleted" });
+        Assert.Equal(accepted, JobWorktree.Head(deleted.LeadPath));
     }
 
     [Fact]
