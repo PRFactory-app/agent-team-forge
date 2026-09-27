@@ -376,6 +376,30 @@ public sealed class SetupCommandTests
         Assert.False(daemon.HasExited);
     }
 
+    [Theory]
+    [InlineData("profile.json")]
+    [InlineData("launch-mode.json")]
+    public async Task CorruptStartupJsonFailsCleanlyForClientAndDaemon(string name)
+    {
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        var path = Path.Combine(rig.StateDir, name);
+        File.WriteAllText(path, "{invalid json");
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, StateDirectory.PrivateFile);
+        }
+
+        foreach (var command in new[] { "start", "daemon" })
+        {
+            var (exit, _, error) = await rig.RunToExitAsync([command, "--state-dir", rig.StateDir]);
+            Assert.Equal(78, exit);
+            Assert.Contains(path, error);
+            Assert.Contains("atf setup or atf doctor", error);
+            Assert.DoesNotContain("Unhandled exception", error);
+        }
+    }
+
     [Fact]
     public void RequestedUnavailableHerdrDoesNotWriteMode()
     {
