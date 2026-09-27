@@ -26,7 +26,8 @@ public sealed class StopAgent(JobStore store, BoundPrincipal principal, BackendC
             {
                 return JobResult.Fail(JobErrors.InvalidRequest);
             }
-            store.CancelDeferredChildren(job.JobId);
+            // The whole session closes, so no deferred turn of any job on it may start afterwards.
+            foreach (var peer in store.GetSessionJobs(job.JobId).Append(job.JobId).Distinct()) { store.CancelDeferredChildren(peer); }
             var backend = backends.Resolve(job.Backend);
             var stopped = false;
             if (backend is HerdrInteractiveBackend herdr)

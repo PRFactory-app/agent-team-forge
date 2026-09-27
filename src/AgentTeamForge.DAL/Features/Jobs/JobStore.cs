@@ -340,7 +340,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
         var running = job.Status == JobStatus.Running;
         var changed = CancelInTransaction(connection, tx, job, reason);
-        var childrenChanged = reason == "interrupted" ? 0 : CancelDeferredChildren(connection, tx, jobId);
+        // Only an operator stop ends the agent; an interrupt or a timeout keeps queued deferred turns.
+        var childrenChanged = reason != "stopped" ? 0 : CancelDeferredChildren(connection, tx, jobId);
         if (changed || childrenChanged > 0)
         {
             tx.Commit();

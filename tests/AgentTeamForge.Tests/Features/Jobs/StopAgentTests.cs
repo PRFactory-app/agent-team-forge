@@ -30,6 +30,45 @@ public sealed class StopAgentTests
     }
 
     [Fact]
+    public void Stopping_agent_by_earlier_job_cancels_deferred_turn_of_a_later_session_job()
+    {
+        using var f = new JobFixture();
+        var parent = f.Submit("parent");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        f.Store.RecordSession(run, "native-1");
+        f.Store.Complete(run, "done");
+        var follow = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept());
+        var turn = follow.Execute(new FollowUpRequest(parent.JobId, "second", "turn-2")).Job!;
+        var turnClaim = f.Store.BeginNextAttempt()!;
+        Assert.Equal(turn.JobId, turnClaim.Job.JobId);
+        var turnRun = new RunRef(turn.JobId, turnClaim.RunId, turnClaim.Generation, turnClaim.Correlation);
+        f.Store.RecordSession(turnRun, "native-1");
+        var deferred = follow.Execute(new FollowUpRequest(turn.JobId, "third", "turn-3") { Defer = true }).Job!;
+        f.Store.Complete(turnRun, "done");
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => new OwnedBackend());
+
+        Assert.Equal("agent_stopped", new StopAgent(f.Store, JobFixture.Operator, catalog).Execute(parent.JobId).Outcome);
+        Assert.Equal((JobStatus.Cancelled, "parent_stopped"),
+            (f.Store.GetJob(deferred.JobId)!.Status, f.Store.GetJob(deferred.JobId)!.ReasonCode));
+        Assert.Null(f.Store.BeginNextAttempt());
+    }
+
+    [Fact]
+    public void Parent_timeout_keeps_queued_deferred_child()
+    {
+        using var f = new JobFixture();
+        var parent = f.Submit("parent");
+        var claim = f.Store.BeginNextAttempt()!;
+        f.Store.RecordSession(new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation), "native-1");
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
+            .Execute(new FollowUpRequest(parent.JobId, "next", "child") { Defer = true }).Job!;
+
+        Assert.True(f.Store.CancelOwned(parent.JobId, "timeout").Changed);
+        Assert.Equal(JobStatus.Queued, f.Store.GetJob(child.JobId)!.Status);
+    }
+
+    [Fact]
     public void Completed_job_can_stop_only_its_owned_idle_session()
     {
         using var f = new JobFixture();
