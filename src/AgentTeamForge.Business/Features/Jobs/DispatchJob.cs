@@ -570,6 +570,15 @@ public sealed class DispatchJob : IDisposable
                             End(run, JobStatus.Failed, error.Code, error.Details);
                             ObserveAgentError(claim.Job.JobId, error.Code, error.Details);
                             return;
+                        case BackendEvidence.AccountLimit limit:
+                            if (store.RecordAccountLimit(run, limit.Details))
+                            {
+                                ObserveAgentError(claim.Job.JobId, "agent_rate_limited", limit.Details);
+                                // The live TUI can resume after the reset; the ordinary turn deadline
+                                // must not quarantine it while it is waiting.
+                                deadline.CancelAfter(Timeout.InfiniteTimeSpan);
+                            }
+                            break;
                         case BackendEvidence.NotStarted rejected:
                             End(run, JobStatus.Failed, "backend_not_started", rejected.Details);
                             return;

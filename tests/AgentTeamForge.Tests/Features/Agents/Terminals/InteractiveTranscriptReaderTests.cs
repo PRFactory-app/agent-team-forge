@@ -14,6 +14,7 @@ public sealed class InteractiveTranscriptReaderTests
         $$$"""{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":{{{(stop is null ? "null" : "\"" + stop + "\"")}}},"content":[{"type":"text","text":"{{{text}}}"}]}}""";
     const string ClaudeApiError = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","isApiErrorMessage":true,"error":"authentication_failed","message":{"role":"assistant","model":"<synthetic>","stop_reason":"end_turn","content":[{"type":"text","text":"Not logged in · Please run /login"}]}}""";
     const string ClaudeConnectionLost = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","isApiErrorMessage":true,"error":"server_error","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"API Error: Connection lost mid-response."}]}}""";
+    const string ClaudeUsageLimit = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","timestamp":"2026-09-27T18:04:31Z","isApiErrorMessage":true,"error":"rate_limit","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"You've hit your monthly spend limit · your session limit resets 8:20pm (Europe/Berlin)"}]}}""";
     const string ClaudeTurnDuration = """{"type":"system","subtype":"turn_duration","durationMs":1000,"isMeta":false,"sessionId":"claude-native"}""";
     const string ClaudeThinkingEnd = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"x"}]}}""";
     const string ClaudeToolResult = """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}""";
@@ -151,6 +152,20 @@ public sealed class InteractiveTranscriptReaderTests
         var ended = reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError;
         Assert.True(ended?.TurnEnded);
         Assert.Equal(TimeSpan.FromSeconds(1), ended?.QuietWindow);
+    }
+
+    [Fact]
+    public void Claude_monthly_spend_limit_maps_to_rate_limit_with_utc_reset()
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Claude);
+        File.WriteAllLines(file, [ClaudeUser(Marker), ClaudeUsageLimit, ClaudeTurnDuration]);
+
+        var error = reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError;
+
+        Assert.Equal("agent_rate_limited", error?.Code);
+        Assert.Contains("2026-09-27T18:20:00", error?.Message);
+        Assert.True(error?.TurnEnded);
     }
 
     public static TheoryData<InteractiveAgentKind, string[]> Unbound => new()
