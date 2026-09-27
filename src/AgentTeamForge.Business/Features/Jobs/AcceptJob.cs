@@ -25,6 +25,10 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
     {
         var behavior = request.Behavior ?? FakeBehavior.Complete;
         var backend = request.Backend ?? BackendCatalog.Fake;
+        if (request.Instruction is { } instruction && InstructionError(instruction, backend) is { } instructionError)
+        {
+            return JobResult.Fail(instructionError);
+        }
         if (!IsValid(request.IdempotencyKey, request.Instruction)
             || !FakeBehavior.All.Contains(behavior)
             || ((request.Hold || behavior != FakeBehavior.Complete) && !testProfile)
@@ -111,7 +115,21 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
 
     internal bool IsValid(string? key, string? instruction) =>
         !string.IsNullOrWhiteSpace(key) && key.Length <= limits.MaxIdempotencyKeyChars
-        && !string.IsNullOrEmpty(instruction) && instruction.Length <= limits.MaxInstructionChars;
+        && !string.IsNullOrEmpty(instruction);
+
+    internal string? InstructionError(string instruction, string? backend)
+    {
+        if (instruction.Length > limits.MaxInstructionChars) { return JobErrors.InstructionTooLong; }
+        if (backend is not (BackendCatalog.Claude or BackendCatalog.Codex or BackendCatalog.Pi)) { return null; }
+        // Linux limits one execve argument to 128 KiB; Herdr accepts only a positional TEXT argument.
+        // Leave room for the correlation marker appended by the interactive backend.
+        if (herdrPlacement is not null && Encoding.UTF8.GetByteCount(instruction) > 120 * 1024)
+        {
+            return JobErrors.HerdrPromptTooLarge;
+        }
+        // Windows tabs hand an over-long prompt over as a private file; macOS has no per-argument limit.
+        return null;
+    }
 
     /// <summary>Durable acceptance shared by submit and follow-up; one admission-gated transaction.</summary>
     internal JobResult Admit(string operation, string key, string instruction, string options, string backend, string? cwd, string? parentJobId,

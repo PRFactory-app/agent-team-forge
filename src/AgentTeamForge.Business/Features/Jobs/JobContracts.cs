@@ -64,6 +64,8 @@ public sealed record FollowUpRequest(string ParentJobId, string Instruction, str
 public static class JobErrors
 {
     public const string InvalidRequest = "invalid_request";
+    public const string InstructionTooLong = "instruction_too_long";
+    public const string HerdrPromptTooLarge = "herdr_prompt_exceeds_120k_utf8_bytes";
     public const string IdempotencyConflict = "idempotency_conflict";
     public const string QueueFull = "queue_full";
     public const string StorageBusy = "storage_busy";

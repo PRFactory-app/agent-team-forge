@@ -28,6 +28,24 @@ public sealed class FollowUpJobTests
         new(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
 
     [Fact]
+    public async Task Long_follow_up_is_stored_and_over_limit_is_rejected_clearly()
+    {
+        using var f = new JobFixture();
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => Agent("sess-long"));
+        var parent = Accept(f, catalog).Execute(new SubmitJobRequest("parent", "first", null, false)).Job!;
+        await DispatchNext(f, catalog);
+        var followUp = new FollowUpJob(f.Store, JobFixture.Operator, Accept(f, catalog));
+        var instruction = new string('y', 20_000);
+
+        var accepted = followUp.Execute(new FollowUpRequest(parent.JobId, instruction, "long"));
+        var rejected = followUp.Execute(new FollowUpRequest(parent.JobId, new string('y', f.Limits.MaxInstructionChars + 1), "too-long"));
+
+        Assert.Equal("accepted", accepted.Outcome);
+        Assert.Equal(instruction, f.Store.GetJob(accepted.Job!.JobId)!.Instruction);
+        Assert.Equal(JobErrors.InstructionTooLong, rejected.Error);
+    }
+
+    [Fact]
     public async Task Follow_up_resumes_the_parent_session_on_the_parent_backend_and_cwd()
     {
         using var f = new JobFixture();

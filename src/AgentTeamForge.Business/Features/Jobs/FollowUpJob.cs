@@ -16,6 +16,10 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
 
     public JobResult Execute(FollowUpRequest request)
     {
+        if (request.Instruction is { } instruction && accept.InstructionError(instruction, null) is { } instructionError)
+        {
+            return JobResult.Fail(instructionError);
+        }
         if (!accept.IsValid(request.IdempotencyKey, request.Instruction)
             || !AcceptJob.ValidLimits(request.TimeoutSeconds, request.QueueTtlSeconds)
             || !AcceptJob.ValidOption(request.Model) || !AcceptJob.ValidOption(request.Effort)
@@ -37,6 +41,11 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
         if (parent is null || parent.Principal != principal.Principal || parent.Team != principal.Team)
         {
             return JobResult.Fail(JobErrors.NotFound);
+        }
+
+        if (accept.InstructionError(request.Instruction, parent.Backend) is { } deliveryError)
+        {
+            return JobResult.Fail(deliveryError);
         }
 
         var interruptRunning = request.Interrupt && parent.Status == JobStatus.Running;

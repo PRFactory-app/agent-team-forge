@@ -351,6 +351,22 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Submit_and_composer_use_the_daemon_instruction_limit()
+    {
+        Assert.Equal(WebConsoleServer.MaxInstructionChars, new AgentTeamForge.Business.SpikeLimits().MaxInstructionChars);
+        var instruction = new string('z', 20_000);
+        Assert.Equal(HttpStatusCode.OK, (await Send(Submit(new WebSubmitBody("codex", instruction, "long-submit", Environment.CurrentDirectory, "high")))).Status);
+        Assert.Equal(HttpStatusCode.OK, (await Send(FollowUp(JsonSerializer.Serialize(new WebFollowUpBody(instruction, "long-follow"), WebConsoleJson.Default.WebFollowUpBody)))).Status);
+        Assert.Equal(2, _forwarded.Count);
+        Assert.All(_forwarded, request => Assert.Equal(instruction, request.Instruction));
+
+        var tooLong = new string('z', WebConsoleServer.MaxInstructionChars + 1);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Send(Submit(new WebSubmitBody("codex", tooLong, "too-long", Environment.CurrentDirectory, "high")))).Status);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Send(FollowUp(JsonSerializer.Serialize(new WebFollowUpBody(tooLong, "too-long-follow"), WebConsoleJson.Default.WebFollowUpBody)))).Status);
+        Assert.Equal(2, _forwarded.Count);
+    }
+
+    [Fact]
     public async Task List_get_and_follow_up_forward_exactly_one_matching_ipc_call_each()
     {
         await Send(Api(HttpMethod.Get, "/api/jobs"));
