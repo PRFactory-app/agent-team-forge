@@ -124,11 +124,12 @@ completion is still refused. A rejected token fences all owned work.
 
 Every claim gets an owned checkout set under `<state>/prfactory-workspaces`,
 created from the fetched base, never from the user's working copy. The mapping's
-`remote`/`baseBranch` pin origin and base (otherwise read once from the
-checkout's `origin` and the remote's HEAD). ProjectInit resumes its existing
-`init/<KEY>` branch; `StartFromBranch` handover without an authoritative start
-SHA fails visibly. Remote, base, start SHA, internal and publish branch are
-recorded before dispatch and reused on restart. Children get separate
+`remote` pins origin; a claimed base snapshot pins the base branch and SHA,
+otherwise the mapping's `baseBranch` or remote HEAD selects the base. A claimed
+continuation takes its exact recorded commit before a `StartFromBranch` handover.
+ProjectInit resumes its existing `init/<KEY>` branch. A handover without an
+authoritative start SHA fails visibly. Remote, base, start SHA, internal and
+publish branch are recorded before dispatch and reused on restart. Children get separate
 checkouts; when all succeed, their commits are merged into the lead branch in
 declared order (conflicts fail with the file list, nothing is auto-resolved),
 their ticket documents are staged, and the lead gets one finalization turn.
@@ -167,11 +168,11 @@ session once, in the same workspace, under a fixed key, even after restart or a
 redelivered command; it counts as applied when that resumed turn completes.
 Commands poll every ~2 s while teams are active. Cursor/Droid are refused.
 
-Registration advertises `authority-disposition-v1` and `remote-publication-v1`.
+Registration advertises `authority-disposition-v1`, `remote-publication-v1` and
+`workspace-continuity-v1`.
 Not advertised yet: `human-wait-v1` (needs native transcript receipts and
-real CLI session proofs, plus the server's `questionId` wire), workspace
-continuity with authoritative start SHAs, readiness probes, external-member
-human waits, multi-repository work and binary attachments.
+real CLI session proofs, plus the server's `questionId` wire), readiness probes,
+external-member human waits, multi-repository work and binary attachments.
 
 ## Phase artefacts
 

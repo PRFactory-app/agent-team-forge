@@ -1,9 +1,124 @@
+using System.Text.Json;
+using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Features.PRFactory;
 
 namespace AgentTeamForge.Tests.PRFactory;
 
 public sealed class WorkspaceWiringTests
 {
+    [Theory]
+    [InlineData("CodeReview", "implementation")]
+    [InlineData("Implementation", "review-fixes")]
+    public async Task Continuation_uses_exact_accepted_head_before_handover_even_when_remote_advances(string phase, string priorBranch)
+    {
+        using var h = new ChainHarness(Item(phase));
+        ChainHarness.Git(h.Repo, "checkout", "-b", priorBranch);
+        var accepted = ChainHarness.Commit(h.Repo, "accepted.txt", "accepted");
+        ChainHarness.Git(h.Repo, "push", "origin", priorBranch);
+        ChainHarness.Commit(h.Repo, "later.txt", "later remote head");
+        ChainHarness.Git(h.Repo, "push", "origin", priorBranch);
+        ChainHarness.Git(h.Repo, "checkout", "-b", "handover", "main");
+        var handover = ChainHarness.Commit(h.Repo, "handover.txt", "handover");
+        ChainHarness.Git(h.Repo, "push", "origin", "handover");
+        h.Server.Item.Continuation = new(priorBranch, accepted);
+        h.Server.Item.StartFromBranch = "handover";
+        h.Server.Item.StartCommitSha = handover;
+
+        await h.TickAsync();
+
+        var workspace = h.Workspaces.Get($"{ChainServer.Url}|{h.Server.Item.Id:D}")!;
+        Assert.Equal(accepted, workspace.StartingSha);
+        Assert.Equal(accepted, JobWorktree.Head(workspace.LeadPath));
+        Assert.False(File.Exists(Path.Combine(workspace.LeadPath, "later.txt")));
+        Assert.Empty(h.Server.Failures);
+    }
+
+    [Fact]
+    public async Task Unpublished_continuation_sha_fails_claim_with_clear_error()
+    {
+        using var h = new ChainHarness(Item("CodeReview"));
+        ChainHarness.Git(h.Repo, "checkout", "-b", "implementation");
+        var unpublished = ChainHarness.Commit(h.Repo, "local-only.txt", "not pushed");
+        ChainHarness.Git(h.Repo, "push", "origin", "main:implementation");
+        h.Server.Item.Continuation = new("implementation", unpublished);
+
+        await h.TickAsync();
+
+        Assert.Null(h.Workspaces.Get($"{ChainServer.Url}|{h.Server.Item.Id:D}"));
+        Assert.Contains("not on remote branch implementation", Assert.Single(h.Server.Failures));
+    }
+
+    [Fact]
+    public async Task Handover_claim_uses_its_sha_and_fails_if_sha_is_missing()
+    {
+        using var h = new ChainHarness(Item("Implementation"));
+        ChainHarness.Git(h.Repo, "checkout", "-b", "handover");
+        var accepted = ChainHarness.Commit(h.Repo, "handover.txt", "accepted");
+        ChainHarness.Git(h.Repo, "push", "origin", "handover");
+        h.Server.Item.StartFromBranch = "handover";
+        h.Server.Item.StartCommitSha = accepted;
+        await h.TickAsync();
+        Assert.Equal(accepted, h.Workspaces.Get($"{ChainServer.Url}|{h.Server.Item.Id:D}")!.StartingSha);
+
+        using var missing = new ChainHarness(Item("Implementation"));
+        ChainHarness.Git(missing.Repo, "checkout", "-b", "handover");
+        ChainHarness.Git(missing.Repo, "push", "origin", "handover");
+        missing.Server.Item.StartFromBranch = "handover";
+        await missing.TickAsync();
+        Assert.Contains("authoritative starting SHA", Assert.Single(missing.Server.Failures));
+    }
+
+    [Fact]
+    public async Task Base_snapshot_uses_recorded_commit_and_legacy_claim_uses_current_default()
+    {
+        using var pinned = new ChainHarness(Item("Planning"));
+        ChainHarness.Commit(pinned.Repo, "new-base.txt", "base advanced");
+        ChainHarness.Git(pinned.Repo, "push", "origin", "main");
+        pinned.Server.Item.BaseSnapshot = new("main", pinned.BaseSha);
+        await pinned.TickAsync();
+        var recorded = pinned.Workspaces.Get($"{ChainServer.Url}|{pinned.Server.Item.Id:D}")!;
+        Assert.Equal(pinned.BaseSha, recorded.BaseSha);
+        Assert.Equal(pinned.BaseSha, recorded.StartingSha);
+
+        using var legacy = new ChainHarness(Item("Planning"));
+        var latest = ChainHarness.Commit(legacy.Repo, "new-base.txt", "base advanced");
+        ChainHarness.Git(legacy.Repo, "push", "origin", "main");
+        await legacy.TickAsync();
+        var current = legacy.Workspaces.Get($"{ChainServer.Url}|{legacy.Server.Item.Id:D}")!;
+        Assert.Equal(latest, current.BaseSha);
+        Assert.Equal(latest, current.StartingSha);
+    }
+
+    [Fact]
+    public void Claim_wire_round_trips_workspace_continuity_fields()
+    {
+        const string json = """
+            {"startFromBranch":"handover","startCommitSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+             "continuation":{"branch":"implementation","commitSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+             "baseSnapshot":{"branch":"main","commitSha":"cccccccccccccccccccccccccccccccccccccccc"}}
+            """;
+        var claim = JsonSerializer.Deserialize(json, PRFactoryWorkItemJson.Default.PRFactoryWorkItem)!;
+        Assert.Equal(new PRFactoryWorkspaceRevision("implementation", new string('b', 40)), claim.Continuation);
+        Assert.Equal(new PRFactoryWorkspaceRevision("main", new string('c', 40)), claim.BaseSnapshot);
+        Assert.Equal(new string('a', 40), claim.StartCommitSha);
+        var legacy = JsonSerializer.Deserialize("{}", PRFactoryWorkItemJson.Default.PRFactoryWorkItem)!;
+        Assert.Null(legacy.Continuation);
+        Assert.Null(legacy.BaseSnapshot);
+        Assert.Null(legacy.StartCommitSha);
+    }
+
+    static PRFactoryWorkItem Item(string phase) => new()
+    {
+        Id = Guid.NewGuid(),
+        Type = phase,
+        RepositoryId = Guid.NewGuid(),
+        LeaseToken = Guid.NewGuid(),
+        AgentType = PRFactoryAgentType.Codex,
+        Prompt = phase,
+        TicketArtefactFolder = "ticket",
+        ReadOnly = true
+    };
+
     [Fact]
     public async Task Team_runs_in_owned_checkouts_children_integrate_then_lead_finalizes_before_completion()
     {

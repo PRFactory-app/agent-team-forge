@@ -40,9 +40,9 @@ public sealed class PRFactoryClient(HttpClient httpClient)
     const string WorkerVersion = "1.0.0";
     // Only semantics that are wired and tested end to end: explicit server dispositions stop and fence
     // owned work; completion carries a pushed, ls-remote-verified branch for remote-only PR creation.
-    // Not yet: workspace-continuity-v1 (no authoritative start SHA on the wire), human-wait-v1,
-    // readiness-parking-v1 (no auth/model probes), multi-repo-v1, attachments-v1.
-    public static readonly string[] Capabilities = ["authority-disposition-v1", "remote-publication-v1"];
+    // Not yet: human-wait-v1, readiness-parking-v1 (no auth/model probes),
+    // multi-repo-v1, attachments-v1.
+    public static readonly string[] Capabilities = ["authority-disposition-v1", "remote-publication-v1", "workspace-continuity-v1"];
     bool legacyLogged;
     public enum AcceptanceResult { Confirmed, NotFound, Conflict }
     /// <summary>Server disposition: accepted, completed, cancelled, revoked or reconciliation-needed.</summary>

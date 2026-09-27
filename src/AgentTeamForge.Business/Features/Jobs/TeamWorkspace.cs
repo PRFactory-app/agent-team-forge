@@ -63,24 +63,21 @@ public sealed class TeamWorkspace(PRFactoryWorkspaceStore store) : IDisposable
                 var repo = request.RepositoryPath ?? throw new InvalidOperationException("Repository mapping missing.");
                 await ValidateRemote(repo, request.Remote);
                 selected = request.BaseBranch ?? throw new InvalidOperationException("Base branch missing.");
-                baseSha = await Fetch(repo, selected);
-                VerifySha(request.ExpectedBaseSha, baseSha);
+                baseSha = await Fetch(repo, selected, request.ExpectedBaseSha);
                 start = baseSha;
                 if (request.PriorBranch is not null)
                 {
-                    start = await Fetch(repo, request.PriorBranch);
-                    VerifyRequiredSha(request.PriorSha, start);
+                    start = await FetchRequired(repo, request.PriorBranch, request.PriorSha);
                 }
                 else if (request.StartFromBranch is not null)
                 {
-                    start = await Fetch(repo, request.StartFromBranch);
-                    VerifyRequiredSha(request.StartCommitSha, start);
+                    start = await FetchRequired(repo, request.StartFromBranch, request.StartCommitSha);
                 }
                 else if (request.ProjectInit && request.PublishBranch is not null)
                 {
                     await CheckBranch(repo, request.PublishBranch);
                     var remote = await Git(repo, "ls-remote", "--heads", "origin", "refs/heads/" + request.PublishBranch);
-                    if (remote.Length > 0) { start = await Fetch(repo, request.PublishBranch); }
+                    if (remote.Length > 0) { start = await Fetch(repo, request.PublishBranch, request.StartCommitSha); }
                     VerifySha(request.StartCommitSha, start);
                 }
                 else { VerifySha(request.StartCommitSha, start); }
@@ -137,20 +134,37 @@ public sealed class TeamWorkspace(PRFactoryWorkspaceStore store) : IDisposable
     static async Task CheckBranch(string repo, string branch) =>
         _ = await Git(repo, "check-ref-format", "refs/heads/" + branch);
 
-    static async Task<string> Fetch(string repo, string branch)
+    static async Task<string> FetchRequired(string repo, string branch, string? expected)
+    {
+        if (string.IsNullOrWhiteSpace(expected))
+        {
+            throw new InvalidOperationException("Continuation requires an authoritative starting SHA.");
+        }
+        return await Fetch(repo, branch, expected);
+    }
+
+    static async Task<string> Fetch(string repo, string branch, string? expected = null)
     {
         await CheckBranch(repo, branch);
         // FETCH_HEAD is shared with the user's checkout and other fetches.
         // Keep an owned ref as both an unambiguous result and a recovery object pin.
         var fetchedRef = "refs/atf/workspace-start/" + Guid.NewGuid().ToString("N");
         await Git(repo, "fetch", "--no-tags", "--no-write-fetch-head", "origin", "refs/heads/" + branch + ":" + fetchedRef);
-        return await Git(repo, "rev-parse", "--verify", fetchedRef + "^{commit}");
-    }
-
-    static void VerifyRequiredSha(string? expected, string actual)
-    {
-        if (expected is null) { throw new InvalidOperationException("Continuation requires an authoritative starting SHA."); }
-        VerifySha(expected, actual);
+        var tip = await Git(repo, "rev-parse", "--verify", fetchedRef + "^{commit}");
+        if (expected is null) { return tip; }
+        if (!JobWorktree.IsCommitSha(expected))
+        {
+            throw new InvalidOperationException("Expected workspace SHA is invalid.");
+        }
+        try
+        {
+            await Git(repo, "merge-base", "--is-ancestor", expected, fetchedRef);
+        }
+        catch (InvalidOperationException)
+        {
+            throw new InvalidOperationException($"Expected workspace SHA {expected} is not on remote branch {branch}.");
+        }
+        return expected;
     }
 
     static void VerifySha(string? expected, string actual)

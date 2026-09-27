@@ -27,6 +27,9 @@ public sealed class PRFactoryWorkItem
     public string? TicketSource { get; set; }
     public string? StepKey { get; set; }
     public string? StartFromBranch { get; set; }
+    public string? StartCommitSha { get; set; }
+    public PRFactoryWorkspaceRevision? Continuation { get; set; }
+    public PRFactoryWorkspaceRevision? BaseSnapshot { get; set; }
     public string? PublishBranch { get; set; }
     public DateTimeOffset? ExpiresAt { get; set; }
     // Repository set/default base are carried in ContextJson by the worker contract.
@@ -44,6 +47,8 @@ public sealed class PRFactoryWorkItem
     public Guid? LeaseToken { get; set; }
     public PRFactoryTeamPlan? TeamPlan { get; set; }
 }
+
+public sealed record PRFactoryWorkspaceRevision(string Branch, string CommitSha);
 
 public sealed class PRFactoryTeamPlan
 {
@@ -110,6 +115,7 @@ public sealed record PRFactoryStreamResponse(bool Accepted, Dictionary<string, l
 [JsonSerializable(typeof(PRFactoryCompletionResponse))]
 [JsonSerializable(typeof(PRFactoryFailureResponse))]
 [JsonSerializable(typeof(PRFactoryWorkItem))]
+[JsonSerializable(typeof(PRFactoryWorkspaceRevision))]
 [JsonSerializable(typeof(PRFactoryCommandDrainResponse))]
 [JsonSerializable(typeof(PRFactoryCommand))]
 [JsonSerializable(typeof(PRFactoryCommandAckRequest))]

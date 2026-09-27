@@ -59,8 +59,9 @@ public sealed class WorkspaceTests
         Assert.Equal(handover, init.StartingSha);
         var firstInit = await f.Workspaces.PrepareAsync(f.Request with { Key = "new-init", ProjectInit = true, PublishBranch = "new-ticket" });
         Assert.Equal(f.BaseSha, firstInit.StartingSha);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Workspaces.PrepareAsync(request with { Key = "bad", PriorSha = f.BaseSha }));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Workspaces.PrepareAsync(request with { Key = "bad", PriorSha = handover }));
         await Assert.ThrowsAsync<InvalidOperationException>(() => f.Workspaces.PrepareAsync(request with { Key = "missing", PriorSha = null }));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => f.Workspaces.PrepareAsync(request with { Key = "missing-handover", PriorBranch = null, StartCommitSha = null }));
         await Assert.ThrowsAsync<InvalidOperationException>(() => f.Workspaces.PrepareAsync(f.Request with { Key = "remote", Remote = f.Remote + "-wrong" }));
         Assert.Null(f.Store.Get("remote"));
     }

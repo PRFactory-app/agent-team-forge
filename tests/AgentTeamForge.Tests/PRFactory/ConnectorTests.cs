@@ -61,7 +61,7 @@ public sealed class ConnectorTests
                     registrationCount++;
                     var capabilities = System.Text.Json.JsonElement.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())
                         .GetProperty("capabilities").EnumerateArray().Select(c => c.GetString()!).ToArray();
-                    Assert.Equal(["authority-disposition-v1", "remote-publication-v1"], capabilities);
+                    Assert.Equal(["authority-disposition-v1", "remote-publication-v1", "workspace-continuity-v1"], capabilities);
                     return new HttpResponseMessage(HttpStatusCode.OK)
                     {
                         Content = new StringContent("{\"machineId\":\"8ad6f5c0-a4f0-42dc-8c29-59677ea37949\",\"heartbeatIntervalSeconds\":1}", Encoding.UTF8, "application/json")

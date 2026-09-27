@@ -562,12 +562,13 @@ public sealed partial class PRFactoryWorkItems(
         // Same naming as PRFactory's InitBranchNaming when an older server omits PublishBranch.
         var publish = item.PublishBranch is { Length: > 0 } explicitBranch ? explicitBranch.Trim()
             : projectInit && item.TicketKey is { Length: > 0 } ticketKey ? $"init/{ticketKey.Trim()}" : $"prfactory/{item.Id}";
-        // ProjectInit resumes its own publish branch when it already exists remotely.
-        var startFrom = projectInit && item.StartFromBranch == publish ? null : item.StartFromBranch;
         return await workspaces.PrepareAsync(new WorkspaceRequest(key, root, item.RepositoryId.ToString("D"), repo.Directory,
             repo.Remote ?? await TeamWorkspace.OriginAsync(repo.Directory),
-            repo.BaseBranch ?? await TeamWorkspace.DefaultBranchAsync(repo.Directory),
-            publish, item.ReadOnly, names, StartFromBranch: startFrom, ProjectInit: projectInit));
+            item.BaseSnapshot?.Branch ?? repo.BaseBranch ?? await TeamWorkspace.DefaultBranchAsync(repo.Directory),
+            publish, item.ReadOnly, names, PriorBranch: item.Continuation?.Branch,
+            PriorSha: item.Continuation?.CommitSha, StartFromBranch: item.StartFromBranch,
+            StartCommitSha: item.StartCommitSha, ProjectInit: projectInit,
+            ExpectedBaseSha: item.BaseSnapshot?.CommitSha));
     }
 
     /// <summary>Children are quiescent and succeeded: integrate their commits, stage their documents, then one lead pass.</summary>
