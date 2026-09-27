@@ -78,3 +78,8 @@ credentials) was deleted afterwards. The first exploratory run encountered an
 inherited repository Stop hook; the successful relay run used
 `--setting-sources user --settings '{"disableAllHooks":true}'` explicitly.
 No hooks were installed or edited.
+
+`main` advanced during the slice and was merged cleanly at `ce655a3` before
+final verification. Both disposable daemon state directories were also removed
+after their processes exited. Opposite-family review remains with the lead;
+no sub-agents were spawned, as requested.

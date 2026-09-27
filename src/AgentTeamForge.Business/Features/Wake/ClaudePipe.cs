@@ -46,7 +46,8 @@ internal static partial class ClaudePipe
             await pipe.WriteAsync(wire, token);
             return true;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException
+            or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             return false;
         }
