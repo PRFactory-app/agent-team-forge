@@ -28,6 +28,9 @@ public abstract record BackendEvidence
     /// <summary>CLI rejected its arguments before a turn began; no job effect occurred.</summary>
     public sealed record NotStarted(string Details) : BackendEvidence;
 
+    /// <summary>The owned interactive wrapper exited before the agent acknowledged this turn.</summary>
+    public sealed record LaunchFailed(string Details) : BackendEvidence;
+
     public sealed record EndOfOutput : BackendEvidence;
 }
 
