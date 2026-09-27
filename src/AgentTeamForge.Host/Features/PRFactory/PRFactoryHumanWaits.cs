@@ -68,7 +68,7 @@ public sealed partial class PRFactoryWorkItems
     // Notices frozen before the lifecycle mapping carry states PRFactory rejected with 400, so none was stored.
     internal static PRFactoryStreamBatch WithoutLegacyLifecycle(PRFactoryStreamBatch batch) => batch with
     {
-        Events = batch.Events.Select(e => e with
+        Events = [.. batch.Events.Select(e => e with
         {
             State = e.State switch
             {
@@ -76,7 +76,7 @@ public sealed partial class PRFactoryWorkItems
                 "AnswerApplied" => "Running",
                 var state => state
             }
-        }).ToList()
+        })]
     };
 
     /// <summary>Open waits hold completion; a failed or cancelled wait finishes the team as a failure.</summary>
