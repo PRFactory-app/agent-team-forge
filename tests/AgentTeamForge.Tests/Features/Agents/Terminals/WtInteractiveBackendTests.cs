@@ -194,6 +194,20 @@ public sealed class WtInteractiveBackendTests
         Assert.Contains("$env:CODEX_HOME = 'C:\\daemon\\codex'", wrapper);
         Assert.Contains("$PID.ToString() + '|'", wrapper);
         Assert.Contains("WriteAllText('C:\\state\\tab.start-error'", wrapper);
+        Assert.Contains("[uint32]0x2000", wrapper);
+        Assert.Contains("AssignProcessToJobObject($job, $agent.Handle)", wrapper);
+        Assert.Contains("if (-not $native::AssignProcessToJobObject", wrapper);
+        Assert.Contains("$agent.Kill()", wrapper);
+        Assert.Contains("finally { [void]$native::CloseHandle($job) }", wrapper);
+        // PowerShell only ends a here-string at a line-initial '@; a stray indent breaks every launch.
+        Assert.Matches(@"\$source = @'\r?\n", wrapper);
+        Assert.Matches(@"\n'@\r?\n", wrapper);
+        // A $null argument would reach a .NET string parameter as "" rather than NULL.
+        Assert.Contains("CreateJobObject([IntPtr]::Zero, [IntPtr]::Zero)", wrapper);
+        // The agent identity lets stop end the agent first so the wrapper exits 0 and its tab closes.
+        Assert.Contains("Out-File -FilePath 'C:\\state\\tab.agent' -Encoding ascii", wrapper);
+        Assert.DoesNotContain("__AGENT_SIDECAR__", wrapper);
+        Assert.DoesNotContain("__START_ERROR__", wrapper);
         Assert.EndsWith("exit 0\r\n", wrapper);
     }
 
@@ -417,16 +431,6 @@ public sealed class WtInteractiveBackendTests
         // 2n+1 + quote -> n and a literal quote; other backslashes are literal.
         Assert.Equal("plain \"\" \"say \\\"hi\\\" --flag \\\\\\\"x\" \"C:\\dir with space\\\\\"",
             WtTabControl.CommandLine(["plain", "", "say \"hi\" --flag \\\"x", "C:\\dir with space\\"]));
-    }
-
-    [Fact]
-    public void OnlyChildrenStartedAfterTheWrapperAreOwned()
-    {
-        var wrapper = new DateTime(2026, 9, 26, 12, 0, 0, DateTimeKind.Utc);
-        Assert.True(WtTabControl.IsOwnedChild(wrapper.AddSeconds(1), wrapper));
-        // A process whose dead parent had the same PID still reports it as ParentProcessId.
-        Assert.False(WtTabControl.IsOwnedChild(wrapper.AddSeconds(-1), wrapper));
-        Assert.False(WtTabControl.IsOwnedChild(null, wrapper));
     }
 
     [Fact]
