@@ -125,6 +125,11 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE account_admission_reservations;
+                DROP INDEX account_parks_due;
+                DROP TABLE account_parks;
+                DROP TABLE account_windows;
+                DELETE FROM schema_migrations WHERE version=20;
                 DROP TABLE prfactory_workspace_integrations;
                 DROP TABLE prfactory_workspaces;
                 DELETE FROM schema_migrations WHERE version=19;
@@ -198,6 +203,11 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE account_admission_reservations;
+                DROP INDEX account_parks_due;
+                DROP TABLE account_parks;
+                DROP TABLE account_windows;
+                DELETE FROM schema_migrations WHERE version=20;
                 DROP TABLE prfactory_workspace_integrations;
                 DROP TABLE prfactory_workspaces;
                 DELETE FROM schema_migrations WHERE version=19;

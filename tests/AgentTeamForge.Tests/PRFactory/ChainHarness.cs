@@ -58,12 +58,12 @@ sealed class ChainHarness : IDisposable
     public StopJob Stop { get; }
     public PRFactoryAuthority Authority { get; }
     public string WorkspaceRoot => root.File("workspaces");
-    public Func<PRFactoryWorkItems, PRFactoryWorkItems>? Configure { get; set; }
+    public AccountAdmission? Accounts { get; set; }
 
     public PRFactoryWorkItems Adapter() => new(ChainServer.Url,
         [new RepositoryMapping(Server.Item.RepositoryId, Repo)], Teams, Server.Client(),
         Accept.Execute, Store.GetJob, () => { }, stopJob: Stop.Execute, followUp: FollowUp.Execute,
-        authority: Authority, workspaces: new PRFactoryWorkspace(Workspaces), workspaceRoot: WorkspaceRoot);
+        authority: Authority, workspaces: new PRFactoryWorkspace(Workspaces), workspaceRoot: WorkspaceRoot, accounts: Accounts);
 
     public Task TickAsync() => Adapter().TickAsync(Machine, CancellationToken.None);
 

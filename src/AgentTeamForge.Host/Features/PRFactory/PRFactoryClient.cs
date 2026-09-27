@@ -91,9 +91,10 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         return true;
     }
 
-    public async Task<IReadOnlyList<PRFactoryWorkItem>> PollAsync(IEnumerable<Guid> repositories, Guid? machineId, CancellationToken ct)
+    public async Task<IReadOnlyList<PRFactoryWorkItem>> PollAsync(IEnumerable<Guid> repositories, Guid? machineId, CancellationToken ct,
+        int maxItems = 10)
     {
-        var query = "maxItems=10" + string.Concat(repositories.Select(id => $"&repositoryIds={id:D}"))
+        var query = $"maxItems={maxItems}" + string.Concat(repositories.Select(id => $"&repositoryIds={id:D}"))
             + $"&workerVersion={WorkerVersion}" + (machineId is Guid mid ? $"&machineId={mid:D}" : "");
         using var response = await httpClient.GetAsync("api/worker/poll?" + query, ct);
         RejectToken(response.StatusCode);

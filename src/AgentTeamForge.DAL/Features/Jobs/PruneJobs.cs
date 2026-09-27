@@ -16,10 +16,15 @@ public sealed class PruneJobs(JobDatabase database)
             using (var select = connection.CreateCommand())
             {
                 select.Transaction = tx;
-                // A result the lead has not read yet (unread wake notice) is never pruned.
+                // A result the lead has not read yet (unread wake notice) is never pruned, nor is a turn
+                // of an accepted PRFactory team or an unresumed account park (its session is resumed later).
                 select.CommandText = """
                     SELECT j.job_id, j.parent_job_id, j.status, j.updated_at,
                            EXISTS (SELECT 1 FROM wake_jobs w WHERE w.job_id=j.job_id AND w.read_at IS NULL)
+                           OR EXISTS (SELECT 1 FROM prfactory_members m JOIN prfactory_teams t
+                               ON t.server=m.server AND t.work_item_id=m.work_item_id
+                               WHERE m.job_id=j.job_id AND t.state='claimed')
+                           OR EXISTS (SELECT 1 FROM account_parks p WHERE p.job_id=j.job_id AND p.state<>'resumed')
                     FROM jobs j
                     """;
                 using var reader = select.ExecuteReader();

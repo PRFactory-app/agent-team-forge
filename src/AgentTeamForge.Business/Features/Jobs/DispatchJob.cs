@@ -82,6 +82,21 @@ public sealed class DispatchJob : IDisposable
     /// <summary>Optional owner admission (PRFactory authority, account windows); false leaves the job queued.</summary>
     public Func<string, bool>? LaunchGate { get; set; }
 
+    /// <summary>Observes backend-owned agent errors after the failed turn has ended (account-limit parking).</summary>
+    public Action<JobRecord, string, string?>? AgentErrorObserved { get; set; }
+
+    void ObserveAgentError(string jobId, string code, string? details)
+    {
+        try
+        {
+            if (AgentErrorObserved is { } observe && store.GetJob(jobId) is { } ended) { observe(ended, code, details); }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            log($"agent error observer failed for {jobId}: {ex.GetType().Name}");
+        }
+    }
+
     bool Eligible(string jobId)
     {
         try { return LaunchGate?.Invoke(jobId) ?? true; }
@@ -553,6 +568,7 @@ public sealed class DispatchJob : IDisposable
                             return;
                         case BackendEvidence.AgentError error:
                             End(run, JobStatus.Failed, error.Code, error.Details);
+                            ObserveAgentError(claim.Job.JobId, error.Code, error.Details);
                             return;
                         case BackendEvidence.NotStarted rejected:
                             End(run, JobStatus.Failed, "backend_not_started", rejected.Details);

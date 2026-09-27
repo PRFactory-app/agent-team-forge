@@ -245,13 +245,26 @@ public static class DaemonCommand
         var workspaceRoot = Path.Combine(state.Path, "prfactory-workspaces");
         // One long-lived authority per connected server; ticks construct the adapter afresh.
         PRFactoryAuthority? authority = null;
+        var accounts = new AccountAdmission(new AccountWindowStore(database));
         dispatcher.LaunchGate = jobId =>
         {
-            if (store.GetJob(jobId)?.Principal != connectorPrincipal.Principal) { return true; }
+            if (store.GetJob(jobId) is not { } job || job.Principal != connectorPrincipal.Principal) { return true; }
+            // An exhausted account blocks only its own backend's connector turns; others keep claiming.
+            if (!accounts.CanStart(job.Backend, PRFactoryWorkItems.DefaultAccount, DateTimeOffset.UtcNow)) { return false; }
             // Connector turns launch only under fresh server confirmation; unmapped ones wait for their mapping.
             var owner = authorityRows.OwnerOf(jobId);
             var current = authority;
             return owner is { } o && current is not null && o.Server == current.Server && current.MayLaunch(o.WorkItemId);
+        };
+        dispatcher.AgentErrorObserved = (job, code, details) =>
+        {
+            // Only backend-owned error evidence; the connector resumes the parked session after reset.
+            if (job.Principal == connectorPrincipal.Principal
+                && accounts.ParkIfLimited(job.JobId, job.Backend, PRFactoryWorkItems.DefaultAccount, job.SessionId,
+                    AccountAdmission.EvidenceCode(job.Backend, code), details, DateTimeOffset.UtcNow))
+            {
+                Log($"job {job.JobId} parked: {job.Backend} account usage limit");
+            }
         };
         var prfactory = PRFactoryHeartbeat.RunAsync(state, lifetime.Token, log: Log,
             onConnected: async (client, settings, machineId, ct) =>
@@ -267,7 +280,7 @@ public static class DaemonCommand
                     cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId, Log, externalTeam,
                     connectorStop.Execute,
                     new FollowUpJob(store, connectorPrincipal, connectorAccept,
-                        dispatcher.InterruptRunning).Execute, jobLogs, authority, connectorWorkspaces, workspaceRoot).TickAsync(machineId, ct);
+                        dispatcher.InterruptRunning).Execute, jobLogs, authority, connectorWorkspaces, workspaceRoot, accounts).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
             },
             onTokenRejected: ct => authority?.TransportFailureAsync(Guid.Empty, System.Net.HttpStatusCode.Unauthorized, ct) ?? Task.CompletedTask);

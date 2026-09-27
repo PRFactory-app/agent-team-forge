@@ -12,8 +12,12 @@ public sealed partial class PRFactoryWorkItems(
     Action onAccepted, Func<string, string?>? leadSessionFor = null, Action<string>? log = null,
     ExternalTeam? externalTeam = null, Func<string, JobResult>? stopJob = null,
     Func<FollowUpRequest, JobResult>? followUp = null, JobLogs? jobLogs = null,
-    PRFactoryAuthority? authority = null, PRFactoryWorkspace? workspaces = null, string? workspaceRoot = null)
+    PRFactoryAuthority? authority = null, PRFactoryWorkspace? workspaces = null, string? workspaceRoot = null,
+    AccountAdmission? accounts = null, int maxAcceptedTeams = 10)
 {
+    // Parked turns share one account binding per backend until configured accounts exist.
+    public const string DefaultAccount = "default";
+
     // Reserved lead turn for the post-integration finalization; command turns continue above it.
     const int FinalizeTurn = 1000;
 
@@ -33,23 +37,41 @@ public sealed partial class PRFactoryWorkItems(
             return;
         }
 
-        var offered = await client.PollAsync(repositories.Select(r => r.Id), machineId, ct);
+        // Accepted-but-unfinished teams are bounded separately from running processes; a full
+        // backlog only stops polling, never fails already accepted work.
+        var free = maxAcceptedTeams - teams.Pending(server).Count;
+        if (free <= 0)
+        {
+            return;
+        }
+        var offered = await client.PollAsync(repositories.Select(r => r.Id), machineId, ct, Math.Min(free, 10));
         foreach (var item in offered)
         {
             if (item.Id == Guid.Empty || teams.Get(server, item.Id) is not null)
             {
                 continue;
             }
-
-            var claimed = await client.ClaimAsync(item.Id, machineId, ct);
-            if (claimed is null || claimed.Id != item.Id)
+            var reservation = accounts?.ReserveClaim(maxAcceptedTeams, DateTimeOffset.UtcNow);
+            if (accounts is not null && reservation is null)
             {
-                continue;
+                break;
             }
+            try
+            {
+                var claimed = await client.ClaimAsync(item.Id, machineId, ct);
+                if (claimed is null || claimed.Id != item.Id)
+                {
+                    continue;
+                }
 
-            var json = JsonSerializer.Serialize(claimed, PRFactoryWorkItemJson.Default.PRFactoryWorkItem);
-            teams.CreateIfAbsent(server, claimed.Id, json, machineId); // Commit identity before POST or dispatch.
-            await IsolateAsync(claimed.Id, () => AdvanceAsync(teams.Get(server, claimed.Id)!, ct), ct);
+                var json = JsonSerializer.Serialize(claimed, PRFactoryWorkItemJson.Default.PRFactoryWorkItem);
+                teams.CreateIfAbsent(server, claimed.Id, json, machineId); // Commit identity before POST or dispatch.
+            }
+            finally
+            {
+                if (reservation is not null) { accounts!.ReleaseClaim(reservation); }
+            }
+            await IsolateAsync(item.Id, () => AdvanceAsync(teams.Get(server, item.Id)!, ct), ct);
         }
     }
 
@@ -325,6 +347,10 @@ public sealed partial class PRFactoryWorkItems(
         allJobs = [.. teams.ManagedMembers(server, item.Id).GroupBy(m => m.Member)
             .Select(g => getJob(g.Last().JobId)!)];
         lead = allJobs.First(j => j.JobId == teams.ManagedMembers(server, item.Id).Last(m => m.Member == "lead").JobId);
+        if (accounts is not null && await ResumeParkedAsync(item, allJobs, ct))
+        {
+            return; // An account-parked member holds completion until it resumes in the same session.
+        }
         var waitForManaged = managedMembers.Length > 0 || externalNames.Length == 0;
         if (allJobs.Count != managedMembers.Length + 1 || !externalRepliesDrained || !outputDrained
             || (waitForManaged
@@ -419,6 +445,49 @@ public sealed partial class PRFactoryWorkItems(
         }
 
         return getJob(jobId);
+    }
+
+    /// <summary>Resumes due parks as a same-session follow-up; returns true while any member park is open.</summary>
+    async Task<bool> ResumeParkedAsync(PRFactoryWorkItem item, IReadOnlyList<JobRecord> latest, CancellationToken ct)
+    {
+        var held = false;
+        foreach (var job in latest)
+        {
+            if (accounts!.Park(job.JobId) is not { State: not "resumed", SessionId: not null } park)
+            {
+                continue;
+            }
+            held = true;
+            if (park.State == "parked" && !accounts.TryBeginResume(park, DateTimeOffset.UtcNow))
+            {
+                continue; // Not yet reset (or unknown reset awaiting explicit recovery).
+            }
+            var member = teams.ManagedMembers(server, item.Id).Last(m => m.JobId == job.JobId);
+            var resumed = JobResult.Fail(JobErrors.DaemonUnhealthy);
+            // A fixed key makes a crash between acceptance and ResumeRecorded resolve to the same turn.
+            await Guard(item.Id, () =>
+            {
+                resumed = followUp?.Invoke(new FollowUpRequest(job.JobId,
+                    "The account usage limit has reset. Continue the task exactly where you left off.", "prf-resume:" + job.JobId))
+                    ?? JobResult.Fail(JobErrors.DaemonUnhealthy);
+                if (resumed.Error is null && !teams.ManagedMembers(server, item.Id).Any(m => m.JobId == resumed.Job!.JobId))
+                {
+                    teams.RecordMember(server, item.Id, member.Member,
+                        teams.ManagedMembers(server, item.Id).Where(m => m.Member == member.Member).Max(m => m.Turn) + 1, resumed.Job!.JobId);
+                }
+                return Task.CompletedTask;
+            }, ct);
+            if (resumed.Error is null)
+            {
+                accounts.ResumeRecorded(job.JobId);
+                onAccepted();
+            }
+            else
+            {
+                accounts.RetryResume(job.JobId);
+            }
+        }
+        return held;
     }
 
     string WorkspaceKey(Guid id) => $"{server}|{id:D}";
