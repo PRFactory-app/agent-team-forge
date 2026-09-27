@@ -92,8 +92,9 @@ These are the atomic operations in `DAL/Features/Jobs/JobStore.cs`:
    `started` run becomes `needs_reconciliation` with reason
    `daemon_restart_uncertain`, and its job is fenced. Nothing is re-queued.
 5. **Cancel / expire**: queued jobs are cancelled by marking their intent
-   `attempted` so they are never claimed; running jobs are cancelled through
-   the backend first.
+   `attempted` so they are never claimed. A running job's cancellation is
+   committed before ATF asks the dispatcher to stop the owned backend run;
+   the session stays fenced until that run is safely stopped or verified idle.
 
 ## Lead sessions and wake
 

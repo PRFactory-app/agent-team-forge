@@ -64,7 +64,10 @@ Rerun the installer to upgrade. Rerunning the active version verifies its instal
 files and makes no changes. An upgrade stops the running daemon, so wait for jobs
 to finish first. It preserves the profile, launch mode, state, and stable MCP
 executable path; reload agent clients after an upgrade. If setup used a custom
-`--state-dir`, pass the same directory to the installer.
+`--state-dir`, pass the same directory to the installer. Back up the state
+directory before an upgrade that changes the database schema: switching back
+to an older binary does not roll back a migrated database. ATF has no restore
+command; restore from a backup is a manual operation with the daemon stopped.
 
 Run `"$HOME/.local/bin/atf" uninstall` to remove the binaries, ATF-owned client
 registrations, Pi wake entry, and login autostart. Shared Pi adapter packages,

@@ -4,6 +4,13 @@ At setup you choose how agents are launched. The choice is explicit and ATF
 never switches to another mode on its own
 ([ADR 0004](adr/0004-explicit-launch-mode.md)).
 
+Submit and follow-up instructions accept up to 65,536 UTF-16 characters by
+default. In Linux Herdr mode, a real-agent prompt above 120 KiB UTF-8 is
+rejected before acceptance because Herdr passes it as one CLI argument. Long
+Windows Terminal prompts are handed to the agent through a private prompt
+file when they exceed the command-line limit; this path awaits Windows
+validation. Headless backends receive prompts on stdin.
+
 | Mode | Platform | What you get |
 | --- | --- | --- |
 | `herdr` | Linux (macOS after `brew install herdr`, untested) | Each agent's real TUI in a tab of a Herdr session |
@@ -31,8 +38,9 @@ the same conversation, result, interrupt and stop. The daemon knows which job,
 native session and terminal tab belong together.
 
 - **Prompts** go through Herdr's native agent commands
-  (`agent start/prompt/get`) or, in Windows Terminal and macOS tabs, as the
-  agent's launch argument; never through simulated keystrokes.
+  (`agent start/prompt/get`) or, in Windows Terminal and macOS tabs, through
+  the agent's launch command (with a private file for long Windows prompts);
+  never through simulated keystrokes.
 - **Completion** comes from the agent's native session transcript, matched by
   a correlation marker for this run. Terminal text, silence or an idle pane is
   not treated as a result.

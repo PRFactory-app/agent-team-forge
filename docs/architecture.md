@@ -86,6 +86,14 @@ transaction. There are no repository ports or mediator layers.
    stale run cannot overwrite a newer one.
 5. **Notify.** After commit, the wake coordinator sends the lead a notice.
 
+These checkpoints establish different facts: acceptance proves the assignment
+is durable, an attempt marker proves only that an external effect *may* have
+begun, and a backend acknowledgement proves only what that backend protocol
+acknowledges. Neither a wake notice nor an acknowledgement proves the model
+finished the turn. Only the correlated native completion record makes a job
+`completed`; a crash between attempt start and that evidence leaves an
+uncertain job for reconciliation.
+
 Follow-ups are new jobs whose parent holds a native session ID; they resume
 that session in the same backend and worktree. `interrupt=true` cancels the
 running parent turn and accepts the new job atomically.

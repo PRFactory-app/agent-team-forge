@@ -78,9 +78,8 @@ omit `model` to reset one tier, or send `{ "reset_all": true }`.
 - The exact `Host` header is required on every request (421 otherwise) and the
   exact `Origin` on writes (403 otherwise). No cookies, CORS or query-string
   credentials.
-- Request bodies (64 KiB), instructions (8K characters) and concurrent calls
-  (4) are bounded. The daemon's own instruction limit is currently lower
-  (4,000 characters), so a longer prompt is rejected by the daemon.
+- Request bodies (512 KiB), instructions (64 KiB characters) and concurrent
+  calls (4) are bounded. The daemon uses the same instruction limit.
 - The console forwards every operation to the daemon over IPC. It never opens
   the database, never mints idempotency keys and never retries a mutation; an
   ambiguous outcome is shown as `outcome_unknown` with an explicit retry using

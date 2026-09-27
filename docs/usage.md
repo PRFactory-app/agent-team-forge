@@ -26,7 +26,7 @@ means.
 - Setup refuses to register a temporary or worktree binary or state directory
   without `--force`. For testing, use `atf start --state-dir DIR` or
   `atf mcp --state-dir DIR`.
-- The daemon runs up to 8 jobs at a time by default.
+- The daemon runs up to 16 jobs at a time by default.
 
 To register a client by hand (troubleshooting):
 
@@ -161,8 +161,8 @@ atf client logs JOB_ID --follow --state-dir "$STATE"
 atf client stop JOB_ID --state-dir "$STATE"
 ```
 
-Submit and follow-up also accept `--timeout S`, `--queue-ttl S` and
-`--worktree`.
+Submit and follow-up also accept `--timeout S` and `--queue-ttl S`. Submit
+accepts `--worktree`; follow-ups reuse the parent's worktree.
 
 ## Job states
 
