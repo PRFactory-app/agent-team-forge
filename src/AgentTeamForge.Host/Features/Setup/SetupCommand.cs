@@ -303,28 +303,24 @@ public static class SetupCommand
             await Task.WhenAll(output, error);
             return await WaitForReadyAsync(state, quiet);
         }
-        // Linux: setsid separates the daemon from the invoking shell; the shell only
-        // redirects its streams and then execs the real atf process. Darwin has no
-        // setsid(1): sh backgrounds the daemon and exits, so the launcher PID is not
-        // the daemon's and readiness is judged by the lock owner and endpoint alone.
-        var info = new ProcessStartInfo(OperatingSystem.IsMacOS() ? "/bin/sh" : "setsid") { UseShellExecute = false };
-        if (!OperatingSystem.IsMacOS())
+        using var input = File.OpenHandle("/dev/null", FileMode.Open, FileAccess.Read);
+        using var log = new FileStream(Path.Combine(state.Path, "daemon.log"),
+            PrivateFiles.Options(FileMode.Append, FileAccess.Write, FileShare.ReadWrite));
+        var info = new ProcessStartInfo(binary)
         {
-            info.ArgumentList.Add("sh");
-        }
-        info.ArgumentList.Add("-c");
-        info.ArgumentList.Add(OperatingSystem.IsMacOS()
-            ? "umask 077; \"$@\" </dev/null >>\"$ATF_DAEMON_LOG\" 2>&1 &"
-            : "umask 077; exec \"$@\" </dev/null >>\"$ATF_DAEMON_LOG\" 2>&1");
-        info.ArgumentList.Add("sh");
-        info.ArgumentList.Add(binary);
+            UseShellExecute = false,
+            StartDetached = true,
+            StandardInputHandle = input,
+            StandardOutputHandle = log.SafeFileHandle,
+            StandardErrorHandle = log.SafeFileHandle,
+            InheritedHandles = [],
+        };
         info.ArgumentList.Add("daemon");
         info.ArgumentList.Add("--state-dir");
         info.ArgumentList.Add(state.Path);
         DaemonEnvironment.Scrub(info.Environment);
-        info.Environment["ATF_DAEMON_LOG"] = Path.Combine(state.Path, "daemon.log");
         using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
-        return await WaitForReadyAsync(state, quiet, OperatingSystem.IsMacOS() ? null : process);
+        return await WaitForReadyAsync(state, quiet, process);
     }
 
     public static int Stop(IReadOnlyDictionary<string, string> options)

@@ -42,6 +42,9 @@ static partial class Native
     [LibraryImport("libc")]
     public static partial uint geteuid();
 
+    [LibraryImport("libc")]
+    public static partial uint umask(uint mask);
+
     [LibraryImport("libc", EntryPoint = "open", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int Open(string path, int flags);
 
