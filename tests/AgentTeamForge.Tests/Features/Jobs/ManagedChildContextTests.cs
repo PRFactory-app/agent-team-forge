@@ -10,6 +10,8 @@ using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Features.Sessions;
 using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Sqlite;
+using AgentTeamForge.Host.Features.Jobs;
+using AgentTeamForge.Host.Features.PRFactory;
 using AgentTeamForge.Tests.Support;
 
 namespace AgentTeamForge.Tests.Features.Jobs;
@@ -33,6 +35,29 @@ public sealed class ManagedChildContextTests
         var args = JsonNode.Parse(File.ReadAllText(prepared.ManagedMcpConfig!))!["mcpServers"]![ManagedChildContext.ServerName]!["args"]!.AsArray();
         var saved = JsonNode.Parse(File.ReadAllText(args[4]!.GetValue<string>()))!;
         Assert.False(saved["human_input_available"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public void Local_child_hides_human_input_and_direct_call_returns_guidance()
+    {
+        using var f = new JobFixture();
+        var root = Path.GetDirectoryName(f.DatabasePath)!;
+        var lead = new LeadSessionStore(f.Database).Start(root, "parent");
+        var team = new ExternalTeam(new ExternalMemberStore(f.Database), new WakeStore(f.Database));
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, ["codex"]);
+        var job = accept.Execute(new SubmitJobRequest("local-question", "task", null, false)
+        { Backend = "codex", LeadSessionId = lead.SessionId }).Job!;
+        var context = new ManagedChildContext(f.Store, team, root, "/private/atf");
+
+        var prepared = context.Prepare(new BackendRequest(job.JobId, "correlation", "task", "{}"));
+        var args = JsonNode.Parse(File.ReadAllText(prepared.ManagedMcpConfig!))!["mcpServers"]![ManagedChildContext.ServerName]!["args"]!.AsArray();
+        var saved = JsonNode.Parse(File.ReadAllText(args[4]!.GetValue<string>()))!;
+        var token = saved["member_token"]!.GetValue<string>();
+
+        Assert.False(saved["human_input_available"]!.GetValue<bool>());
+        Assert.False(JobsMcpBridge.ShouldOfferHumanInput(token, saved["human_input_available"]!.GetValue<bool>()));
+        var asked = PRFactoryInteraction.RequestFromManagedChild(team.ManagedChildName(token));
+        Assert.Equal(PRFactoryInteraction.HumanInputUnavailable, asked.Error);
     }
 
     [Fact]

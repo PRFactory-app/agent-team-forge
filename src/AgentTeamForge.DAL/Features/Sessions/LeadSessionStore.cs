@@ -149,6 +149,7 @@ public sealed class LeadSessionStore(JobDatabase database)
                 AND read_at IS NULL AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation AND active=1);
             INSERT INTO wake_jobs(job_id,target_key)
                 SELECT j.job_id,$key FROM jobs j WHERE j.lead_session_id=$id
+                AND j.status IN ('queued','running')
                 AND NOT EXISTS (SELECT 1 FROM wake_jobs w WHERE w.job_id=j.job_id)
                 AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation AND active=1);
             UPDATE external_messages SET wake_key=$key WHERE team_id=$id AND recipient='lead'

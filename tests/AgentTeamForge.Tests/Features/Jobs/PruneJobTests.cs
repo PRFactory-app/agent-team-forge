@@ -90,7 +90,7 @@ public sealed class PruneJobTests
         Assert.Empty(prune.Execute(DateTimeOffset.UtcNow.AddDays(-30), false));
         Assert.NotNull(f.Store.GetJob(job.JobId));
 
-        wake.MarkRead(job.JobId, target.Key, target.Generation);
+        wake.MarkRead(job.JobId, JobStatus.Completed, target.Key, target.Generation);
         Assert.Equal([job.JobId], prune.Execute(DateTimeOffset.UtcNow.AddDays(-30), false));
         Assert.Null(f.Store.GetJob(job.JobId));
     }

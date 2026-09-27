@@ -9,7 +9,7 @@ namespace AgentTeamForge.Host.Features.PRFactory;
 public sealed class PRFactoryInteraction(HumanWaitStore waits, PRFactoryTeamStore teams, JobStore jobs,
     Func<FollowUpRequest, JobResult> followUp, ExternalTeam? external = null)
 {
-    public const string HumanInputUnavailable = "PRFactory cannot answer request_human_input yet. Proceed with your best judgement or record open questions in your artefact.";
+    public const string HumanInputUnavailable = "Human input is unavailable for this managed job. Proceed with your best judgement or record open questions in your artefact.";
     public HumanWaitResult Answer(string server, Guid workItemId, string member, string questionId,
         Guid commandId, string answer, int? maxIterations, DateTimeOffset now)
     {
@@ -44,18 +44,15 @@ public sealed class PRFactoryInteraction(HumanWaitStore waits, PRFactoryTeamStor
         return waits.RecordResumed(questionId, result.Job!.JobId);
     }
 
-    /// <summary>
-    /// Reject a managed PRFactory child's question while the server lacks the questionId answer-command wire.
-    /// </summary>
-    public static HumanInputRequestResult RequestFromManagedChild(PRFactoryAuthorityStore owners, string? memberName)
+    /// <summary>Reject a managed child's question while no managed-child human-wait path is available.</summary>
+    public static HumanInputRequestResult RequestFromManagedChild(string? memberName)
     {
         const string prefix = "child-";
-        if (memberName is null || !memberName.StartsWith(prefix, StringComparison.Ordinal)
-            || owners.OwnerOf(memberName[prefix.Length..]) is null)
+        if (memberName is null || !memberName.StartsWith(prefix, StringComparison.Ordinal))
         {
             return new(null, JobErrors.NotFound);
         }
-        // PRFactory does not provide the questionId answer-command wire yet. Never persist an unanswerable wait.
+        // Never persist an unanswerable wait for a local or PRFactory managed child.
         return new(null, HumanInputUnavailable);
     }
 

@@ -249,12 +249,15 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             case IpcProtocol.JobStop:
                 return Map(stop.Execute(request.JobId ?? string.Empty, request.Interrupt));
             case IpcProtocol.JobStopAgent:
-                return stopAgent is null ? new IpcResponse(false, JobErrors.BackendUnavailable) : Map(stopAgent.Execute(request.JobId ?? string.Empty));
+                if (stopAgent is null) { return new IpcResponse(false, JobErrors.BackendUnavailable); }
+                var stoppedAgent = stopAgent.Execute(request.JobId ?? string.Empty);
+                if (stoppedAgent.Error is null && stoppedAgent.Job is not null) { MarkWakeRead(request, stoppedAgent.Job.JobId, stoppedAgent.Job.Status); }
+                return Map(stoppedAgent);
             case IpcProtocol.JobGet:
                 var found = ReadJob(request);
-                if (found.Error is null && LeadWake(request) is { Key: { } readKey, Generation: long generation } && wakeStore is not null)
+                if (found.Error is null && found.Job is not null)
                 {
-                    wakeStore.MarkRead(request.JobId!, readKey, generation);
+                    MarkWakeRead(request, found.Job.JobId, found.Job.Status);
                 }
                 return Map(WithLocation(found)) with { HerdrMode = herdrPlacement is not null };
             case IpcProtocol.JobOutput:
@@ -288,8 +291,10 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     OrderByActivity = request.OrderByActivity,
                     IncludeConnector = request.IncludeConnector && request.LeadSessionId is null,
                 });
-                return listed.Error is null ? new IpcResponse(true, Outcome: "listed", Page: WithLocations(listed.Page!),
-                    ExternalMembers: request.IncludeConnector ? externalMembers?.ActiveMcpMembers() : null) : new IpcResponse(false, listed.Error);
+                if (listed.Error is not null) { return new IpcResponse(false, listed.Error); }
+                foreach (var job in listed.Page!.Jobs) { MarkWakeRead(request, job.JobId, job.Status); }
+                return new IpcResponse(true, Outcome: "listed", Page: WithLocations(listed.Page),
+                    ExternalMembers: request.IncludeConnector ? externalMembers?.ActiveMcpMembers() : null);
             case IpcProtocol.JobPrune:
                 if (prune is null || request.OlderThanDays is not (>= 1 and <= 36500))
                 {
@@ -363,6 +368,14 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     (string? Key, long? Generation) LeadWake(IpcRequest request) =>
         request.LeadSessionId is not null && wakeStore?.Status(request.LeadSessionId) is { Registered: true, Key: { } key, Generation: { } generation }
             ? (key, generation) : (request.WakeKey, request.WakeGeneration);
+
+    void MarkWakeRead(IpcRequest request, string jobId, string observedStatus)
+    {
+        if (wakeStore is not null && LeadWake(request) is { Key: { } key, Generation: long generation })
+        {
+            wakeStore.MarkRead(jobId, observedStatus, key, generation);
+        }
+    }
 
     static bool ValidWorkspace(IpcRequest request) => request.Workspace is { Length: > 0 and <= 4096 } workspace
         && Path.IsPathFullyQualified(workspace) && request.BindingKey is { Length: > 0 and <= 4096 };

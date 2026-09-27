@@ -1,4 +1,5 @@
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Features.Jobs;
@@ -156,8 +157,25 @@ public sealed class WakeTests
         new StopJob(fixture.Store, JobFixture.Operator, _ => { }).Execute(job.JobId);
 
         Assert.Equal(1, Assert.Single(store.Pending()).Unread);
-        store.MarkRead(job.JobId, target.Key, target.Generation);
+        store.MarkRead(job.JobId, JobStatus.Cancelled, target.Key, target.Generation);
         Assert.Empty(store.Pending());
+    }
+
+    [Fact]
+    public void Completion_racing_a_read_of_the_running_job_stays_unread()
+    {
+        using var fixture = new JobFixture();
+        var store = new WakeStore(fixture.Database);
+        var target = store.Register("codex:race", "codex", "thread", "", "/tmp");
+        var job = fixture.Accept().Execute(new SubmitJobRequest("race", "work", null, false) { WakeKey = target.Key, WakeGeneration = target.Generation }).Job!;
+        var claim = fixture.Store.BeginNextAttempt()!;
+        var observed = fixture.Get().Execute(job.JobId).Job!; // get_job/list_jobs saw it running...
+
+        Assert.True(fixture.Store.Complete(new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "done"));
+        store.MarkRead(job.JobId, observed.Status, target.Key, target.Generation); // ...and marks after it completed.
+
+        Assert.Equal(JobStatus.Running, observed.Status);
+        Assert.Equal(1, Assert.Single(store.Pending()).Unread);
     }
 
     [Fact]
@@ -190,8 +208,8 @@ public sealed class WakeTests
         time += TimeSpan.FromSeconds(10);
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
         Assert.Single(poster.Attempts);
-        store.MarkRead(first, target.Key, target.Generation);
-        store.MarkRead(second, target.Key, target.Generation);
+        store.MarkRead(first, JobStatus.Completed, target.Key, target.Generation);
+        store.MarkRead(second, JobStatus.Completed, target.Key, target.Generation);
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
         Finish(fixture, target, "three");
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
@@ -276,6 +294,128 @@ public sealed class WakeTests
     }
 
     [Fact]
+    public async Task Resume_preserves_read_jobs_and_get_stop_list_drain_unread_completions()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/wake-read", "parent=1");
+        var accept = fixture.Accept();
+        var endpoint = new JobsEndpoint(accept, fixture.Get(), new FollowUpJob(fixture.Store, JobFixture.Operator, accept), fixture.List(),
+            new StopJob(fixture.Store, JobFixture.Operator, _ => { }), new AgentTeamForge.DAL.Sqlite.DurabilityCheckpoints(null),
+            () => { }, wake, jobStore: fixture.Store, sessions: sessions,
+            stopAgent: new StopAgent(fixture.Store, JobFixture.Operator, new BackendCatalog()));
+
+        IpcResponse Submit(string key) => endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobSubmit,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            Backend = "fake",
+            IdempotencyKey = key,
+            Instruction = key
+        });
+
+        void Complete(string jobId)
+        {
+            var claim = fixture.Store.BeginNextAttempt()!;
+            Assert.Equal(jobId, claim.Job.JobId);
+            Assert.True(fixture.Store.Complete(new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "done"));
+        }
+
+        var beforeWake = Submit("before-wake");
+        Assert.True(beforeWake.Ok, beforeWake.Error);
+        Complete(beforeWake.Job!.JobId);
+
+        var first = wake.Register("codex:before-restart", "codex", "old", "", "/tmp");
+        Assert.True(endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.SessionBindWake,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            WakeKey = first.Key,
+            WakeGeneration = first.Generation
+        }).Ok);
+        Assert.Empty(wake.Pending()); // A terminal job predating wake binding is already known history.
+
+        var getBeforeResume = Submit("get-before-resume");
+        var getAfterResume = Submit("get-after-resume");
+        var stopAgent = Submit("stop-agent");
+        var listJobs = Submit("list-jobs");
+        foreach (var submitted in new[] { getBeforeResume, getAfterResume, stopAgent, listJobs })
+        {
+            Assert.True(submitted.Ok, submitted.Error);
+            Complete(submitted.Job!.JobId);
+        }
+        Assert.Equal(4, Assert.Single(wake.Pending()).Unread);
+
+        Assert.True(endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobGet,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            JobId = getBeforeResume.Job!.JobId
+        }).Ok);
+        Assert.Equal(3, Assert.Single(wake.Pending()).Unread);
+
+        var resumed = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.SessionResume,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            BindingKey = "parent=restart"
+        });
+        Assert.True(resumed.Ok, resumed.Error);
+        var current = wake.Register("codex:after-restart", "codex", "new", "", "/tmp");
+        Assert.True(endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.SessionBindWake,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            WakeKey = current.Key,
+            WakeGeneration = current.Generation
+        }).Ok);
+        Assert.Equal(3, Assert.Single(wake.Pending()).Unread); // Resume must not resurrect the read job.
+
+        Assert.True(endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobGet,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            JobId = getAfterResume.Job!.JobId
+        }).Ok);
+        Assert.Equal(2, Assert.Single(wake.Pending()).Unread);
+
+        var stopped = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobStopAgent,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            JobId = stopAgent.Job!.JobId
+        });
+        Assert.True(stopped.Ok, stopped.Error);
+        Assert.Equal(1, Assert.Single(wake.Pending()).Unread);
+
+        var listed = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobList,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace
+        });
+        Assert.True(listed.Ok, listed.Error);
+        Assert.Contains(listed.Page!.Jobs, job => job.JobId == listJobs.Job!.JobId);
+        Assert.Empty(wake.Pending());
+
+        var newJob = Submit("after-read");
+        Assert.True(newJob.Ok, newJob.Error);
+        Complete(newJob.Job!.JobId);
+        var poster = new FakePoster();
+        await new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero)
+            .TickAsync(TestContext.Current.CancellationToken);
+        Assert.Contains("1 completed job(s)", Assert.Single(poster.Attempts).Notice);
+    }
+
+    [Fact]
     public void Wake_repair_adopts_its_own_generation_and_never_takes_another_live_binding()
     {
         var mine = new IpcRequest { Op = IpcProtocol.WakeRegister, WakeKey = "claude:a", WakeKind = "claude", WakeAddress = "/tmp/a.sock" };
@@ -339,9 +479,9 @@ public sealed class WakeTests
         time += TimeSpan.FromSeconds(2);
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
         Assert.Equal(current, Assert.Single(poster.Attempts).Target);
-        store.MarkRead(jobId, old.Key, old.Generation);
+        store.MarkRead(jobId, JobStatus.Completed, old.Key, old.Generation);
         Assert.Equal(1, store.Pending().Single().Unread);
-        store.MarkRead(jobId, current.Key, current.Generation);
+        store.MarkRead(jobId, JobStatus.Completed, current.Key, current.Generation);
         Assert.Empty(store.Pending());
     }
 

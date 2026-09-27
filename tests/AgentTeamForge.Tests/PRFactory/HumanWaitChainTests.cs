@@ -45,7 +45,7 @@ public sealed class HumanWaitChainTests
         Assert.False(JobsMcpBridge.ShouldOfferHumanInput("child-token", false));
         Assert.True(JobsMcpBridge.ShouldOfferHumanInput("child-token", true));
 
-        var asked = PRFactoryInteraction.RequestFromManagedChild(h.Authorities, "child-" + lead.JobId);
+        var asked = PRFactoryInteraction.RequestFromManagedChild("child-" + lead.JobId);
         Assert.Equal(PRFactoryInteraction.HumanInputUnavailable, asked.Error);
         Assert.Contains("best judgement", asked.Error, StringComparison.Ordinal);
         Assert.Contains("artefact", asked.Error, StringComparison.Ordinal);

@@ -7,6 +7,7 @@ param(
     [string]$StateDir,
     [switch]$Uninstall,
     [switch]$Purge,
+    [switch]$Force,
     [int]$ParentPid = 0
 )
 
@@ -49,7 +50,8 @@ if ($Uninstall) {
             & $binary stop --state-dir $StateDir
             if ($LASTEXITCODE -ne 0) { Fail 'daemon did not stop; installation left unchanged' }
         }
-        & $binary uninstall --teardown-only --state-dir $StateDir
+        if ($Force) { & $binary uninstall --teardown-only --state-dir $StateDir --force }
+        else { & $binary uninstall --teardown-only --state-dir $StateDir }
         if ($LASTEXITCODE -ne 0) { Fail 'client teardown failed; installation left unchanged' }
     }
     if ($ParentPid -gt 0) {
@@ -74,7 +76,7 @@ if ($Uninstall) {
     Write-Output 'atf uninstalled'
     return
 }
-if ($Purge -or $ParentPid -gt 0) { Fail 'purge and parent PID are only valid with uninstall' }
+if ($Purge -or $Force -or $ParentPid -gt 0) { Fail 'purge, force and parent PID are only valid with uninstall' }
 
 $architecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 switch ($architecture) {
