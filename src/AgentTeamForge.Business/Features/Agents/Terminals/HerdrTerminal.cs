@@ -73,10 +73,10 @@ public sealed class HerdrTerminal
         {
             throw new ArgumentException("session prefix must be lowercase letters, digits or '-'", nameof(options));
         }
-        var environment = new Dictionary<string, string?>(options.Environment, StringComparer.Ordinal)
-        {
-            ["CODEX_HOME"] = CodexPaths.Home(name => options.Environment.GetValueOrDefault(name), Environment.CurrentDirectory)
-        };
+        var environment = new Dictionary<string, string?>(options.Environment, StringComparer.Ordinal);
+        var codexHome = CodexPaths.LaunchHome(name => options.Environment.GetValueOrDefault(name), Environment.CurrentDirectory);
+        if (codexHome is null) { environment.Remove("CODEX_HOME"); }
+        else { environment["CODEX_HOME"] = codexHome; }
         _options = options with { Environment = environment };
         _runner = runner;
     }
@@ -172,7 +172,7 @@ public sealed class HerdrTerminal
         var args = new List<string> { "tab", "create", "--workspace", session.WorkspaceId, "--cwd", cwd, "--label", label,
             "--env", BootstrapVariable + "=" + bootstrapFile, "--no-focus" };
         // Shared Herdr sessions may have been started with another CODEX_HOME.
-        args.AddRange(["--env", "CODEX_HOME=" + Env("CODEX_HOME")]);
+        if (Env("CODEX_HOME") is { } codexHome) { args.AddRange(["--env", "CODEX_HOME=" + codexHome]); }
         if (exclusivePiMcp) { args.AddRange(["--env", "PI_MCP_CONFIG_MODE=exclusive"]); }
         if (workspaceTrustEnvironment is { } trust)
         {

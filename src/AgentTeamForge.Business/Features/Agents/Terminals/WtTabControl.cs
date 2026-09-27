@@ -11,7 +11,7 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 internal sealed class WtTabControl : IWtTabControl
 {
     readonly ConcurrentDictionary<string, OwnedTab> _tabs = [];
-    readonly string _codexHome = CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
+    readonly string? _codexHome = CodexPaths.LaunchHome(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
 
     public void Preflight(InteractiveAgentKind kind)
     {
@@ -280,7 +280,9 @@ internal sealed class WtTabControl : IWtTabControl
         }
         if (launch.Kind == InteractiveAgentKind.Codex)
         {
-            lines.Insert(2, "$env:CODEX_HOME = " + Quote(codexHome ?? CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory)));
+            var home = codexHome ?? CodexPaths.LaunchHome(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
+            lines.Insert(2, home is null ? "Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue"
+                : "$env:CODEX_HOME = " + Quote(home));
         }
         if (launch.Kind == InteractiveAgentKind.Pi && InteractiveAgentCommand.ManagedConfigPath(launch) is { } config && File.Exists(config))
         {

@@ -77,7 +77,7 @@ public static class DaemonCommand
 
         // Pin a relative CODEX_HOME to this daemon's startup directory before any
         // terminal or transcript reader captures its environment.
-        Environment.SetEnvironmentVariable("CODEX_HOME", CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory));
+        Environment.SetEnvironmentVariable("CODEX_HOME", CodexPaths.LaunchHome(Environment.GetEnvironmentVariable, Environment.CurrentDirectory));
 
         var limits = profile.Limits;
         var checkpoints = new DurabilityCheckpoints(point =>
