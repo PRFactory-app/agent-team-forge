@@ -16,7 +16,10 @@ public sealed class InstallScriptTests
     public void WindowsReleaseIncludesInstallerAndChecksumsIt()
     {
         var root = Path.GetDirectoryName(Script)!;
-        Assert.True(File.Exists(Path.Combine(root, "install.ps1")));
+        var installer = File.ReadAllText(Path.Combine(root, "install.ps1"));
+        // Windows PowerShell 5.1 has no null-coalescing or null-conditional operators.
+        Assert.DoesNotContain("??", installer);
+        Assert.DoesNotContain("?.", installer);
         var workflow = File.ReadAllText(Path.Combine(root, ".github", "workflows", "release.yml"));
         Assert.Contains("Copy-Item install.ps1 $bundle", workflow);
         Assert.Contains("Copy-Item install.ps1 $release", workflow);

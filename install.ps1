@@ -100,7 +100,9 @@ if ($Archive) {
     if (-not $Version) {
         try { $latest = Invoke-WebRequest -UseBasicParsing -Uri "$repo/latest" -MaximumRedirection 5 }
         catch { Fail "could not resolve latest release: $($_.Exception.Message)" }
-        $latestUrl = $latest.BaseResponse.ResponseUri.AbsoluteUri
+        # Windows PowerShell exposes ResponseUri; PowerShell 7 exposes RequestMessage.
+        $response = $latest.BaseResponse
+        $latestUrl = if ($response.ResponseUri) { $response.ResponseUri.AbsoluteUri } else { $response.RequestMessage.RequestUri.AbsoluteUri }
         if ($latestUrl -notmatch '/tag/v([0-9][0-9A-Za-z.+-]*)$') { Fail 'no release is published yet' }
         $Version = $Matches[1]
     }
@@ -112,6 +114,7 @@ $scratch = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $scratch | Out-Null
 $stage = Join-Path $root ([IO.Path]::GetRandomFileName())
 $backup = Join-Path $root ([IO.Path]::GetRandomFileName())
+$extract = $null
 try {
     if (-not $Archive) {
         $Archive = Join-Path $scratch $name
@@ -131,7 +134,8 @@ try {
         if ((& (Join-Path $target 'atf.exe') --version) -ne "atf $Version") { Fail 'installed version failed verification' }
     } else {
         New-Item -ItemType Directory -Force -Path $releases | Out-Null
-        $extract = Join-Path $scratch 'extract'
+        # Extract beside the target: Move-Item cannot move directories across volumes.
+        $extract = Join-Path $root ([IO.Path]::GetRandomFileName())
         Expand-Archive -LiteralPath $Archive -DestinationPath $extract
         if (-not (Test-Path (Join-Path $extract 'atf.exe') -PathType Leaf)) { Fail 'archive missing atf.exe' }
         if ((& (Join-Path $extract 'atf.exe') --version) -ne "atf $Version") { Fail 'archive version mismatch' }
@@ -153,7 +157,8 @@ try {
             & $binary stop --state-dir $StateDir
             if ($LASTEXITCODE -ne 0) { Fail 'daemon did not stop; installation left unchanged' }
         }
-        Move-Item $bin $backup
+        try { Move-Item $bin $backup }
+        catch { Fail "cannot replace $bin; close agent clients using atf (MCP bridges) and rerun: $($_.Exception.Message)" }
     }
     try { Move-Item $stage $bin }
     catch {
@@ -171,4 +176,5 @@ try {
 } finally {
     if (Test-Path $scratch) { Remove-Item $scratch -Recurse -Force }
     if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+    if ($extract -and (Test-Path $extract)) { Remove-Item $extract -Recurse -Force }
 }
