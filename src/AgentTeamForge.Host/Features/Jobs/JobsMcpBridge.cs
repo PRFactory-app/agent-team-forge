@@ -29,6 +29,7 @@ public static class JobsMcpBridge
           "effort":{"type":"string","description":"Explicit effort for Claude or a raw/blank Codex/pi model. A capability tier owns its effort and ignores this override."},
           "herdr_placement":{"type":"string","description":"Optional Herdr placement: own-session or herdr-session:<running session name>. Omit to use the daemon's global default."},
           "instruction":{"type":"string","description":"Task for the agent."},
+          "name":{"type":"string","description":"Optional name for this agent and its web console card."},
           "cwd":{"type":"string","description":"Absolute working directory for the agent (optional)."},
           "worktree":{"type":"boolean","description":"Create a private git worktree for this job from cwd's HEAD."},
           "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."},
@@ -341,7 +342,7 @@ public static class JobsMcpBridge
             : request;
 
     /// <summary>Maps a tool call to one IPC request, or to a rejection code without contacting the daemon.</summary>
-    static (IpcRequest? Request, string? Rejection) Map(string name, IDictionary<string, JsonElement> args, bool testProfile) =>
+    internal static (IpcRequest? Request, string? Rejection) Map(string name, IDictionary<string, JsonElement> args, bool testProfile) =>
         name switch
         {
             "job_submit" or "submit_job" => (new IpcRequest
@@ -350,6 +351,7 @@ public static class JobsMcpBridge
                 IdempotencyKey = String(args, "idempotency_key"),
                 Instruction = String(args, "instruction"),
                 Backend = String(args, "backend"),
+                TargetAgent = String(args, "name"),
                 Model = String(args, "model"),
                 Effort = String(args, "effort"),
                 HerdrPlacement = String(args, "herdr_placement"),
