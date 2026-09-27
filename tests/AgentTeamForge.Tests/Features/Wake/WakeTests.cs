@@ -2,7 +2,11 @@ using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Features.Sessions;
+using AgentTeamForge.DAL.Features.External;
+using AgentTeamForge.Business.Features.External;
+using AgentTeamForge.Host.Features.Jobs;
 using AgentTeamForge.Host.Features.Wake;
+using AgentTeamForge.Host.Transport;
 using AgentTeamForge.Tests.Support;
 using System.Net.Sockets;
 using System.Text;
@@ -107,9 +111,11 @@ public sealed class WakeTests
         Finish(fixture, target, "one");
         var time = DateTimeOffset.UtcNow;
         var poster = new FakePoster((_, _) => false);
-        var coordinator = new WakeCoordinator(store, poster, _ => { }, () => time, TimeSpan.Zero);
+        var failures = new List<string>();
+        var coordinator = new WakeCoordinator(store, poster, failures.Add, () => time, TimeSpan.Zero);
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
         Assert.Single(poster.Attempts);
+        Assert.Contains(failures, line => line.Contains("wake post rejected:") && line.Contains("source=jobs"));
         time += TimeSpan.FromSeconds(1);
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
         Assert.Single(poster.Attempts);
@@ -124,6 +130,98 @@ public sealed class WakeTests
         }
 
         Assert.Equal(TimeSpan.FromMinutes(5), backoff.Delay);
+    }
+
+    [Fact]
+    public async Task Legacy_lead_wake_is_rebound_to_a_live_bridge_for_external_messages_and_jobs()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/wake", "parent=1");
+        var team = new ExternalTeam(new ExternalMemberStore(fixture.Database), wake);
+        var legacy = wake.Register("claude:/tmp/123.sock", "claude", "/tmp/123.sock", "", "");
+        sessions.BindWake(lead.SessionId, legacy.Key, legacy.Generation);
+        var ticket = team.CreateTicket(lead.SessionId, lead.Workspace, "visitor", null).Ticket!;
+        var member = team.Join(lead.SessionId, ticket.Token).Member!;
+        Assert.True(team.Send(member.MemberToken, "reply").Ok);
+        var job = fixture.Accept().Execute(new SubmitJobRequest("legacy-job", "work", null, false)
+        { LeadSessionId = lead.SessionId, WakeKey = legacy.Key, WakeGeneration = legacy.Generation });
+        Assert.True(job.Error is null, job.Error);
+        var claim = fixture.Store.BeginNextAttempt()!;
+        Assert.True(fixture.Store.Complete(new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "done"));
+
+        var target = new IpcRequest
+        {
+            Op = IpcProtocol.WakeRegister,
+            WakeKey = "claude:hash",
+            WakeKind = "claude",
+            WakeAddress = legacy.Address,
+            WakeSecret = "token",
+            WakeHome = "123"
+        };
+        var oldStatus = wake.Status(lead.SessionId);
+        Assert.False(oldStatus.Usable);
+        Assert.Equal(JobsMcpBridge.WakeRepair.Register, JobsMcpBridge.RepairWake(oldStatus, target, legacy.Generation));
+        var current = wake.Register(target.WakeKey!, target.WakeKind!, target.WakeAddress!, target.WakeSecret!, target.WakeHome!);
+        sessions.BindWake(lead.SessionId, current.Key, current.Generation);
+        Assert.Equal(current.Key, wake.Status(lead.SessionId).Key);
+        Assert.Equal(JobsMcpBridge.WakeRepair.Keep, JobsMcpBridge.RepairWake(wake.Status(lead.SessionId), target, current.Generation));
+        Assert.Equal(current.Key, Assert.Single(wake.PendingExternal()).Target.Key);
+        Assert.Equal(current.Key, Assert.Single(wake.Pending()).Target.Key);
+        var poster = new FakePoster();
+        await new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero)
+            .TickAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, poster.Attempts.Count);
+        Assert.Contains(poster.Attempts, attempt => attempt.Notice.Contains("external message(s)"));
+        Assert.Contains(poster.Attempts, attempt => attempt.Notice.Contains("completed job(s)"));
+    }
+
+    [Fact]
+    public void Wake_repair_adopts_its_own_generation_and_never_takes_another_live_binding()
+    {
+        var mine = new IpcRequest { Op = IpcProtocol.WakeRegister, WakeKey = "claude:a", WakeKind = "claude", WakeAddress = "/tmp/a.sock" };
+        static WakeRegistrationStatus Bound(string key, long generation, string address, bool usable = true) =>
+            new(true, key, generation, "claude", address, usable);
+        Assert.Equal(JobsMcpBridge.WakeRepair.Keep, JobsMcpBridge.RepairWake(Bound("claude:a", 3, "/tmp/a.sock"), mine, 3));
+        Assert.Equal(JobsMcpBridge.WakeRepair.Adopt, JobsMcpBridge.RepairWake(Bound("claude:a", 4, "/tmp/a.sock"), mine, 3));
+        // Another bridge resumed this session on its own channel: do not steal it back on every call.
+        Assert.Equal(JobsMcpBridge.WakeRepair.Keep, JobsMcpBridge.RepairWake(Bound("claude:b", 1, "/tmp/b.sock"), mine, 3));
+        // Our own channel under a legacy key, a dead registration or no binding is repaired.
+        Assert.Equal(JobsMcpBridge.WakeRepair.Register, JobsMcpBridge.RepairWake(Bound("claude:/tmp/a.sock", 1, "/tmp/a.sock"), mine, 3));
+        Assert.Equal(JobsMcpBridge.WakeRepair.Register, JobsMcpBridge.RepairWake(Bound("claude:b", 1, "/tmp/b.sock", usable: false), mine, 3));
+        Assert.Equal(JobsMcpBridge.WakeRepair.Register, JobsMcpBridge.RepairWake(new(false, null, null, null, null), mine, 3));
+    }
+
+    [Fact]
+    public void Jobs_follow_the_sessions_current_wake_binding_not_a_stale_bridge_generation()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/wake", "parent=1");
+        var accept = fixture.Accept();
+        var endpoint = new JobsEndpoint(accept, fixture.Get(), new FollowUpJob(fixture.Store, JobFixture.Operator, accept), fixture.List(),
+            new StopJob(fixture.Store, JobFixture.Operator, _ => { }), new AgentTeamForge.DAL.Sqlite.DurabilityCheckpoints(null),
+            () => { }, wake, jobStore: fixture.Store, sessions: sessions);
+        var stale = wake.Register("claude:a", "claude", "/tmp/a.sock", "token", "123");
+        var current = wake.Register("claude:a", "claude", "/tmp/a.sock", "token", "123");
+        sessions.BindWake(lead.SessionId, current.Key, current.Generation);
+        var submitted = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobSubmit,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            Backend = "fake",
+            IdempotencyKey = "stale-wake",
+            Instruction = "work",
+            WakeKey = stale.Key,
+            WakeGeneration = stale.Generation
+        });
+        Assert.True(submitted.Ok, submitted.Error);
+        var claim = fixture.Store.BeginNextAttempt()!;
+        Assert.True(fixture.Store.Complete(new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "done"));
+        Assert.Equal(current.Key, Assert.Single(wake.Pending()).Target.Key);
     }
 
     [Fact]
