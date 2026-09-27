@@ -125,6 +125,8 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                ALTER TABLE wake_targets DROP COLUMN active;
+                DELETE FROM schema_migrations WHERE version=15;
                 ALTER TABLE runs DROP COLUMN ready_at;
                 ALTER TABLE runs DROP COLUMN submitted_at;
                 ALTER TABLE runs DROP COLUMN acknowledged_at;
@@ -185,6 +187,8 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                ALTER TABLE wake_targets DROP COLUMN active;
+                DELETE FROM schema_migrations WHERE version=15;
                 ALTER TABLE runs DROP COLUMN ready_at;
                 ALTER TABLE runs DROP COLUMN submitted_at;
                 ALTER TABLE runs DROP COLUMN acknowledged_at;

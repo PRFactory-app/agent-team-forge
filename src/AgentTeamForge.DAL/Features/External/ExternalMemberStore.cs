@@ -580,7 +580,7 @@ public sealed class ExternalMemberStore(JobDatabase database)
         command.Transaction = tx;
         command.CommandText = """
             UPDATE external_teams SET wake_key=$key WHERE team_id=$team AND closed_at IS NULL
-            AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation)
+            AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation AND active=1)
             """;
         command.Parameters.AddWithValue("$team", teamId);
         command.Parameters.AddWithValue("$key", wakeKey);

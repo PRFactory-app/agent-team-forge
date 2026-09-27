@@ -227,7 +227,10 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
 
         if (threadId.Length == 0)
         {
-            return members.SetMemberWake(secret, null) ? new() : new("membership_revoked");
+            var clearKey = "external:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(secret))).ToLowerInvariant();
+            if (!members.SetMemberWake(secret, null)) { return new("membership_revoked"); }
+            wake.Invalidate(clearKey);
+            return new();
         }
 
         if (!Guid.TryParseExact(threadId, "D", out var parsed) || parsed.ToString("D") != threadId
