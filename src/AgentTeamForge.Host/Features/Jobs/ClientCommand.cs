@@ -54,6 +54,7 @@ public static class ClientCommand
                 IdempotencyKey = options.GetValueOrDefault("key"),
                 Instruction = options.GetValueOrDefault("instruction"),
                 Interrupt = options.ContainsKey("interrupt"),
+                Defer = true,
                 Model = options.GetValueOrDefault("model"),
                 Effort = options.GetValueOrDefault("effort"),
                 TimeoutSeconds = Seconds(options, "timeout"),

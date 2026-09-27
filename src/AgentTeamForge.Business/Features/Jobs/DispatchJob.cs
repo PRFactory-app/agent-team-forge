@@ -4,6 +4,7 @@ using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
+using AgentTeamForge.Business.Features.Wake;
 
 namespace AgentTeamForge.Business.Features.Jobs;
 
@@ -28,6 +29,8 @@ public sealed class DispatchJob : IDisposable
     readonly List<HeadlessRun> _headless = [];
     readonly SemaphoreSlim _claimGate = new(1, 1);
     readonly Lock _haltClaimGate = new();
+    // Orders an operator release of N5 against the one codex queue call of an attempt.
+    readonly Lock _nativeSubmitGate = new();
     readonly JobStore store;
     readonly BackendCatalog backends;
     readonly SpikeLimits limits;
@@ -37,6 +40,8 @@ public sealed class DispatchJob : IDisposable
     readonly JobLogs? jobLogs;
     readonly ManagedChildContext? childContext;
     readonly string? piHome;
+    readonly string codexHome = CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
+    internal Func<string, string, string, CancellationToken, Task<CodexSubmission>> SubmitNativeCodex { get; init; } = CodexQueueWake.SubmitAsync;
     string? _haltReason;
 
     /// <summary>Single-backend convenience: serves jobs whose backend is "fake".</summary>
@@ -319,26 +324,72 @@ public sealed class DispatchJob : IDisposable
     /// </summary>
     async Task SweepQueueAsync(CancellationToken stopping)
     {
-        while (!stopping.IsCancellationRequested)
+        var nativeTasks = new List<Task>();
+        try
         {
-            try
+            while (!stopping.IsCancellationRequested)
             {
-                SweepExpiredQueued();
-            }
-            catch (StorageException ex)
-            {
-                log($"queue ttl sweep failed: {ex.Failure}");
-            }
+                try
+                {
+                    SweepExpiredQueued();
+                    ReconcileNativeCodex();
+                    nativeTasks.RemoveAll(task => task.IsCompleted);
+                    if (nativeTasks.Count < limits.MaxConcurrentJobs)
+                    {
+                        await _claimGate.WaitAsync(stopping);
+                        AttemptClaim? native;
+                        try
+                        {
+                            lock (_haltClaimGate)
+                            {
+                                native = Halted || stopping.IsCancellationRequested ? null : ClaimNativeCodex();
+                            }
+                        }
+                        finally { _claimGate.Release(); }
+                        if (native is not null)
+                        {
+                            nativeTasks.Add(Task.Run(async () =>
+                            {
+                                try { await RunAttemptAsync(native, stopping); }
+                                catch (Exception ex) { log($"native dispatch fault: {ex.GetType().Name}"); Halt("dispatcher_fault"); }
+                                finally { Signal(); }
+                            }, CancellationToken.None));
+                        }
+                    }
+                }
+                catch (StorageException ex)
+                {
+                    log($"queue sweep failed: {ex.Failure}");
+                    if (ex.Failure != StorageFailure.Busy) { Halt("dispatcher_fault"); }
+                }
+                catch (OperationCanceledException) when (stopping.IsCancellationRequested) { break; }
+                catch (Exception ex)
+                {
+                    log($"queue sweep fault: {ex.GetType().Name}");
+                    Halt("dispatcher_fault");
+                    break;
+                }
 
-            try
-            {
-                await Task.Delay(TimeSpan.FromSeconds(1), stopping);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
+                try { await Task.Delay(TimeSpan.FromSeconds(1), stopping); }
+                catch (OperationCanceledException) { break; }
             }
         }
+        finally { await Task.WhenAll(nativeTasks); }
+    }
+
+    bool CanNativeCodex(JobRecord parent) =>
+        backends.Resolve(parent.Backend) is HerdrInteractiveBackend herdr
+        && parent.SessionId is { } thread && herdr.HasLiveCodexSession(thread)
+        && CodexQueueWake.VerifyCodexThread(new DAL.Features.Wake.WakeRegistration("", 0, "codex", thread, "", codexHome));
+
+    AttemptClaim? ClaimNativeCodex() => store.BeginNativeCodexAttempt(CanNativeCodex, codexHome, Eligible);
+
+    bool EligibleOrdinary(string jobId)
+    {
+        if (!Eligible(jobId)) { return false; }
+        var job = store.GetJob(jobId);
+        return job is null || JobOptions.Read(job.Options, "native_codex") != "1"
+            || job.ParentJobId is not { } parentId || store.GetJob(parentId) is not { } parent || !CanNativeCodex(parent);
     }
 
     internal void SweepExpiredQueued()
@@ -381,7 +432,7 @@ public sealed class DispatchJob : IDisposable
                         }
 
                         claim = store.BeginNextAttempt([.. _running.Keys],
-                            (correlations, pids) => OrphanedBackendProcess.HasMarkedProcess(correlations, pids), Eligible);
+                            (correlations, pids) => OrphanedBackendProcess.HasMarkedProcess(correlations, pids), EligibleOrdinary);
                     }
                 }
                 finally
@@ -460,6 +511,12 @@ public sealed class DispatchJob : IDisposable
         HeadlessRun? headless = null;
         try
         {
+            // Routed by correlation: a reverted native attempt resumes through a new run.
+            if (store.NativeAttempt(run.JobId) is { } native && native.Correlation == run.Correlation)
+            {
+                await RunNativeCodexAsync(run, native, daemonLifetime, stopRequested.Token);
+                return;
+            }
             headless = TrackHeadless(claim);
             // The deadline starts before any backend effect, so start and delivery are bounded too.
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, stopRequested.Token);
@@ -675,6 +732,75 @@ public sealed class DispatchJob : IDisposable
                     Halt("terminal_write_failed");
                 }
             }
+        }
+    }
+
+    void ReconcileNativeCodex()
+    {
+        foreach (var attempt in store.UnresolvedNativeAttempts())
+        {
+            var receipt = InteractiveTranscriptReader.ReadCodexThread(attempt.CodexHome, attempt.ThreadId, attempt.Correlation);
+            if (receipt is not null) { store.RecordNativeReceipt(attempt.JobId, attempt.Correlation); }
+            if (receipt is { Completed: true, Message: { Length: > 0 } message })
+            {
+                store.SettleNativeAttempt(attempt.JobId, attempt.Correlation, message);
+                Signal();
+            }
+        }
+    }
+
+    async Task RunNativeCodexAsync(RunRef run, NativeCodexAttempt attempt, CancellationToken daemonLifetime, CancellationToken stopRequested)
+    {
+        JobRecord job;
+        lock (_nativeSubmitGate)
+        {
+            // A stop or release may have committed after the claim; the queue call is the only effect.
+            job = store.GetJob(run.JobId)!;
+            if (job.Status != JobStatus.Running || stopRequested.IsCancellationRequested
+                || store.NativeAttempt(run.JobId) is not { State: "sent" }) { return; }
+        }
+        var prompt = job.Instruction + "\n\n[AgentTeamForge correlation id: atf-corr:"
+            + run.Correlation + " — internal marker, ignore this line]";
+        try
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, stopRequested);
+            deadline.CancelAfter(TimeSpan.FromSeconds(job.TimeoutSeconds ?? 600));
+            var submission = await SubmitNativeCodex(attempt.ThreadId, attempt.CodexHome, prompt, deadline.Token);
+            if (!submission.Started)
+            {
+                // Nothing ran, so nothing can be presented: resume carries the turn instead.
+                if (store.RevertNativeAttempt(run)) { log($"codex queue did not start for {run.JobId}; resuming instead"); }
+                else { store.ReleaseNativeAttempt(job.JobId, job.Principal, job.Team); }
+                Signal();
+                return;
+            }
+            if (submission.SubmissionId is not { } id)
+            {
+                End(run, JobStatus.NeedsReconciliation, "native_submission_unresolved");
+                return;
+            }
+            store.RecordNativeSubmission(run.JobId, run.Correlation, id);
+            store.RecordStartup(run, "submitted");
+            ReconcileNativeCodex();
+            return; // The sweep settles the frozen carrier without holding a dispatch slot.
+        }
+        catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested || stopRequested.IsCancellationRequested) { return; }
+        catch (OperationCanceledException) { }
+        // The queue can outlive this daemon and timeout. N5 persists until a
+        // transcript receipt settles the frozen thread, including on restart.
+        End(run, JobStatus.NeedsReconciliation, "native_delivery_unresolved");
+    }
+
+    /// <summary>
+    /// stop_job on a native attempt that is not mid-submit: release N5 and end the job.
+    /// The queued message cannot be retracted and may still be presented.
+    /// </summary>
+    public bool ReleaseNative(JobRecord job)
+    {
+        lock (_nativeSubmitGate)
+        {
+            if (_running.ContainsKey(job.JobId) || store.NativeAttempt(job.JobId) is not { Unresolved: true }) { return false; }
+            return store.ReleaseNativeAttempt(job.JobId, job.Principal, job.Team).Changed;
         }
     }
 

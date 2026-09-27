@@ -53,8 +53,15 @@ this branch") or call the MCP tools directly:
 4. **Follow up** on a finished job with
    `follow_up(job_id=..., instruction=..., idempotency_key="task-1-b")`. It
    resumes the same native agent session, backend and worktree. Add
-   `interrupt=true` to replace a running turn. Otherwise the prompt queues
-   durably behind a busy turn; `defer=false` instead returns `parent_not_ready`.
+   `interrupt=true` to replace a running turn. A verified live Codex TUI
+   receives a prompt through `codex queue` even while busy; it runs after the
+   current turn. Other busy follow-ups wait durably; `defer=false` returns
+   `parent_not_ready` for a busy parent. `get_job` shows the native submission
+   ID when Codex acknowledges the queue call. Until Codex shows the prompt,
+   later follow-ups to that agent return `parent_not_ready`; `stop_job` on the
+   stuck job releases them, but the queued prompt may still run.
+   `send_message(job_id=..., text=..., idempotency_key=...)` uses this same
+   managed follow-up path. `send_message(to=...)` remains inbox messaging.
 5. **Stop** a queued or running job with `stop_job(job_id=...)`. Use
    `interrupt_job` to interrupt without another prompt, `stop_agent` to
    close an idle retained agent, and `revive_agent` to resume a dead session

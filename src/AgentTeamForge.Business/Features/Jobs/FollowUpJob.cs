@@ -1,6 +1,7 @@
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Business.Features.Agents.Backends;
+using System.Text;
 
 namespace AgentTeamForge.Business.Features.Jobs;
 
@@ -48,6 +49,11 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             return JobResult.Fail(deliveryError);
         }
 
+        var nativeCodex = parent.Backend == BackendCatalog.Codex && parent.SessionId is not null
+            && !request.Interrupt && request.ReplaceIfIdle && Encoding.UTF8.GetByteCount(request.Instruction) <= 16 * 1024
+            && request.Model is null && request.Effort is null;
+        var defer = request.Defer;
+
         var interruptRunning = request.Interrupt && parent.Status == JobStatus.Running;
         try
         {
@@ -58,7 +64,7 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             {
                 // Resuming a session that is still in a turn would race the running agent;
                 // defer waits for its terminal state; interrupt cancels it atomically.
-                var deferred = request.Defer && !request.Interrupt && parent.Status is JobStatus.Queued or JobStatus.Running;
+                var deferred = defer && !request.Interrupt && parent.Status is JobStatus.Queued or JobStatus.Running;
                 if (!deferred && (parent.SessionId is null || parent.Status is not (JobStatus.Completed or JobStatus.Cancelled or JobStatus.Failed or JobStatus.NeedsReconciliation)
                     && !interruptRunning))
                 {
@@ -124,7 +130,8 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             return JobResult.Fail(ex.Message);
         }
         var options = "behavior=complete;hold=0" + (request.Interrupt ? ";interrupt=1" : "")
-            + (request.Defer ? ";defer=1" : "") + (!request.ReplaceIfIdle ? ";replace_if_idle=0" : "");
+            + (defer ? ";defer=1" : "") + (nativeCodex ? ";native_codex=1" : "")
+            + (!request.ReplaceIfIdle ? ";replace_if_idle=0" : "");
         if (selection.model is not null)
         {
             options += ";model=" + selection.model;
@@ -142,6 +149,6 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             worktreePath: parent.WorktreePath, worktreeBranch: parent.WorktreeBranch,
             timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds,
             interruptParent: interruptRunning, cancelRunning: cancelRunning, leadSessionId: request.LeadSessionId,
-            targetAgent: parent.TargetAgent, deferParent: request.Defer && !request.Interrupt);
+            targetAgent: parent.TargetAgent, deferParent: defer && !request.Interrupt);
     }
 }
