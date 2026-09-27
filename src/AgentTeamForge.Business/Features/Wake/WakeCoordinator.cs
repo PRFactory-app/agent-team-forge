@@ -106,6 +106,10 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
             }
             else
             {
+                if (!posted)
+                {
+                    log($"wake post rejected: kind={target.Kind} target={target.Key} source={(snapshot.External ? "external" : "jobs")}");
+                }
                 state.Backoff.Failed(now());
             }
         }
