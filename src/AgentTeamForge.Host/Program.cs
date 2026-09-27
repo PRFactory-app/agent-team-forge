@@ -56,7 +56,7 @@ try
             return await DaemonCommand.RunAsync(StateDirectory.Open(daemonDir), options.GetValueOrDefault("test-crash-at"), options.GetValueOrDefault("test-fail-at"));
         case "mcp" when options.TryGetValue("state-dir", out var mcpDir):
             var mcpState = StateDirectory.Open(mcpDir);
-            return await JobsMcpBridge.RunAsync(mcpState, SpikeProfileFile.Load(mcpState).TestProfile, options.GetValueOrDefault("managed-context"));
+            return await JobsMcpBridge.RunAsync(mcpState, ProfileFile.Load(mcpState).TestProfile, options.GetValueOrDefault("managed-context"));
         case "web":
             return WebConsoleCommand.Run(options);
         case "client" when args.Length > 1 && options.TryGetValue("state-dir", out var clientDir):
@@ -68,7 +68,7 @@ try
 }
 catch (StateDirectoryException ex)
 {
-    Console.Error.WriteLine($"error: {ex.Code}");
+    Console.Error.WriteLine($"error: {ex.Message}");
     return 78;
 }
 

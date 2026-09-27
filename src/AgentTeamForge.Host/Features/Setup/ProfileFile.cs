@@ -11,7 +11,7 @@ namespace AgentTeamForge.Host.Features.Setup;
 /// Backend "agents" enables the real agent CLIs (plus fake); "fake" is fake only.
 /// A test profile never runs real agents.
 /// </summary>
-public sealed record SpikeProfileFile
+public sealed record ProfileFile
 {
     public required string Principal { get; init; }
     public required string Team { get; init; }
@@ -51,10 +51,21 @@ public sealed record SpikeProfileFile
         }
     }
 
-    public static SpikeProfileFile Load(StateDirectory state)
+    public static ProfileFile Load(StateDirectory state)
     {
-        var profile = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(state.ProfileFile), SetupJson.Default.SpikeProfileFile)
-            ?? throw new StateDirectoryException("profile_invalid");
+        ProfileFile? profile;
+        try
+        {
+            profile = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(state.ProfileFile), SetupJson.Default.ProfileFile);
+        }
+        catch (JsonException)
+        {
+            throw new StateDirectoryException("profile_invalid", $"invalid JSON in {state.ProfileFile}; run atf setup or atf doctor to inspect configuration");
+        }
+        if (profile is null)
+        {
+            throw new StateDirectoryException("profile_invalid", $"invalid JSON in {state.ProfileFile}; run atf setup or atf doctor to inspect configuration");
+        }
         if (profile.Backend is not (FakeBackends or AgentBackends))
         {
             // Explicit selection only: there is no fallback from a real backend to fake.
@@ -79,5 +90,5 @@ public sealed record SpikeProfileFile
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower, WriteIndented = true)]
-[JsonSerializable(typeof(SpikeProfileFile))]
+[JsonSerializable(typeof(ProfileFile))]
 public sealed partial class SetupJson : JsonSerializerContext;
