@@ -13,6 +13,19 @@ public sealed class InstallScriptTests
     static readonly string Script = FindInstallScript();
 
     [Fact]
+    public void WindowsReleaseIncludesInstallerAndChecksumsIt()
+    {
+        var root = Path.GetDirectoryName(Script)!;
+        Assert.True(File.Exists(Path.Combine(root, "install.ps1")));
+        var workflow = File.ReadAllText(Path.Combine(root, ".github", "workflows", "release.yml"));
+        Assert.Contains("Copy-Item install.ps1 $bundle", workflow);
+        Assert.Contains("Copy-Item install.ps1 $release", workflow);
+        Assert.Contains("$files = @($archive, 'install.ps1')", workflow);
+        Assert.Contains("Get-FileHash -Algorithm SHA256", workflow);
+        Assert.Contains("SHA256SUMS-win-x64", workflow);
+    }
+
+    [Fact]
     public void UpgradeStopsDaemonAndUninstallKeepsUnownedFiles()
     {
         using var temp = new TempStateDir();

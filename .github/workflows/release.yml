@@ -63,6 +63,7 @@ jobs:
           if (-not (Test-Path (Join-Path $publish 'e_sqlite3.dll'))) { throw 'Published SQLite native library missing' }
           Copy-Item (Join-Path $publish 'atf.exe') $bundle
           Get-ChildItem $publish -Filter '*.dll' -File | Copy-Item -Destination $bundle
+          Copy-Item install.ps1 $bundle
           $extension = Join-Path $bundle 'extensions/pi-wake'
           New-Item -ItemType Directory -Force $extension | Out-Null
           Copy-Item -Path @('extensions/pi-wake/index.ts','extensions/pi-wake/package.json','extensions/pi-wake/README.md','extensions/pi-wake/PROVENANCE.md') -Destination $extension
@@ -72,7 +73,8 @@ jobs:
           }
           $archive = "atf-$version-win-x64.zip"
           Compress-Archive -Path (Join-Path $bundle '*') -DestinationPath (Join-Path $release $archive)
-          $files = @($archive)
+          Copy-Item install.ps1 $release
+          $files = @($archive, 'install.ps1')
           $pdb = Join-Path $publish 'atf.pdb'
           if (Test-Path $pdb) {
             $symbol = "atf-$version-win-x64.pdb"
