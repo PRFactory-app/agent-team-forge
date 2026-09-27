@@ -65,6 +65,20 @@ public sealed class PruneJobs(JobDatabase database)
             {
                 if (!dryRun)
                 {
+                    // Accepted teams are pinned above. Once their jobs expire, retire question
+                    // notices before the waits' foreign keys would block the entire prune batch.
+                    using (var questions = connection.CreateCommand())
+                    {
+                        questions.Transaction = tx;
+                        questions.CommandText = """
+                            DELETE FROM prfactory_human_stream WHERE question_id IN
+                                (SELECT question_id FROM human_waits WHERE job_id=$id OR resumed_job_id=$id);
+                            DELETE FROM human_waits WHERE job_id=$id OR resumed_job_id=$id;
+                            DELETE FROM account_parks WHERE job_id=$id AND state='resumed';
+                            """;
+                        questions.Parameters.AddWithValue("$id", id);
+                        questions.ExecuteNonQuery();
+                    }
                     foreach (var table in new[] { "wake_jobs", "events", "runs", "dispatch_intents", "jobs" })
                     {
                         using var delete = connection.CreateCommand();

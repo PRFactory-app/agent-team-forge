@@ -15,6 +15,7 @@ public sealed class WorkspaceWiringTests
             LeaseToken = Guid.NewGuid(),
             AgentType = PRFactoryAgentType.Codex,
             Prompt = "Implement",
+            TicketArtefactFolder = "ticket",
             TeamPlan = new PRFactoryTeamPlan
             {
                 RecipeName = "pair",
@@ -37,11 +38,14 @@ public sealed class WorkspaceWiringTests
             Assert.Null(job.WorktreePath); // Already isolated; no second worktree from incidental HEAD.
             Assert.Equal("base", File.ReadAllText(Path.Combine(job.Cwd!, "base.txt")));
             ChainHarness.Commit(job.Cwd!, job.Cwd == workspace.LeadPath ? "lead.txt" : "child.txt", "work");
+            Directory.CreateDirectory(Path.Combine(job.Cwd!, "ticket"));
+            File.WriteAllText(Path.Combine(job.Cwd!, "ticket/report.md"), "# Report");
         });
         Assert.Equal([workspace.LeadPath, workspace.Members[0].Path], first.Select(j => j.Cwd!).OrderBy(p => p != workspace.LeadPath));
 
         await h.TickAsync(); // Integrate the child and resume the lead once.
         Assert.True(File.Exists(Path.Combine(workspace.LeadPath, "child.txt")));
+        Assert.True(File.Exists(Path.Combine(workspace.StagingPath, "child-0/ticket/report.md")));
         Assert.Empty(h.Server.Completions);
         var finalization = Assert.Single(h.RunQueued(job => ChainHarness.Commit(job.Cwd!, "final.txt", "reviewed")));
         Assert.Equal(workspace.LeadPath, finalization.Cwd);

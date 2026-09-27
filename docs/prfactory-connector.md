@@ -134,8 +134,9 @@ declared order (conflicts fail with the file list, nothing is auto-resolved),
 their ticket documents are staged, and the lead gets one finalization turn.
 
 Implementation, CodeReview, writable CustomStep and ProjectInit publish: the
-lead must have committed its code (untracked files in the ticket artefact
-folder are the only exclusion); the frozen HEAD is pushed without force to the
+lead must have committed its code (only top-level untracked Markdown/HTML documents
+in the ticket artefact folder are excluded; nested files and source files block
+publication); the frozen HEAD is pushed without force to the
 publish branch (`prfactory/<work-item>` or the server's `PublishBranch`) using
 the user's own Git credentials, verified with `ls-remote`, and recorded before
 completion. Completion sends that branch/SHA plus a verified `publication`

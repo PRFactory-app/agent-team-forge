@@ -81,6 +81,11 @@ public sealed class ManagedChildContextTests
         var contextPath = args[4]!.GetValue<string>();
         var saved = JsonNode.Parse(File.ReadAllText(contextPath))!;
         Assert.Equal(lead.SessionId, saved["parent_session_id"]!.GetValue<string>());
+        Assert.Equal("child-" + first.JobId, team.ManagedChildName(saved["member_token"]!.GetValue<string>()));
+        var foreignTeam = team.CreateActorTeam("foreign")!;
+        var forged = team.CreateTicketForTeam(foreignTeam, "child-" + first.JobId, null).Ticket!;
+        var foreignToken = team.Join(foreignTeam, forged.Token).Member!.MemberToken;
+        Assert.Null(team.ManagedChildName(foreignToken));
         Assert.True(team.Send(saved["member_token"]!.GetValue<string>(), "report").Ok);
         Assert.Equal("report", Assert.Single(team.ReadLead(lead.SessionId, root, null, null).Inbox!.Messages).Text);
         if (!OperatingSystem.IsWindows())
@@ -100,6 +105,7 @@ public sealed class ManagedChildContextTests
             Assert.Contains(request.ManagedMcpConfig!, HerdrAgentControl.AgentArguments(launch));
         }
         Assert.True(team.CloseTeam(lead.SessionId));
+        Assert.Null(team.ManagedChildName(saved["member_token"]!.GetValue<string>()));
         Assert.Equal("membership_revoked", team.Send(saved["member_token"]!.GetValue<string>(), "late report").Error);
     }
 

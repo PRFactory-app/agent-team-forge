@@ -12,7 +12,8 @@ public static class PRFactoryHeartbeat
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         Action<string>? log = null,
         Func<PRFactoryClient, PRFactorySettings, Guid, CancellationToken, Task>? onConnected = null,
-        Func<CancellationToken, Task>? onTokenRejected = null, Func<bool>? activeWork = null)
+        Func<CancellationToken, Task>? onTokenRejected = null, Func<bool>? activeWork = null,
+        Func<CancellationToken, Task>? onUnavailable = null)
     {
         delay ??= Task.Delay;
         log ??= _ => { };
@@ -32,6 +33,7 @@ public static class PRFactoryHeartbeat
                     var settings = PRFactoryConnection.LoadSettings(state);
                     if (settings is null)
                     {
+                        if (onUnavailable is not null) { await onUnavailable(ct); }
                         http?.Dispose();
                         http = null;
                         client = null;
@@ -59,6 +61,7 @@ public static class PRFactoryHeartbeat
                     }
                     if (rejected)
                     {
+                        if (onTokenRejected is not null) { await onTokenRejected(ct); }
                         await delay(TimeSpan.FromSeconds(5), ct);
                         continue;
                     }
@@ -86,6 +89,12 @@ public static class PRFactoryHeartbeat
                     {
                         await delay(FastTick, ct);
                         remaining -= FastTick;
+                        if (!StillConfigured(state, connection))
+                        {
+                            if (onUnavailable is not null) { await onUnavailable(ct); }
+                            remaining = TimeSpan.Zero;
+                            break;
+                        }
                         await onConnected(client!, settings, machineId!.Value, ct);
                     }
                     await delay(remaining, ct);
@@ -115,6 +124,7 @@ public static class PRFactoryHeartbeat
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
+                    if (onUnavailable is not null) { await onUnavailable(ct); }
                     failures = Math.Min(failures + 1, 6);
                     var wait = TimeSpan.FromSeconds(Math.Min(60, 1 << (failures - 1)));
                     log($"PRFactory heartbeat failed ({ex.GetType().Name}); retry in {wait.TotalSeconds}s");

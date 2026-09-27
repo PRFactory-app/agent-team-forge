@@ -103,6 +103,11 @@ public sealed class HumanWaitStore(JobDatabase database)
         {
             Execute(c, tx, "UPDATE human_waits SET status='cancelled',error='member_closed' WHERE question_id=$id", ("$id", id));
         }
+        else if (row.ResumedJobId is { } resumed && Scalar(c, tx,
+            "SELECT count(*) FROM jobs WHERE job_id=$job AND status IN ('failed','cancelled')", ("$job", resumed)) > 0)
+        {
+            Execute(c, tx, "UPDATE human_waits SET status='failed',error='resumed_turn_failed' WHERE question_id=$id", ("$id", id));
+        }
         else if (row.JobId is not null && row.ResumedJobId is null)
         {
             if (Scalar(c, tx, "SELECT count(*) FROM prfactory_members WHERE server=$s AND work_item_id=$t AND member=$m AND turn>$turn",

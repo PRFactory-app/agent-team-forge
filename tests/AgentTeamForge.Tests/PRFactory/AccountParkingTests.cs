@@ -37,6 +37,12 @@ public sealed class AccountParkingTests
         Assert.Single(h.Teams.MemberJobs(ChainServer.Url, h.Server.Item.Id));
 
         accounts.PermitAccountRecovery("codex", PRFactoryWorkItems.DefaultAccount, DateTimeOffset.UtcNow);
+        // Simulate a crash after follow-up acceptance + member mapping, before the park receipt.
+        Assert.True(accounts.TryBeginResume(accounts.Park(lead.JobId)!, DateTimeOffset.UtcNow));
+        var accepted = h.FollowUp.Execute(new(lead.JobId,
+            "The account usage limit has reset. Continue the task exactly where you left off.", "prf-resume:" + lead.JobId));
+        Assert.Null(accepted.Error);
+        h.Teams.RecordMember(ChainServer.Url, h.Server.Item.Id, "lead", 1, accepted.Job!.JobId);
         await h.TickAsync();
         await h.TickAsync(); // Idempotent: still exactly one resumed turn.
         var turns = h.Teams.MemberJobs(ChainServer.Url, h.Server.Item.Id);

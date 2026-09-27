@@ -14,6 +14,23 @@ public sealed class AuthorityTests
 {
     const string Server = "https://example.test";
 
+    [Fact]
+    public async Task Disconnected_connector_requires_fresh_confirmation_before_launch_or_effects()
+    {
+        using var f = new JobFixture();
+        var (teams, rows, id) = Setup(f);
+        using var authority = new PRFactoryAuthority(Server, rows, teams,
+            _ => throw new InvalidOperationException(), _ => throw new InvalidOperationException(), (_, _) => true, _ => true);
+        await authority.ObserveAsync(id, "accepted", ct: TestContext.Current.CancellationToken);
+        Assert.True(authority.MayLaunch(id));
+        await authority.SuspendAsync(TestContext.Current.CancellationToken);
+        Assert.False(authority.MayLaunch(id));
+        Assert.False(await authority.RunAsync(id, () => throw new InvalidOperationException(), TestContext.Current.CancellationToken));
+        Assert.Equal("accepted", Assert.Single(rows.Read(Server)).Disposition);
+        await authority.ObserveAsync(id, "accepted", ct: TestContext.Current.CancellationToken);
+        Assert.True(authority.MayLaunch(id));
+    }
+
     [Theory]
     [InlineData("completed")]
     [InlineData("cancelled")]

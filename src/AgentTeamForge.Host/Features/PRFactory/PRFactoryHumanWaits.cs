@@ -71,7 +71,8 @@ public sealed partial class PRFactoryWorkItems
     /// <summary>Open waits hold completion; a failed or cancelled wait finishes the team as a failure.</summary>
     HumanWaitRecord? BlockingWait(Guid id, out bool failed)
     {
-        var blocking = humanWaits?.ForTeam(server, id).FirstOrDefault(w => w.Status != "applied");
+        var blocking = humanWaits?.ForTeam(server, id).OrderByDescending(w => w.Status is "failed" or "cancelled")
+            .FirstOrDefault(w => w.Status != "applied");
         failed = blocking?.Status is "failed" or "cancelled";
         return blocking;
     }

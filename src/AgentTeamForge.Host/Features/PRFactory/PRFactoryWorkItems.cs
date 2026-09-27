@@ -270,7 +270,7 @@ public sealed partial class PRFactoryWorkItems(
         {
             try
             {
-                workspace = await PrepareWorkspaceAsync(item, repo, managedMembers, ct);
+                await Guard(item.Id, async () => workspace = await PrepareWorkspaceAsync(item, repo, managedMembers, ct), ct);
             }
             catch (InvalidOperationException ex)
             {
@@ -463,6 +463,13 @@ public sealed partial class PRFactoryWorkItems(
     /// <summary>Resumes due parks as a same-session follow-up; returns true while any member park is open.</summary>
     async Task<bool> ResumeParkedAsync(PRFactoryWorkItem item, IReadOnlyList<JobRecord> latest, CancellationToken ct)
     {
+        // A crash can follow the new member mapping but precede the park receipt. The
+        // old turn is no longer in 'latest', so reconcile its fixed-key successor first.
+        var turns = teams.ManagedMembers(server, item.Id).Select(m => getJob(m.JobId)).OfType<JobRecord>().ToList();
+        foreach (var turn in turns.Where(t => t.ParentJobId is not null && t.IdempotencyKey == "prf-resume:" + t.ParentJobId))
+        {
+            if (accounts!.Park(turn.ParentJobId!)?.State == "resuming") { accounts.ResumeRecorded(turn.ParentJobId!); }
+        }
         var held = false;
         foreach (var job in latest)
         {
@@ -568,7 +575,7 @@ public sealed partial class PRFactoryWorkItems(
     {
         try
         {
-            await Guard(item.Id, () => workspaces!.IntegrateChildrenAsync(workspace), ct);
+            await Guard(item.Id, () => workspaces!.IntegrateChildrenAsync(workspace, item.TicketArtefactFolder), ct);
             foreach (var member in workspace.Members)
             {
                 var folder = string.IsNullOrWhiteSpace(item.TicketArtefactFolder) ? null : Path.Combine(member.Path, item.TicketArtefactFolder);
@@ -616,8 +623,15 @@ public sealed partial class PRFactoryWorkItems(
         var owner = "prfactory:" + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes($"{server}|{item.RepositoryId:D}|{item.Id:D}")));
         var existing = teams.ExternalMembers(server, item.Id);
-        var teamId = (existing.Count > 0 ? existing[0].TeamId : null) ?? actor.CreateActorTeam(owner)
-            ?? throw new InvalidDataException("Cannot create PRFactory actor team");
+        var teamId = existing.Count > 0 ? existing[0].TeamId : string.Empty;
+        if (teamId.Length == 0)
+        {
+            await Guard(item.Id, () =>
+            {
+                teamId = actor.CreateActorTeam(owner) ?? throw new InvalidDataException("Cannot create PRFactory actor team");
+                return Task.CompletedTask;
+            }, ct);
+        }
         foreach (var name in names)
         {
             var external = teams.External(server, item.Id, name);
@@ -632,10 +646,17 @@ public sealed partial class PRFactoryWorkItems(
                 }, ct);
                 external = teams.External(server, item.Id, name)!;
             }
-            if (!external.Closed && actor.RenewExpiredTicket(external.TeamId, external.ActualName) is { } renewed)
+            if (!external.Closed)
             {
-                // An unjoined ticket expired; the fresh one appears in the private status snapshot.
-                teams.RenewExternal(server, item.Id, name, renewed.Token, renewed.ExpiresAt);
+                await Guard(item.Id, () =>
+                {
+                    if (actor.RenewExpiredTicket(external.TeamId, external.ActualName) is { } renewed)
+                    {
+                        // An unjoined ticket expired; the fresh one appears in the private status snapshot.
+                        teams.RenewExternal(server, item.Id, name, renewed.Token, renewed.ExpiresAt);
+                    }
+                    return Task.CompletedTask;
+                }, ct);
             }
             if (!external.TicketUploaded && !external.Closed)
             {

@@ -211,7 +211,7 @@ public static class DaemonCommand
             new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
             new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
             (token, question, key) => PRFactoryInteraction.RequestFromManagedChild(humanWait, store, authorityRows,
-                externalTeam.MemberName(token), question, key));
+                externalTeam.ManagedChildName(token), question, key));
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
@@ -237,6 +237,9 @@ public static class DaemonCommand
             Log($"web console unavailable on 127.0.0.1:{webPort}: {ex.GetType().Name}: {ex.Message}");
         }
         Log($"ready pid={Environment.ProcessId}");
+        // Recovery may have queued connector turns before the first heartbeat. Install a
+        // fail-closed gate before starting dispatch; ordinary jobs remain independent.
+        dispatcher.LaunchGate = id => store.GetJob(id)?.Principal != connectorPrincipal.Principal;
         var dispatching = dispatcher.RunAsync(lifetime.Token);
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path, claudeMailbox), Log).RunAsync(lifetime.Token);
         var pruning = profile.AutoPrune ? RunPruneAsync(prune, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
@@ -291,7 +294,8 @@ public static class DaemonCommand
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
             },
             onTokenRejected: ct => authority?.TransportFailureAsync(Guid.Empty, System.Net.HttpStatusCode.Unauthorized, ct) ?? Task.CompletedTask,
-            activeWork: () => authority is { } current && connectorTeams.Pending(current.Server).Count > 0);
+            activeWork: () => authority is { } current && connectorTeams.Pending(current.Server).Count > 0,
+            onUnavailable: ct => authority?.SuspendAsync(ct) ?? Task.CompletedTask);
         var firstStopped = await Task.WhenAny(serving, dispatching);
 
         // Stop admission before tearing down either service. A serving fault

@@ -9,6 +9,26 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 public sealed class BranchPublisherTests
 {
     [Theory]
+    [InlineData("leftover.cs", false)]
+    [InlineData("nested/report.md", false)]
+    [InlineData("report.md", true)]
+    public async Task Artefact_exclusion_is_limited_to_top_level_documents(string file, bool allowed)
+    {
+        using var rig = await Rig.Create();
+        var path = Path.Combine(rig.Request.LeadPath, "ticket", file);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "untracked");
+        using var publisher = rig.Publisher();
+        var request = rig.Request with { ArtefactFolder = "ticket" };
+        if (allowed) { Assert.NotNull(await publisher.PublishAsync(request, TestContext.Current.CancellationToken)); }
+        else
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => publisher.PublishAsync(request, TestContext.Current.CancellationToken));
+            Assert.Equal("", await rig.RemoteHead());
+        }
+    }
+
+    [Theory]
     [InlineData("Implementation", false)]
     [InlineData("CodeReview", false)]
     [InlineData("CustomStep", false)]

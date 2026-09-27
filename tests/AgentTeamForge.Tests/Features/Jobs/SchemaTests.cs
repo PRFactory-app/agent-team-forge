@@ -8,6 +8,48 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 public sealed class SchemaTests
 {
     [Fact]
+    public void Version_17_connector_rows_survive_wave_two_upgrade()
+    {
+        using var dir = new TempStateDir();
+        var path = dir.File("jobs.db");
+        var database = JobDatabase.Create(path, TimeSpan.FromSeconds(1));
+        var teams = new PRFactoryTeamStore(database);
+        var id = Guid.NewGuid();
+        teams.CreateIfAbsent("server", id, "{\"prompt\":\"kept\"}", Guid.NewGuid());
+        teams.SetAcceptance("server", id, "accepted");
+        teams.FreezeArtefacts("server", id, "{\"artefacts\":[]}", null);
+        var before = teams.Get("server", id);
+        using (var connection = database.OpenConnection())
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                DROP TABLE prfactory_human_stream;
+                DROP TABLE human_waits;
+                DROP TABLE prfactory_publications;
+                DROP TABLE account_admission_reservations;
+                DROP TABLE account_parks;
+                DROP TABLE account_windows;
+                DROP TABLE prfactory_workspace_integrations;
+                DROP TABLE prfactory_workspaces;
+                DROP TABLE prfactory_authority;
+                DELETE FROM schema_migrations WHERE version>17;
+                """;
+            command.ExecuteNonQuery();
+        }
+        var upgraded = JobDatabase.Open(path, TimeSpan.FromSeconds(1));
+        var recovered = new PRFactoryTeamStore(upgraded);
+        Assert.Equal(before, recovered.Get("server", id));
+        Assert.Equal("{\"artefacts\":[]}", recovered.ArtefactDelivery("server", id)!.Payload);
+        using var check = upgraded.OpenConnection();
+        using var query = check.CreateCommand();
+        query.CommandText = "SELECT max(version) FROM schema_migrations";
+        Assert.Equal(22L, query.ExecuteScalar());
+        query.CommandText = "PRAGMA foreign_key_check";
+        using var violations = query.ExecuteReader();
+        Assert.False(violations.Read());
+    }
+
+    [Fact]
     public void Newer_schema_is_refused_and_left_unchanged()
     {
         using var dir = new TempStateDir();

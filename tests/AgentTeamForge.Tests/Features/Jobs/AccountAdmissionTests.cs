@@ -9,6 +9,14 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 public sealed class AccountAdmissionTests
 {
     [Fact]
+    public void Parses_reported_iso_reset_in_backend_error()
+    {
+        var signal = AccountLimitDetector.Inspect("codex", "default", "cli_nonzero_exit",
+            "usage limit reached; resets at 2026-09-28T12:30:00Z", DateTimeOffset.UtcNow);
+        Assert.Equal(DateTimeOffset.Parse("2026-09-28T12:30:00Z"), signal!.ResetsAt);
+    }
+
+    [Fact]
     public void Quota_error_parks_original_job_without_failing_team_and_blocks_only_its_account()
     {
         using var fixture = new JobFixture();

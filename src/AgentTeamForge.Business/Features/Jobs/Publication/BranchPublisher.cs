@@ -77,12 +77,16 @@ public sealed class BranchPublisher(PRFactoryPublicationStore store, Publication
 
     // The one defined exclusion: untracked phase documents in the ticket artefact folder are
     // uploaded as artefacts, not published code. Tracked changes there still count as dirty.
-    static bool IsStagedArtefact(string porcelain, string? folder)
+    internal static bool IsStagedArtefact(string porcelain, string? folder)
     {
         if (string.IsNullOrWhiteSpace(folder) || !porcelain.StartsWith("?? ", StringComparison.Ordinal)) { return false; }
         var prefix = folder.Replace('\\', '/').Trim('/') + "/";
         var path = porcelain[3..].Trim('"');
-        return prefix != "/" && !prefix.Contains("..", StringComparison.Ordinal) && path.StartsWith(prefix, StringComparison.Ordinal);
+        // The collector uploads top-level text documents only. Never hide source files or
+        // nested directories merely because the claim names their ancestor as the folder.
+        return prefix != "/" && !Path.IsPathRooted(folder) && !prefix.Contains("..", StringComparison.Ordinal)
+            && path.StartsWith(prefix, StringComparison.Ordinal) && !path[prefix.Length..].Contains('/')
+            && Path.GetExtension(path).ToLowerInvariant() is ".md" or ".html";
     }
 
     static async Task ValidateRemote(PublicationRequest request, CancellationToken ct)

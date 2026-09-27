@@ -635,6 +635,21 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return FindMember(db, tx, token)?.Name;
     }
 
+    public string? ManagedChildName(string token)
+    {
+        using var db = database.OpenConnection();
+        using var command = db.CreateCommand();
+        command.CommandText = """
+            SELECT m.name FROM external_members m
+            JOIN external_teams t ON t.team_id=m.team_id
+            JOIN jobs j ON m.name='child-'||j.job_id AND j.lead_session_id=t.lead_session_id
+            WHERE m.token_hash=$hash AND m.active=1 AND m.left_at IS NULL
+                AND t.closed_at IS NULL AND j.parent_job_id IS NULL
+            """;
+        command.Parameters.AddWithValue("$hash", Hash(token));
+        return command.ExecuteScalar() as string;
+    }
+
     public bool TokenBelongsToTeam(string token, string teamId)
     {
         using var db = database.OpenConnection();

@@ -14,6 +14,34 @@ namespace AgentTeamForge.Tests.PRFactory;
 public sealed class HumanWaitTests
 {
     [Fact]
+    public void Pruning_retains_active_team_questions_and_retires_terminal_team_questions()
+    {
+        using var f = new Fixture();
+        var row = f.Ask();
+        f.Finish();
+        f.Waits.PendingNotices(Fixture.Server, f.Team, [(row, "lead:questions")], (_, _, _) => "{}");
+        var prune = new PruneJobs(f.State.Database);
+        Assert.Empty(prune.Execute(DateTimeOffset.UtcNow.AddDays(1), false));
+        f.Teams.Finish(Fixture.Server, f.Team, "completed");
+        Assert.Equal([f.Parent], prune.Execute(DateTimeOffset.UtcNow.AddDays(1), false));
+        Assert.Null(f.Waits.Get(row.QuestionId));
+    }
+
+    [Fact]
+    public void Cancelled_answer_turn_becomes_failed_instead_of_waiting_forever()
+    {
+        using var f = new Fixture();
+        var row = f.Ask();
+        f.Finish();
+        Assert.Null(f.Answer(row, Guid.NewGuid()).Error);
+        var resumed = f.Interaction().Advance(row.QuestionId).Wait!;
+        Assert.Equal(JobStatus.Cancelled, f.Jobs.Cancel(resumed.ResumedJobId!, "p", "t").Job!.Status);
+        var refreshed = f.Waits.Refresh(row.QuestionId).Wait!;
+        Assert.Equal("failed", refreshed.Status);
+        Assert.Equal("resumed_turn_failed", refreshed.Error);
+    }
+
+    [Fact]
     public void Question_then_end_turn_blocks_completion_and_survives_restart()
     {
         using var f = new Fixture();

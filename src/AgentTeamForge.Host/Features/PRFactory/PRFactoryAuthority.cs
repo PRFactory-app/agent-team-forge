@@ -28,6 +28,14 @@ public sealed class PRFactoryAuthority(
         lock (confirmed) { return confirmed.Contains(id); }
     }
 
+    public async Task SuspendAsync(CancellationToken ct = default)
+    {
+        await gate.WaitAsync(ct);
+        try { lock (confirmed) { confirmed.Clear(); } }
+        finally { gate.Release(); }
+        await RetryStopsAsync(ct);
+    }
+
     public async Task<bool> RunAsync(Guid id, Func<Task> effect, CancellationToken ct = default)
     {
         Task pending;

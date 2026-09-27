@@ -16,7 +16,7 @@ public static partial class AccountLimitDetector
     private static partial Regex CodexLimit();
     [GeneratedRegex(@"(?i)\b(?:usage limit (?:reached|exceeded)|rate limit(?:ed)? (?:reached|exceeded)|too many requests|insufficient quota)\b")]
     private static partial Regex PiLimit();
-    [GeneratedRegex(@"(?i)\b(?:resets? (?:at|on)\s+|reset_at[=:]\s*)(?<when>\d{4}-\d\d-\d\s*[T ]\s*\d\d:\d\d(?::\d\d)?(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)?)")]
+    [GeneratedRegex(@"(?i)\b(?:resets? (?:at|on)\s+|reset_at[=:]\s*)(?<when>\d{4}-\d\d-\d\d\s*[T ]\s*\d\d:\d\d(?::\d\d)?(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)?)")]
     private static partial Regex ResetTime();
 
     public static AccountLimitSignal? Inspect(string backend, string accountKey, string? errorCode,

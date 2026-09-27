@@ -161,7 +161,7 @@ public sealed class TeamWorkspace(PRFactoryWorkspaceStore store) : IDisposable
         }
     }
 
-    public async Task<WorkspaceIntegration> IntegrateAsync(string key, int memberOrder)
+    public async Task<WorkspaceIntegration> IntegrateAsync(string key, int memberOrder, string? artefactFolder = null)
     {
         await gate.WaitAsync();
         try
@@ -174,8 +174,8 @@ public sealed class TeamWorkspace(PRFactoryWorkspaceStore store) : IDisposable
                 if (store.Integration(key, previous.Order)?.Applied != true) { throw new InvalidOperationException("Children must integrate in declared order."); }
             }
             await ValidateRemote(workspace.RepositoryPath, workspace.Remote);
-            await Clean(workspace.LeadPath);
-            await Clean(member.Path);
+            await Clean(workspace.LeadPath, artefactFolder);
+            await Clean(member.Path, artefactFolder);
             if (JobWorktree.Branch(workspace.LeadPath) != workspace.InternalBranch || JobWorktree.Branch(member.Path) != member.Branch)
             {
                 throw new InvalidOperationException("Workspace branch changed.");
@@ -212,9 +212,10 @@ public sealed class TeamWorkspace(PRFactoryWorkspaceStore store) : IDisposable
         finally { gate.Release(); }
     }
 
-    static async Task Clean(string path)
+    static async Task Clean(string path, string? artefactFolder)
     {
-        if ((await Git(path, "status", "--porcelain", "--untracked-files=all")).Length != 0)
+        if ((await Git(path, "status", "--porcelain", "--untracked-files=all"))
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries).Any(line => !Publication.BranchPublisher.IsStagedArtefact(line, artefactFolder)))
         {
             throw new InvalidOperationException("Integration requires clean committed work; files retained.");
         }
