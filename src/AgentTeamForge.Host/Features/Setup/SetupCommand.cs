@@ -126,7 +126,7 @@ public static class SetupCommand
         }
 
         var state = StateDirectory.Open(dir);
-        if (!SpikeProfileFile.Load(state).RealAgents)
+        if (!ProfileFile.Load(state).RealAgents)
         {
             Console.Error.WriteLine("error: setup requires an agents profile");
             return 78;
@@ -216,7 +216,7 @@ public static class SetupCommand
     public static async Task<int> StartAsync(IReadOnlyDictionary<string, string> options, string? executablePath = null, bool quiet = false)
     {
         var state = StateDirectory.Open(ResolveStateDir(options));
-        var profile = SpikeProfileFile.Load(state);
+        var profile = ProfileFile.Load(state);
         var mode = ConfiguredMode(state) ?? (profile.TestProfile ? "headless" : ReadMode(state));
         if (!ModeAvailable(mode))
         {
@@ -747,7 +747,15 @@ public static class SetupCommand
     static LaunchModeSettings ReadSettings(StateDirectory state)
     {
         var path = Path.Combine(state.Path, SettingsFile);
-        var settings = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(path), SetupCommandJson.Default.LaunchModeSettings);
+        LaunchModeSettings? settings;
+        try
+        {
+            settings = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(path), SetupCommandJson.Default.LaunchModeSettings);
+        }
+        catch (JsonException)
+        {
+            throw new StateDirectoryException("launch_mode_invalid", $"invalid JSON in {path}; run atf setup or atf doctor to inspect configuration");
+        }
         if (settings?.Mode is not ("headless" or "herdr" or "terminal" or "wt")
             || settings.Mode == "terminal" && (settings.TerminalProvider is not ("terminal" or "kitty")
                 || settings.TerminalProvider == "kitty" && (settings.KittyAddress is null || settings.KittyBinary is null))

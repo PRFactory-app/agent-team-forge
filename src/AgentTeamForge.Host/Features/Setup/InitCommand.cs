@@ -15,14 +15,14 @@ public static class InitCommand
 {
     public static int Run(string stateDir, bool testProfile, int? queueLimit, int? maxRuntimeSeconds, string? backends = null)
     {
-        backends ??= testProfile ? SpikeProfileFile.FakeBackends : SpikeProfileFile.AgentBackends;
-        if (backends is not (SpikeProfileFile.FakeBackends or SpikeProfileFile.AgentBackends) || (testProfile && backends != SpikeProfileFile.FakeBackends))
+        backends ??= testProfile ? ProfileFile.FakeBackends : ProfileFile.AgentBackends;
+        if (backends is not (ProfileFile.FakeBackends or ProfileFile.AgentBackends) || (testProfile && backends != ProfileFile.FakeBackends))
         {
             Console.Error.WriteLine("error: profile_invalid_backends");
             return 2;
         }
 
-        if (!SpikeProfileFile.LimitsAreValid(queueLimit, maxRuntimeSeconds))
+        if (!ProfileFile.LimitsAreValid(queueLimit, maxRuntimeSeconds))
         {
             Console.Error.WriteLine("error: profile_invalid_limits");
             return 2;
@@ -53,7 +53,7 @@ public static class InitCommand
 
         var state = StateDirectory.Open(stateDir);
 
-        var profile = new SpikeProfileFile
+        var profile = new ProfileFile
         {
             Principal = "local-operator",
             Team = "spike-team",
@@ -63,7 +63,7 @@ public static class InitCommand
             QueueLimit = queueLimit,
             MaxFakeRuntimeSeconds = maxRuntimeSeconds,
         };
-        WritePrivate(state.ProfileFile, JsonSerializer.SerializeToUtf8Bytes(profile, SetupJson.Default.SpikeProfileFile));
+        WritePrivate(state.ProfileFile, JsonSerializer.SerializeToUtf8Bytes(profile, SetupJson.Default.ProfileFile));
         WritePrivate(state.CredentialFile, System.Text.Encoding.UTF8.GetBytes(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))));
         if (testProfile)
         {
