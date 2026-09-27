@@ -111,6 +111,33 @@ public sealed class PiBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task Unknown_option_before_a_turn_is_a_proven_launch_failure()
+    {
+        var script = _dir.File("pi-unknown-option");
+        File.WriteAllText(script, "#!/usr/bin/env bash\necho 'Error: Unknown option: --mcp-config' >&2\nexit 1\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        var evidence = await RunAsync(Request("x"), new PiBackend(script));
+
+        var failure = Assert.Single(evidence);
+        Assert.Contains("Unknown option: --mcp-config", Assert.IsType<BackendEvidence.NotStarted>(failure).Details);
+    }
+
+    [Theory]
+    [InlineData("\"npm:pi-mcp-adapter\"")]
+    [InlineData("{\"source\":\"npm:pi-mcp-adapter\"}")]
+    public void Adapter_detection_accepts_pi_package_sources(string package)
+    {
+        var home = _dir.File("home");
+        var settings = Path.Combine(home, ".pi", "agent", "settings.json");
+        Assert.False(PiMcpAdapter.IsInstalled(home));
+        Directory.CreateDirectory(Path.GetDirectoryName(settings)!);
+        File.WriteAllText(settings, "{\"packages\":[" + package + "]}");
+
+        Assert.True(PiMcpAdapter.IsInstalled(home));
+    }
+
+    [Fact]
     public void Settled_turn_without_assistant_message_has_empty_result_unless_a_line_was_skipped()
     {
         var settled = System.Text.Encoding.UTF8.GetBytes("""{"type":"agent_settled"}""");

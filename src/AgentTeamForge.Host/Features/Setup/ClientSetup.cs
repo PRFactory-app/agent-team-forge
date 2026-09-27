@@ -2,6 +2,7 @@ using AgentTeamForge.DAL.Files;
 using System.Text.Json.Nodes;
 using System.Text.Json;
 using AgentTeamForge.Host.Hosting;
+using AgentTeamForge.Business.Features.Agents.Backends;
 
 namespace AgentTeamForge.Host.Features.Setup;
 
@@ -9,7 +10,7 @@ namespace AgentTeamForge.Host.Features.Setup;
 internal static class ClientSetup
 {
     const string Name = "agentteamforge";
-    const string Adapter = "npm:pi-mcp-adapter";
+    const string Adapter = PiMcpAdapter.Package;
 
     internal static string StableBinary(string executable, string home)
     {
@@ -188,7 +189,7 @@ internal static class ClientSetup
             var settings = ReadObject(settingsPath);
             if (settings["packages"] is JsonArray packages)
             {
-                var owned = packages.Where(node => PackageSource(node) is string source && IsLocalPackageSource(source)
+                var owned = packages.Where(node => PiMcpAdapter.PackageSource(node) is string source && IsLocalPackageSource(source)
                     && Path.GetFullPath(source, directory).Equals(extension, StringComparison.Ordinal)).ToArray();
                 foreach (var entry in owned)
                 {
@@ -244,8 +245,8 @@ internal static class ClientSetup
 
         var settings = ReadObject(settingsPath);
         var packages = settings["packages"] as JsonArray;
-        var sources = packages?.Select(PackageSource).OfType<string>().ToList() ?? [];
-        var adapterCurrent = sources.Contains(Adapter);
+        var sources = packages?.Select(PiMcpAdapter.PackageSource).OfType<string>().ToList() ?? [];
+        var adapterCurrent = PiMcpAdapter.IsInstalled(home);
         var extensionCurrent = sources.Any(source => IsLocalPackageSource(source)
             && Path.GetFullPath(source, directory).Equals(extension,
                 OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
@@ -317,14 +318,6 @@ internal static class ClientSetup
         Console.Out.WriteLine("pi: installed (adapter, MCP and wake extension updated)");
         return true;
     }
-
-    // Pi package entries are either a source string or an object with a "source" string.
-    static string? PackageSource(JsonNode? node) => node switch
-    {
-        JsonValue value when value.TryGetValue<string>(out var source) => source,
-        JsonObject entry when entry["source"] is JsonValue value && value.TryGetValue<string>(out var source) => source,
-        _ => null,
-    };
 
     internal static bool IsLocalPackageSource(string source) => !source.Contains(':', StringComparison.Ordinal)
         || source.Length >= 3 && char.IsAsciiLetter(source[0]) && source[1] == ':' && source[2] is '\\' or '/';

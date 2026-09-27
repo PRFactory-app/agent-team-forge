@@ -45,7 +45,7 @@ public static class DaemonCommand
             Console.SetOut(log);
             Console.SetError(log);
         }
-        var profile = SpikeProfileFile.Load(state);
+        var profile = ProfileFile.Load(state);
         var launchMode = SetupCommand.ConfiguredMode(state);
         if (launchMode is "herdr" or "terminal" or "wt" && !profile.RealAgents)
         {
