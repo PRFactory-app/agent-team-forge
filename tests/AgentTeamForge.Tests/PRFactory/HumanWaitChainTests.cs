@@ -22,6 +22,18 @@ public sealed class HumanWaitChainTests
         Assert.Contains(state, accepted);
     }
 
+    [Theory]
+    [InlineData("WaitingForHuman", "Waiting")]
+    [InlineData("AnswerQueued", "Waiting")]
+    [InlineData("AnswerApplied", "Running")]
+    [InlineData("Failed", "Failed")]
+    public void Frozen_legacy_notice_replays_with_prfactory_lifecycle(string frozen, string expected)
+    {
+        var batch = new PRFactoryStreamBatch(Guid.NewGuid(), "human:q:waiting",
+            [new("member", "team", "lead", "codex", frozen, null, null)], []);
+        Assert.Equal(expected, PRFactoryWorkItems.WithoutLegacyLifecycle(batch).Events.Single().State);
+    }
+
     [Fact]
     public async Task Prfactory_question_tool_is_gated_and_direct_call_does_not_create_a_wait()
     {

@@ -34,7 +34,7 @@ public sealed partial class PRFactoryWorkItems
         var current = humanWaits.ForTeam(server, item.Id).Select(w => (w, w.Member + ":questions"));
         foreach (var (questionId, status, seq, frozen) in humanWaits.PendingNotices(server, item.Id, current, (wait, agent, seq) => Notice(item, wait, agent, seq)))
         {
-            var batch = JsonSerializer.Deserialize(frozen, PRFactoryWorkItemJson.Default.PRFactoryStreamBatch)!;
+            var batch = WithoutLegacyLifecycle(JsonSerializer.Deserialize(frozen, PRFactoryWorkItemJson.Default.PRFactoryStreamBatch)!);
             PRFactoryStreamResponse response = null!;
             await Guard(item.Id, async () => response = await client.UploadStreamAsync(item.Id, batch, ct), ct);
             var agentName = batch.Lines[0].AgentName;
@@ -63,6 +63,20 @@ public sealed partial class PRFactoryWorkItems
         "ending_turn" or "waiting" or "answer_reserved" => "Waiting",
         "resumed" or "applied" => "Running",
         _ => "Failed"
+    };
+
+    // Notices frozen before the lifecycle mapping carry states PRFactory rejected with 400, so none was stored.
+    internal static PRFactoryStreamBatch WithoutLegacyLifecycle(PRFactoryStreamBatch batch) => batch with
+    {
+        Events = batch.Events.Select(e => e with
+        {
+            State = e.State switch
+            {
+                "WaitingForHuman" or "AnswerQueued" => "Waiting",
+                "AnswerApplied" => "Running",
+                var state => state
+            }
+        }).ToList()
     };
 
     /// <summary>Open waits hold completion; a failed or cancelled wait finishes the team as a failure.</summary>
