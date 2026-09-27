@@ -131,6 +131,11 @@ public sealed class WtInteractiveBackendTests
         Assert.Contains("$start.WorkingDirectory = '" + cwd.Replace("'", "''") + "'", wrapper);
         Assert.Contains("$env:CODEX_HOME = 'C:\\daemon\\codex'", wrapper);
         Assert.Contains("$PID.ToString() + '|'", wrapper);
+        Assert.Contains("[uint32]0x2000", wrapper);
+        Assert.Contains("AssignProcessToJobObject($job, $agent.Handle)", wrapper);
+        Assert.Contains("if (-not $native::AssignProcessToJobObject", wrapper);
+        Assert.Contains("$agent.Kill()", wrapper);
+        Assert.Contains("finally { [void]$native::CloseHandle($job) }", wrapper);
         Assert.EndsWith("exit 0\r\n", wrapper);
     }
 
@@ -337,16 +342,6 @@ public sealed class WtInteractiveBackendTests
         // 2n+1 + quote -> n and a literal quote; other backslashes are literal.
         Assert.Equal("plain \"\" \"say \\\"hi\\\" --flag \\\\\\\"x\" \"C:\\dir with space\\\\\"",
             WtTabControl.CommandLine(["plain", "", "say \"hi\" --flag \\\"x", "C:\\dir with space\\"]));
-    }
-
-    [Fact]
-    public void OnlyChildrenStartedAfterTheWrapperAreOwned()
-    {
-        var wrapper = new DateTime(2026, 9, 26, 12, 0, 0, DateTimeKind.Utc);
-        Assert.True(WtTabControl.IsOwnedChild(wrapper.AddSeconds(1), wrapper));
-        // A process whose dead parent had the same PID still reports it as ParentProcessId.
-        Assert.False(WtTabControl.IsOwnedChild(wrapper.AddSeconds(-1), wrapper));
-        Assert.False(WtTabControl.IsOwnedChild(null, wrapper));
     }
 
     [Fact]
