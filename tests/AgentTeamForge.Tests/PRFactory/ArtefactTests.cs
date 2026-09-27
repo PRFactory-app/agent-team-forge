@@ -154,6 +154,19 @@ public sealed class ArtefactTests
         Assert.Single(run.Payloads);
     }
 
+    [Fact]
+    public async Task Oversized_artefacts_fail_before_freezing_or_upload()
+    {
+        using var run = new Run(Claim("Planning"));
+        run.Write("plan.md", "Plan");
+        run.Write("mockup.html", "");
+        using (var big = File.OpenWrite(Path.Combine(run.RepoPath, "docs/tickets/PRF-42/mockup.html")))
+        { big.SetLength(PRFactoryArtefacts.MaxUploadBytes); }
+        await run.Tick();
+        Assert.Empty(run.Payloads);
+        Assert.Contains("exceed", Assert.Single(run.Failures));
+    }
+
     [Theory]
     [InlineData("../outside")]
     [InlineData("/tmp")]

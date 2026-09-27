@@ -5,9 +5,13 @@ namespace AgentTeamForge.Host.Features.PRFactory;
 
 internal static class PRFactoryArtefacts
 {
+    // Below PRFactory's default request body limit; the whole request is frozen in SQLite.
+    internal const long MaxUploadBytes = 20 * 1024 * 1024;
+
     public static async Task<List<PRFactoryArtefactFile>> CollectAsync(PRFactoryWorkItem item, string cwd, CancellationToken ct)
     {
         var files = new List<PRFactoryArtefactFile>();
+        long total = 0;
         if (item.Type == "CustomStep" && string.IsNullOrWhiteSpace(item.ExpectedOutput))
         { throw new InvalidDataException("CustomStep is missing ExpectedOutput in the claim"); }
         if (!string.IsNullOrWhiteSpace(item.TicketArtefactFolder))
@@ -27,6 +31,8 @@ internal static class PRFactoryArtefacts
                     if (extension is not (".md" or ".html") && !(item.Type == "Decomposition" && extension == ".json")
                         && Path.GetFileName(file) != item.ExpectedOutput) { continue; }
                     SafePath(cwd, Path.GetRelativePath(cwd, file));
+                    if ((total += new FileInfo(file).Length) > MaxUploadBytes)
+                    { throw new InvalidDataException($"artefacts exceed {MaxUploadBytes / (1024 * 1024)} MB at {Path.GetFileName(file)}"); }
                     files.Add(new(Path.GetFileName(file), await File.ReadAllTextAsync(file, ct), Kind(Path.GetFileName(file), item.Type)));
                 }
             }
