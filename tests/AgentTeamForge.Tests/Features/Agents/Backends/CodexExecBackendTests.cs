@@ -70,6 +70,18 @@ public sealed class CodexExecBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task Failed_turn_with_usage_limit_is_terminal_rate_limit_error()
+    {
+        var codex = FakeCodex(
+            $$"""{"type":"thread.started","thread_id":"{{ThreadId}}"}""",
+            """{"type":"turn.failed","error":{"message":"usage limit reached; resets at 2026-09-27T18:20:00Z"}}""");
+
+        var evidence = await RunAsync(new CodexExecBackend(codex), new BackendRequest("job-limit", "corr-limit", "x", "") { WorkingDirectory = _dir.Path });
+
+        Assert.Contains(new BackendEvidence.AgentError("agent_rate_limited", "usage limit reached; resets at 2026-09-27T18:20:00Z"), evidence);
+    }
+
+    [Fact]
     public async Task Stream_error_without_completed_turn_is_a_protocol_error()
     {
         var codex = FakeCodex("""{"type":"error","message":"unauthorized"}""");

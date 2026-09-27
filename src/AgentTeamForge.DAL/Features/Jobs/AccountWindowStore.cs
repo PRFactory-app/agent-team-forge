@@ -9,21 +9,30 @@ public sealed record AccountPark(string JobId, string Backend, string AccountKey
 /// <summary>Durable account exhaustion and same-lineage park state. A missing/corrupt schema fails closed.</summary>
 public sealed class AccountWindowStore(JobDatabase database)
 {
+    const string UpsertWindowSql = """
+        INSERT INTO account_windows(backend, account_key, reason, observed_at, resets_at)
+        VALUES($backend,$account,$reason,$observed,$reset)
+        ON CONFLICT(backend,account_key) DO UPDATE SET reason=excluded.reason,
+            observed_at=excluded.observed_at,
+            resets_at=CASE
+                WHEN account_windows.resets_at IS NULL OR excluded.resets_at IS NULL THEN NULL
+                WHEN account_windows.resets_at > excluded.resets_at THEN account_windows.resets_at
+                ELSE excluded.resets_at END
+        """;
+
+    public void Block(string backend, string accountKey, string reason, DateTimeOffset observedAt, DateTimeOffset? resetsAt)
+    {
+        using var connection = database.OpenConnection();
+        using var command = Command(connection, null, UpsertWindowSql, backend, accountKey, reason, observedAt, resetsAt);
+        command.ExecuteNonQuery();
+    }
+
     public void Park(string jobId, string backend, string accountKey, string reason, string? sessionId,
         DateTimeOffset observedAt, DateTimeOffset? resetsAt)
     {
         using var connection = database.OpenConnection();
         using var transaction = connection.BeginTransaction();
-        using (var window = Command(connection, transaction, """
-            INSERT INTO account_windows(backend, account_key, reason, observed_at, resets_at)
-            VALUES($backend,$account,$reason,$observed,$reset)
-            ON CONFLICT(backend,account_key) DO UPDATE SET reason=excluded.reason,
-                observed_at=excluded.observed_at,
-                resets_at=CASE
-                    WHEN account_windows.resets_at IS NULL OR excluded.resets_at IS NULL THEN NULL
-                    WHEN account_windows.resets_at > excluded.resets_at THEN account_windows.resets_at
-                    ELSE excluded.resets_at END
-            """, backend, accountKey, reason, observedAt, resetsAt))
+        using (var window = Command(connection, transaction, UpsertWindowSql, backend, accountKey, reason, observedAt, resetsAt))
         {
             window.ExecuteNonQuery();
         }
@@ -192,7 +201,7 @@ public sealed class AccountWindowStore(JobDatabase database)
         command.ExecuteNonQuery();
     }
 
-    static SqliteCommand Command(SqliteConnection connection, SqliteTransaction transaction, string sql,
+    static SqliteCommand Command(SqliteConnection connection, SqliteTransaction? transaction, string sql,
         string backend, string account, string reason, DateTimeOffset observed, DateTimeOffset? reset,
         string? job = null, string? session = null)
     {

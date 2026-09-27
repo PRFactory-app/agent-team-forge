@@ -67,6 +67,11 @@ public sealed partial class PRFactoryWorkItems(
             {
                 continue;
             }
+            if (accounts is not null && BlockedBackend(item) is { } blocked)
+            {
+                log?.Invoke($"PRFactory work item {item.Id:D} not claimed: {blocked} default account is blocked by a usage limit");
+                continue;
+            }
             var reservation = accounts?.ReserveClaim(maxAcceptedTeams, DateTimeOffset.UtcNow);
             if (accounts is not null && reservation is null)
             {
@@ -90,6 +95,16 @@ public sealed partial class PRFactoryWorkItems(
             }
             await IsolateAsync(item.Id, () => AdvanceAsync(teams.Get(server, item.Id)!, ct), ct);
         }
+    }
+
+    string? BlockedBackend(PRFactoryWorkItem item)
+    {
+        var externalNames = repositories.SingleOrDefault(r => r.Id == item.RepositoryId)?.ExternalMembers ?? [];
+        var backends = new[] { item.AgentType }.Concat((item.TeamPlan?.Members ?? [])
+            .Where(m => !m.IsLead && !externalNames.Contains(m.Name, StringComparer.Ordinal))
+            .Select(m => m.Backend ?? item.AgentType));
+        return backends.Select(MapBackend).FirstOrDefault(backend => backend is not null
+            && !accounts!.CanStart(backend, DefaultAccount, DateTimeOffset.UtcNow));
     }
 
     // One failing team must not block every other team and new claims; it retries next tick.
@@ -425,7 +440,8 @@ public sealed partial class PRFactoryWorkItems(
             return;
         }
         await FinishAsync(team, item, failed is null || !waitForManaged && lead.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation,
-            failed?.ReasonCode ?? "job failed", repo?.Directory, ct,
+            failed?.ReasonCode == "agent_rate_limited" ? "agent_rate_limited: " + failed.ResultText
+                : failed?.ReasonCode ?? "job failed", repo?.Directory, ct,
             lead.ResultText ?? (!waitForManaged ? "External members completed their work; replies are in the agent stream." : null));
     }
 
@@ -856,7 +872,8 @@ public sealed partial class PRFactoryWorkItems(
         }
         else
         {
-            await Guard(item.Id, () => client.FailAsync(item.Id, item.LeaseToken, error, ct), ct);
+            await Guard(item.Id, () => client.FailAsync(item.Id, item.LeaseToken, error, ct,
+                error.StartsWith("agent_rate_limited", StringComparison.Ordinal)), ct);
             StopManagedJobs(item.Id);
             teams.Finish(server, item.Id, error.StartsWith("multi-repository", StringComparison.Ordinal) ? "refused" : "failed");
             await Observe(item.Id, "completed", "failure_reported", ct);

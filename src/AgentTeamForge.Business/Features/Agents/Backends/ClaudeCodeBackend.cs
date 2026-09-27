@@ -116,6 +116,8 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             yield return new BackendEvidence.Session(correlation, sessionId);
             var final = Array.Empty<byte>();
             string? apiError = null;
+            var rateLimited = false;
+            DateTimeOffset? reset = null;
             await foreach (var line in ReadLinesAsync(_stdout, cancellationToken))
             {
                 if (line is null)
@@ -138,12 +140,24 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
                         apiError = document.RootElement.TryGetProperty("error", out var error)
                             && error.ValueKind == JsonValueKind.String ? error.GetString() : "api_error";
                     }
+                    else if (document.RootElement.ValueKind == JsonValueKind.Object
+                        && document.RootElement.TryGetProperty("type", out var eventType) && eventType.ValueEquals("rate_limit_event")
+                        && document.RootElement.TryGetProperty("rate_limit_info", out var limit)
+                        && limit.TryGetProperty("status", out var status) && status.ValueEquals("rejected"))
+                    {
+                        rateLimited = true;
+                        if (limit.TryGetProperty("resetsAt", out var resetsAt) && resetsAt.TryGetInt64(out var epoch))
+                        {
+                            try { reset = DateTimeOffset.FromUnixTimeSeconds(epoch); }
+                            catch (ArgumentOutOfRangeException) { }
+                        }
+                    }
                 }
                 catch (JsonException) { }
             }
             // A successful turn may itself mention these phrases; only a turn without a
             // result is checked for a missing native session.
-            var interpreted = Interpret(correlation, final, apiError).ToList();
+            var interpreted = Interpret(correlation, final, apiError, rateLimited, reset).ToList();
             if (!newSession && !interpreted.Any(e => e is BackendEvidence.Result)
                 && (BackendSessionErrors.IsExpired(Encoding.UTF8.GetString(final))
                     || await BackendSessionErrors.HasExpiredDiagnosticAsync(_stderrDrain, cancellationToken)))
@@ -312,7 +326,8 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
     }
 
     /// <summary>Maps claude's final result event to Session then Result or ProtocolError.</summary>
-    internal static IEnumerable<BackendEvidence> Interpret(string correlation, byte[] output, string? apiError = null)
+    internal static IEnumerable<BackendEvidence> Interpret(string correlation, byte[] output, string? apiError = null,
+        bool rateLimited = false, DateTimeOffset? reset = null)
     {
         ClaudeResult? result;
         try
@@ -340,7 +355,9 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
 
         if (result is null)
         {
-            yield return new BackendEvidence.ProtocolError("backend_malformed_output");
+            yield return rateLimited || apiError == "rate_limit"
+                ? new BackendEvidence.AgentError("agent_rate_limited", RateLimitDetails(reset))
+                : new BackendEvidence.ProtocolError("backend_malformed_output");
             yield break;
         }
 
@@ -349,7 +366,11 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             yield return new BackendEvidence.Session(correlation, result.SessionId);
         }
 
-        if (result is { Type: "result", IsError: false, Result: { } text })
+        if (rateLimited || apiError == "rate_limit")
+        {
+            yield return new BackendEvidence.AgentError("agent_rate_limited", RateLimitDetails(reset));
+        }
+        else if (result is { Type: "result", IsError: false, Result: { } text })
         {
             yield return new BackendEvidence.Result(correlation, text);
         }
@@ -367,6 +388,9 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             yield return new BackendEvidence.ProtocolError("claude_error:" + (result.Subtype ?? "unknown"));
         }
     }
+
+    static string RateLimitDetails(DateTimeOffset? reset) => "usage limit reached"
+        + (reset is { } at ? "; resets at " + at.ToUniversalTime().ToString("O") : "; reset time unknown");
 }
 
 /// <summary>The fields of claude's final stream-json result event that we use.</summary>

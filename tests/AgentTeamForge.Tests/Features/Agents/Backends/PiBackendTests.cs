@@ -99,6 +99,19 @@ public sealed class PiBackendTests : IDisposable
     }
 
     [Fact]
+    public void Assistant_usage_limit_is_terminal_rate_limit_error()
+    {
+        var turn = new PiBackend.TurnState();
+        var message = System.Text.Encoding.UTF8.GetBytes("""
+            {"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"usage limit reached; resets at 2026-09-27T18:20:00Z"}}
+            """);
+
+        Assert.Empty(turn.Observe(message, "c1"));
+        Assert.Equal(new BackendEvidence.AgentError("agent_rate_limited", "usage limit reached; resets at 2026-09-27T18:20:00Z"),
+            Assert.Single(turn.Observe("""{"type":"agent_settled"}"""u8.ToArray(), "c1")));
+    }
+
+    [Fact]
     public void Assistant_message_without_agent_settled_is_not_a_result()
     {
         var turn = new PiBackend.TurnState();

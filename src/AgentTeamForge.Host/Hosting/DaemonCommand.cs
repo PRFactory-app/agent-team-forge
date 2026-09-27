@@ -267,7 +267,13 @@ public static class DaemonCommand
         dispatcher.AgentErrorObserved = (job, code, details) =>
         {
             // Only backend-owned error evidence; the connector resumes the parked session after reset.
-            if (job.Principal == connectorPrincipal.Principal
+            if (job.Principal != connectorPrincipal.Principal) { return; }
+            if (code == "agent_rate_limited"
+                && accounts.BlockIfLimited(job.Backend, PRFactoryWorkItems.DefaultAccount, code, details, DateTimeOffset.UtcNow))
+            {
+                Log($"job {job.JobId} failed: {job.Backend} account blocked by usage limit ({details})");
+            }
+            else if (code != "agent_rate_limited"
                 && accounts.ParkIfLimited(job.JobId, job.Backend, PRFactoryWorkItems.DefaultAccount, job.SessionId,
                     AccountAdmission.EvidenceCode(job.Backend, code), details, DateTimeOffset.UtcNow))
             {

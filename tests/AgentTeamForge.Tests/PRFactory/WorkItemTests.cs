@@ -114,6 +114,68 @@ public sealed class WorkItemTests
         Assert.Empty(teams.Pending("https://example.test"));
     }
 
+    [Fact]
+    public async Task Rate_limited_lead_fails_retryably_and_blocks_new_claims_on_its_account()
+    {
+        using var dir = new TempStateDir();
+        var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var repo = Guid.NewGuid();
+        var first = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            RepositoryId = repo,
+            ReadOnly = true,
+            AgentType = PRFactoryAgentType.ClaudeCode,
+            Prompt = "First"
+        };
+        var server = new FakeServer(first);
+        var teams = new PRFactoryTeamStore(db);
+        var jobs = new JobStore(db, DurabilityCheckpoints.None);
+        var accept = new AcceptJob(jobs, new BoundPrincipal("prfactory", "connector", "connector-lead"),
+            new SpikeLimits(), false, new AdmissionGate(), ["claude", "codex"]);
+        var accounts = new AccountAdmission(new AccountWindowStore(db));
+        var logs = new List<string>();
+        var adapter = new PRFactoryWorkItems("https://example.test", [new RepositoryMapping(repo, dir.Path)],
+            teams, new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
+            accept.Execute, jobs.GetJob, () => { }, log: logs.Add, accounts: accounts);
+
+        await adapter.TickAsync(null, CancellationToken.None);
+        var claim = jobs.BeginNextAttempt()!;
+        Assert.True(jobs.EndUnsuccessfully(new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation),
+            JobStatus.Failed, "agent_rate_limited", "usage limit reached; resets at 2099-09-27T18:20:00Z"));
+        Assert.True(accounts.BlockIfLimited("claude", PRFactoryWorkItems.DefaultAccount, "agent_rate_limited",
+            "usage limit reached; resets at 2099-09-27T18:20:00Z", DateTimeOffset.UtcNow));
+        await adapter.TickAsync(null, CancellationToken.None);
+
+        Assert.True(server.ShouldRetry);
+        Assert.Contains("2099-09-27T18:20:00Z", server.FailureMessage);
+        Assert.Equal("failed", teams.Get("https://example.test", first.Id)!.State);
+        var second = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            RepositoryId = repo,
+            ReadOnly = true,
+            AgentType = PRFactoryAgentType.ClaudeCode,
+            Prompt = "Second"
+        };
+        server.Item = second;
+        await adapter.TickAsync(null, CancellationToken.None);
+        Assert.Equal(1, server.Claims);
+        Assert.Null(teams.Get("https://example.test", second.Id));
+        Assert.Contains(logs, line => line.Contains("default account is blocked", StringComparison.Ordinal));
+
+        server.Item = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            RepositoryId = repo,
+            ReadOnly = true,
+            AgentType = PRFactoryAgentType.Codex,
+            Prompt = "Other account"
+        };
+        await adapter.TickAsync(null, CancellationToken.None);
+        Assert.Equal(2, server.Claims);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -357,6 +419,8 @@ public sealed class WorkItemTests
         public int Claims { get; private set; }
         public int Uploads { get; private set; }
         public int Completions { get; private set; }
+        public bool? ShouldRetry { get; private set; }
+        public string? FailureMessage { get; private set; }
         public string? UploadContent { get; private set; }
         public string? RejectEndpoint { get; set; }
         public HttpStatusCode RejectStatus { get; set; }
@@ -408,6 +472,10 @@ public sealed class WorkItemTests
                 {
                     return new HttpResponseMessage(RejectStatus);
                 }
+                var body = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
+                using var json = JsonDocument.Parse(body);
+                ShouldRetry = json.RootElement.GetProperty("shouldRetry").GetBoolean();
+                FailureMessage = json.RootElement.GetProperty("errorMessage").GetString();
                 return Json("{\"acknowledged\":true}");
             }
             throw new InvalidOperationException(path);

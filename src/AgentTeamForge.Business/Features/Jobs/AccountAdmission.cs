@@ -25,7 +25,7 @@ public static partial class AccountLimitDetector
         if (string.IsNullOrWhiteSpace(backend) || string.IsNullOrWhiteSpace(accountKey)) { return null; }
         // The caller must supply a CLI exit/API-error code. Claude's transcript parser already
         // classifies API-error records as agent_api_error; normal transcript prose is excluded.
-        if (errorCode is not ("agent_api_error" or "rate_limit_error" or "rate_limit_exceeded"
+        if (errorCode is not ("agent_api_error" or "agent_rate_limited" or "rate_limit_error" or "rate_limit_exceeded"
             or "insufficient_quota" or "usage_limit_reached" or "cli_nonzero_exit")) { return null; }
         var pattern = backend switch
         {
@@ -35,7 +35,7 @@ public static partial class AccountLimitDetector
             _ => null
         };
         if (pattern is null || !(pattern.IsMatch(errorText ?? "")
-            || errorCode is "rate_limit_error" or "rate_limit_exceeded" or "insufficient_quota" or "usage_limit_reached"))
+            || errorCode is "agent_rate_limited" or "rate_limit_error" or "rate_limit_exceeded" or "insufficient_quota" or "usage_limit_reached"))
         {
             return null;
         }
@@ -62,6 +62,16 @@ public sealed class AccountAdmission(AccountWindowStore windows)
         var signal = AccountLimitDetector.Inspect(backend, accountKey, errorCode, errorText, observedAt, reportedReset);
         if (signal is null) { return false; }
         windows.Park(jobId, signal.Backend, signal.AccountKey, signal.Reason, sessionId, observedAt, signal.ResetsAt);
+        return true;
+    }
+
+    /// <summary>Blocks new turns after a terminal limit failure, without scheduling this job for a same-session resume.</summary>
+    public bool BlockIfLimited(string backend, string accountKey, string? errorCode, string? errorText,
+        DateTimeOffset observedAt)
+    {
+        var signal = AccountLimitDetector.Inspect(backend, accountKey, errorCode, errorText, observedAt);
+        if (signal is null) { return false; }
+        windows.Block(signal.Backend, signal.AccountKey, signal.Reason, signal.ObservedAt, signal.ResetsAt);
         return true;
     }
 
