@@ -239,6 +239,10 @@ public static class DaemonCommand
             dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership);
         var connectorStopAgent = new StopAgent(store, connectorPrincipal, backends);
         var authorityRows = new PRFactoryAuthorityStore(database);
+        // The daemon is the sole writer of team workspaces; the singleton serializes Git mutations.
+        using var teamWorkspaces = new TeamWorkspace(new PRFactoryWorkspaceStore(database));
+        var connectorWorkspaces = new PRFactoryWorkspace(teamWorkspaces);
+        var workspaceRoot = Path.Combine(state.Path, "prfactory-workspaces");
         // One long-lived authority per connected server; ticks construct the adapter afresh.
         PRFactoryAuthority? authority = null;
         dispatcher.LaunchGate = jobId =>
@@ -263,7 +267,7 @@ public static class DaemonCommand
                     cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId, Log, externalTeam,
                     connectorStop.Execute,
                     new FollowUpJob(store, connectorPrincipal, connectorAccept,
-                        dispatcher.InterruptRunning).Execute, jobLogs, authority).TickAsync(machineId, ct);
+                        dispatcher.InterruptRunning).Execute, jobLogs, authority, connectorWorkspaces, workspaceRoot).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
             },
             onTokenRejected: ct => authority?.TransportFailureAsync(Guid.Empty, System.Net.HttpStatusCode.Unauthorized, ct) ?? Task.CompletedTask);

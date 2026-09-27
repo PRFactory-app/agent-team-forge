@@ -12,8 +12,11 @@ public sealed partial class PRFactoryWorkItems(
     Action onAccepted, Func<string, string?>? leadSessionFor = null, Action<string>? log = null,
     ExternalTeam? externalTeam = null, Func<string, JobResult>? stopJob = null,
     Func<FollowUpRequest, JobResult>? followUp = null, JobLogs? jobLogs = null,
-    PRFactoryAuthority? authority = null)
+    PRFactoryAuthority? authority = null, PRFactoryWorkspace? workspaces = null, string? workspaceRoot = null)
 {
+    // Reserved lead turn for the post-integration finalization; command turns continue above it.
+    const int FinalizeTurn = 1000;
+
     public async Task TickAsync(Guid? machineId, CancellationToken ct)
     {
         if (authority is not null)
@@ -238,10 +241,26 @@ public sealed partial class PRFactoryWorkItems(
             await FinishAsync(team, item, false, "team recipe permits no concurrent children", repo.Directory, ct);
             return;
         }
+        WorkspaceSnapshot? workspace = null;
+        if (workspaces is not null)
+        {
+            try
+            {
+                workspace = await PrepareWorkspaceAsync(item, repo, managedMembers, ct);
+            }
+            catch (InvalidOperationException ex)
+            {
+                // Identity mismatch, missing continuation SHA or an unreachable branch: fail visibly, keep files.
+                await FinishAsync(team, item, false, $"workspace preparation failed: {ex.Message}", repo.Directory, ct);
+                return;
+            }
+        }
+        string Cwd(string member) => workspace is null ? repo.Directory
+            : member == "lead" ? workspace.LeadPath : workspace.Members.Single(m => m.Name == member).Path;
         JobRecord? lead;
         try
         {
-            lead = await SubmitMember(item, "lead", item.AgentType, item.Model, item.Effort, item.Prompt, repo.Directory, ct);
+            lead = await SubmitMember(item, "lead", item.AgentType, item.Model, item.Effort, item.Prompt, Cwd("lead"), workspace is not null, ct);
         }
         catch (PRFactoryJobSubmissionException ex)
         {
@@ -283,7 +302,7 @@ public sealed partial class PRFactoryWorkItems(
             try
             {
                 child = await SubmitMember(item, member.Name, member.Backend ?? item.AgentType,
-                    member.Model ?? item.Model, member.Effort ?? item.Effort, instruction, repo.Directory, ct);
+                    member.Model ?? item.Model, member.Effort ?? item.Effort, instruction, Cwd(member.Name), workspace is not null, ct);
             }
             catch (PRFactoryJobSubmissionException ex)
             {
@@ -342,13 +361,19 @@ public sealed partial class PRFactoryWorkItems(
             teams.MarkExternalClosed(server, item.Id);
         }
         var failed = allJobs.FirstOrDefault(j => j.Status != JobStatus.Completed);
+        if (failed is null && workspace is { RepositoryPath: not null, ReadOnly: false } && managedMembers.Length > 0
+            && teams.MemberJob(server, item.Id, "lead", FinalizeTurn) is null)
+        {
+            await IntegrateAndFinalizeAsync(team, item, workspace, lead, ct);
+            return;
+        }
         await FinishAsync(team, item, failed is null || !waitForManaged && lead.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation,
             failed?.ReasonCode ?? "job failed", repo.Directory, ct,
             lead.ResultText ?? (!waitForManaged ? "External members completed their work; replies are in the agent stream." : null));
     }
 
     async Task<JobRecord?> SubmitMember(PRFactoryWorkItem item, string member,
-        PRFactoryAgentType agent, string? model, PRFactoryEffort? effort, string instruction, string cwd, CancellationToken ct)
+        PRFactoryAgentType agent, string? model, PRFactoryEffort? effort, string instruction, string cwd, bool isolated, CancellationToken ct)
     {
         var existingId = teams.MemberJob(server, item.Id, member, 0);
         if (existingId is not null)
@@ -368,7 +393,8 @@ public sealed partial class PRFactoryWorkItems(
             {
                 Backend = backend,
                 Cwd = cwd,
-                Worktree = !item.ReadOnly,
+                // A prepared team workspace is already isolated; never re-pin a second worktree from incidental HEAD.
+                Worktree = !isolated && !item.ReadOnly,
                 Model = model,
                 Effort = effort?.ToString().ToLowerInvariant(),
                 LeadSessionId = leadSessionFor?.Invoke(cwd),
@@ -393,6 +419,81 @@ public sealed partial class PRFactoryWorkItems(
         }
 
         return getJob(jobId);
+    }
+
+    string WorkspaceKey(Guid id) => $"{server}|{id:D}";
+
+    async Task<WorkspaceSnapshot> PrepareWorkspaceAsync(PRFactoryWorkItem item, RepositoryMapping repo,
+        PRFactoryTeamMember[] members, CancellationToken ct)
+    {
+        var key = WorkspaceKey(item.Id);
+        var names = members.Select(m => m.Name).ToArray();
+        var root = workspaceRoot ?? throw new InvalidOperationException("Workspace root is not configured.");
+        if (workspaces!.Get(key) is { } saved)
+        {
+            // Recorded choices are immutable; recovery only re-materializes the owned checkouts.
+            return await workspaces.PrepareAsync(new WorkspaceRequest(key, root, saved.RepositoryId, saved.RepositoryPath,
+                saved.Remote, saved.BaseBranch, saved.PublishBranch, saved.ReadOnly, names));
+        }
+        ct.ThrowIfCancellationRequested();
+        var projectInit = string.Equals(item.TicketSource, "ProjectInit", StringComparison.OrdinalIgnoreCase);
+        // Same naming as PRFactory's InitBranchNaming when an older server omits PublishBranch.
+        var publish = item.PublishBranch is { Length: > 0 } explicitBranch ? explicitBranch.Trim()
+            : projectInit && item.TicketKey is { Length: > 0 } ticketKey ? $"init/{ticketKey.Trim()}" : $"prfactory/{item.Id}";
+        // ProjectInit resumes its own publish branch when it already exists remotely.
+        var startFrom = projectInit && item.StartFromBranch == publish ? null : item.StartFromBranch;
+        return await workspaces.PrepareAsync(new WorkspaceRequest(key, root, item.RepositoryId.ToString("D"), repo.Directory,
+            repo.Remote ?? await TeamWorkspace.OriginAsync(repo.Directory),
+            repo.BaseBranch ?? await TeamWorkspace.DefaultBranchAsync(repo.Directory),
+            publish, item.ReadOnly, names, StartFromBranch: startFrom, ProjectInit: projectInit));
+    }
+
+    /// <summary>Children are quiescent and succeeded: integrate their commits, stage their documents, then one lead pass.</summary>
+    async Task IntegrateAndFinalizeAsync(PRFactoryTeamRecord team, PRFactoryWorkItem item, WorkspaceSnapshot workspace,
+        JobRecord lead, CancellationToken ct)
+    {
+        try
+        {
+            await Guard(item.Id, () => workspaces!.IntegrateChildrenAsync(workspace), ct);
+            foreach (var member in workspace.Members)
+            {
+                var folder = string.IsNullOrWhiteSpace(item.TicketArtefactFolder) ? null : Path.Combine(member.Path, item.TicketArtefactFolder);
+                if (folder is null || !Directory.Exists(folder)) { continue; }
+                var documents = Directory.EnumerateFiles(folder)
+                    .Where(f => Path.GetExtension(f).ToLowerInvariant() is ".md" or ".html" or ".json")
+                    .Select(f => Path.GetRelativePath(member.Path, f)).Order(StringComparer.Ordinal).ToArray();
+                workspaces!.GatherDocuments(workspace, member.Order, documents);
+            }
+        }
+        catch (WorkspaceConflictException ex)
+        {
+            await FinishAsync(team, item, false, $"child integration conflict in {string.Join(", ", ex.Files)}; resolve manually", workspace.LeadPath, ct);
+            return;
+        }
+        catch (InvalidOperationException ex)
+        {
+            await FinishAsync(team, item, false, $"child integration failed: {ex.Message}", workspace.LeadPath, ct);
+            return;
+        }
+        var instruction = "All team members finished and their commits are now integrated into your branch. "
+            + $"Their documents are staged (read-only copies) under {workspace.StagingPath}. Review and test the integrated code, "
+            + "choose the canonical phase documents in the ticket folder, and commit every intended change before ending your turn.";
+        var result = JobResult.Fail(JobErrors.DaemonUnhealthy);
+        await Guard(item.Id, () =>
+        {
+            result = followUp?.Invoke(new FollowUpRequest(lead.JobId, instruction, $"prf-finalize:{item.Id:N}"))
+                ?? JobResult.Fail(JobErrors.DaemonUnhealthy);
+            if (result.Error is null) { teams.RecordMember(server, item.Id, "lead", FinalizeTurn, result.Job!.JobId); }
+            return Task.CompletedTask;
+        }, ct);
+        if (result.Error is null)
+        {
+            onAccepted();
+        }
+        else if (result.Error is not (JobErrors.QueueFull or JobErrors.StorageBusy or JobErrors.StorageUnavailable or JobErrors.DaemonUnhealthy))
+        {
+            await FinishAsync(team, item, false, $"lead finalization could not resume: {result.Error}", workspace.LeadPath, ct);
+        }
     }
 
     async Task<bool> AdvanceExternalAsync(PRFactoryWorkItem item, string[] names, CancellationToken ct)

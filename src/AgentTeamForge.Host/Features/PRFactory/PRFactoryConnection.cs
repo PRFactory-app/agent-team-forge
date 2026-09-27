@@ -8,7 +8,9 @@ using AgentTeamForge.DAL.Features.External;
 
 namespace AgentTeamForge.Host.Features.PRFactory;
 
-public sealed record RepositoryMapping(Guid Id, string Directory, string[]? ExternalMembers = null);
+// Remote/BaseBranch pin the approved origin URL and base; when absent they are read from the checkout once and recorded.
+public sealed record RepositoryMapping(Guid Id, string Directory, string[]? ExternalMembers = null,
+    string? Remote = null, string? BaseBranch = null);
 public sealed record PRFactorySettings(string Url, RepositoryMapping[] Repositories);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, WriteIndented = true)]

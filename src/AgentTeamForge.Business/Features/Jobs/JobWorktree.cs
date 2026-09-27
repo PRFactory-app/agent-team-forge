@@ -27,10 +27,34 @@ public static class JobWorktree
 
     public static async Task<string[]?> TrackedPathsAsync(string cwd, CancellationToken ct)
     {
-        var output = await GitCaptureAsync(cwd, QueryTimeout, false, ct, "ls-files", "-z", "--full-name", "--", ":/");
+        var output = await GitCaptureAsync(cwd, QueryTimeout, false, false, ct, "ls-files", "-z", "--full-name", "--", ":/");
         // Never certify a truncated tree. The query helper bounds captured output.
         return output is null || Encoding.UTF8.GetByteCount(output) >= MaxGitOutputBytes
             ? null : output.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+    }
+
+    public static bool IsCommitSha(string value) => (value.Length is 40 or 64) && value.All(Uri.IsHexDigit);
+
+    /// <summary>Prepare from the persisted SHA, never resolve a moving branch on recovery.</summary>
+    public static bool Prepare(string repository, string path, string branch, string startingSha)
+    {
+        if (!IsCommitSha(startingSha)) { return false; }
+        if (Directory.Exists(path))
+        {
+            return Git(path, QueryTimeout, "rev-parse", "--show-prefix") == string.Empty &&
+                Branch(path) == branch &&
+                Git(path, QueryTimeout, "merge-base", "--is-ancestor", startingSha, "HEAD") is not null &&
+                Git(path, QueryTimeout, "rev-parse", "--path-format=absolute", "--git-common-dir") ==
+                Git(repository, QueryTimeout, "rev-parse", "--path-format=absolute", "--git-common-dir");
+        }
+        PrivateFiles.CreateDirectory(Path.GetDirectoryName(path)!);
+        // An interrupted worktree add can have already created the branch.
+        var existing = Git(repository, QueryTimeout, "rev-parse", "--verify", $"refs/heads/{branch}");
+        if (existing is not null)
+        {
+            return existing == startingSha && Git(repository, AddTimeout, "worktree", "add", path, branch) is not null;
+        }
+        return Git(repository, AddTimeout, "worktree", "add", "-b", branch, path, startingSha) is not null;
     }
 
     public static bool Prepare(JobRecord job)
@@ -44,7 +68,9 @@ public static class JobWorktree
         {
             // A follow-up and a restarted daemon must preserve the existing checkout.
             // The agent may have switched branches there; only require it to still be a worktree root.
-            return Git(job.WorktreePath, QueryTimeout, "rev-parse", "--show-prefix") == string.Empty;
+            return job.WorktreeBase is not null && IsCommitSha(job.WorktreeBase) &&
+                Git(job.WorktreePath, QueryTimeout, "rev-parse", "--show-prefix") == string.Empty &&
+                Git(job.WorktreePath, QueryTimeout, "merge-base", "--is-ancestor", job.WorktreeBase, "HEAD") is not null;
         }
 
         if (job.ParentJobId is not null || job.Cwd is null || job.WorktreeBranch is null || job.WorktreeBase is null)
@@ -57,7 +83,7 @@ public static class JobWorktree
             var parent = Path.GetDirectoryName(job.WorktreePath)!;
             PrivateFiles.CreateDirectory(parent);
 
-            return Git(job.Cwd, AddTimeout, "worktree", "add", "-b", job.WorktreeBranch, job.WorktreePath, job.WorktreeBase) is not null;
+            return Prepare(job.Cwd, job.WorktreePath, job.WorktreeBranch, job.WorktreeBase);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -83,9 +109,13 @@ public static class JobWorktree
         GitAsync(cwd, timeout, CancellationToken.None, args).GetAwaiter().GetResult();
 
     internal static Task<string?> GitAsync(string cwd, TimeSpan timeout, CancellationToken cancellationToken, params string[] args) =>
-        GitCaptureAsync(cwd, timeout, true, cancellationToken, args);
+        GitCaptureAsync(cwd, timeout, true, false, cancellationToken, args);
 
-    static async Task<string?> GitCaptureAsync(string cwd, TimeSpan timeout, bool trim, CancellationToken cancellationToken, params string[] args)
+    /// <summary>Trimmed output; with includeFailure a nonzero exit still returns its output (e.g. merge-tree conflicts).</summary>
+    internal static Task<string?> GitOutputAsync(string cwd, TimeSpan timeout, bool includeFailure, CancellationToken cancellationToken, params string[] args) =>
+        GitCaptureAsync(cwd, timeout, true, includeFailure, cancellationToken, args);
+
+    static async Task<string?> GitCaptureAsync(string cwd, TimeSpan timeout, bool trim, bool includeFailure, CancellationToken cancellationToken, params string[] args)
     {
         try
         {
@@ -140,7 +170,7 @@ public static class JobWorktree
             drain.CancelAfter(DrainGrace);
             var text = await output;
             cancellationToken.ThrowIfCancellationRequested();
-            return process.ExitCode == 0 ? trim ? text.Trim() : text : null;
+            return process.ExitCode == 0 || includeFailure ? trim ? text.Trim() : text : null;
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
         {
