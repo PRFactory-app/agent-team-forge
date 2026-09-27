@@ -21,7 +21,7 @@ those machines).
 | Headless Pi | Tested | Untested (Pi not installed on the test VM) | Untested |
 | Interactive agents | Herdr: tested | Windows Terminal (`wt`): Claude and Codex tested; see open items | Terminal.app / kitty: untested |
 | Daemon restart keeps live TUIs | Tested (Herdr) | Implemented; awaiting re-validation | Untested |
-| Native wake: Claude lead | Tested | Not available (Linux-only channel) | Not available |
+| Native wake: Claude lead/member | Host-local relay live-tested with an external member | Named-pipe transport implemented; runtime untested | Unix-socket transport implemented; runtime untested |
 | Native wake: Codex lead | Tested | Untested in ATF | Untested |
 | Native wake: Pi lead | Tested | Untested | Untested |
 | External members (Codex Desktop) | Tested | Untested | Untested |
@@ -54,9 +54,26 @@ locked; `atf stop` printed raw `taskkill` output.
 ## Open items
 
 - Re-run the Windows matrix on the current release, including Pi.
-- Claude native wake on Windows and macOS (currently poll `get_job`).
-- Wake for a Claude Desktop external member (currently poll `external_read`).
+- Validate Claude native wake on Windows and macOS, including pipe ACLs, server PID proof, stalled-reader cancellation and macOS host ancestry.
+- Validate specific Claude Desktop channel exports; sessions without an exported channel or recognizable host retain manual `external_read`.
 - Validate `install.ps1` and upgrade/uninstall on Windows.
 - First macOS run by a volunteer, including Terminal.app tab placement.
 - win-agent-teams parity gaps: see the
   [migration guide](migrating-from-win-agent-teams.md).
+
+## Claude external-member wake (2026-09-27)
+
+Claude Code 2.1.283 (Sonnet) in an isolated Linux interactive PTY joined an ATF
+team, sent READY, and ended its turn. With hooks explicitly disabled, two
+native notices caused `external_read` followed by replies
+`ACK: WAKE-relay-first` (10:44:29 UTC) and `ACK: WAKE-relay-second`
+(10:45:36 UTC), in the same process/session without further TUI input.
+The first direct-daemon experiment was held as an unidentified peer; the
+successful path posts through the recipient's own MCP bridge.
+
+The test used a dedicated state directory, port 18763, and copied credentials
+in a disposable HOME. Test processes, credential copies and daemon state were
+cleaned up. Windows/macOS and arbitrary Claude Desktop sessions were not tested.
+The final runtime gate (`DOTNET_PROCESSOR_COUNT=2 scripts/verify.sh`) passed
+with 709 tests, 7 opt-in live tests skipped, and 40/40 published Linux AOT
+scenarios. Later main changes were documentation and test comments only.

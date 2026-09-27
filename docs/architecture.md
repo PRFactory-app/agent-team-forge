@@ -157,9 +157,17 @@ control/result path. The user-facing rules are in
   transaction.
 - `WakeCoordinator` scans committed terminal jobs and unread external
   messages, coalesces them and posts a notice through the host's native path:
-  Claude channel socket (`ClaudeChannelWake`, Linux only), `codex queue`
+  Claude host-local channel (`ClaudeChannelWake`), `codex queue`
   (`CodexQueueWake`) or the Pi extension spool (`PiExtensionWake`, read by
   `extensions/pi-wake`).
+- For Claude, the daemon offers a notice through `ClaudeWakeMailbox`; the
+  recipient's own MCP bridge claims it over authenticated IPC, writes its own
+  channel and reports the write outcome. Offers are single-claim and bound to
+  channel credentials and host PID. A ten-second timeout or daemon restart
+  leaves the durable inbox unread for retry; duplicate notices are possible.
+  Linux/macOS select Unix sockets. Windows verifies the connected local pipe's
+  owner user SID and server PID before sending, uses cancellable asynchronous
+  I/O, and reserves incomplete writes until they drain (at most eight).
 - Reading the job through the registered bridge marks it read. Failed posts
   back off; outstanding unread work is re-notified.
 
@@ -169,7 +177,7 @@ control/result path. The user-facing rules are in
 session join a lead with a one-time ticket, then exchange durable messages
 through `send_message`/`read_messages` (lead) and
 `external_send`/`external_read` (member). Tickets and tokens are stored as
-hashes. Member wake is Codex queue only. The same team API serves the
+hashes. Member wake supports Codex queue and Claude host-local channel notices. The same team API serves the
 PRFactory connector with an owner key instead of a lead session. Usage:
 [external members](usage.md#external-members).
 

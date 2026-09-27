@@ -28,13 +28,16 @@ extension.
 
 ## Consequences
 
-- Claude wake needs `crossSessionInbound: accept` in Claude settings;
-  `atf setup` sets it.
+- Claude notices are posted by the recipient's own MCP bridge. Direct daemon
+  writes can be held as an unidentified peer (observed with Claude 2.1.283).
+  Setup also sets `crossSessionInbound: accept`; no wake hooks are installed.
 - Codex may not pass `CODEX_THREAD_ID` to MCP; the lead then calls
   `register_codex_wake` once.
 - Pi needs the bundled `extensions/pi-wake` extension.
-- Claude channel wake is Linux-only (`ClaudeChannelWake.cs`). Windows and
-  macOS Claude leads must poll. Codex and Pi wake are cross-platform in code but
-  only verified on Linux.
-- External Desktop members have Codex queue wake only; a Claude Desktop member
-  must poll `external_read`.
+- Claude channel wake selects Unix sockets on Linux/macOS and local named
+  pipes on Windows. Windows/macOS runtime remains untested. Codex and Pi wake
+  are cross-platform in code but only verified on Linux.
+- External Claude members register the host-local channel at join. Sessions
+  without exported channel credentials or a recognizable Claude ancestor,
+  including Desktop configurations without that mechanism, must use
+  `external_read`. Registration never invents a working channel.
