@@ -16,7 +16,8 @@ checkout (found through Git's common directory, so linked worktrees share it)
 and fall back to `dotnet` on PATH. Override with `DOTNET=/path/to/dotnet`. The
 scripts never install an SDK or change your PATH. Native AOT publishing also
 needs the platform's native compiler and linker, and restore may need network
-access.
+access. The reasons for .NET 11 and AOT are in
+[ADR 0001](docs/adr/0001-dotnet-11-native-aot.md).
 
 To build the apphost directly:
 
@@ -45,9 +46,40 @@ Other scripts:
 - `scripts/demo-real.sh [claude|codex|pi|fake]` — opt-in end-to-end run against
   a real agent CLI. It spends tokens; `fake` is a plumbing dry run.
 - `scripts/demo-web.sh` — start a demo daemon with the web console.
-- `scripts/release-build.sh VERSION` — build a local Native AOT release bundle
-  (linux-x64 or osx-arm64). Publishing a release is a separate, owner-approved
-  step.
+- `scripts/release-build.sh VERSION [OUTPUT_DIR]` — build a local Native AOT
+  release bundle (linux-x64 or osx-arm64). See [Releases](#releases).
+
+To publish a Native AOT apphost by hand:
+
+```bash
+DOTNET="$(realpath "$(git rev-parse --path-format=absolute --git-common-dir)/../.tools/dotnet11/dotnet")"
+export DOTNET_ROOT="$(dirname "$DOTNET")"
+"$DOTNET" publish src/AgentTeamForge.Host/AgentTeamForge.Host.csproj \
+  -c Release -r linux-x64 --self-contained true -p:PublishAot=true -o artifacts/dev
+```
+
+### Releases
+
+A `vX.Y.Z` tag runs `.github/workflows/release.yml`. The version in the
+package and in `atf --version` comes from the tag.
+
+- `scripts/release-build.sh` publishes Native AOT on the matching host and
+  produces `atf-VERSION-<rid>.tar.gz` plus `SHA256SUMS`
+  (`SHA256SUMS-osx-arm64` on macOS), then runs the extracted binary. Linux also
+  runs the published scenario smoke.
+- A `windows-latest` job publishes `atf-VERSION-win-x64.zip` with
+  `SHA256SUMS-win-x64` and separate debug symbols. Windows AOT cannot be
+  cross-compiled from Linux.
+- Bundles contain the native executable and its native libraries (including
+  SQLite); no .NET runtime is needed on the target. Linux builds on Ubuntu
+  24.04 (glibc 2.39) and links only `libc`, `libm` and the loader.
+- The workflow uploads artifacts; publishing the GitHub release is a separate,
+  owner-approved step. A CI build is not platform validation (see
+  [platform status](docs/platform-status.md)).
+- `install.sh` installs payloads into
+  `~/.local/share/agentteamforge/releases/VERSION` and links
+  `~/.local/bin/atf`. Local test install:
+  `sh install.sh --archive atf-VERSION-<rid>.tar.gz --checksum SHA256SUMS`.
 
 ### Testing against a running daemon safely
 
@@ -77,7 +109,7 @@ src/
 extensions/pi-wake/          Pi extension for native wake notices
 scripts/                     verify, demo and release scripts
 install.sh                   release installer
-docs/                        user docs, architecture, plans, reports
+docs/                        user docs, architecture, data model, ADRs
 ```
 
 The dependency direction is **Host → Business → DAL**. Code is organized by
@@ -126,12 +158,16 @@ Report failures honestly.
 | Document | Contents |
 | --- | --- |
 | [AGENTS.md](AGENTS.md) | Contributor and agent instructions (authoritative). |
-| [HANDOFF.md](HANDOFF.md) | Orientation for a fresh session and the owner's standing decisions. |
-| [Project status](docs/project-status.html) | What is verified, what remains, platform status. |
-| [Quickstart](docs/quickstart.md) / [Install](docs/install.md) | User setup, MCP tools, CLI, wake, state and pruning. |
-| [Architecture](docs/architecture.md) | Host → Business → DAL, process boundaries, design rationale. |
+| [Install](docs/install.md) | Install, upgrade, uninstall, login autostart. |
+| [Usage](docs/usage.md) | Setup, MCP tools, CLI, wake, external members, state and pruning. |
 | [Launch modes](docs/terminal-modes.md) | Interactive vs headless; Herdr, Windows Terminal, macOS. |
-| [Web console](docs/web-console.md) / [Tier settings](docs/settings.md) | Operator console behavior and API. |
-| [Plans](docs/plans/) | Feature plans, including the [PRFactory connector](docs/plans/prfactory-connector.md). |
-| [Reports](docs/reports/) | Test reports, such as the Windows v0.0.1 end-to-end check. |
-| [Roadmap](docs/roadmap.md), [plan](docs/plan.md), [product scope](docs/product-scope.md) | Longer-range design and scope. Planning documents are not evidence of working software. |
+| [Web console](docs/web-console.md) | Operator console, model tiers, security. |
+| [Migrating from win-agent-teams](docs/migrating-from-win-agent-teams.md) | Tool-by-tool mapping and parity gaps. |
+| [PRFactory connector](docs/prfactory-connector.md) | Opt-in connector to PRFactory. |
+| [Architecture](docs/architecture.md) | Processes, projects, job lifecycle, crash guarantees, backends, wake. |
+| [Data model](docs/data-model.md) | SQLite schema and transaction rules. |
+| [ADRs](docs/adr/README.md) | Architecture decisions, including dropped scope. |
+| [Platform status](docs/platform-status.md) | What is tested on Linux, Windows and macOS. |
+
+Older plans, spikes, reviews and reports were removed from the tree; git
+history keeps them.

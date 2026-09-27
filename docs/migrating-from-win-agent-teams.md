@@ -3,7 +3,7 @@
 ATF coordinates durable **jobs**, not named members in a lead's team. Use
 `claude`, `codex`, or `pi` as the ATF backend name (`claude-code` in the
 reference becomes `claude`). Choose headless or Herdr at setup; see the
-[Linux quickstart](quickstart.md). This table reflects the current Linux MCP
+[usage guide](usage.md). This table reflects the current Linux MCP
 surface. **Landing** means work is in flight, not an available tool.
 
 | win-agent-teams MCP tool or behavior | ATF equivalent | Difference |
@@ -19,7 +19,7 @@ surface. **Landing** means work is in flight, not an available tool.
 | `agent_status` | `get_job` / `list_jobs` | Job status; no heartbeat or member binding row. |
 | `check_agent` | `get_job`, `get_job_output` | Status/result and progress log, not a transcript-state probe. |
 | `agent_watch_paths` | None needed | Native notice wakes a registered lead; no file watcher. |
-| `install_lead_wake` | `register_codex_wake` for Codex; setup for Claude | Codex reads `CODEX_THREAD_ID` from its shell. Claude inbound setup and Pi extension are in the quickstart. |
+| `install_lead_wake` | `register_codex_wake` for Codex; setup for Claude | Codex reads `CODEX_THREAD_ID` from its shell. Claude inbound setup and Pi extension are in the [usage guide](usage.md#native-wake). |
 | `install_member_wake` | None needed | ATF has no external-member inbox watcher. |
 | `list_backends` | None | Choose `claude`, `codex`, or `pi` from configured mode; no discovery MCP tool yet. |
 | `delivery_status` | `get_job`; retry with the same idempotency key if acceptance is uncertain | No separate delivery receipt tool. |

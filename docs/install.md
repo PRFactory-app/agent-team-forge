@@ -39,7 +39,7 @@ If you intentionally test a temporary binary or state directory, setup requires
 use `atf start --state-dir DIR` or `atf mcp --state-dir DIR` instead.
 
 Linux arm64 and musl are not supported. macOS arm64 and Windows x64 remain
-tester-only until validated on those machines. See [quickstart](quickstart.md)
+tester-only until validated on those machines. See [usage](usage.md)
 for use, and `"$HOME/.local/bin/atf" uninstall` for removal. See
 [Upgrade and uninstall](#upgrade-and-uninstall).
 

@@ -2,8 +2,8 @@ namespace AgentTeamForge.Tests.Support;
 
 /// <summary>
 /// MODEL ONLY. A small deterministic model of the public Codex 0.157.1 thread
-/// queue contract as read from source (openai/codex 36650394c5b3, see
-/// docs/research/codex-queue-admission.md). It is not a Codex client and proves
+/// queue contract as read from source (openai/codex 36650394c5b3; research note
+/// docs/research/codex-queue-admission.md in git history). It is not a Codex client and proves
 /// nothing about native behaviour; it exists to express protocol counterexamples
 /// that the application must fence. This is the durable queue store (shared by
 /// every runtime); <see cref="Runtime"/> is one server process loading a thread.

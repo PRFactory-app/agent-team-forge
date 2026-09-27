@@ -7,7 +7,7 @@ namespace AgentTeamForge.Tests.Support.ManagedDemo;
 /// <summary>
 /// D2 characterization surface, now delegating to the production Herdr launch rules promoted by D7
 /// (<c>src/AgentTeamForge.Business/Features/Agents/Terminals</c>), so the reviewed vectors pin
-/// production code. Provenance of the original rules: docs/spikes/char-d2-report.md. Nothing here
+/// production code. Provenance of the original rules: docs/spikes/char-d2-report.md (git history). Nothing here
 /// starts a process.
 /// </summary>
 public static class HerdrLaunchFixture
