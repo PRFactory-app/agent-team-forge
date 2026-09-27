@@ -28,7 +28,10 @@ internal static class InteractiveAgentPreflight
             var config = ClaudeConfigRoot.Resolve(environment, workingDirectory);
             // With an override Claude keeps global state in the override directory;
             // otherwise it lives beside ~/.claude, at ~/.claude.json.
-            var global = environment("CLAUDE_CONFIG_DIR") is { Length: > 0 }
+            // A legacy <config>/.config.json still takes precedence when present.
+            var legacy = Path.Combine(config, ".config.json");
+            var global = !Missing(legacy) ? legacy
+                : environment("CLAUDE_CONFIG_DIR") is { Length: > 0 }
                 ? Path.Combine(config, ".claude.json") : Path.Combine(Path.GetDirectoryName(config)!, ".claude.json");
             if (!Missing(global))
             {

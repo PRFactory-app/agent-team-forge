@@ -105,6 +105,15 @@ public sealed class InteractiveAgentPreflightTests
     }
 
     [Fact]
+    public void Legacy_config_json_takes_precedence_over_missing_global_file()
+    {
+        using var state = new TempStateDir();
+        Directory.CreateDirectory(state.File(".claude"));
+        File.WriteAllText(Path.Combine(state.Path, ".claude", ".config.json"), "{\"hasCompletedOnboarding\":true,\"oauthAccount\":{}}");
+        Assert.Null(Check(Env(state.Path), state.Path));
+    }
+
+    [Fact]
     public void Unreadable_shape_and_other_agents_keep_the_bounded_path()
     {
         using var state = new TempStateDir();
