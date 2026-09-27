@@ -42,8 +42,10 @@ public class HerdrTerminalTests
     [Fact]
     public async Task OwnedLaunch_RetainsHandleAndBootstrapProof()
     {
+        using var state = new TempStateDir();
         var fake = new FakeHerdr();
-        var terminal = Terminal(fake);
+        var environment = new Dictionary<string, string?>(Desktop) { ["HOME"] = state.Path };
+        var terminal = Terminal(fake, environment);
 
         var session = await terminal.StartSessionAsync(CancellationToken.None);
         var binding = await terminal.OpenAgentTabAsync(session, "agent-a", "/work", Bootstrap, CancellationToken.None);
@@ -59,13 +61,30 @@ public class HerdrTerminalTests
         var server = Assert.Single(fake.Detached);
         Assert.Equal(["-f", "sh", "-c", HerdrCommands.ServerScript, session.SessionName], server.ArgumentList);
         var tab = fake.Calls.Single(c => c.Args is ["tab", "create", ..]);
-        Assert.Equal(["tab", "create", "--workspace", "w1", "--cwd", "/work", "--label", "agent-a", "--env", "ATF_BOOTSTRAP_FILE=" + Bootstrap, "--no-focus", "--env", "CODEX_HOME=/home/u/.codex"], tab.Args);
+        Assert.Equal(["tab", "create", "--workspace", "w1", "--cwd", "/work", "--label", "agent-a", "--env", "ATF_BOOTSTRAP_FILE=" + Bootstrap, "--no-focus"], tab.Args);
+        Assert.Null(terminal.Env("CODEX_HOME"));
         foreach (var env in fake.Calls.Select(c => c.Env).Append(server.Environment))
         {
             Assert.DoesNotContain(env.Values, v => v?.Contains(Sentinel, StringComparison.Ordinal) == true);
             Assert.False(env.TryGetValue("HERDR_SOCKET_PATH", out var socket) && socket == "/home/u/.config/herdr/herdr.sock");
         }
         Assert.All(fake.Calls.Where(c => c.Args is ["workspace" or "tab" or "pane", ..]), c => Assert.Equal(fake.SocketPath, c.Env["HERDR_SOCKET_PATH"]));
+    }
+
+    [Fact]
+    public async Task ExistingDefaultCodexHomeIsPinnedForSharedTab()
+    {
+        using var state = new TempStateDir();
+        Directory.CreateDirectory(Path.Combine(state.Path, ".codex"));
+        var fake = new FakeHerdr { SharedRunning = true };
+        var environment = new Dictionary<string, string?>(Desktop) { ["HOME"] = state.Path };
+        var terminal = Terminal(fake, environment);
+
+        var session = await terminal.ExistingSessionAsync("default", CancellationToken.None);
+        await terminal.OpenAgentTabAsync(session, "agent-a", "/work", Bootstrap, CancellationToken.None);
+
+        Assert.Equal(Path.Combine(state.Path, ".codex"), terminal.Env("CODEX_HOME"));
+        Assert.Contains("CODEX_HOME=" + terminal.Env("CODEX_HOME"), fake.Calls.Single(c => c.Args is ["tab", "create", ..]).Args);
     }
 
     [Theory]
