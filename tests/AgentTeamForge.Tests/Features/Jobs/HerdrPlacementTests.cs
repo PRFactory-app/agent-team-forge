@@ -10,7 +10,7 @@ public sealed class HerdrPlacementTests
     {
         using var state = new TempStateDir();
         var settings = new HerdrPlacement(state.Path);
-        Assert.Equal("own-session", settings.Resolve(null));
+        Assert.Equal("herdr-session:default", settings.Resolve(null));
         settings.Change("herdr-session:default");
         Assert.Equal("herdr-session:default", new HerdrPlacement(state.Path).Resolve(null));
         Assert.Equal("own-session", settings.Resolve("own-session"));
@@ -23,7 +23,7 @@ public sealed class HerdrPlacementTests
         using var state = new TempStateDir();
         File.WriteAllText(state.File("herdr-placement.json"), "broken");
         var settings = new HerdrPlacement(state.Path);
-        Assert.Equal("own-session", settings.Default);
+        Assert.Equal("herdr-session:default", settings.Default);
         Assert.Throws<ArgumentException>(() => settings.Change("herdr-session:bad;name"));
         Assert.Throws<ArgumentException>(() => settings.Resolve("herdr-session:"));
     }

@@ -35,7 +35,7 @@
   let modelOptions = {};
   let tierSettings = [];
   let herdrMode = false;
-  let defaultPlacement = 'own-session';
+  let defaultPlacement = 'herdr-session:default';
   const recentCwds = new Map();
   let pickedDirectory = null;
   let timer = null;
@@ -141,7 +141,7 @@
     modelOptions = r?.model_options || {};
     tierSettings = r?.tiers || tierSettings;
     herdrMode = !!r?.herdr_mode;
-    defaultPlacement = r?.herdr_placement || 'own-session';
+    defaultPlacement = r?.herdr_placement || 'herdr-session:default';
     $('new-agent-placement-field').hidden = !herdrMode;
     $('herdr-settings').hidden = !herdrMode;
     setPlacementControls('new-agent', defaultPlacement);
@@ -591,10 +591,10 @@
     expiry.dataset.leadId = leadId;
     container.append(expiry);
     copyable(container, 'Ticket', ticket.token);
-    const call = 'join_team(session_id="' + ticket.session_id + '", token="' + ticket.token + '")';
+    const call = 'mcp__agentteamforge__join_team(session_id="' + ticket.session_id + '", token="' + ticket.token + '")';
     copyable(container, 'Claude Desktop · external-member MCP entry',
       'Join my AgentTeamForge team as ' + ticket.name + '. Call ' + call
-      + '. Save member_token from the reply. Use external_read(member_token=...) to read work and external_send(member_token=..., text=...) to reply.');
+      + '. This AgentTeamForge external team is separate from Codex built-in collaboration. Save member_token from the reply. Use mcp__agentteamforge__external_read(member_token=...) to read work and mcp__agentteamforge__external_send(member_token=..., text=...) to reply.');
     copyable(container, 'Codex Desktop · external-member MCP entry', ticket.join_prompt || call);
   }
 
@@ -982,7 +982,8 @@
         row.append(chips, state);
         open.append(row);
         if (j.startup) {
-          open.append(element('span', 'card-activity', 'Startup: ' + j.startup.phase + ' · ' + j.startup.elapsed_seconds + 's'));
+          const startup = j.startup.no_marker_since_launch ? 'no state marker since launch' : j.startup.phase;
+          open.append(element('span', 'card-activity', 'Startup: ' + startup + ' · ' + j.startup.elapsed_seconds + 's'));
           if (j.startup.hint) open.append(element('span', 'card-activity', j.startup.hint));
         }
         if (preview) open.append(element('span', 'card-activity', '› ' + preview));

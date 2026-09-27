@@ -229,6 +229,8 @@ public sealed class ExternalTeamTests
         await new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero).TickAsync(TestContext.Current.CancellationToken);
         Assert.Single(poster.Notices);
         Assert.Contains("external message", poster.Notices[0]);
+        Assert.Contains("mcp__agentteamforge__external_read", poster.Notices[0]);
+        Assert.Contains("mcp__agentteamforge__read_messages", poster.Notices[0]);
 
         var first = team.ReadLead(lead.SessionId, lead.Workspace, null, 1).Inbox!;
         Assert.Equal("one", Assert.Single(first.Messages).Text);

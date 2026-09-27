@@ -4,7 +4,7 @@ using AgentTeamForge.DAL.Sqlite;
 namespace AgentTeamForge.Business.Features.Jobs;
 
 /// <summary>Authorized read of a job's committed state; never triggers resend.</summary>
-public sealed class GetJob(JobStore store, BoundPrincipal principal)
+public sealed class GetJob(JobStore store, BoundPrincipal principal, bool interactiveLaunch = false)
 {
     public JobResult Execute(string jobId)
     {
@@ -46,7 +46,7 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal)
     {
         ReasonCode = job.Status == JobStatus.Queued && job.ParentJobId is { } parent && store.IsSessionFenced(parent)
             ? "parent_needs_reconciliation" : job.ReasonCode,
-        Startup = StartupProgress.Read(store, job.JobId, job.Status, job.Backend, job.ReasonCode),
+        Startup = StartupProgress.Read(store, job.JobId, job.Status, job.Backend, job.ReasonCode, interactiveLaunch),
         Delivery = Delivery(job)
     };
 
