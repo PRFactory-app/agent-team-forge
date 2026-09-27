@@ -1,4 +1,5 @@
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Features.Jobs;
@@ -273,6 +274,128 @@ public sealed class WakeTests
         Assert.Equal(2, poster.Attempts.Count);
         Assert.Contains(poster.Attempts, attempt => attempt.Notice.Contains("external message(s)"));
         Assert.Contains(poster.Attempts, attempt => attempt.Notice.Contains("completed job(s)"));
+    }
+
+    [Fact]
+    public async Task Resume_preserves_read_jobs_and_get_stop_list_drain_unread_completions()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/wake-read", "parent=1");
+        var accept = fixture.Accept();
+        var endpoint = new JobsEndpoint(accept, fixture.Get(), new FollowUpJob(fixture.Store, JobFixture.Operator, accept), fixture.List(),
+            new StopJob(fixture.Store, JobFixture.Operator, _ => { }), new AgentTeamForge.DAL.Sqlite.DurabilityCheckpoints(null),
+            () => { }, wake, jobStore: fixture.Store, sessions: sessions,
+            stopAgent: new StopAgent(fixture.Store, JobFixture.Operator, new BackendCatalog()));
+
+        IpcResponse Submit(string key) => endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobSubmit,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            Backend = "fake",
+            IdempotencyKey = key,
+            Instruction = key
+        });
+
+        void Complete(string jobId)
+        {
+            var claim = fixture.Store.BeginNextAttempt()!;
+            Assert.Equal(jobId, claim.Job.JobId);
+            Assert.True(fixture.Store.Complete(new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "done"));
+        }
+
+        var beforeWake = Submit("before-wake");
+        Assert.True(beforeWake.Ok, beforeWake.Error);
+        Complete(beforeWake.Job!.JobId);
+
+        var first = wake.Register("codex:before-restart", "codex", "old", "", "/tmp");
+        Assert.True(endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.SessionBindWake,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            WakeKey = first.Key,
+            WakeGeneration = first.Generation
+        }).Ok);
+        Assert.Empty(wake.Pending()); // A terminal job predating wake binding is already known history.
+
+        var getBeforeResume = Submit("get-before-resume");
+        var getAfterResume = Submit("get-after-resume");
+        var stopAgent = Submit("stop-agent");
+        var listJobs = Submit("list-jobs");
+        foreach (var submitted in new[] { getBeforeResume, getAfterResume, stopAgent, listJobs })
+        {
+            Assert.True(submitted.Ok, submitted.Error);
+            Complete(submitted.Job!.JobId);
+        }
+        Assert.Equal(4, Assert.Single(wake.Pending()).Unread);
+
+        Assert.True(endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobGet,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            JobId = getBeforeResume.Job!.JobId
+        }).Ok);
+        Assert.Equal(3, Assert.Single(wake.Pending()).Unread);
+
+        var resumed = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.SessionResume,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            BindingKey = "parent=restart"
+        });
+        Assert.True(resumed.Ok, resumed.Error);
+        var current = wake.Register("codex:after-restart", "codex", "new", "", "/tmp");
+        Assert.True(endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.SessionBindWake,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            WakeKey = current.Key,
+            WakeGeneration = current.Generation
+        }).Ok);
+        Assert.Equal(3, Assert.Single(wake.Pending()).Unread); // Resume must not resurrect the read job.
+
+        Assert.True(endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobGet,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            JobId = getAfterResume.Job!.JobId
+        }).Ok);
+        Assert.Equal(2, Assert.Single(wake.Pending()).Unread);
+
+        var stopped = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobStopAgent,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            JobId = stopAgent.Job!.JobId
+        });
+        Assert.True(stopped.Ok, stopped.Error);
+        Assert.Equal(1, Assert.Single(wake.Pending()).Unread);
+
+        var listed = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobList,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace
+        });
+        Assert.True(listed.Ok, listed.Error);
+        Assert.Contains(listed.Page!.Jobs, job => job.JobId == listJobs.Job!.JobId);
+        Assert.Empty(wake.Pending());
+
+        var newJob = Submit("after-read");
+        Assert.True(newJob.Ok, newJob.Error);
+        Complete(newJob.Job!.JobId);
+        var poster = new FakePoster();
+        await new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero)
+            .TickAsync(TestContext.Current.CancellationToken);
+        Assert.Contains("1 completed job(s)", Assert.Single(poster.Attempts).Notice);
     }
 
     [Fact]
