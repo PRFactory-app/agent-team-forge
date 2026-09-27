@@ -4,7 +4,7 @@ ATF coordinates durable **jobs**. Optional agent names label a sequence of turns
 save the returned job IDs for follow-up and status. Use
 `claude`, `codex`, or `pi` as the ATF backend name (`claude-code` in the
 reference becomes `claude`). Choose headless or Herdr at setup; see the
-[Linux quickstart](quickstart.md). This table reflects the current Linux MCP
+[usage guide](usage.md). This table reflects the current Linux MCP
 surface; tool names differ where ATF uses jobs instead of process records.
 
 | win-agent-teams MCP tool or behavior | ATF equivalent | Difference |
@@ -23,7 +23,7 @@ surface; tool names differ where ATF uses jobs instead of process records.
 | `agent_status` | `get_job` / `list_jobs` | Job status; no heartbeat or member binding row. |
 | `check_agent` | `get_job`, `get_job_output`, `get_job_activity` | Status, native session, startup diagnostics and cursor-based activity. List timestamps expose inactivity; no identical heartbeat/marker heuristics. |
 | `agent_watch_paths` | None needed | Native notice wakes a registered lead; no file watcher. |
-| `install_lead_wake` | `register_codex_wake` for Codex; setup for Claude | Codex reads `CODEX_THREAD_ID` from its shell. Claude inbound setup and Pi extension are in the quickstart. |
+| `install_lead_wake` | `register_codex_wake` for Codex; setup for Claude | Codex reads `CODEX_THREAD_ID` from its shell. Claude inbound setup and Pi extension are in the [usage guide](usage.md#native-wake). |
 | `install_member_wake` | None needed | ATF has no external-member inbox watcher. |
 | `list_backends` | `list_backends` | Configured backends, executable availability, model choices, effective tiers, cached native models and launch mode. Availability checks PATH, not authentication. |
 | `delivery_status` | `get_job`; retry with the same idempotency key if acceptance is uncertain | The `delivery` field retains run ID and submission/acknowledgement timestamps, including after cancellation. Acceptance alone is not delivery. |
@@ -41,7 +41,10 @@ surface; tool names differ where ATF uses jobs instead of process records.
 
 For a manually started member, configure a separate ATF MCP entry with `ATF_EXTERNAL_ONLY=1`. That entry exposes only `join_team`, `external_send`, `external_read`, `external_set_wake`, and `leave_team`, and does not create a lead session. Its bearer token grants access only to its joined lead's inbox. The regular lead entry exposes `send_message`, `read_messages`, `create_join_ticket`, and `close_team`.
 
-An in-daemon connector can own a team without an MCP lead session. `ExternalTeam.CreateActorTeam(ownerKey)` recovers a stable team ID, then `CreateTicketForTeam`, `SendToMember`, `ReadTeam`, `BindTeamWake`, and `CloseTeam` operate on that ID directly. The PRFactory adapter still needs to map a work item to an owner key, deliver server `SendMessage` commands to `SendToMember`, and upload member replies from `ReadTeam` to the agent stream with a persisted cursor. Those bindings are outside this slice.
+An in-daemon connector can own a team without an MCP lead session. PRFactory
+uses this path to map a work item to a stable team, deliver server messages
+to external members and upload replies from a persisted cursor. See the
+[connector guide](prfactory-connector.md) for its current server dependency.
 
 ## Deferred turns and recovery
 

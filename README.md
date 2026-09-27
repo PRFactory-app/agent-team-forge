@@ -48,7 +48,7 @@ submit_job(backend="codex", instruction="Review this branch for bugs", idempoten
 ```
 
 The lead is notified when the job finishes. Run `atf web --open` to watch the
-team. More in the [quickstart guide](docs/quickstart.md).
+team. More in the [usage guide](docs/usage.md).
 
 ## How it works
 
@@ -90,7 +90,7 @@ run `atf prfactory connect`.
 
 ## Learn more
 
-- [Quickstart guide](docs/quickstart.md) and [install, upgrade, uninstall](docs/install.md)
-- [Launch modes](docs/terminal-modes.md), [web console](docs/web-console.md), [model tiers](docs/settings.md)
-- [Architecture](docs/architecture.md) and [project status](docs/project-status.html)
+- [Usage guide](docs/usage.md) and [install, upgrade, uninstall](docs/install.md)
+- [Launch modes](docs/terminal-modes.md), [web console and model tiers](docs/web-console.md)
+- [Architecture](docs/architecture.md) and [platform status](docs/platform-status.md)
 - [Contributing](CONTRIBUTING.md) — building from source, tests and how changes are made
