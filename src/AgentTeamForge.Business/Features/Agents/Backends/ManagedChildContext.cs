@@ -22,6 +22,8 @@ public sealed class ManagedChildContext(JobStore jobs, ExternalTeam teams, strin
         var directory = Path.Combine(stateRoot, "managed-children", root.JobId);
         PrivateFiles.CreateDirectory(directory);
         var contextPath = Path.Combine(directory, "context.json");
+        // Neither local jobs nor the current PRFactory wire can answer a managed child's question.
+        const bool humanInputAvailable = false;
         if (!File.Exists(contextPath))
         {
             var ticket = teams.CreateTicket(lead.SessionId, lead.Workspace, "child-" + root.JobId, "Managed agent").Ticket
@@ -34,14 +36,14 @@ public sealed class ManagedChildContext(JobStore jobs, ExternalTeam teams, strin
                 ["parent_session_id"] = lead.SessionId,
                 ["member_token"] = member.MemberToken,
                 ["binding_key"] = "managed-child:" + root.JobId,
-                ["human_input_available"] = root.Principal != "prfactory",
+                ["human_input_available"] = humanInputAvailable,
             });
         }
         else
         {
             // Existing managed sessions keep their token, but gain the current capability gate.
             var existing = JsonNode.Parse(File.ReadAllText(contextPath))!.AsObject();
-            existing["human_input_available"] = root.Principal != "prfactory";
+            existing["human_input_available"] = humanInputAvailable;
             Write(contextPath, existing);
         }
         // Every follow-up points to the original membership and nested-lead binding.

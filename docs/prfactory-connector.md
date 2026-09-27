@@ -173,12 +173,13 @@ slots. Pruning never removes turns of accepted teams or unresumed parks.
 
 ## Human questions during a turn
 
-PRFactory jobs do not offer `request_human_input` while the server has no
-`questionId` answer-command wire. A call from an existing session is rejected
-with guidance to proceed using best judgement or record open questions in its
-artefact. Local jobs retain their existing human-input tool. Existing durable
-question records can still be resumed and streamed; ATF maps their internal
-statuses to PRFactory's coarse lifecycle values.
+Managed children do not offer `request_human_input` unless their root job has a
+working human-wait path. Local jobs have no such path, and PRFactory jobs do not
+offer it while the server lacks the `questionId` answer-command wire. A direct
+call is rejected with guidance to proceed using best judgement or record open
+questions in the artefact. Existing durable question records can still be
+resumed and streamed; ATF maps their internal statuses to PRFactory's coarse
+lifecycle values.
 
 Registration advertises `authority-disposition-v1`, `remote-publication-v1`,
 `workspace-continuity-v1` and `blob-attachments-v1`.
