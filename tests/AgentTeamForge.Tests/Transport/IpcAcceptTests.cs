@@ -98,4 +98,35 @@ public sealed class IpcAcceptTests
         listener.Dispose();
         await serving.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
     }
+
+    [Fact]
+    public async Task Fatal_accept_failures_fault_the_loop_without_retry()
+    {
+        using var state = new TempStateDir();
+        using var lifetime = new CancellationTokenSource();
+        var messages = new ConcurrentQueue<string>();
+        using var server = new IpcServer(state.Path, [], new BoundPrincipal("op", "team", "agent"),
+            new SpikeLimits(), _ => new IpcResponse(true), messages.Enqueue);
+
+        // A squatted Windows pipe is refused, not retried.
+        var squatted = 0;
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => server.ServeAcceptedAsync<MemoryStream>(_ =>
+        {
+            squatted++;
+            throw new UnauthorizedAccessException("not private");
+        }, _ => Task.CompletedTask, lifetime.Token).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        Assert.Equal(1, squatted);
+
+        // A persistent transient-looking failure ends after a bounded streak, logging one full stack.
+        var attempts = 0;
+        var streak = await Assert.ThrowsAsync<IOException>(() => server.ServeAcceptedAsync<MemoryStream>(_ =>
+        {
+            attempts++;
+            throw new IOException("broken");
+        }, _ => Task.CompletedTask, lifetime.Token, maxConsecutiveFailures: 4).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.Equal(4, attempts);
+        Assert.IsType<IOException>(streak.InnerException);
+        Assert.Equal(3, messages.Count);
+        Assert.Single(messages, message => message.Contains(" at ", StringComparison.Ordinal));
+    }
 }

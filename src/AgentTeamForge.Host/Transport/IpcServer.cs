@@ -75,10 +75,14 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
 
     // Both transports use this loop. A failed accept owns no connection; a
     // failed handler owns only its connection, never the serving task.
+    // A squatted pipe, a disposed listener or a long unbroken failure streak is
+    // fatal: the serving task faults and the daemon exits unhealthy.
     internal async Task ServeAcceptedAsync<T>(Func<CancellationToken, Task<T>> accept,
-        Func<T, Task> handleConnection, CancellationToken daemonLifetime) where T : IDisposable
+        Func<T, Task> handleConnection, CancellationToken daemonLifetime, int maxConsecutiveFailures = 60) where T : IDisposable
     {
         var retryDelay = 25;
+        var failures = 0;
+        var lastFullLog = DateTime.MinValue;
         while (!daemonLifetime.IsCancellationRequested)
         {
             T connection;
@@ -86,13 +90,27 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
             {
                 connection = await accept(daemonLifetime);
             }
-            catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested)
+            catch (Exception) when (daemonLifetime.IsCancellationRequested)
             {
                 return;
             }
-            catch (Exception ex) when (ex is not OutOfMemoryException)
+            catch (Exception ex) when (ex is not (OutOfMemoryException or UnauthorizedAccessException or ObjectDisposedException))
             {
-                log($"ipc accept failed: {ex}");
+                if (++failures >= maxConsecutiveFailures)
+                {
+                    throw new IOException($"ipc accept failed {failures} times in a row", ex);
+                }
+                // Full stack at most once a minute; a hostile or broken client
+                // must not fill daemon.log.
+                if (DateTime.UtcNow - lastFullLog >= TimeSpan.FromMinutes(1))
+                {
+                    lastFullLog = DateTime.UtcNow;
+                    log($"ipc accept failed: {ex}");
+                }
+                else
+                {
+                    log($"ipc accept failed: {ex.GetType().Name}: {ex.Message}");
+                }
                 try { await Task.Delay(retryDelay, daemonLifetime); }
                 catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested) { return; }
                 retryDelay = Math.Min(retryDelay * 2, 1000);
@@ -100,6 +118,7 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
             }
 
             retryDelay = 25;
+            failures = 0;
             if (!_slots.Wait(0, CancellationToken.None))
             {
                 connection.Dispose();
