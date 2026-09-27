@@ -112,5 +112,72 @@ public sealed class BaseWipHandoverTests
         Assert.True(h.Teams.Get(ChainServer.Url, item.Id)!.State == "completed", string.Join("\n", h.Logs));
         Assert.Equal(head, new PRFactoryHandoverStore(h.Database)
             .Release($"{ChainServer.Url}|{item.Id:D}")?.VerifiedWipSha);
+        Assert.False(Directory.Exists(workspace.LeadPath));
+        Assert.Equal(head, ChainHarness.Git(h.Repo, "rev-parse", "refs/heads/" + workspace.InternalBranch));
+    }
+
+    [Fact]
+    public async Task Request_holds_release_while_a_child_has_commits_outside_the_lead()
+    {
+        var item = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            TicketKey = "PRF-42",
+            Type = "Implementation",
+            RepositoryId = Guid.NewGuid(),
+            LeaseToken = Guid.NewGuid(),
+            AgentType = PRFactoryAgentType.Codex,
+            Prompt = "Work",
+            TeamPlan = new PRFactoryTeamPlan
+            {
+                MaxConcurrentChildren = 1,
+                Members = [new PRFactoryTeamMember { Name = "worker", Role = "Implementer", Order = 1 }]
+            }
+        };
+        using var h = new ChainHarness(item);
+        h.Server.BaseWipSupported = true;
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        h.RunQueued(_ => { });
+        var workspace = h.Workspaces.Get($"{ChainServer.Url}|{item.Id:D}")!;
+        var child = ChainHarness.Commit(Assert.Single(workspace.Members).Path, "child.txt", "not integrated");
+        h.Server.HandoverRequested = true;
+
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        Assert.Empty(h.Server.Releases);
+        Assert.Equal("claimed", h.Teams.Get(ChainServer.Url, item.Id)!.State);
+        Assert.Equal(child, ChainHarness.Git(workspace.Members[0].Path, "rev-parse", "HEAD"));
+        Assert.Contains(h.Logs, line => line.Contains("child commits", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Cleanup_keeps_worktrees_when_the_lead_moved_past_the_released_receipt()
+    {
+        var item = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            TicketKey = "PRF-42",
+            Type = "Implementation",
+            RepositoryId = Guid.NewGuid(),
+            LeaseToken = Guid.NewGuid(),
+            AgentType = PRFactoryAgentType.Codex,
+            Prompt = "Work"
+        };
+        using var h = new ChainHarness(item);
+        h.Server.BaseWipSupported = true;
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        var key = $"{ChainServer.Url}|{item.Id:D}";
+        var workspace = h.Workspaces.Get(key)!;
+        var released = ChainHarness.Commit(workspace.LeadPath, "work.txt", "released");
+        const string branch = "wip/source/PRF-42";
+        ChainHarness.Git(workspace.LeadPath, "push", "origin", released + ":refs/heads/" + branch);
+        var store = new PRFactoryHandoverStore(h.Database);
+        store.SaveWip(new WipRecord(key, branch, released, null, "reported", "receipt-1"));
+        store.RecordRelease(key, new WipReleaseRecord("release-1", released, DateTimeOffset.UtcNow));
+        var later = ChainHarness.Commit(workspace.LeadPath, "later.txt", "after release");
+
+        var handover = new PRFactoryHandover(h.Server.Client(), store, (_, _, _) => Task.FromResult(false));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            handover.CleanupReleasedAsync(workspace, () => true, TimeSpan.Zero));
+        Assert.Equal(later, ChainHarness.Git(workspace.LeadPath, "rev-parse", "HEAD"));
     }
 }

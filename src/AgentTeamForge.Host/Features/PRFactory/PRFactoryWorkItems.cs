@@ -40,7 +40,8 @@ public sealed partial class PRFactoryWorkItems(
         {
             foreach (var key in handovers.ReleasedKeys(server))
             {
-                if (workspaces.Get(key) is not { } released || !Directory.Exists(released.Root)) { continue; }
+                // A removed lead means an earlier cleanup ran; anything left in the root is kept for inspection.
+                if (workspaces.Get(key) is not { } released || !Directory.Exists(released.LeadPath)) { continue; }
                 var idText = key[(server.Length + 1)..];
                 if (!Guid.TryParse(idText, out var id) || teams.Get(server, id) is not { State: not "claimed" }) { continue; }
                 await IsolateAsync(id, async () =>
@@ -833,6 +834,12 @@ public sealed partial class PRFactoryWorkItems(
                 (JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation))
             && teams.ExternalMembers(server, item.Id).All(member => member.Closed);
         if (!Quiescent()) { return; } // Let active turns reach a terminal state; never interrupt dirty buffers.
+        if (PRFactoryRepositorySet.HasSecondaries(item))
+        {
+            // Only the primary lead is published and released; secondary checkouts would be left behind.
+            log?.Invoke($"PRFactory work item {item.Id:D} handover held: multi-repository handover is unsupported");
+            return;
+        }
 
         try
         {

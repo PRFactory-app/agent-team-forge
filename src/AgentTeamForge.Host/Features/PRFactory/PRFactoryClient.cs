@@ -75,7 +75,7 @@ public sealed partial class PRFactoryClient(HttpClient httpClient, TimeProvider?
 
     public async Task<RegisterMachineResponse> RegisterMachineAsync(CancellationToken ct)
     {
-        var supported = await ServerCapabilitiesAsync(ct);
+        var supported = await ServerCapabilitiesAsync(ct, legacyOnServerError: true);
         var advertised = Capabilities.Where(capability => capability is not ("base-wip-v1" or "multi-repo-v1")
             || supported.Contains(capability, StringComparer.Ordinal)).ToArray();
         var request = new RegisterMachineRequest(Environment.MachineName,

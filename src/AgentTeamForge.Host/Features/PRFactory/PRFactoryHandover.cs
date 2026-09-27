@@ -37,7 +37,9 @@ public sealed partial class PRFactoryClient
     DateTimeOffset capabilityExpires;
     static readonly TimeSpan CapabilityTtl = TimeSpan.FromSeconds(15);
 
-    async Task<string[]> ServerCapabilitiesAsync(CancellationToken ct)
+    // A 5xx is transient: registration may advertise the legacy set, but runtime gating retries
+    // instead of treating an outage as a server without base-wip-v1/multi-repo-v1.
+    async Task<string[]> ServerCapabilitiesAsync(CancellationToken ct, bool legacyOnServerError = false)
     {
         if (serverCapabilities is not null && (clock?.GetUtcNow() ?? DateTimeOffset.UtcNow) < capabilityExpires)
         {
@@ -45,7 +47,13 @@ public sealed partial class PRFactoryClient
         }
         using var response = await httpClient.GetAsync("api/worker/capabilities", ct);
         RejectToken(response.StatusCode);
-        if (response.StatusCode == HttpStatusCode.NotFound || (int)response.StatusCode >= 500)
+        if ((int)response.StatusCode >= 500)
+        {
+            if (!legacyOnServerError) { response.EnsureSuccessStatusCode(); }
+            workerVersion = "1.0.0";
+            return [];
+        }
+        if (response.StatusCode == HttpStatusCode.NotFound)
         {
             serverCapabilities = [];
         }
@@ -208,6 +216,7 @@ public sealed class PRFactoryHandover(PRFactoryClient client, PRFactoryHandoverS
         {
             throw new InvalidOperationException("Release refused: final lead SHA has no verified WIP receipt.");
         }
+        await RequireIntegratedAsync(workspace, wip.HeadSha, "Release refused: child commits are not in the WIP receipt.");
         var remote = await TeamWorkspace.Git(workspace.LeadPath, "ls-remote", "--heads", "origin", "refs/heads/" + wip.Branch);
         if (remote != wip.HeadSha + "\trefs/heads/" + wip.Branch)
         {
@@ -265,11 +274,40 @@ public sealed class PRFactoryHandover(PRFactoryClient client, PRFactoryHandoverS
         {
             throw new InvalidOperationException("Unreceipted staging files remain; cleanup refused.");
         }
+        if (JobWorktree.Head(workspace.LeadPath) != wip.HeadSha)
+        {
+            throw new InvalidOperationException("Lead has commits beyond the WIP receipt; cleanup refused.");
+        }
+        await RequireIntegratedAsync(workspace, wip.HeadSha, "Child commits are not in the WIP receipt; cleanup refused.");
         foreach (var path in owned)
         {
             await TeamWorkspace.Git(repository, "worktree", "remove", "--", path);
         }
-        if (Directory.Exists(workspace.StagingPath)) { Directory.Delete(workspace.StagingPath); }
-        Directory.Delete(root); // Unknown artifacts keep the root for inspection.
+        try
+        {
+            if (Directory.Exists(workspace.StagingPath)) { Directory.Delete(workspace.StagingPath); }
+            Directory.Delete(root); // Unknown artifacts keep the root for inspection.
+        }
+        catch (IOException ex)
+        {
+            throw new InvalidOperationException($"Worktrees removed; unknown files keep the workspace root: {ex.Message}");
+        }
+    }
+
+    // Child checkouts keep their branches after worktree removal, but only the lead receipt is handed over.
+    static async Task RequireIntegratedAsync(WorkspaceSnapshot workspace, string receiptSha, string refusal)
+    {
+        foreach (var member in workspace.Members)
+        {
+            var child = await TeamWorkspace.Git(member.Path, "rev-parse", "HEAD");
+            try
+            {
+                await TeamWorkspace.Git(workspace.LeadPath, "merge-base", "--is-ancestor", child, receiptSha);
+            }
+            catch (InvalidOperationException)
+            {
+                throw new InvalidOperationException(refusal);
+            }
+        }
     }
 }

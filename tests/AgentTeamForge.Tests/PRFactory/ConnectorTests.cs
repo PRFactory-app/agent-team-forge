@@ -110,7 +110,7 @@ public sealed class ConnectorTests
     }
 
     [Fact]
-    public async Task Capability_failure_allows_legacy_registration_and_retries_after_ttl()
+    public async Task Capability_outage_allows_legacy_registration_but_not_cached_gating()
     {
         var clock = new ManualClock();
         var capabilityCalls = 0;
@@ -120,7 +120,7 @@ public sealed class ConnectorTests
             if (request.RequestUri!.AbsolutePath == "/api/worker/capabilities")
             {
                 capabilityCalls++;
-                return capabilityCalls == 1 ? new(HttpStatusCode.ServiceUnavailable)
+                return capabilityCalls <= 2 ? new(HttpStatusCode.ServiceUnavailable)
                     : new(HttpStatusCode.OK) { Content = new StringContent("{\"capabilities\":[\"base-wip-v1\"]}") };
             }
             using var body = System.Text.Json.JsonDocument.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
@@ -135,13 +135,15 @@ public sealed class ConnectorTests
         await client.RegisterMachineAsync(TestContext.Current.CancellationToken);
         Assert.Equal("1.0.0", registrations[0].Version);
         Assert.DoesNotContain("base-wip-v1", registrations[0].Capabilities);
-        Assert.False(await client.SupportsBaseWipAsync(TestContext.Current.CancellationToken));
-        Assert.Equal(1, capabilityCalls);
-        clock.Advance(TimeSpan.FromSeconds(16));
+        // An outage is not a legacy server: runtime gating retries instead of caching "unsupported".
+        await Assert.ThrowsAsync<HttpRequestException>(() => client.SupportsBaseWipAsync(TestContext.Current.CancellationToken));
         Assert.True(await client.SupportsBaseWipAsync(TestContext.Current.CancellationToken));
         await client.RegisterMachineAsync(TestContext.Current.CancellationToken);
         Assert.Contains("base-wip-v1", registrations[1].Capabilities);
-        Assert.Equal(2, capabilityCalls);
+        Assert.Equal(3, capabilityCalls);
+        clock.Advance(TimeSpan.FromSeconds(16));
+        Assert.True(await client.SupportsBaseWipAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(4, capabilityCalls);
     }
 
     [Fact]
