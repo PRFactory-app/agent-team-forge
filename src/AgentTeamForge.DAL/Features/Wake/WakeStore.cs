@@ -120,7 +120,8 @@ public sealed class WakeStore(JobDatabase database)
             FROM wake_targets t
             JOIN wake_jobs w ON w.target_key=t.target_key AND w.read_at IS NULL
             JOIN jobs j ON j.job_id=w.job_id AND j.status IN ('completed','failed','needs_reconciliation','cancelled')
-                AND (j.reason_code IS NULL OR j.reason_code!='interactive_completion_unobserved')
+                -- Session-owned parks wake once through PendingParks; session-less ones keep the terminal notice.
+                AND (j.lead_session_id IS NULL OR j.reason_code IS NULL OR j.reason_code!='interactive_completion_unobserved')
             JOIN events e ON e.job_id=j.job_id AND e.kind IN ('completed','failed','needs_reconciliation','cancelled')
             WHERE t.active=1 GROUP BY t.target_key;
             """;

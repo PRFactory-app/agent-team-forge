@@ -82,6 +82,24 @@ public sealed class WakeTests
     }
 
     [Fact]
+    public void Sessionless_park_keeps_terminal_notice()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var target = wake.Register("codex:nosession", "codex", "thread", "", "/tmp");
+        var accepted = fixture.Accept().Execute(new SubmitJobRequest("park-nosession", "work", null, false)
+        { WakeKey = target.Key, WakeGeneration = target.Generation });
+        Assert.Equal("accepted", accepted.Outcome);
+        var claim = fixture.Store.BeginNextAttempt()!;
+        Assert.True(fixture.Store.EndUnsuccessfully(
+            new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation),
+            JobStatus.NeedsReconciliation, "interactive_completion_unobserved"));
+
+        Assert.Equal(1, Assert.Single(wake.Pending()).Unread);
+        Assert.Empty(wake.PendingParks());
+    }
+
+    [Fact]
     public async Task Registration_after_interactive_park_catches_up()
     {
         using var fixture = new JobFixture();
