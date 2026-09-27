@@ -311,11 +311,16 @@ public sealed partial class PRFactoryWorkItems(
         {
             throw new HttpRequestException("PRFactory base-wip-v1 capability disappeared during accepted work.");
         }
+        if (baseWip && workspaces is not null)
+        {
+            // Local rollback of ATF's own interrupted refresh; the half-rebased lead cannot be re-materialized.
+            await workspaces.Freshness(handovers!).RecoverAsync(WorkspaceKey(item.Id));
+        }
         if (workspaces is not null)
         {
             try
             {
-                await Guard(item.Id, async () => workspace = await PrepareWorkspaceAsync(item, repo, managedMembers, ct), ct);
+                await Guard(item.Id, async () => workspace = await PrepareWorkspaceAsync(item, repo, managedMembers, baseWip, ct), ct);
             }
             catch (InvalidOperationException ex)
             {
@@ -328,8 +333,9 @@ public sealed partial class PRFactoryWorkItems(
             && teams.MemberJob(server, item.Id, "lead", 0) is null)
         {
             BaseFreshnessResult freshness = null!;
-            await Guard(item.Id, async () => freshness = await new PhaseBaseFreshness(handovers!)
+            await Guard(item.Id, async () => freshness = await workspaces!.Freshness(handovers!)
                 .EnsureFreshAsync(workspace, item.PlanBasisCommitSha), ct);
+            workspace = workspaces!.Get(workspace.Key)!;
             if (item.LeaseToken is not Guid lease || item.RepositoryId is not Guid repository)
             {
                 throw new InvalidOperationException("Base refresh lacks accepted repository identity.");
@@ -350,10 +356,6 @@ public sealed partial class PRFactoryWorkItems(
             if (!freshness.AgentMayRun)
             {
                 return;
-            }
-            if (freshness.HeadSha is { } refreshedHead)
-            {
-                await Guard(item.Id, () => workspaces!.AlignChildrenAsync(workspace, refreshedHead), ct);
             }
         }
         string Cwd(string member) => workspace is null ? repo!.Directory
@@ -451,12 +453,18 @@ public sealed partial class PRFactoryWorkItems(
             }
             catch (WipPushException ex)
             {
+                // Reported, not rethrown: a failed WIP push leaves no receipt (so no release), but must not
+                // stall the lead's completion and final publication.
                 var countText = await TeamWorkspace.Git(workspace.LeadPath, "rev-list", "--count", workspace.BaseSha + ".." + ex.HeadSha);
                 await Guard(item.Id, () => client.ReportWipFailureAsync(item.Id,
                     new(wipLease, machine, atfJob, wipRepo, workspace.BaseSha!, ex.Branch, ex.HeadSha,
                         int.Parse(countText, System.Globalization.CultureInfo.InvariantCulture), false, ex.Message,
                         $"{item.Id:D}:{ex.HeadSha}"), ct), ct);
-                throw;
+                log?.Invoke($"PRFactory work item {item.Id:D} WIP publication failed; no receipt recorded");
+            }
+            catch (InvalidOperationException ex)
+            {
+                log?.Invoke($"PRFactory work item {item.Id:D} WIP publication deferred: {ex.Message}");
             }
         }
         allJobs = [.. teams.ManagedMembers(server, item.Id).GroupBy(m => m.Member)
@@ -657,7 +665,7 @@ public sealed partial class PRFactoryWorkItems(
     string WorkspaceKey(Guid id) => $"{server}|{id:D}";
 
     async Task<WorkspaceSnapshot> PrepareWorkspaceAsync(PRFactoryWorkItem item, RepositoryMapping? repo,
-        PRFactoryTeamMember[] members, CancellationToken ct)
+        PRFactoryTeamMember[] members, bool baseWip, CancellationToken ct)
     {
         var key = WorkspaceKey(item.Id);
         var names = members.Select(m => m.Name).ToArray();
@@ -687,7 +695,7 @@ public sealed partial class PRFactoryWorkItems(
             publish, item.ReadOnly, names, PriorBranch: item.Continuation?.Branch,
             PriorSha: item.Continuation?.CommitSha, StartFromBranch: startFrom,
             StartCommitSha: item.StartCommitSha, ProjectInit: projectInit,
-            ExpectedBaseSha: item.BaseSnapshot?.CommitSha));
+            ExpectedBaseSha: item.BaseSnapshot?.CommitSha, ExactWipTip: baseWip));
     }
 
     /// <summary>Children are quiescent and succeeded: integrate their commits, stage their documents, then one lead pass.</summary>

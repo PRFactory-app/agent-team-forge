@@ -17,13 +17,67 @@ public sealed class WorkspaceTests
         var workspace = await f.Workspaces.PrepareAsync(f.Request);
         var moved = Commit(f.Repo, "later.txt", "later");
         Git(f.Repo, "push", "origin", "main");
-        var result = await new PhaseBaseFreshness(new PRFactoryHandoverStore(f.Db)).EnsureFreshAsync(workspace);
-        await f.Workspaces.AlignChildrenAsync(workspace, result.HeadSha!);
+        var result = await new PhaseBaseFreshness(new PRFactoryHandoverStore(f.Db), f.Workspaces).EnsureFreshAsync(workspace);
         Assert.Equal("Fetched", result.Action);
         Assert.Equal(moved, JobWorktree.Head(workspace.LeadPath));
         Assert.All(workspace.Members, member => Assert.Equal(moved, JobWorktree.Head(member.Path)));
         Assert.Equal(moved, JobWorktree.Head(f.Repo));
         Assert.Equal("later", File.ReadAllText(Path.Combine(workspace.LeadPath, "later.txt")));
+    }
+
+    [Fact]
+    public async Task Rebased_continuation_survives_restart_and_integrates_children()
+    {
+        using var f = new WorkspaceFixture();
+        Git(f.Repo, "checkout", "-b", "implementation");
+        var prior = Commit(f.Repo, "code.txt", "prior");
+        Git(f.Repo, "push", "origin", "implementation");
+        Git(f.Repo, "checkout", "main");
+        var request = f.Request with { PriorBranch = "implementation", PriorSha = prior };
+        var workspace = await f.Workspaces.PrepareAsync(request);
+        var moved = Commit(f.Repo, "later.txt", "later");
+        Git(f.Repo, "push", "origin", "main");
+        var handovers = new PRFactoryHandoverStore(f.Db);
+        var result = await new PhaseBaseFreshness(handovers, f.Workspaces).EnsureFreshAsync(workspace);
+        Assert.Equal("Rebased", result.Action);
+        Assert.All(workspace.Members, m => Assert.Equal(result.HeadSha, JobWorktree.Head(m.Path)));
+        // The next tick re-materializes the recorded workspace; the rebased tip must still be recoverable.
+        var again = await f.Workspaces.PrepareAsync(request);
+        Assert.Equal(result.HeadSha, again.StartingSha);
+        Assert.Equal(moved, again.BaseSha);
+        Assert.Equal("later", File.ReadAllText(Path.Combine(again.LeadPath, "later.txt")));
+        Assert.Equal("prior", File.ReadAllText(Path.Combine(again.LeadPath, "code.txt")));
+        Commit(again.Members[0].Path, "one.txt", "one");
+        Assert.True((await f.Workspaces.IntegrateAsync(again.Key, 0)).Applied);
+        Assert.Equal("Rebased", (await new PhaseBaseFreshness(handovers, f.Workspaces).EnsureFreshAsync(again)).Action);
+    }
+
+    [Fact]
+    public async Task Crash_after_rebase_before_receipt_restores_lead_and_children_before_rematerializing()
+    {
+        using var f = new WorkspaceFixture();
+        Git(f.Repo, "checkout", "-b", "implementation");
+        var prior = Commit(f.Repo, "code.txt", "prior");
+        Git(f.Repo, "push", "origin", "implementation");
+        Git(f.Repo, "checkout", "main");
+        var request = f.Request with { PriorBranch = "implementation", PriorSha = prior };
+        var workspace = await f.Workspaces.PrepareAsync(request);
+        var moved = Commit(f.Repo, "later.txt", "later");
+        Git(f.Repo, "push", "origin", "main");
+        var handovers = new PRFactoryHandoverStore(f.Db);
+        handovers.BeginRefresh(new(workspace.Key, prior, moved, "Rebased", "pending"));
+        Git(workspace.LeadPath, "-c", "user.name=Test", "-c", "user.email=test@localhost",
+            "rebase", "--onto", moved, f.BaseSha, workspace.InternalBranch!);
+        var rebased = JobWorktree.Head(workspace.LeadPath)!;
+        Git(workspace.Members[0].Path, "reset", "--hard", rebased);
+        var freshness = new PhaseBaseFreshness(handovers, f.Workspaces);
+        Assert.True(await freshness.RecoverAsync(workspace.Key));
+        Assert.Equal(prior, JobWorktree.Head(workspace.LeadPath));
+        Assert.All(workspace.Members, m => Assert.Equal(prior, JobWorktree.Head(m.Path)));
+        var again = await f.Workspaces.PrepareAsync(request);
+        Assert.Equal(prior, again.StartingSha);
+        Assert.Equal("Rebased", (await freshness.EnsureFreshAsync(again)).Action);
+        Assert.Equal(moved, f.Workspaces.Get(workspace.Key)!.BaseSha);
     }
 
     [Fact]
@@ -34,7 +88,7 @@ public sealed class WorkspaceTests
         var original = Commit(workspace.LeadPath, "base.txt", "lead edit");
         Commit(f.Repo, "base.txt", "remote edit");
         Git(f.Repo, "push", "origin", "main");
-        var result = await new PhaseBaseFreshness(new PRFactoryHandoverStore(f.Db)).EnsureFreshAsync(workspace);
+        var result = await new PhaseBaseFreshness(new PRFactoryHandoverStore(f.Db), f.Workspaces).EnsureFreshAsync(workspace);
         Assert.Equal("ConflictStopped", result.Action);
         Assert.Contains("base.txt", result.ConflictingPaths);
         Assert.Equal(original, JobWorktree.Head(workspace.LeadPath));
@@ -49,7 +103,7 @@ public sealed class WorkspaceTests
         var workspace = await f.Workspaces.PrepareAsync(f.Request);
         Commit(f.Repo, "later.txt", "later");
         Git(f.Repo, "push", "origin", "main");
-        var result = await new PhaseBaseFreshness(new PRFactoryHandoverStore(f.Db))
+        var result = await new PhaseBaseFreshness(new PRFactoryHandoverStore(f.Db), f.Workspaces)
             .EnsureFreshAsync(workspace, f.BaseSha);
         Assert.False(result.AgentMayRun);
         Assert.Equal(f.BaseSha, JobWorktree.Head(workspace.LeadPath));
@@ -67,7 +121,7 @@ public sealed class WorkspaceTests
         handovers.BeginRefresh(new(workspace.Key, original, moved, "Rebased", "pending"));
         await JobWorktree.GitAsync(workspace.LeadPath, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken,
             "rebase", "--onto", moved, f.BaseSha, workspace.InternalBranch!);
-        var result = await new PhaseBaseFreshness(handovers).EnsureFreshAsync(workspace);
+        var result = await new PhaseBaseFreshness(handovers, f.Workspaces).EnsureFreshAsync(workspace);
         Assert.Equal("ConflictStopped", result.Action);
         Assert.Equal(original, JobWorktree.Head(workspace.LeadPath));
         Assert.Equal("restored", handovers.Refresh(workspace.Key)!.State);
@@ -97,20 +151,26 @@ public sealed class WorkspaceTests
             OwnedRoot = secondRoot.File("owned"),
             RepositoryPath = secondRepo,
             StartFromBranch = branch,
-            StartCommitSha = committed
+            StartCommitSha = committed,
+            ExactWipTip = true
         });
         Assert.Equal(committed, adopted.StartingSha);
         Assert.Equal("saved", File.ReadAllText(Path.Combine(adopted.LeadPath, "work.txt")));
         var newer = Commit(first.LeadPath, "other.txt", "later");
         Git(first.LeadPath, "push", "--force", "origin", newer + ":refs/heads/" + branch);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => second.PrepareAsync(f.Request with
+        var moved = f.Request with
         {
             Key = "third:item",
             OwnedRoot = secondRoot.File("owned"),
             RepositoryPath = secondRepo,
             StartFromBranch = branch,
-            StartCommitSha = committed
-        }));
+            StartCommitSha = committed,
+            ExactWipTip = true
+        };
+        await Assert.ThrowsAsync<InvalidOperationException>(() => second.PrepareAsync(moved));
+        // Without base-wip-v1 a moved wip/* branch still resumes the recorded SHA as before.
+        var legacy = await second.PrepareAsync(moved with { Key = "legacy:item", ExactWipTip = false });
+        Assert.Equal(committed, legacy.StartingSha);
     }
 
     [Fact]
@@ -152,9 +212,13 @@ public sealed class WorkspaceTests
         await Assert.ThrowsAsync<HttpRequestException>(() => publisher.PublishAsync(item.Id, workspace, branch,
             (_, _) => throw new HttpRequestException("lost report reply"), ct: TestContext.Current.CancellationToken));
         Assert.Equal(head, Git(f.Repo, "ls-remote", "--heads", "origin", "refs/heads/" + branch).Split('\t')[0]);
+        // The lead keeps committing while the receipt is unconfirmed; the stale intent is superseded.
+        head = Commit(workspace.LeadPath, "more.txt", "more");
         var wip = await publisher.PublishAsync(item.Id, workspace, branch, (_, _) => Task.FromResult("server-receipt"),
             ct: TestContext.Current.CancellationToken);
         Assert.Equal("reported", wip.State);
+        Assert.Equal(head, wip.HeadSha);
+        Assert.Equal(head, Git(f.Repo, "ls-remote", "--heads", "origin", "refs/heads/" + branch).Split('\t')[0]);
         var releaseId = $"{item.Id:D}:{item.LeaseToken:D}:{head}";
         var releaseCalls = 0;
         using var http = PRFactoryClient.CreateHttpClient("https://example.test", "token", new StubHandler(request =>

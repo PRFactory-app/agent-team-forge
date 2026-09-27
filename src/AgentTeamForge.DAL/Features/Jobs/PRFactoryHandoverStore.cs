@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AgentTeamForge.DAL.Sqlite;
 
 namespace AgentTeamForge.DAL.Features.Jobs;
@@ -41,6 +42,31 @@ public sealed class PRFactoryHandoverStore(JobDatabase database)
         cmd.Parameters.AddWithValue("$key", key);
         cmd.Parameters.AddWithValue("$state", state);
         cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Moves the recorded base/start to the refreshed tip and marks the refresh done in one transaction.</summary>
+    public void CompleteRefresh(string key, string baseSha, string startingSha)
+    {
+        using var db = database.OpenConnection();
+        using var tx = db.BeginTransaction();
+        using var read = db.CreateCommand();
+        read.Transaction = tx;
+        read.CommandText = "SELECT snapshot FROM prfactory_workspaces WHERE workspace_key=$key";
+        read.Parameters.AddWithValue("$key", key);
+        var snapshot = read.ExecuteScalar() is string json
+            ? JsonSerializer.Deserialize(json, WorkspaceJson.Default.WorkspaceSnapshot)
+            : throw new InvalidOperationException("Workspace missing.");
+        using var write = db.CreateCommand();
+        write.Transaction = tx;
+        write.CommandText = """
+            UPDATE prfactory_workspaces SET snapshot=$snapshot WHERE workspace_key=$key;
+            UPDATE prfactory_base_refresh SET state='done' WHERE workspace_key=$key AND state='pending';
+            """;
+        write.Parameters.AddWithValue("$key", key);
+        write.Parameters.AddWithValue("$snapshot", JsonSerializer.Serialize(snapshot! with { BaseSha = baseSha, StartingSha = startingSha },
+            WorkspaceJson.Default.WorkspaceSnapshot));
+        write.ExecuteNonQuery();
+        tx.Commit();
     }
 
     public WipRecord? Wip(string key)

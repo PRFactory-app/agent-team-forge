@@ -6,7 +6,7 @@ namespace AgentTeamForge.Business.Features.Jobs;
 public sealed record WorkspaceRequest(string Key, string OwnedRoot, string? RepositoryId, string? RepositoryPath,
     string? Remote, string? BaseBranch, string? PublishBranch, bool ReadOnly, string[] Members,
     string? PriorBranch = null, string? PriorSha = null, string? StartFromBranch = null,
-    string? StartCommitSha = null, bool ProjectInit = false, string? ExpectedBaseSha = null);
+    string? StartCommitSha = null, bool ProjectInit = false, string? ExpectedBaseSha = null, bool ExactWipTip = false);
 
 /// <summary>One daemon owns these operations. Call only while lead and children are quiescent.</summary>
 public sealed class TeamWorkspace(PRFactoryWorkspaceStore store) : IDisposable
@@ -92,11 +92,11 @@ public sealed class TeamWorkspace(PRFactoryWorkspaceStore store) : IDisposable
                 start = baseSha;
                 if (request.PriorBranch is not null)
                 {
-                    start = await FetchRequired(repo, request.PriorBranch, request.PriorSha);
+                    start = await FetchRequired(repo, request.PriorBranch, request.PriorSha, request.ExactWipTip);
                 }
                 else if (request.StartFromBranch is not null)
                 {
-                    start = await FetchRequired(repo, request.StartFromBranch, request.StartCommitSha);
+                    start = await FetchRequired(repo, request.StartFromBranch, request.StartCommitSha, request.ExactWipTip);
                 }
                 else if (request.ProjectInit && request.PublishBranch is not null)
                 {
@@ -159,16 +159,16 @@ public sealed class TeamWorkspace(PRFactoryWorkspaceStore store) : IDisposable
     static async Task CheckBranch(string repo, string branch) =>
         _ = await Git(repo, "check-ref-format", "refs/heads/" + branch);
 
-    static async Task<string> FetchRequired(string repo, string branch, string? expected)
+    static async Task<string> FetchRequired(string repo, string branch, string? expected, bool exactWipTip)
     {
         if (string.IsNullOrWhiteSpace(expected))
         {
             throw new InvalidOperationException("Continuation requires an authoritative starting SHA.");
         }
         var fetched = await Fetch(repo, branch, expected);
-        if (branch.StartsWith("wip/", StringComparison.Ordinal))
+        if (exactWipTip && branch.StartsWith("wip/", StringComparison.Ordinal))
         {
-            // Handover adoption is tied to the remote branch's exact verified tip.
+            // base-wip-v1 handover adoption is tied to the remote branch's exact verified tip.
             var remote = await Git(repo, "ls-remote", "--heads", "origin", "refs/heads/" + branch);
             var fields = remote.Split('\t');
             if (fields.Length != 2 || !fields[0].Equals(expected, StringComparison.OrdinalIgnoreCase))

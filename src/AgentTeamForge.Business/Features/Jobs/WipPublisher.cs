@@ -65,9 +65,11 @@ public sealed class WipPublisher(PRFactoryHandoverStore store, PublicationAuthor
 
         var remoteRef = "refs/heads/" + branch;
         var remote = await RemoteHead(cwd, workspace.Remote, remoteRef);
-        if (prior is { State: "pending" } && prior.HeadSha != head)
+        // An unconfirmed intent for an older head (failed push or lost report) is superseded only while
+        // the remote still shows its lease value or our own push of it.
+        if (prior is { State: "pending" } && prior.HeadSha != head && remote != prior.RemoteOldSha && remote != prior.HeadSha)
         {
-            throw new InvalidOperationException("Lead HEAD changed during pending WIP publication.");
+            throw new InvalidOperationException("WIP remote changed during pending publication; reconciliation required.");
         }
 
         if (prior is { State: "reported" } && remote != prior.HeadSha && remote != head)
@@ -75,7 +77,7 @@ public sealed class WipPublisher(PRFactoryHandoverStore store, PublicationAuthor
             throw new InvalidOperationException("WIP remote changed since its receipt; reconciliation required.");
         }
 
-        var intent = prior is { State: "pending" } ? prior : new WipRecord(workspace.Key, branch, head, remote, "pending", null);
+        var intent = prior is { State: "pending" } && prior.HeadSha == head ? prior : new WipRecord(workspace.Key, branch, head, remote, "pending", null);
         store.SaveWip(intent);
         if (remote != head)
         {

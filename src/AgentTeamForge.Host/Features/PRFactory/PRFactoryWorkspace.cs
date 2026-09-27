@@ -10,7 +10,7 @@ public sealed class PRFactoryWorkspace(TeamWorkspace workspaces)
 
     public WorkspaceSnapshot? Get(string key) => workspaces.Get(key);
 
-    public Task AlignChildrenAsync(WorkspaceSnapshot workspace, string head) => workspaces.AlignChildrenAsync(workspace, head);
+    public PhaseBaseFreshness Freshness(PRFactoryHandoverStore store) => new(store, workspaces);
 
     public async Task IntegrateChildrenAsync(WorkspaceSnapshot workspace, string? artefactFolder = null)
     {
