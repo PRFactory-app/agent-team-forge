@@ -30,6 +30,12 @@ public static class DaemonCommand
 {
     public static async Task<int> RunAsync(StateDirectory state, string? crashAt, string? failAt)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            // The old shell launcher set this before exec; keep private defaults for
+            // daemon-created files even when the invoking client has a loose umask.
+            _ = Native.umask(0x3F); // 077
+        }
         if (OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("ATF_DAEMON_LOG") is { } logPath)
         {
             var log = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
@@ -39,7 +45,7 @@ public static class DaemonCommand
             Console.SetOut(log);
             Console.SetError(log);
         }
-        var profile = SpikeProfileFile.Load(state);
+        var profile = ProfileFile.Load(state);
         var launchMode = SetupCommand.ConfiguredMode(state);
         if (launchMode is "herdr" or "terminal" or "wt" && !profile.RealAgents)
         {
@@ -77,7 +83,7 @@ public static class DaemonCommand
 
         // Pin a relative CODEX_HOME to this daemon's startup directory before any
         // terminal or transcript reader captures its environment.
-        Environment.SetEnvironmentVariable("CODEX_HOME", CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory));
+        Environment.SetEnvironmentVariable("CODEX_HOME", CodexPaths.LaunchHome(Environment.GetEnvironmentVariable, Environment.CurrentDirectory));
 
         var limits = profile.Limits;
         var checkpoints = new DurabilityCheckpoints(point =>
@@ -128,12 +134,6 @@ public static class DaemonCommand
             }
         }).Execute();
         Log($"recovery: quarantined {quarantined.Count} uncertain attempt(s)");
-        if (OperatingSystem.IsWindows())
-        {
-            // Not gated on the current mode: tabs from an earlier wt setup are still ours.
-            Log($"recovery: settled {WtInteractiveBackend.RecoverOwned(state.Path)} owned Windows tab(s)");
-        }
-
         var backendEnv = new Dictionary<string, string>();
         if (profile.TestProfile)
         {
@@ -238,20 +238,36 @@ public static class DaemonCommand
                         dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership).Execute).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
             });
-        await Task.WhenAny(serving, dispatching);
+        var firstStopped = await Task.WhenAny(serving, dispatching);
 
-        // The dispatcher only returns on its own when halted or faulted; it closed
-        // the shared admission gate at that instant, so later submits get
-        // daemon_unhealthy. Stop the listener and exit unhealthy; restart recovery
-        // quarantines the run and queued work admitted before the halt runs then.
+        // Stop admission before tearing down either service. A serving fault
+        // must be reported as such, including its stack in daemon.log.
         var halted = !lifetime.IsCancellationRequested;
         if (halted)
         {
-            Log($"error: dispatcher_halted reason={dispatcher.HaltReason ?? "dispatcher_fault"}; admission stopped");
+            if (firstStopped == serving)
+            {
+                admission.Close("daemon_unhealthy");
+                Log(serving.IsFaulted
+                    ? $"error: serving_halted reason=serving_fault; admission stopped: {serving.Exception!.GetBaseException()}"
+                    : "error: serving_halted reason=serving_stopped; admission stopped");
+            }
+            else
+            {
+                Log($"error: dispatcher_halted reason={dispatcher.HaltReason ?? "dispatcher_fault"}; admission stopped");
+            }
             lifetime.Cancel();
         }
 
-        await serving;
+        try { await serving; }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            halted = true;
+            if (firstStopped != serving)
+            {
+                Log($"error: serving_halted reason=serving_fault; admission stopped: {ex}");
+            }
+        }
         await waking;
         await pruning;
         await prfactory;
@@ -267,10 +283,12 @@ public static class DaemonCommand
         catch (Exception ex)
         {
             halted = true;
-            Log($"error: dispatcher_halted reason=dispatcher_fault ({ex.GetType().Name})");
+            Log($"error: dispatcher_halted reason=dispatcher_fault: {ex}");
         }
         foreach (var backend in interactiveBackends)
         {
+            // Windows tabs retain their wrapper and PID sidecars for explicit stop after restart.
+            if (backend is WtInteractiveBackend) { continue; }
             try { backend.StopAllIdleSessions(); }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {

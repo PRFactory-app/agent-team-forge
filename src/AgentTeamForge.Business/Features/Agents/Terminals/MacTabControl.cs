@@ -10,7 +10,7 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 internal sealed class MacTabControl(string provider, string? kittyAddress, string? kittyBinary) : IWtTabControl
 {
     readonly ConcurrentDictionary<string, OwnedTab> _tabs = [];
-    readonly string _codexHome = CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
+    readonly string? _codexHome = CodexPaths.LaunchHome(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
 
     public void Preflight(InteractiveAgentKind kind)
     {
@@ -30,7 +30,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
             throw new BackendNotStartedException("Terminal.app launcher is unavailable");
         }
         var executable = kind switch { InteractiveAgentKind.Claude => "claude", InteractiveAgentKind.Codex => "codex", _ => "pi" };
-        if (FindExecutable(executable) is null)
+        if (FindExecutable(executable) is not { } binary || !IsExecutable(binary))
         {
             throw new BackendNotStartedException($"{executable} is unavailable");
         }
@@ -48,6 +48,8 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
         {
             throw new IOException("terminal ownership sidecar already exists");
         }
+        var startError = Path.ChangeExtension(wrapper, ".start-error");
+        if (File.Exists(startError)) { File.Delete(startError); }
 
         await File.WriteAllTextAsync(wrapper, WrapperText(launch, prompt, sidecar,
             Environment.ProcessPath ?? throw new IOException("atf executable path unavailable"), _codexHome), Encoding.UTF8, cancellationToken);
@@ -61,14 +63,14 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
         {
             while (true)
             {
-                if (TryReadSidecar(sidecar) is { } identity && DarwinProcess.CreationToken(identity.Pid) == identity.Token)
+                if (TryReadSidecar(sidecar) is { } identity)
                 {
+                    if (DarwinProcess.CreationToken(identity.Pid) != identity.Token) { return; }
                     _tabs[launch.AgentName] = new(identity.Pid, identity.Token, wrapper, sidecar);
                     await Task.Delay(TimeSpan.FromSeconds(1), deadline.Token);
                     if (!IsAlive(launch))
                     {
-                        _tabs.TryRemove(launch.AgentName, out _);
-                        throw new IOException("terminal agent exited during startup");
+                        return;
                     }
                     return;
                 }
@@ -90,11 +92,32 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
     public bool IsAlive(InteractiveLaunch launch) =>
         _tabs.TryGetValue(launch.AgentName, out var tab) && DarwinProcess.CreationToken(tab.Pid) == tab.Token;
 
+    public string? StartFailure(InteractiveLaunch launch)
+    {
+        var error = Path.ChangeExtension(launch.BootstrapPath, ".start-error");
+        try
+        {
+            var file = new FileInfo(error);
+            if (file.Exists && file.LinkTarget is null && file.Length <= 4096)
+            {
+                return "interactive agent could not start: " + File.ReadAllText(error).Trim();
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        return null;
+    }
+
+    public bool WrapperExited(InteractiveLaunch launch) =>
+        TryReadSidecar(Path.ChangeExtension(launch.BootstrapPath, ".pid")) is { } identity
+        && DarwinProcess.CreationToken(identity.Pid) != identity.Token;
+
     public void StopOwned(InteractiveLaunch launch)
     {
         if (!_tabs.TryGetValue(launch.AgentName, out var tab))
         {
-            return;
+            var sidecar = Path.ChangeExtension(launch.BootstrapPath, ".pid");
+            if (TryReadSidecar(sidecar) is not { } identity) { return; }
+            tab = new(identity.Pid, identity.Token, launch.BootstrapPath, sidecar);
         }
         if (DarwinProcess.CreationToken(tab.Pid) == tab.Token)
         {
@@ -112,7 +135,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
         _tabs.TryRemove(launch.AgentName, out _);
         if (DarwinProcess.CreationToken(tab.Pid) != tab.Token)
         {
-            try { File.Delete(tab.Sidecar); File.Delete(tab.Wrapper); }
+            try { File.Delete(tab.Sidecar); File.Delete(tab.Wrapper); File.Delete(Path.ChangeExtension(tab.Wrapper, ".start-error")); }
             catch (IOException) { }
         }
     }
@@ -148,7 +171,8 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
     internal static string WrapperText(InteractiveLaunch launch, string prompt, string sidecar, string atfBinary, string? codexHome = null)
     {
         var args = WtTabControl.AgentArguments(launch, prompt);
-        var command = string.Join(' ', new[] { FindExecutable(args[0]) ?? args[0] }.Concat(args.Skip(1)).Select(ShellQuote));
+        var executable = FindExecutable(args[0]) ?? args[0];
+        var command = string.Join(' ', new[] { executable }.Concat(args.Skip(1)).Select(ShellQuote));
         var trust = InteractiveAgentCommand.WorkspaceTrustEnvironment(launch.Kind);
         var identityNames = string.Join(' ', LaunchEnvironment.IdentityNames);
         var identityPrefixes = string.Join('|', LaunchEnvironment.IdentityPrefixes);
@@ -156,11 +180,23 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
             "unset " + identityNames + "\n" +
             "for name in $(env | cut -d= -f1 | grep -E '^(" + identityPrefixes + ")' || :); do unset \"$name\"; done\n" +
             (trust is { } env ? "export " + env.Name + "=" + ShellQuote(env.Value) + "\n" : "") +
-            (launch.Kind == InteractiveAgentKind.Codex ? "export CODEX_HOME=" + ShellQuote(codexHome ?? CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory)) + "\n" : "") +
+            (launch.Kind == InteractiveAgentKind.Codex ? CodexHomeLine(codexHome) : "") +
+            (launch.Kind == InteractiveAgentKind.Pi && InteractiveAgentCommand.ManagedConfigPath(launch) is { } config && File.Exists(config)
+                ? "export PI_MCP_CONFIG_MODE=exclusive\n" : "") +
             "cd " + ShellQuote(launch.WorkingDirectory) + "\n" +
             "export ATF_RUN_CORRELATION=" + ShellQuote(launch.AgentName) + "\n" +
             ShellQuote(atfBinary) + " terminal-token --pid \"$$\" --sidecar " + ShellQuote(sidecar) + "\n" +
+            "if [ ! -x " + ShellQuote(executable) + " ]; then\n" +
+            "  printf '%s\\n' 'agent executable is unavailable' > " + ShellQuote(Path.ChangeExtension(sidecar, ".start-error")) + "\n" +
+            "  exit 0\n" +
+            "fi\n" +
             "exec " + command + "\n";
+    }
+
+    static string CodexHomeLine(string? codexHome)
+    {
+        var home = codexHome ?? CodexPaths.LaunchHome(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
+        return home is null ? "unset CODEX_HOME\n" : "export CODEX_HOME=" + ShellQuote(home) + "\n";
     }
 
     internal static string ShellQuote(string value) => value.Contains('\0')
@@ -243,6 +279,15 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
         return null;
     }
 
+    static bool IsExecutable(string path)
+    {
+        try
+        {
+            return (File.GetUnixFileMode(path) & (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
+    }
+
     static (int Pid, ulong Token)? TryReadSidecar(string path)
     {
         try
@@ -267,7 +312,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
 public sealed class MacInteractiveBackend(InteractiveAgentKind kind, string stateRoot, string provider, string? kittyAddress, string? kittyBinary) : IJobBackend
 {
     readonly WtInteractiveBackend _backend = new(new MacTabControl(provider, kittyAddress, kittyBinary),
-        new InteractiveTranscriptReader(), kind, stateRoot, "terminal");
+        new InteractiveTranscriptReader(), kind, stateRoot, "terminal", configPreflight: InteractiveAgentPreflight.CheckCurrent);
 
     public IBackendRun Start(BackendRequest request) => _backend.Start(request);
 

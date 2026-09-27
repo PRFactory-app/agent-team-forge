@@ -1,24 +1,40 @@
 using System.ComponentModel;
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
-/// <summary>A real console for an agent when WT cannot provide a usable tab.</summary>
+/// <summary>A Windows launcher that can break away from an ambient daemon job.</summary>
 internal sealed class WindowsConsoleProcess(nint handle) : IDisposable
 {
+    internal const uint BreakawayFromJob = 0x01000000;
+    internal const uint NewProcessGroup = 0x00000200;
+    internal const uint NewConsole = 0x00000010;
+    internal const uint NoWindow = 0x08000000;
+
     public bool HasExited => WindowsTabNative.GetExitCodeProcess(handle, out var code) && code != 259;
     public int ExitCode => WindowsTabNative.GetExitCodeProcess(handle, out var code) ? unchecked((int)code) : -1;
 
-    public static unsafe WindowsConsoleProcess Start(string script)
+    internal static uint CreationFlags(bool newConsole) => NewProcessGroup | BreakawayFromJob | (newConsole ? NewConsole : NoWindow);
+
+    public static WindowsConsoleProcess StartConsole(string script) => Start("powershell.exe",
+        ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], newConsole: true);
+
+    public static unsafe WindowsConsoleProcess Start(string executable, IEnumerable<string> arguments, bool newConsole)
     {
-        var command = ("\"powershell.exe\" -NoProfile -ExecutionPolicy Bypass -File \"" + script + "\"\0").ToCharArray();
+        var command = (WtTabControl.CommandLine([executable, .. arguments]) + "\0").ToCharArray();
         var startup = new WindowsTabNative.StartupInfo { Size = (uint)Marshal.SizeOf<WindowsTabNative.StartupInfo>() };
         fixed (char* text = command)
         {
-            if (!WindowsTabNative.CreateProcess(null, text, 0, 0, false, 0x10, 0, null, ref startup, out var info))
+            var flags = CreationFlags(newConsole);
+            if (!WindowsTabNative.CreateProcess(null, text, 0, 0, false, flags, 0, null, ref startup, out var info))
             {
-                throw new Win32Exception(Marshal.GetLastPInvokeError(), "CREATE_NEW_CONSOLE failed");
+                var error = Marshal.GetLastPInvokeError();
+                // Some ambient jobs deny breakaway. Match the reference's one retry.
+                if (error != 5 || !WindowsTabNative.CreateProcess(null, text, 0, 0, false,
+                    flags & ~BreakawayFromJob, 0, null, ref startup, out info))
+                {
+                    throw new Win32Exception(error == 5 ? Marshal.GetLastPInvokeError() : error, "interactive launcher failed");
+                }
             }
             WindowsTabNative.CloseHandle(info.Thread);
             return new WindowsConsoleProcess(info.Process);
@@ -26,50 +42,6 @@ internal sealed class WindowsConsoleProcess(nint handle) : IDisposable
     }
 
     public void Dispose() => WindowsTabNative.CloseHandle(handle);
-}
-
-/// <summary>Kill owned wrappers when the daemon exits; persisted sidecars cover abrupt restarts.</summary>
-internal static class WindowsTabJob
-{
-    static readonly Lock Gate = new();
-    static nint _job;
-
-    public static unsafe void Assign(int pid)
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
-        lock (Gate)
-        {
-            if (_job == 0)
-            {
-                var job = WindowsTabNative.CreateJobObject(0, null);
-                if (job == 0)
-                {
-                    return;
-                }
-                Span<byte> limits = stackalloc byte[IntPtr.Size == 8 ? 144 : 112];
-                limits.Clear();
-                BitConverter.TryWriteBytes(limits.Slice(16, 4), 0x2000); // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-                fixed (byte* data = limits)
-                {
-                    if (!WindowsTabNative.SetInformationJobObject(job, 9, data, (uint)limits.Length))
-                    {
-                        WindowsTabNative.CloseHandle(job);
-                        return;
-                    }
-                }
-                _job = job;
-            }
-            try
-            {
-                using var process = Process.GetProcessById(pid);
-                _ = WindowsTabNative.AssignProcessToJobObject(_job, process.Handle);
-            }
-            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or Win32Exception) { }
-        }
-    }
 }
 
 internal static unsafe partial class WindowsTabNative
@@ -115,17 +87,6 @@ internal static unsafe partial class WindowsTabNative
     [LibraryImport("kernel32.dll", EntryPoint = "GetExitCodeProcess", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool GetExitCodeProcess(nint process, out uint code);
-
-    [LibraryImport("kernel32.dll", EntryPoint = "CreateJobObjectW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
-    internal static partial nint CreateJobObject(nint attributes, string? name);
-
-    [LibraryImport("kernel32.dll", EntryPoint = "SetInformationJobObject", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static partial bool SetInformationJobObject(nint job, int infoClass, byte* info, uint length);
-
-    [LibraryImport("kernel32.dll", EntryPoint = "AssignProcessToJobObject", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static partial bool AssignProcessToJobObject(nint job, nint process);
 
     [LibraryImport("kernel32.dll", EntryPoint = "CloseHandle", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

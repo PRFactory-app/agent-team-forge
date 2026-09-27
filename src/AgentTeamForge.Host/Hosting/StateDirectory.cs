@@ -193,7 +193,7 @@ public sealed class StateDirectory
         SHA256.HashData(Encoding.UTF8.GetBytes(System.IO.Path.GetFullPath(path).ToUpperInvariant())))[..24];
 }
 
-public sealed class StateDirectoryException(string code) : Exception(code)
+public sealed class StateDirectoryException(string code, string? detail = null) : Exception(detail is null ? code : $"{code}: {detail}")
 {
     public string Code { get; } = code;
 }

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json.Nodes;
 using AgentTeamForge.Business.Features.Agents.Backends;
 
@@ -15,8 +16,11 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         var bootstrap = Path.GetDirectoryName(launch.BootstrapPath)!;
         Directory.CreateDirectory(bootstrap);
         File.SetUnixFileMode(bootstrap, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        await File.WriteAllTextAsync(launch.BootstrapPath, launch.AgentName, cancellationToken);
-        File.SetUnixFileMode(launch.BootstrapPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        await using (var file = new FileStream(launch.BootstrapPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+            File.SetUnixFileMode(launch.BootstrapPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            await file.WriteAsync(Encoding.UTF8.GetBytes(launch.AgentName), cancellationToken);
+        }
 
         OwnedHerdrSession session;
         try
@@ -28,6 +32,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         catch (InteractiveTerminalUnavailableException ex)
         {
             // Provider preflight runs before any session or tab creation.
+            File.Delete(launch.BootstrapPath);
             throw new BackendNotStartedException(ex.Message, ex);
         }
         // Record immediately: a later tab/start failure is still an owned session.
@@ -37,8 +42,8 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
             var binding = await terminal.OpenAgentTabAsync(session, launch.AgentName, launch.WorkingDirectory, launch.BootstrapPath, cancellationToken,
                 workspaceTrustEnvironment: InteractiveAgentCommand.WorkspaceTrustEnvironment(launch.Kind),
                 onCreated: created => { session = created; HerdrOwnedSessions.Save(launch, created); },
-                exclusivePiMcp: launch.Kind == InteractiveAgentKind.Pi && launch.JobId is { } jobId
-                    && File.Exists(ManagedChildContext.ConfigPath(Path.GetDirectoryName(bootstrap)!, jobId)));
+                exclusivePiMcp: launch.Kind == InteractiveAgentKind.Pi && InteractiveAgentCommand.ManagedConfigPath(launch) is { } config
+                    && File.Exists(config));
             _runs[launch.AgentName] = (session, binding);
             var args = new List<string> { "agent", "start", launch.AgentName, "--kind", Kind(launch.Kind), "--pane", binding.PaneId, "--timeout", "15000", "--" };
             args.AddRange(AgentArguments(launch));
@@ -58,7 +63,11 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
             }
             catch (HerdrLaunchException) { /* The original fault remains uncertain; never touch another session. */ }
             _runs.TryRemove(launch.AgentName, out _);
-            if (cleaned) { throw new BackendNotStartedException("interactive launch failed; owned session stopped: " + ex.Message, ex); }
+            if (cleaned)
+            {
+                File.Delete(launch.BootstrapPath);
+                throw new BackendNotStartedException("interactive launch failed; owned session stopped: " + ex.Message, ex);
+            }
             throw;
         }
     }
@@ -248,17 +257,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         _ => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 
-    internal static IReadOnlyList<string> AgentArguments(InteractiveLaunch launch)
-    {
-        var args = new List<string>();
-        if (launch.JobId is { } jobId)
-        {
-            var stateRoot = Path.GetDirectoryName(Path.GetDirectoryName(launch.BootstrapPath))!;
-            args.AddRange(ManagedChildContext.Arguments(Kind(launch.Kind), ManagedChildContext.ConfigPath(stateRoot, jobId)));
-        }
-        args.AddRange(InteractiveAgentCommand.Arguments(launch));
-        return args;
-    }
+    internal static IReadOnlyList<string> AgentArguments(InteractiveLaunch launch) => InteractiveAgentCommand.ManagedArguments(launch);
 
     static string? FindStatus(JsonNode? node)
     {

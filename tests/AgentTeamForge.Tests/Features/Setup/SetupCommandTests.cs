@@ -1,6 +1,7 @@
 using AgentTeamForge.Host.Features.Setup;
 using AgentTeamForge.Host.Hosting;
 using AgentTeamForge.Tests.Support;
+using System.Diagnostics;
 using System.Text.Json;
 
 namespace AgentTeamForge.Tests.Features.Setup;
@@ -375,6 +376,30 @@ public sealed class SetupCommandTests
         Assert.False(daemon.HasExited);
     }
 
+    [Theory]
+    [InlineData("profile.json")]
+    [InlineData("launch-mode.json")]
+    public async Task CorruptStartupJsonFailsCleanlyForClientAndDaemon(string name)
+    {
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        var path = Path.Combine(rig.StateDir, name);
+        File.WriteAllText(path, "{invalid json");
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, StateDirectory.PrivateFile);
+        }
+
+        foreach (var command in new[] { "start", "daemon" })
+        {
+            var (exit, _, error) = await rig.RunToExitAsync([command, "--state-dir", rig.StateDir]);
+            Assert.Equal(78, exit);
+            Assert.Contains(path, error);
+            Assert.Contains("atf setup or atf doctor", error);
+            Assert.DoesNotContain("Unhandled exception", error);
+        }
+    }
+
     [Fact]
     public void RequestedUnavailableHerdrDoesNotWriteMode()
     {
@@ -446,6 +471,47 @@ public sealed class SetupCommandTests
         {
             await rig.RunToExitAsync(["stop", "--state-dir", rig.StateDir]);
         }
+    }
+
+    [Fact]
+    public async Task StartedDaemonHasItsOwnSessionAndOnlyExplicitStandardHandles()
+    {
+        if (!OperatingSystem.IsLinux()) { return; }
+
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        var sentinelPath = Path.Combine(Path.GetDirectoryName(rig.StateDir)!, "caller-fd");
+        using var sentinel = File.OpenHandle(sentinelPath, FileMode.CreateNew, FileAccess.ReadWrite);
+        var start = new ProcessStartInfo(SpikeRig.Binary)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            InheritedHandles = [sentinel],
+        };
+        foreach (var arg in new[] { "start", "--state-dir", rig.StateDir }) { start.ArgumentList.Add(arg); }
+        using var caller = Process.Start(start)!;
+        var output = caller.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+        var error = caller.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+        using var deadline = new CancellationTokenSource(Bounded.ScenarioDeadline);
+        await caller.WaitForExitAsync(deadline.Token);
+        Assert.True(caller.ExitCode == 0, $"atf start exited {caller.ExitCode}: {await output} {await error}");
+
+        var pid = Assert.IsType<int>(DaemonLock.ReadOwnerPid(StateDirectory.Open(rig.StateDir).LockFile));
+        var stat = File.ReadAllText($"/proc/{pid}/stat");
+        var fields = stat[(stat.LastIndexOf(')') + 2)..].Split(' ');
+        Assert.Equal(pid, int.Parse(fields[2])); // process group
+        Assert.Equal(pid, int.Parse(fields[3])); // session
+        Assert.Contains("Umask:\t0077", File.ReadAllLines($"/proc/{pid}/status"));
+
+        var fdDir = $"/proc/{pid}/fd";
+        Assert.Equal("/dev/null", new FileInfo(Path.Combine(fdDir, "0")).LinkTarget);
+        var log = Path.Combine(rig.StateDir, "daemon.log");
+        Assert.Equal(log, new FileInfo(Path.Combine(fdDir, "1")).LinkTarget);
+        Assert.Equal(log, new FileInfo(Path.Combine(fdDir, "2")).LinkTarget);
+        Assert.Equal(StateDirectory.PrivateFile, File.GetUnixFileMode(log));
+        Assert.DoesNotContain(Directory.EnumerateFileSystemEntries(fdDir),
+            fd => new FileInfo(fd).LinkTarget == sentinelPath);
     }
 
     [Fact]

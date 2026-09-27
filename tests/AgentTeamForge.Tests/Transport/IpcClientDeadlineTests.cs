@@ -99,22 +99,33 @@ public sealed class IpcClientDeadlineTests
     [Fact]
     public async Task Budget_is_total_and_not_reset_per_step()
     {
-        // Each step alone fits inside the budget; together they exceed it.
-        var step = Budget * 0.7;
+        var clock = new ManualTimeProvider();
+        var helloRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sendHello = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sendResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var peer = new FakePeer(async (stream, ct) =>
         {
             await Frames.ReadAsync(stream, IpcJson.Default.IpcRequest, 1 << 20, Timeout.InfiniteTimeSpan, ct);
-            await Task.Delay(step, ct);
+            helloRead.SetResult();
+            await sendHello.Task.WaitAsync(ct);
             await Frames.WriteAsync(stream, new IpcResponse(true), IpcJson.Default.IpcResponse, ct);
             await ReadRequestAsync(stream, ct);
-            await Task.Delay(step, ct);
+            requestRead.SetResult();
+            await sendResponse.Task.WaitAsync(ct);
             await Frames.WriteAsync(stream, new IpcResponse(true, Outcome: "accepted"), IpcJson.Default.IpcResponse, ct);
         });
 
-        var (response, elapsed) = await Timed(() => peer.Client(Budget).SendAsync(Submit, CancellationToken.None));
+        var call = new IpcClient(peer.State, new SpikeLimits(), Budget, clock).SendAsync(Submit, CancellationToken.None);
+        await helloRead.Task.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+        clock.Advance(Budget * 0.7);
+        sendHello.SetResult();
+        await requestRead.Task.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+        clock.Advance(Budget * 0.4);
+        sendResponse.SetResult();
+        var response = await call.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
 
         Assert.Equal(IpcProtocol.OutcomeUnknown, response.Error);
-        Assert.True(elapsed < step * 2, $"took {elapsed}");
     }
 
     [Fact]
@@ -242,6 +253,17 @@ public sealed class IpcClientDeadlineTests
         Assert.False(File.Exists(Path.Combine(state.Path, "start.lock")));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Access_denied_response_uses_endpoint_specific_detail(bool windowsPipe)
+    {
+        var response = IpcClient.AccessDeniedResponse(windowsPipe);
+
+        Assert.Equal(IpcProtocol.AccessDenied, response.Error);
+        Assert.Equal(windowsPipe ? WindowsPipe.AccessDeniedMessage : IpcClient.AccessDeniedDetail, response.ErrorDetail);
+    }
+
     [Fact]
     public async Task Denied_start_gate_returns_error_instead_of_throwing()
     {
@@ -284,6 +306,65 @@ public sealed class IpcClientDeadlineTests
         // Test supervisor bound: a hung client fails the test instead of the run.
         var response = await call.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
         return (response, clock.Elapsed);
+    }
+
+    sealed class ManualTimeProvider : TimeProvider
+    {
+        readonly Lock _sync = new();
+        readonly List<ManualTimer> _timers = [];
+        long _ticks;
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new ManualTimer(this, callback, state);
+            lock (_sync)
+            {
+                _timers.Add(timer);
+                timer.Change(dueTime, period);
+            }
+            return timer;
+        }
+
+        public void Advance(TimeSpan duration)
+        {
+            ManualTimer[] due;
+            lock (_sync)
+            {
+                _ticks += duration.Ticks;
+                due = [.. _timers.Where(timer => timer.DueAt <= _ticks && !timer.Disposed)];
+                foreach (var timer in due) { timer.DueAt = long.MaxValue; }
+            }
+            foreach (var timer in due) { timer.Fire(); }
+        }
+
+        sealed class ManualTimer(ManualTimeProvider clock, TimerCallback callback, object? state) : ITimer
+        {
+            public long DueAt { get; set; } = long.MaxValue;
+            public bool Disposed { get; private set; }
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                lock (clock._sync)
+                {
+                    if (Disposed) { return false; }
+                    DueAt = dueTime == Timeout.InfiniteTimeSpan ? long.MaxValue : clock._ticks + dueTime.Ticks;
+                    return true;
+                }
+            }
+
+            public void Fire() => callback(state);
+
+            public void Dispose()
+            {
+                lock (clock._sync) { Disposed = true; }
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return ValueTask.CompletedTask;
+            }
+        }
     }
 
     /// <summary>Scripted in-process UDS peer on a private temp state directory.</summary>

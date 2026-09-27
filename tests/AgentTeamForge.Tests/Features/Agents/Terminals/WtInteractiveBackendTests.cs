@@ -1,7 +1,9 @@
 using System.Text;
+using System.Text.Json.Nodes;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Business.Features.Recovery;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Tests.Support;
@@ -10,6 +12,34 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 
 public sealed class WtInteractiveBackendTests
 {
+    [Fact]
+    public async Task Config_preflight_fails_before_any_tab_and_does_not_fence_the_job()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var tabs = new FakeTabs();
+        var backend = new WtInteractiveBackend(tabs, new FakeReader(null), InteractiveAgentKind.Claude,
+            state.Path, "wt", configPreflight: (kind, cwd) =>
+            {
+                var env = new Dictionary<string, string?> { ["HOME"] = state.Path };
+                if (InteractiveAgentPreflight.Check(kind, name => env.GetValueOrDefault(name), cwd, InteractivePlatform.Windows) is { } blocked)
+                {
+                    throw blocked;
+                }
+            });
+        var job = f.Submit("preflight");
+        var claim = f.Store.BeginNextAttempt()!;
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        await dispatcher.RunAttemptAsync(claim, TestContext.Current.CancellationToken);
+
+        Assert.True(tabs.Preflighted);
+        Assert.Null(tabs.Launch);
+        Assert.Equal(JobStatus.Failed, f.Store.GetJob(job.JobId)!.Status);
+        Assert.Equal("agent_first_run_required", f.Store.GetJob(job.JobId)!.ReasonCode);
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+        Assert.Null(f.Store.GetRuns(job.JobId).Single().SubmittedAt);
+    }
+
     [Fact]
     public async Task FakeTabLaunchRetainsNativeSessionUntilStopAgent()
     {
@@ -49,6 +79,68 @@ public sealed class WtInteractiveBackendTests
         }
 
         Assert.Equal([new BackendEvidence.ProtocolError("interactive_delivery_not_confirmed")], evidence);
+    }
+
+    [Fact]
+    public async Task WrapperStartFailureFailsJobWithoutFence()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("wt-failed-start");
+        var claim = f.Store.BeginNextAttempt()!;
+        var tabs = new FakeTabs { Failure = "The specified executable is not a valid application" };
+        var backend = new WtInteractiveBackend(tabs, new FakeReader(null), InteractiveAgentKind.Claude,
+            Path.GetTempPath(), "wt", TimeSpan.FromSeconds(2));
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        await dispatcher.RunAttemptAsync(claim, CancellationToken.None);
+
+        var record = f.Store.GetJob(job.JobId)!;
+        Assert.Equal(JobStatus.Failed, record.Status);
+        Assert.Equal("launch_failed", record.ReasonCode);
+        Assert.Contains("not a valid application", record.ResultText);
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+        Assert.True(tabs.Stopped);
+    }
+
+    [Fact]
+    public async Task WrapperExitWithoutStartErrorIsUncertainAndFenced()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("wt-exited-wrapper");
+        var claim = f.Store.BeginNextAttempt()!;
+        // The agent may have run with the prompt in argv; its exit alone is not "no effect".
+        var tabs = new FakeTabs { Exited = true };
+        var backend = new WtInteractiveBackend(tabs, new FakeReader(null), InteractiveAgentKind.Claude,
+            Path.GetTempPath(), "wt", TimeSpan.FromMinutes(5));
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        await dispatcher.RunAttemptAsync(claim, TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+        var record = f.Store.GetJob(job.JobId)!;
+        Assert.Equal(JobStatus.NeedsReconciliation, record.Status);
+        Assert.Equal("interactive_agent_exited", record.ReasonCode);
+    }
+
+    [Fact]
+    public void InvalidWindowsAgentImageIsRejectedBeforeTabLaunch()
+    {
+        using var state = new TempStateDir();
+        var bogus = Path.Combine(state.Path, "claude.exe");
+        File.WriteAllBytes(bogus, [0x4d, 0x5a, 0, 0]);
+        Assert.Throws<BackendNotStartedException>(() => WtTabControl.ValidateWindowsAgentBinary(bogus));
+        Assert.Throws<BackendNotStartedException>(() => WtTabControl.ValidateWindowsAgentBinary(Path.Combine(state.Path, "missing.exe")));
+    }
+
+    [Fact]
+    public void PreflightFailureDoesNotOpenTab()
+    {
+        var tabs = new FakeTabs { FailPreflight = true };
+        var backend = new WtInteractiveBackend(tabs, new FakeReader(null), InteractiveAgentKind.Claude, Path.GetTempPath());
+        Assert.Throws<BackendNotStartedException>(() => backend.Start(new BackendRequest("job", "corr", "work", "")
+        { WorkingDirectory = Path.GetTempPath() }));
+        Assert.Null(tabs.Launch);
     }
 
     [Fact]
@@ -130,7 +222,39 @@ public sealed class WtInteractiveBackendTests
         Assert.Contains("$start.WorkingDirectory = '" + cwd.Replace("'", "''") + "'", wrapper);
         Assert.Contains("$env:CODEX_HOME = 'C:\\daemon\\codex'", wrapper);
         Assert.Contains("$PID.ToString() + '|'", wrapper);
+        Assert.Contains("WriteAllText('C:\\state\\tab.start-error'", wrapper);
+        Assert.Contains("[uint32]0x2000", wrapper);
+        Assert.Contains("AssignProcessToJobObject($job, $agent.Handle)", wrapper);
+        Assert.Contains("if (-not $native::AssignProcessToJobObject", wrapper);
+        Assert.Contains("$agent.Kill()", wrapper);
+        Assert.Contains("finally { [void]$native::CloseHandle($job) }", wrapper);
+        // PowerShell only ends a here-string at a line-initial '@; a stray indent breaks every launch.
+        Assert.Matches(@"\$source = @'\r?\n", wrapper);
+        Assert.Matches(@"\n'@\r?\n", wrapper);
+        // A $null argument would reach a .NET string parameter as "" rather than NULL.
+        Assert.Contains("CreateJobObject([IntPtr]::Zero, [IntPtr]::Zero)", wrapper);
+        // The agent identity lets stop end the agent first so the wrapper exits 0 and its tab closes.
+        Assert.Contains("Out-File -FilePath 'C:\\state\\tab.agent' -Encoding ascii", wrapper);
+        Assert.DoesNotContain("__AGENT_SIDECAR__", wrapper);
+        Assert.DoesNotContain("__START_ERROR__", wrapper);
         Assert.EndsWith("exit 0\r\n", wrapper);
+    }
+
+    [Fact]
+    public void RecordedWrapperFailureAndExitedPidAreObservedWithoutAWindowProbe()
+    {
+        using var state = new TempStateDir();
+        var wrapper = Path.Combine(state.Path, "tab.launch.ps1");
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", state.Path, null, null, wrapper);
+        var sidecar = Path.ChangeExtension(wrapper, ".pid");
+        var tabs = new WtTabControl();
+        File.WriteAllText(sidecar, $"{int.MaxValue}|{DateTime.UtcNow.Ticks}");
+        Assert.True(tabs.WrapperExited(launch));
+        Assert.Null(tabs.StartFailure(launch));
+        File.WriteAllText(Path.ChangeExtension(wrapper, ".start-error"), "bad image");
+        Assert.Equal("interactive agent could not start: bad image", tabs.StartFailure(launch));
+        tabs.StopOwned(launch);
+        Assert.False(File.Exists(sidecar));
     }
 
     [Fact]
@@ -166,6 +290,62 @@ public sealed class WtInteractiveBackendTests
         Assert.DoesNotContain("-match '^(CLAUDE_CODE_", wrapper);
         Assert.DoesNotContain("'CLAUDE_CODE_GIT_BASH_PATH'", wrapper);
         Assert.Contains("$start.Arguments = ", wrapper);
+    }
+
+    [Theory]
+    [InlineData(InteractiveAgentKind.Claude, "--resume")]
+    [InlineData(InteractiveAgentKind.Codex, "resume")]
+    [InlineData(InteractiveAgentKind.Pi, "--continue")]
+    public void ManagedWtLaunchAndResumeCarryPrivateMcpConfig(InteractiveAgentKind kind, string resumeFlag)
+    {
+        using var state = new TempStateDir();
+        var root = Path.Combine(state.Path, "state with spaces");
+        var configPath = ManagedChildContext.ConfigPath(root, "job-first");
+        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+        var config = new JsonObject
+        {
+            ["mcpServers"] = new JsonObject
+            {
+                [ManagedChildContext.ServerName] = new JsonObject
+                {
+                    ["command"] = @"C:\Program Files\ATF\atf.exe",
+                    ["args"] = new JsonArray("mcp", "--state-dir", root, "--managed-context", Path.Combine(root, "parent context.json")),
+                },
+            },
+        }.ToJsonString();
+        File.WriteAllText(configPath, config);
+        var followConfig = ManagedChildContext.ConfigPath(root, "job-follow");
+        Directory.CreateDirectory(Path.GetDirectoryName(followConfig)!);
+        File.WriteAllText(followConfig, config);
+        var initial = new InteractiveLaunch(kind, "atffirst", root, null, Path.Combine(root, "pi"),
+            Path.Combine(root, "wt", "first.launch.ps1"))
+        { JobId = "job-first" };
+        var follow = initial with
+        {
+            AgentName = "atffollow",
+            ResumeSessionId = "native-1",
+            BootstrapPath = Path.Combine(root, "wt", "follow.launch.ps1"),
+            JobId = "job-follow"
+        };
+
+        foreach (var launch in new[] { initial, follow })
+        {
+            var args = WtTabControl.AgentArguments(launch, "task");
+            var expected = ManagedChildContext.Arguments(kind.ToString().ToLowerInvariant(),
+                ManagedChildContext.ConfigPath(root, launch.JobId!));
+            Assert.Equal(expected, args.Skip(1).Take(expected.Count));
+            if (kind == InteractiveAgentKind.Codex)
+            {
+                var serverArgs = Assert.Single(args, arg => arg.StartsWith("mcp_servers.agentteamforge.args=", StringComparison.Ordinal));
+                Assert.Contains(Path.Combine(root, "parent context.json"), serverArgs);
+                Assert.Contains("\\\"mcp\\\"", WtTabControl.CommandLine([serverArgs]));
+                Assert.Contains("\\\"mcp\\\"", WindowsCliLaunch.ShimArgument(serverArgs));
+            }
+            else { Assert.Contains(ManagedChildContext.ConfigPath(root, launch.JobId!), args); }
+            var wrapper = Encoding.UTF8.GetString(WtTabControl.WrapperBytes(launch, "task", Path.Combine(root, "wt", "tab.pid")));
+            if (kind == InteractiveAgentKind.Pi) { Assert.Contains("$env:PI_MCP_CONFIG_MODE = 'exclusive'", wrapper); }
+        }
+        Assert.Contains(resumeFlag, WtTabControl.AgentArguments(follow, "task"));
     }
 
     [Theory]
@@ -244,24 +424,45 @@ public sealed class WtInteractiveBackendTests
     }
 
     [Fact]
-    public void RecoveryStopsOnlyTabsWhosePidStillHasTheRecordedIdentity()
+    public void RestartFindsOnlyTheMatchingOwnedJob()
     {
         var root = Path.Combine(Path.GetTempPath(), "atf-wt-recovery-" + Guid.NewGuid().ToString("N"));
         var directory = Path.Combine(root, "wt");
         Directory.CreateDirectory(directory);
-        var created = new DateTime(638945424000000000, DateTimeKind.Utc);
         try
         {
-            File.WriteAllText(Path.Combine(directory, "atfvalid.pid"), $"4242|{created.Ticks}");
-            File.WriteAllText(Path.Combine(directory, "atfstale.pid"), $"5252|{created.Ticks}");
-            var stopped = new List<int>();
-            var count = WtTabControl.RecoverOwned(root,
-                pid => pid == 4242 ? created : created.AddSeconds(1),
-                tab => { stopped.Add(tab.Pid); return true; });
-            Assert.Equal(1, count);
-            Assert.Equal([4242], stopped);
+            File.WriteAllText(Path.Combine(directory, "atfforeign.launch.job"), "other-job");
+            File.WriteAllText(Path.Combine(directory, "atfowned.launch.job"), "our-job");
+            var found = WtInteractiveBackend.FindRecoveredLaunch(root, InteractiveAgentKind.Codex, "our-job");
+            Assert.Equal("atfowned", found?.AgentName);
+            Assert.Equal(Path.Combine(directory, "atfowned.launch.ps1"), found?.BootstrapPath);
+            Assert.Null(WtInteractiveBackend.FindRecoveredLaunch(root, InteractiveAgentKind.Codex, "missing-job"));
         }
         finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void RestartQuarantinesRunningWtJobForVerifiedStop()
+    {
+        using var fixture = new JobFixture();
+        var job = fixture.Submit("wt-restart");
+        _ = fixture.Store.BeginNextAttempt();
+        var quarantined = new RecoverOnStartup(fixture.NewStore()).Execute();
+        Assert.Contains(job.JobId, quarantined);
+        Assert.Equal(JobStatus.NeedsReconciliation, fixture.Store.GetJob(job.JobId)?.Status);
+    }
+
+    [Fact]
+    public void WindowsLaunchersRequestBreakawayButKeepWrapperCleanupLocal()
+    {
+        Assert.Equal(WindowsConsoleProcess.BreakawayFromJob | WindowsConsoleProcess.NewProcessGroup | WindowsConsoleProcess.NoWindow,
+            WindowsConsoleProcess.CreationFlags(newConsole: false));
+        Assert.Equal(WindowsConsoleProcess.BreakawayFromJob | WindowsConsoleProcess.NewProcessGroup | WindowsConsoleProcess.NewConsole,
+            WindowsConsoleProcess.CreationFlags(newConsole: true));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", "C:\\work", null, null, "C:\\state\\tab.ps1");
+        var wrapper = Encoding.UTF8.GetString(WtTabControl.WrapperBytes(launch, "task", "C:\\state\\tab.pid"));
+        Assert.Contains("finally { [void]$native::CloseHandle($job) }", wrapper);
+        Assert.Contains("Out-File -FilePath 'C:\\state\\tab.agent' -Encoding ascii", wrapper);
     }
 
     [Fact]
@@ -280,16 +481,6 @@ public sealed class WtInteractiveBackendTests
         // 2n+1 + quote -> n and a literal quote; other backslashes are literal.
         Assert.Equal("plain \"\" \"say \\\"hi\\\" --flag \\\\\\\"x\" \"C:\\dir with space\\\\\"",
             WtTabControl.CommandLine(["plain", "", "say \"hi\" --flag \\\"x", "C:\\dir with space\\"]));
-    }
-
-    [Fact]
-    public void OnlyChildrenStartedAfterTheWrapperAreOwned()
-    {
-        var wrapper = new DateTime(2026, 9, 26, 12, 0, 0, DateTimeKind.Utc);
-        Assert.True(WtTabControl.IsOwnedChild(wrapper.AddSeconds(1), wrapper));
-        // A process whose dead parent had the same PID still reports it as ParentProcessId.
-        Assert.False(WtTabControl.IsOwnedChild(wrapper.AddSeconds(-1), wrapper));
-        Assert.False(WtTabControl.IsOwnedChild(null, wrapper));
     }
 
     [Fact]
@@ -335,10 +526,16 @@ public sealed class WtInteractiveBackendTests
     {
         public bool Preflighted { get; private set; }
         public bool FailLaunch { get; init; }
+        public bool FailPreflight { get; init; }
+        public string? Failure { get; init; }
         public bool Stopped { get; private set; }
         public string Prompt { get; private set; } = "";
         public InteractiveLaunch? Launch { get; private set; }
-        public void Preflight(InteractiveAgentKind kind) => Preflighted = true;
+        public void Preflight(InteractiveAgentKind kind)
+        {
+            Preflighted = true;
+            if (FailPreflight) { throw new BackendNotStartedException("agent launcher is invalid"); }
+        }
         public Task StartAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken)
         {
             if (FailLaunch)
@@ -351,6 +548,9 @@ public sealed class WtInteractiveBackendTests
             return Task.CompletedTask;
         }
         public bool IsAlive(InteractiveLaunch launch) => !Stopped;
+        public bool Exited { get; init; }
+        public string? StartFailure(InteractiveLaunch launch) => Failure;
+        public bool WrapperExited(InteractiveLaunch launch) => Exited;
         public int? ProcessId(InteractiveLaunch launch) => Prompt.Length > 0 ? 4242 : null;
         public void StopOwned(InteractiveLaunch launch) => Stopped = true;
     }
@@ -366,6 +566,8 @@ public sealed class WtInteractiveBackendTests
             throw new IOException("tab readiness timed out after handing off the wrapper");
         }
         public bool IsAlive(InteractiveLaunch launch) => Interlocked.Increment(ref _probes) > 2;
+        public string? StartFailure(InteractiveLaunch launch) => null;
+        public bool WrapperExited(InteractiveLaunch launch) => false;
         public int? ProcessId(InteractiveLaunch launch) => Volatile.Read(ref _probes) > 2 ? 4242 : null;
         public void StopOwned(InteractiveLaunch launch) { }
     }

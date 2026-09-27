@@ -34,6 +34,7 @@ public sealed class DispatchJob : IDisposable
     readonly Action<string> log;
     readonly JobLogs? jobLogs;
     readonly ManagedChildContext? childContext;
+    readonly string? piHome;
     string? _haltReason;
 
     /// <summary>Single-backend convenience: serves jobs whose backend is "fake".</summary>
@@ -42,7 +43,7 @@ public sealed class DispatchJob : IDisposable
     {
     }
 
-    public DispatchJob(JobStore store, BackendCatalog backends, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log, JobLogs? jobLogs = null, ManagedChildContext? childContext = null)
+    public DispatchJob(JobStore store, BackendCatalog backends, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log, JobLogs? jobLogs = null, ManagedChildContext? childContext = null, string? piHome = null)
     {
         // Validated before the daemon reports readiness; CancelAfter would otherwise fault the loop.
         if (limits.MaxFakeRuntime <= TimeSpan.Zero || limits.MaxFakeRuntime > MaxAllowedRuntime)
@@ -60,6 +61,7 @@ public sealed class DispatchJob : IDisposable
         this.log = log;
         this.jobLogs = jobLogs;
         this.childContext = childContext;
+        this.piHome = piHome;
     }
 
     /// <summary>
@@ -145,6 +147,31 @@ public sealed class DispatchJob : IDisposable
             try { active.Stop.Cancel(); }
             catch (ObjectDisposedException) { }
             CloseInterruptedIfUnclaimed(jobId);
+        }
+        else
+        {
+            // The cancelled run may have finished cleanup after the acceptance
+            // commit but before this callback. Headless descendants can outlive
+            // that cleanup, so verify their run markers before releasing the fence.
+            try
+            {
+                var job = store.GetJob(jobId);
+                if (job?.Status != JobStatus.Cancelled) { return; }
+                if (backends.Resolve(job.Backend) is not HerdrInteractiveBackend)
+                {
+                    var runs = store.GetRuns(jobId);
+                    var correlations = runs.Select(run => run.Correlation).ToArray();
+                    OrphanedBackendProcess.TerminateMarked(correlations);
+                    if (OrphanedBackendProcess.HasMarkedProcess(correlations,
+                        [.. runs.Where(run => run.BackendPid.HasValue).Select(run => run.BackendPid!.Value)])) { return; }
+                }
+                store.ReconcileStoppedJob(jobId);
+            }
+            catch (Exception ex)
+            {
+                log($"session reconciliation failed for {jobId}: {ex.Message}");
+                Halt("terminal_write_failed");
+            }
         }
     }
 
@@ -445,6 +472,11 @@ public sealed class DispatchJob : IDisposable
                 Output = jobLogs?.BeginRun(claim.Job.JobId, claim.RunId, claim.Job.Backend),
             };
             request = childContext?.Prepare(request) ?? request;
+            if (claim.Job.Backend == BackendCatalog.Pi && request.ManagedMcpConfig is not null && !PiMcpAdapter.IsInstalled(piHome))
+            {
+                End(run, JobStatus.Failed, "pi_mcp_adapter_missing", PiMcpAdapter.InstallHint);
+                return;
+            }
             var starting = Task.Run(() => backend.Start(request), CancellationToken.None);
             try
             {
@@ -452,9 +484,10 @@ public sealed class DispatchJob : IDisposable
             }
             catch (OperationCanceledException)
             {
-                // Process start cannot be cancelled. A late start may exist: it is
-                // terminated when it returns, never delivered to, never replaced.
-                TerminateLateStart(starting, run, daemonLifetime.IsCancellationRequested && backend is HerdrInteractiveBackend);
+                // Process start cannot be cancelled. A late interactive terminal
+                // session still belongs to the quarantined attempt after shutdown.
+                TerminateLateStart(starting, run, daemonLifetime.IsCancellationRequested
+                    && backend is HerdrInteractiveBackend or WtInteractiveBackend);
                 if (!daemonLifetime.IsCancellationRequested && !stopRequested.IsCancellationRequested)
                 {
                     End(run, JobStatus.NeedsReconciliation, "backend_start_timeout");
@@ -495,6 +528,12 @@ public sealed class DispatchJob : IDisposable
                         case BackendEvidence.ProtocolError error:
                             End(run, error.Code == JobErrors.SessionExpired ? JobStatus.Failed : JobStatus.NeedsReconciliation, error.Code);
                             return;
+                        case BackendEvidence.NotStarted rejected:
+                            End(run, JobStatus.Failed, "backend_not_started", rejected.Details);
+                            return;
+                        case BackendEvidence.LaunchFailed failed:
+                            End(run, JobStatus.Failed, "launch_failed", failed.Details);
+                            return;
                         case BackendEvidence.EndOfOutput:
                             End(run, JobStatus.NeedsReconciliation, "backend_eof");
                             return;
@@ -518,8 +557,8 @@ public sealed class DispatchJob : IDisposable
         }
         catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested)
         {
-            // Human-visible Herdr sessions outlive the daemon; restart quarantines them.
-            if (backends.Resolve(claim.Job.Backend) is not HerdrInteractiveBackend)
+            // Interactive terminal sessions outlive the daemon; restart quarantines them.
+            if (backends.Resolve(claim.Job.Backend) is not (HerdrInteractiveBackend or WtInteractiveBackend))
             {
                 active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
             }
@@ -538,7 +577,10 @@ public sealed class DispatchJob : IDisposable
             var noEffects = blocked is not null || ex.InnerException is BackendNotStartedException && backendRun is null;
             var reason = blocked?.Reason ?? (noEffects ? "backend_not_started" : ex.Reason);
             var message = ex.InnerException!.Message;
-            if (ex.InnerException.InnerException is not null) { message += ": " + ex.InnerException.GetBaseException().Message; }
+            if (ex.InnerException.InnerException is not null && !message.Contains(ex.InnerException.GetBaseException().Message, StringComparison.Ordinal))
+            {
+                message += ": " + ex.InnerException.GetBaseException().Message;
+            }
             log($"backend failure for {run.RunId}: {reason}: {message}");
             active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
             End(run, noEffects ? JobStatus.Failed : JobStatus.NeedsReconciliation, reason,

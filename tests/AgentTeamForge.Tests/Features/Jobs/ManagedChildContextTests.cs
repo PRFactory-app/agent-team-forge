@@ -5,6 +5,7 @@ using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.External;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.External;
+using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Features.Sessions;
 using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Sqlite;
@@ -14,6 +15,42 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 
 public sealed class ManagedChildContextTests
 {
+    [Fact]
+    public async Task Lead_bound_pi_without_adapter_fails_before_launch_and_without_fence()
+    {
+        using var f = new JobFixture();
+        var root = Path.GetDirectoryName(f.DatabasePath)!;
+        var home = Path.Combine(root, "home");
+        var lead = new LeadSessionStore(f.Database).Start(root, "parent");
+        var team = new ExternalTeam(new ExternalMemberStore(f.Database), new WakeStore(f.Database));
+        var context = new ManagedChildContext(f.Store, team, root, "/private/atf");
+        var backend = new ScriptedBackend(r => [new BackendEvidence.Result(r.Correlation, "done")]);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Pi, () => backend);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
+        var first = accept.Execute(new SubmitJobRequest("first", "task", null, false)
+        { Backend = BackendCatalog.Pi, LeadSessionId = lead.SessionId }).Job!;
+        using var dispatch = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { },
+            childContext: context, piHome: home);
+
+        await dispatch.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+
+        var failed = f.Store.GetJob(first.JobId)!;
+        Assert.Equal(JobStatus.Failed, failed.Status);
+        Assert.Equal("pi_mcp_adapter_missing", failed.ReasonCode);
+        Assert.Contains("pi install npm:pi-mcp-adapter", failed.ResultText);
+        Assert.False(f.Store.IsSessionFenced(first.JobId));
+        Assert.Empty(backend.Started);
+
+        var settings = Path.Combine(home, ".pi", "agent", "settings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(settings)!);
+        File.WriteAllText(settings, "{\"packages\":[\"npm:pi-mcp-adapter\"]}");
+        var second = accept.Execute(new SubmitJobRequest("second", "task", null, false)
+        { Backend = BackendCatalog.Pi, LeadSessionId = lead.SessionId }).Job!;
+        await dispatch.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(second.JobId)!.Status);
+        Assert.Single(backend.Started);
+    }
+
     [Fact]
     public async Task Spawn_and_resume_receive_private_configuration_for_the_same_parent()
     {

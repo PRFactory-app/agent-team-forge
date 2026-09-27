@@ -3,6 +3,9 @@
 // A fragment token is copied to per-tab storage and removed from the address bar.
 (() => {
   const $ = (id) => document.getElementById(id);
+  // Jobs accepted before derived names carry the setup profile's placeholder agent.
+  const agentName = (j) => j.target_agent && j.target_agent !== 'fake-agent' ? j.target_agent
+    : (j.backend || 'agent') + '-' + j.job_id.slice(-8);
   const tokenKey = 'atf.web.token';
   const themeKey = 'atf.web.theme';
   let theme = 'auto';
@@ -402,7 +405,7 @@
       picker.dataset.composerKey = key;
       picker.dataset.composerRole = 'target';
       for (const j of targets) {
-        const option = element('option', '', (j.target_agent || 'Agent') + ' · ' + j.job_id.slice(-8) + ' · ' + j.status);
+        const option = element('option', '', agentName(j) + ' · ' + j.job_id.slice(-8) + ' · ' + j.status);
         option.value = j.job_id;
         picker.append(option);
       }
@@ -419,14 +422,14 @@
       label.append(picker);
       heading.append(label);
     } else {
-      heading.textContent = target ? '→ ' + (target.target_agent || 'Agent') + ' · job ' + target.job_id.slice(-8)
+      heading.textContent = target ? '→ ' + agentName(target) + ' · job ' + target.job_id.slice(-8)
         : lead ? 'No member agent session to message yet' : 'Agent session not available yet';
     }
     const input = element('textarea', 'composer-input');
     input.rows = 2;
     input.maxLength = 8192;
     input.placeholder = target ? 'Message this agent…' : 'Available after an agent session starts';
-    input.setAttribute('aria-label', 'Message ' + (target?.target_agent || 'agent'));
+    input.setAttribute('aria-label', 'Message ' + (target ? agentName(target) : 'agent'));
     input.dataset.composerKey = key;
     input.dataset.composerRole = 'message';
     input.value = state.draft;
@@ -962,7 +965,7 @@
         open.addEventListener('click', () => toggleCard(key));
         const row = element('span', 'card-identity');
         row.append(light(Object.hasOwn(counts, j.light) ? j.light : 'red', j.status.replaceAll('_', ' ')),
-          element('strong', 'node-name', j.target_agent || 'Agent'),
+          element('strong', 'node-name', agentName(j)),
           element('span', 'job-id', 'job ' + j.job_id.slice(-8)));
         const chips = element('span', 'chips');
         if (j.backend) chips.append(backendChip(j.backend));
