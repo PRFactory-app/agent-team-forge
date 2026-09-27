@@ -21,7 +21,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
         var limit = request.Limit ?? DefaultPageSize;
         if (limit is < 1 or > MaxPageSize
             || request.Status is not (null or JobStatus.Queued or JobStatus.Running or JobStatus.Completed or JobStatus.Failed or JobStatus.NeedsReconciliation or JobStatus.Cancelled)
-            || request.Backend is not (null or "fake" or "claude" or "codex" or "pi")
+            || request.Backend is not (null or "fake" or "claude" or "codex" or "pi" or "cursor" or "droid")
             || (request.Since is not null && !DateTimeOffset.TryParse(request.Since, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out _))
             || (request.Cursor is not null && (request.Cursor.Length > 64 || !request.Cursor.StartsWith("job_", StringComparison.Ordinal))))
         {

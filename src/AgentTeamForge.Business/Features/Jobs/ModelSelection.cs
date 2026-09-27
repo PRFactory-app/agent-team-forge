@@ -17,7 +17,7 @@ public static class ModelSelection
         };
 
     static readonly string[] SharedTierOrder = [.. Tiers.Keys];
-    static readonly string[] DroidEfforts = ["none", "minimal", "medium", "high", "xhigh", "max"];
+    static readonly string[] DroidEfforts = ["none", "low", "medium", "high", "xhigh", "max"];
     public static IReadOnlyList<string> TierNames(string backend) => backend == "pi"
         ? [.. SharedTierOrder.Take(3), "medium-fast", .. SharedTierOrder.Skip(3)]
         : backend is "codex" or "cursor" or "droid" ? SharedTierOrder : [];

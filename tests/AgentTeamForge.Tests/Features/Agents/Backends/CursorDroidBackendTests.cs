@@ -67,6 +67,8 @@ public sealed class CursorDroidBackendTests : IDisposable
             Assert.Contains("headless-only", result.Error);
         }
         Assert.Empty(fixture.List().Execute(new ListJobsRequest()).Page!.Jobs);
+        Assert.Null(fixture.List().Execute(new ListJobsRequest { Backend = BackendCatalog.Cursor }).Error);
+        Assert.Null(fixture.List().Execute(new ListJobsRequest { Backend = BackendCatalog.Droid }).Error);
     }
 
     [Fact]
