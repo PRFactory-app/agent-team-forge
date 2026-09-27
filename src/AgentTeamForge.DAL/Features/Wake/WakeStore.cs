@@ -3,7 +3,7 @@ using AgentTeamForge.DAL.Sqlite;
 namespace AgentTeamForge.DAL.Features.Wake;
 
 public sealed record WakeRegistration(string Key, long Generation, string Kind, string Address, string Secret, string Home);
-public sealed record WakeRegistrationStatus(bool Registered, string? Key, long? Generation, string? Kind, string? Address);
+public sealed record WakeRegistrationStatus(bool Registered, string? Key, long? Generation, string? Kind, string? Address, bool Usable = false);
 public sealed record WakeSnapshot(WakeRegistration Target, int Unread, long LatestSeq, long NotifiedSeq, DateTimeOffset? LastSuccess, bool Outstanding, bool External = false);
 
 /// <summary>Committed wake routing and unread state. A posted notice is only a doorbell, never a read receipt.</summary>
@@ -40,13 +40,15 @@ public sealed class WakeStore(JobDatabase database)
         using var connection = database.OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT t.target_key,t.generation,t.kind,t.address FROM lead_sessions s
+            SELECT t.target_key,t.generation,t.kind,t.address,
+                   CASE WHEN t.kind='claude' THEN length(t.secret)>0 AND length(t.home)>0 ELSE 1 END
+            FROM lead_sessions s
             JOIN wake_targets t ON t.target_key=s.wake_key AND t.active=1
             WHERE s.session_id=$id AND s.closed_at IS NULL
             """;
         command.Parameters.AddWithValue("$id", sessionId);
         using var reader = command.ExecuteReader();
-        return reader.Read() ? new(true, reader.GetString(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3))
+        return reader.Read() ? new(true, reader.GetString(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetInt64(4) != 0)
             : new(false, null, null, null, null);
     }
 

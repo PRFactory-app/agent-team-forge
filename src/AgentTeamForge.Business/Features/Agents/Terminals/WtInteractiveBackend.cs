@@ -240,7 +240,11 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
                         yield return new BackendEvidence.ProtocolError("interactive_agent_exited");
                         yield break;
                     }
-                    if (DateTimeOffset.UtcNow >= confirmationDeadline)
+                    if (tabs.IsUnverified(launch))
+                    {
+                        confirmationDeadline = DateTimeOffset.UtcNow.Add(startupTimeout);
+                    }
+                    else if (DateTimeOffset.UtcNow >= confirmationDeadline)
                     {
                         yield return new BackendEvidence.ProtocolError("interactive_delivery_not_confirmed");
                         yield break;
@@ -293,6 +297,7 @@ internal interface IWtTabControl
     void Preflight(InteractiveAgentKind kind);
     Task StartAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken);
     bool IsAlive(InteractiveLaunch launch);
+    bool IsUnverified(InteractiveLaunch launch) => false;
     string? StartFailure(InteractiveLaunch launch);
     bool WrapperExited(InteractiveLaunch launch);
     int? ProcessId(InteractiveLaunch launch);

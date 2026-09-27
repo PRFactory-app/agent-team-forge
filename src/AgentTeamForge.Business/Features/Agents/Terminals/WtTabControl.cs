@@ -62,7 +62,11 @@ internal sealed class WtTabControl : IWtTabControl
         }
         await File.WriteAllBytesAsync(wrapper, WrapperBytes(launch, prompt, sidecar, _codexHome), cancellationToken);
 
-        if (FindExecutable("wt.exe") is not { } wt)
+        var wt = FindExecutable("wt.exe");
+        var args = WtCommandLine.Arguments(
+            ["-w", "wt-atf", "nt", "--title", launch.AgentName, "--suppressApplicationTitle"],
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", wrapper]);
+        if (wt is null || args is null)
         {
             await StartConsoleAsync(launch, wrapper, sidecar, cancellationToken);
             return;
@@ -74,8 +78,6 @@ internal sealed class WtTabControl : IWtTabControl
             // Windows Terminal is MSIX-packaged; its tabs see a virtualized AppData\Local and cannot find the wrapper.
             throw new IOException($"state directory is under {localAppData}, which Windows Terminal tabs cannot read; use a --state-dir outside it");
         }
-        var args = new[] { "-w", "wt-atf", "nt", "--title", launch.AgentName,
-            "--suppressApplicationTitle", "--", "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", wrapper };
         WindowsConsoleProcess? launcher = null;
         try
         {
@@ -146,14 +148,14 @@ internal sealed class WtTabControl : IWtTabControl
 
     OwnedTab? Owned(InteractiveLaunch launch)
     {
-        if (_tabs.TryGetValue(launch.AgentName, out var existing) && TryIdentity(existing.Pid) == existing.Created)
+        if (_tabs.TryGetValue(launch.AgentName, out var existing) && MayBeLive(existing))
         {
             return existing;
         }
         // The wrapper may write its sidecar after the launch wait expired.
         var sidecar = Path.ChangeExtension(launch.BootstrapPath, ".pid");
         var found = TryReadOwned(sidecar, launch.BootstrapPath);
-        if (found is null || TryIdentity(found.Pid) != found.Created) { return null; }
+        if (found is null || !MayBeLive(found)) { return null; }
         _tabs[launch.AgentName] = found;
         return found;
     }
@@ -161,6 +163,9 @@ internal sealed class WtTabControl : IWtTabControl
     public int? ProcessId(InteractiveLaunch launch) => Owned(launch)?.Pid;
 
     public bool IsAlive(InteractiveLaunch launch) => Owned(launch) is not null;
+
+    public bool IsUnverified(InteractiveLaunch launch) =>
+        Owned(launch) is { } tab && TryIdentity(tab.Pid) is null && PidAlive(tab.Pid);
 
     public string? StartFailure(InteractiveLaunch launch)
     {
@@ -179,7 +184,7 @@ internal sealed class WtTabControl : IWtTabControl
 
     public bool WrapperExited(InteractiveLaunch launch) =>
         TryReadOwned(Path.ChangeExtension(launch.BootstrapPath, ".pid"), launch.BootstrapPath) is { } tab
-        && TryIdentity(tab.Pid) != tab.Created;
+        && !MayBeLive(tab);
 
     public void StopOwned(InteractiveLaunch launch)
     {
@@ -189,7 +194,10 @@ internal sealed class WtTabControl : IWtTabControl
             return;
         }
 
-        StopOwned(tab);
+        if (!StopOwned(tab))
+        {
+            throw new InvalidOperationException($"PID {tab.Pid} is still live; retaining terminal ownership");
+        }
         _tabs.TryRemove(launch.AgentName, out _);
     }
 
@@ -211,7 +219,7 @@ internal sealed class WtTabControl : IWtTabControl
                 WaitForExit(tab);
             }
         }
-        if (TryIdentity(tab.Pid) == tab.Created)
+        if (MayBeLive(tab))
         {
             // Preserve the sidecar so the next daemon can retry owned cleanup.
             return false;
@@ -576,6 +584,24 @@ internal sealed class WtTabControl : IWtTabControl
             return process.HasExited ? null : process.StartTime.ToUniversalTime();
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { return null; }
+    }
+
+    static bool MayBeLive(OwnedTab tab)
+    {
+        var current = TryIdentity(tab.Pid);
+        return current == tab.Created || (current is null && PidAlive(tab.Pid));
+    }
+
+    static bool PidAlive(int pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return !process.HasExited;
+        }
+        catch (ArgumentException) { return false; }
+        catch (System.ComponentModel.Win32Exception) { return true; } // Access denied leaves identity unverified.
+        catch (InvalidOperationException) { return true; }
     }
 
     static void WaitForExit(OwnedTab tab)

@@ -340,6 +340,26 @@ public sealed class HerdrTerminal
         return _runner.Identity(binding.ShellPid)?.StartTicks == binding.ShellStartTicks ? null : "the bound pane shell process was replaced or exited";
     }
 
+    internal bool HasUnverifiedLiveIdentity(HerdrTabBinding binding)
+    {
+        var server = _runner.Identity(binding.Session.ServerPid);
+        if (server is { } known && known.StartTicks != binding.Session.ServerStartTicks) { return false; }
+        if (server is null) { return PidMayBeAlive(binding.Session.ServerPid); }
+        return _runner.Identity(binding.ShellPid) is null && PidMayBeAlive(binding.ShellPid);
+    }
+
+    static bool PidMayBeAlive(int pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return !process.HasExited;
+        }
+        catch (ArgumentException) { return false; }
+        catch (Win32Exception) { return true; }
+        catch (InvalidOperationException) { return true; }
+    }
+
     /// <summary>Stops and deletes the session only after proving ownership; refuses otherwise.</summary>
     public async Task StopOwnedSessionAsync(OwnedHerdrSession session, CancellationToken cancellationToken)
     {

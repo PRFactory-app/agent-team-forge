@@ -43,6 +43,14 @@ public class HerdrTerminalTests
         }, fake);
 
     [Fact]
+    public void UnreadableLiveServerPidRemainsUnverified()
+    {
+        var session = new OwnedHerdrSession("atf-test", "/tmp/atf-test.sock", Environment.ProcessId, 11, "owner", "workspace");
+        var binding = new HerdrTabBinding(session, "tab", "pane", "terminal", 0, 22);
+        Assert.True(Terminal(new FakeHerdr()).HasUnverifiedLiveIdentity(binding));
+    }
+
+    [Fact]
     public async Task OwnedLaunch_RetainsHandleAndBootstrapProof()
     {
         using var state = new TempStateDir();

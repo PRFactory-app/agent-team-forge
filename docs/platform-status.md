@@ -78,6 +78,7 @@ locked; `atf stop` printed raw `taskkill` output.
 ## Open items
 
 - Re-check the not-logged-in Claude case on Windows and run the remaining matrix, including Pi.
+- Re-test Windows Terminal launches with `;`, quotes, spaces, non-ASCII characters and `%VAR%` in the title and state path. Confirm `%VAR%` in the wrapper path opens an interactive console instead, while a single `%` still opens a WT tab.
 - Validate Claude native wake on Windows and macOS, including pipe ACLs, server PID proof, stalled-reader cancellation and macOS host ancestry.
 - Validate specific Claude Desktop channel exports; sessions without an exported channel or recognizable host retain manual `external_read`.
 - Validate `install.ps1` and upgrade/uninstall on Windows.
