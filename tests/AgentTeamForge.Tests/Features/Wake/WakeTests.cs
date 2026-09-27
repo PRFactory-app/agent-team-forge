@@ -1,6 +1,7 @@
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.DAL.Features.Wake;
+using AgentTeamForge.DAL.Features.Sessions;
 using AgentTeamForge.Host.Features.Wake;
 using AgentTeamForge.Tests.Support;
 using System.Net.Sockets;
@@ -17,6 +18,18 @@ public sealed class WakeTests
         {
             Attempts.Add((target, notice));
             return Task.FromResult(send?.Invoke(target, notice) ?? true);
+        }
+    }
+
+    sealed class DelayedPoster : IWakePoster
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async Task<bool> PostAsync(WakeRegistration target, string notice, CancellationToken cancellationToken)
+        {
+            Started.SetResult();
+            await Release.Task.WaitAsync(cancellationToken);
+            return true;
         }
     }
 
@@ -134,6 +147,78 @@ public sealed class WakeTests
         Assert.Equal(1, store.Pending().Single().Unread);
         store.MarkRead(jobId, current.Key, current.Generation);
         Assert.Empty(store.Pending());
+    }
+
+    [Fact]
+    public async Task Clear_waits_for_delayed_post_then_tombstones_and_rebinds_unread_after_restart()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/wake", "parent=1");
+        var first = wake.Register("codex:first", "codex", "first", "", "/tmp");
+        sessions.BindWake(lead.SessionId, first.Key, first.Generation);
+        var accepted = fixture.Accept().Execute(new SubmitJobRequest("one", "secret result", null, false)
+        { LeadSessionId = lead.SessionId, WakeKey = first.Key, WakeGeneration = first.Generation });
+        var claim = fixture.Store.BeginNextAttempt()!;
+        fixture.Store.Complete(new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "done");
+        var poster = new DelayedPoster();
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero);
+        var posting = coordinator.TickAsync(TestContext.Current.CancellationToken);
+        await poster.Started.Task;
+        var clearing = Task.Run(() =>
+        {
+            using var gate = WakeRoutingGate.Enter();
+            return wake.ClearLead(lead.SessionId, first.Key, first.Generation);
+        });
+        Assert.False(clearing.IsCompleted);
+        poster.Release.SetResult();
+        await posting;
+        Assert.True(await clearing);
+        Assert.False(wake.IsCurrent(first));
+        Assert.Empty(wake.Pending());
+        var reopened = AgentTeamForge.DAL.Sqlite.JobDatabase.Open(fixture.Database.Path, TimeSpan.FromSeconds(2));
+        var restartedWake = new WakeStore(reopened);
+        var restartedSessions = new LeadSessionStore(reopened);
+        var second = restartedWake.Register("codex:second", "codex", "second", "", "/tmp");
+        restartedSessions.BindWake(lead.SessionId, second.Key, second.Generation);
+        Assert.Equal(second.Key, Assert.Single(restartedWake.Pending()).Target.Key);
+        Assert.Equal(accepted.Job!.JobId, claim.Job.JobId);
+    }
+
+    [Fact]
+    public void Codex_queue_requires_submission_id_even_on_successful_exit()
+    {
+        Assert.False(CodexQueueWake.HasSubmissionId(""));
+        Assert.False(CodexQueueWake.HasSubmissionId("{\"status\":\"ok\"}"));
+        Assert.True(CodexQueueWake.HasSubmissionId("{\"submission_id\":\"queued-123\"}"));
+    }
+
+    [Fact]
+    public async Task Replacement_during_delayed_post_queues_only_on_the_new_target_after_return()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var old = wake.Register("codex:old", "codex", "old", "", "/tmp");
+        Finish(fixture, old, "one");
+        var delayed = new DelayedPoster();
+        var posting = new WakeCoordinator(wake, delayed, _ => { }, coalesce: TimeSpan.Zero)
+            .TickAsync(TestContext.Current.CancellationToken);
+        await delayed.Started.Task;
+        var replacing = Task.Run(() =>
+        {
+            using var gate = WakeRoutingGate.Enter();
+            return wake.Register(old.Key, "codex", "new", "", "/tmp");
+        });
+        Assert.False(replacing.IsCompleted);
+        delayed.Release.SetResult();
+        await posting;
+        var current = await replacing;
+        Assert.False(wake.IsCurrent(old));
+        var notices = new FakePoster();
+        await new WakeCoordinator(wake, notices, _ => { }, coalesce: TimeSpan.Zero)
+            .TickAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(current, Assert.Single(notices.Attempts).Target);
     }
 
     [Fact]

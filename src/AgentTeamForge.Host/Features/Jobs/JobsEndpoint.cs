@@ -1,6 +1,7 @@
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.External;
+using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Features.Sessions;
@@ -19,6 +20,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     {
         if (request.Op is IpcProtocol.ExternalJoin or IpcProtocol.ExternalSend or IpcProtocol.ExternalRead or IpcProtocol.ExternalSetWake or IpcProtocol.ExternalLeave)
         {
+            using var routing = request.Op == IpcProtocol.ExternalSetWake ? WakeRoutingGate.Enter() : null;
             if (external is null)
             {
                 return new IpcResponse(false, JobErrors.InvalidRequest);
@@ -62,10 +64,20 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         }
         if (request.Op == IpcProtocol.SessionBindWake)
         {
-            if (sessions is null || request.LeadSessionId is null || request.Workspace is null || request.WakeKey is null || request.WakeGeneration is null
+            using var routing = WakeRoutingGate.Enter();
+            if (sessions is null || wakeStore is null || request.LeadSessionId is null || request.Workspace is null || request.WakeKey is null || request.WakeGeneration is null
                 || !sessions.Exists(request.LeadSessionId, request.Workspace))
             {
                 return new IpcResponse(false, JobErrors.InvalidRequest);
+            }
+            if (!wakeStore.IsCurrent(new WakeRegistration(request.WakeKey, request.WakeGeneration.Value, "", "", "", "")))
+            {
+                return new IpcResponse(false, JobErrors.InvalidRequest);
+            }
+            var previous = wakeStore.Status(request.LeadSessionId);
+            if (previous is { Registered: true, Key: not null, Generation: not null } && previous.Key != request.WakeKey)
+            {
+                wakeStore.ClearLead(request.LeadSessionId, previous.Key, previous.Generation.Value);
             }
             sessions.BindWake(request.LeadSessionId, request.WakeKey, request.WakeGeneration.Value);
             return new IpcResponse(true, Outcome: "bound");
@@ -211,16 +223,53 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 return new IpcResponse(true, Outcome: request.DryRun ? "dry_run" : "pruned",
                     PrunedJobs: prune.Execute(request.OlderThanDays.Value, request.DryRun));
             case IpcProtocol.WakeRegister:
-                if (wakeStore is null || string.IsNullOrWhiteSpace(request.WakeKey) || request.WakeKey.Length > 256
-                    || request.WakeKind is not ("claude" or "codex" or "pi") || string.IsNullOrWhiteSpace(request.WakeAddress)
-                    || request.WakeAddress.Length > 4096 || (request.WakeSecret?.Length ?? 0) > 4096
-                    || (request.WakeHome?.Length ?? 0) > 4096)
+                using (WakeRoutingGate.Enter())
                 {
-                    return new IpcResponse(false, JobErrors.InvalidRequest);
+                    if (wakeStore is null || string.IsNullOrWhiteSpace(request.WakeKey) || request.WakeKey.Length > 256
+                        || request.WakeKind is not ("claude" or "codex" or "pi") || string.IsNullOrWhiteSpace(request.WakeAddress)
+                        || request.WakeAddress.Length > 4096 || (request.WakeSecret?.Length ?? 0) > 4096
+                        || (request.WakeHome?.Length ?? 0) > 4096)
+                    {
+                        return new IpcResponse(false, JobErrors.InvalidRequest);
+                    }
+                    if (request.JobId is not null && (jobStore?.GetJob(request.JobId) is not { Backend: "codex" } spawned
+                        || spawned.SessionId != request.WakeAddress || request.WakeKind != "codex"
+                        || sessions is null || request.LeadSessionId is null || request.Workspace is null
+                        || !sessions.IsManagedChild(request.LeadSessionId, request.Workspace, request.JobId)))
+                    {
+                        return new IpcResponse(false, JobErrors.InvalidRequest);
+                    }
+                    if (request.LeadSessionId is not null && (sessions is null || request.Workspace is null
+                        || !sessions.Exists(request.LeadSessionId, request.Workspace)))
+                    {
+                        return new IpcResponse(false, JobErrors.InvalidRequest);
+                    }
+                    var previous = request.LeadSessionId is null ? null : wakeStore.Status(request.LeadSessionId);
+                    if (previous is { Registered: true, Key: not null, Generation: not null } && previous.Key != request.WakeKey)
+                    {
+                        wakeStore.ClearLead(request.LeadSessionId!, previous.Key, previous.Generation.Value);
+                    }
+                    var registration = wakeStore.Register(request.WakeKey, request.WakeKind, request.WakeAddress,
+                        request.WakeSecret ?? string.Empty, request.WakeHome ?? string.Empty);
+                    if (request.LeadSessionId is not null) { sessions!.BindWake(request.LeadSessionId, registration.Key, registration.Generation); }
+                    return new IpcResponse(true, Outcome: "registered", WakeGeneration: registration.Generation);
                 }
-                var registration = wakeStore.Register(request.WakeKey, request.WakeKind, request.WakeAddress,
-                    request.WakeSecret ?? string.Empty, request.WakeHome ?? string.Empty);
-                return new IpcResponse(true, Outcome: "registered", WakeGeneration: registration.Generation);
+            case IpcProtocol.WakeClear:
+                using (WakeRoutingGate.Enter())
+                {
+                    if (wakeStore is null || sessions is null || request.LeadSessionId is null || request.Workspace is null
+                        || !sessions.Exists(request.LeadSessionId, request.Workspace)) { return new IpcResponse(false, JobErrors.InvalidRequest); }
+                    var current = wakeStore.Status(request.LeadSessionId);
+                    if (current is { Registered: true, Key: not null, Generation: not null })
+                    {
+                        wakeStore.ClearLead(request.LeadSessionId, current.Key, current.Generation.Value);
+                    }
+                    return new IpcResponse(true, Outcome: "cleared", WakeStatus: wakeStore.Status(request.LeadSessionId));
+                }
+            case IpcProtocol.WakeStatus:
+                if (wakeStore is null || sessions is null || request.LeadSessionId is null || request.Workspace is null
+                    || !sessions.Exists(request.LeadSessionId, request.Workspace)) { return new IpcResponse(false, JobErrors.InvalidRequest); }
+                return new IpcResponse(true, Outcome: "wake_status", WakeStatus: wakeStore.Status(request.LeadSessionId));
             default:
                 return new IpcResponse(false, IpcProtocol.UnknownOp);
         }

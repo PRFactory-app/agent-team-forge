@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.DAL.Features.Wake;
@@ -115,7 +116,7 @@ public sealed class CodexQueueWake(Func<WakeRegistration, bool>? verify = null,
                 var stderr = process.StandardError.ReadToEndAsync(deadline.Token);
                 await process.WaitForExitAsync(deadline.Token);
                 await Task.WhenAll(stdout, stderr);
-                return process.ExitCode == 0;
+                return process.ExitCode == 0 && HasSubmissionId(await stdout);
             }
             catch (OperationCanceledException)
             {
@@ -131,5 +132,24 @@ public sealed class CodexQueueWake(Func<WakeRegistration, bool>? verify = null,
         {
             return false;
         }
+    }
+
+    public static bool HasSubmissionId(string output)
+    {
+        foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                if (document.RootElement.ValueKind == JsonValueKind.Object
+                    && document.RootElement.TryGetProperty("submission_id", out var id)
+                    && id.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(id.GetString()))
+                {
+                    return true;
+                }
+            }
+            catch (JsonException) { }
+        }
+        return false;
     }
 }
