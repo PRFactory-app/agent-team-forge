@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
+using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Transport;
 using AgentTeamForge.Host.Hosting;
@@ -49,9 +50,9 @@ public sealed partial class WebConsoleJson : JsonSerializerContext;
 /// </remarks>
 public sealed class WebConsoleServer : IAsyncDisposable
 {
-    // Room for MaxInstructionChars of any text: up to 3 UTF-8 bytes per UTF-16 char, 6 when JSON-escaped.
-    public const int MaxBodyBytes = 64 * 1024;
-    public const int MaxInstructionChars = 8 * 1024;
+    // Room for MaxInstructionChars even when every UTF-16 char is JSON-escaped (6 bytes).
+    public const int MaxInstructionChars = SpikeLimits.DefaultMaxInstructionChars;
+    public const int MaxBodyBytes = 512 * 1024;
     public const int MaxKeyChars = 128;
     public const int MaxConcurrentCalls = 4;
 

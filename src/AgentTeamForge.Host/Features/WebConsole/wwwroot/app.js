@@ -427,7 +427,7 @@
     }
     const input = element('textarea', 'composer-input');
     input.rows = 2;
-    input.maxLength = 8192;
+    input.maxLength = 65536;
     input.placeholder = target ? 'Message this agent…' : 'Available after an agent session starts';
     input.setAttribute('aria-label', 'Message ' + (target ? agentName(target) : 'agent'));
     input.dataset.composerKey = key;

@@ -366,6 +366,24 @@ public sealed class WtInteractiveBackendTests
         Assert.Contains(kind switch { InteractiveAgentKind.Claude => "--resume", InteractiveAgentKind.Codex => "resume", _ => "--continue" }, args);
     }
 
+    [Theory]
+    [InlineData(InteractiveAgentKind.Claude)]
+    [InlineData(InteractiveAgentKind.Codex)]
+    [InlineData(InteractiveAgentKind.Pi)]
+    public void LongWindowsPromptIsHandedOverAsItsFileWithTheCorrelationMarker(InteractiveAgentKind kind)
+    {
+        var launch = new InteractiveLaunch(kind, "atftest", Environment.CurrentDirectory, null, kind == InteractiveAgentKind.Pi ? "C:\\state\\pi" : null, "C:\\state\\tab.ps1");
+        var marker = "[AgentTeamForge correlation id: atf-corr:abc123 — internal marker, ignore this line]";
+        var shortArgs = WtTabControl.AgentArguments(launch, "task\n\n" + marker, windowsCommandLine: true);
+        var longArgs = WtTabControl.AgentArguments(launch, new string('"', 20_000) + "\n\n" + marker, windowsCommandLine: true);
+
+        Assert.Equal("task\n\n" + marker, shortArgs[^1]);
+        Assert.True(WtTabControl.CommandLine(longArgs).Length < WtTabControl.MaxWindowsCommandLineChars);
+        Assert.Contains("C:\\state\\tab.prompt.txt", longArgs[^1]);
+        if (kind == InteractiveAgentKind.Pi) { Assert.Equal("@C:\\state\\tab.prompt.txt", longArgs[^1]); }
+        else { Assert.EndsWith(" " + marker, longArgs[^1]); }
+    }
+
     [Fact]
     public void WindowsHookAndShimArgumentsKeepThePromptOutOfCmd()
     {

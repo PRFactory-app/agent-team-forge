@@ -13,8 +13,9 @@ through `--version`. Linux also runs the published scenario smoke. The tag
 workflow uploads these files plus `install.sh` as CI artifacts. A separate `win-x64`
 job on `windows-latest` publishes Native AOT on Windows and uploads
 `atf-VERSION-win-x64.zip` with `SHA256SUMS-win-x64` and separate debug symbols.
-The workflow does not publish a GitHub release. The owner can publish the
-artifacts after review and platform validation. macOS arm64 is **prepared,
+The Linux job publishes the GitHub release; macOS and Windows tester assets
+are attached after their platform jobs finish. The Windows assets include
+`install.ps1`, also listed in `SHA256SUMS-win-x64`. macOS arm64 is **prepared,
 untested** until a volunteer runs it on a Mac.
 
 The workflow builds on Ubuntu 24.04 (glibc 2.39). On the local Linux build,
@@ -42,8 +43,11 @@ starts on first use). Back up the state directory before
 an upgrade that changes the database schema; switching binaries back does not
 roll back the database.
 
-`atf uninstall` removes unchanged installer-owned payload files and links.
-It leaves state in `${XDG_STATE_HOME:-$HOME/.local/state}/agentteamforge`.
+On Unix, `atf uninstall` removes unchanged installer-owned payload files and
+links. On Windows, it removes the dedicated ATF bin and release directories
+after the calling executable exits. It leaves state in
+`${XDG_STATE_HOME:-$HOME/.local/state}/agentteamforge` (under `%USERPROFILE%`
+on Windows).
 `atf uninstall --purge` also deletes that state after checking for an ATF
-profile and key. Client registrations are handled by setup and should be
-removed separately until ownership tracking for registrations is implemented.
+profile and key. Uninstall also tears down ATF-owned client registrations,
+Pi wake entry, and login autostart; it preserves unrelated client settings.
