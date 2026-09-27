@@ -22,7 +22,7 @@ public static class JobActivity
 
         JsonDocument document;
         try { document = JsonDocument.Parse(line); }
-        catch (JsonException) { return backend is "claude" or "codex" or "pi" ? [] : [Entry("assistant_text", line)]; }
+        catch (JsonException) { return backend is "claude" or "codex" or "pi" or "cursor" or "droid" ? [] : [Entry("assistant_text", line)]; }
         using (document)
         {
             var root = document.RootElement;
@@ -41,7 +41,15 @@ public static class JobActivity
                 }
             }
 
-            if (backend is not ("claude" or "codex" or "pi"))
+            if (backend is "cursor" or "droid")
+            {
+                if (type == "result")
+                {
+                    Add(root.TryGetProperty("is_error", out var error) && error.ValueKind == JsonValueKind.True ? "error" : "result",
+                        String(root, "result"));
+                }
+            }
+            else if (backend is not ("claude" or "codex" or "pi"))
             {
                 Add("assistant_text", line);
             }

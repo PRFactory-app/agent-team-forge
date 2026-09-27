@@ -17,12 +17,16 @@ public static class ModelSelection
         };
 
     static readonly string[] SharedTierOrder = [.. Tiers.Keys];
+    static readonly string[] DroidEfforts = ["none", "minimal", "medium", "high", "xhigh", "max"];
     public static IReadOnlyList<string> TierNames(string backend) => backend == "pi"
         ? [.. SharedTierOrder.Take(3), "medium-fast", .. SharedTierOrder.Skip(3)]
-        : backend == "codex" ? SharedTierOrder : [];
+        : backend is "codex" or "cursor" or "droid" ? SharedTierOrder : [];
 
     public static (string Model, string Effort) DefaultTier(string backend, string tier) =>
         backend == "pi" && tier == "medium-fast" ? ("gpt-6-sol", "medium")
+        : backend == "cursor" && SharedTierOrder.Contains(tier) ? ("auto", "none")
+        : backend == "droid" && Array.IndexOf(SharedTierOrder, tier) is var index and >= 0
+            ? ("claude-opus-5", DroidEfforts[index])
         : backend is "codex" or "pi" && Tiers.TryGetValue(tier, out var value) ? value
         : throw new ArgumentException("Unknown backend or tier");
     static readonly Dictionary<string, string> ClaudeModelMap = new(StringComparer.Ordinal)
@@ -44,6 +48,8 @@ public static class ModelSelection
             ["claude"] = new(ClaudeModels, ClaudeEfforts),
             ["codex"] = new(SharedTierOrder, []),
             ["pi"] = new([.. SharedTierOrder.Take(3), "medium-fast", .. SharedTierOrder.Skip(3)], []),
+            ["cursor"] = new(SharedTierOrder, []),
+            ["droid"] = new(SharedTierOrder, []),
         };
 
     public static bool ValidConsoleSelection(string backend, string? model, string? effort) =>
@@ -68,7 +74,13 @@ public static class ModelSelection
                 : throw new ArgumentException($"Unsupported model '{key}' for claude-code. Supported: haiku, sonnet, opus, fable");
         }
 
-        if (backend is not ("codex" or "pi") || string.IsNullOrEmpty(key))
+        if (backend == "droid" && effort is not null && effort != "ultra" && !TierMap.Efforts("droid").Contains(effort))
+        {
+            throw new ArgumentException($"Unsupported Droid reasoning effort '{effort}'");
+        }
+        if (backend == "cursor" && string.IsNullOrEmpty(key)) { return (key, null); }
+
+        if (backend is not ("codex" or "pi" or "cursor" or "droid") || string.IsNullOrEmpty(key))
         {
             return (key, effort);
         }
@@ -82,8 +94,8 @@ public static class ModelSelection
             ? tierMap?.Effective(backend, key.ToLowerInvariant()) ?? DefaultTier(backend, key.ToLowerInvariant())
             : ((string Model, string Effort)?)null;
         var selected = tier?.Model ?? key;
-        var available = (discover ?? DefaultDiscovery.GetModels)(backend);
-        var found = available.Count == 0 || (backend == "pi"
+        var available = backend == "droid" ? [] : (discover ?? DefaultDiscovery.GetModels)(backend);
+        var found = available.Count == 0 || backend == "cursor" && selected == "auto" || (backend == "pi"
             ? available.Any(candidate => candidate.Split('/', 2)[^1] == selected.Split('/', 2)[^1])
             : available.Contains(selected));
         if (!found)
@@ -94,11 +106,13 @@ public static class ModelSelection
             }
 
             var hint = backend == "codex" ? "npm install -g @openai/codex@latest"
+                : backend == "cursor" ? "run cursor-agent --list-models or check account access"
                 : "npm install -g @earendil-works/pi-coding-agent@latest (GPT-6 Sol/Luna need pi >= 0.87.1; or add the model to your provider config)";
             throw new ArgumentException($"Model '{selected}' is not available for {backend} on this machine. Available: {string.Join(", ", available)}. Upgrade the CLI or check account access. Upgrade {backend}: {hint}");
         }
 
-        return tier is { } resolved ? (resolved.Model, resolved.Effort) : (key, effort);
+        return tier is { } resolved ? (resolved.Model, backend == "cursor" ? null : resolved.Effort)
+            : (key, backend == "cursor" ? null : effort);
     }
 
 }

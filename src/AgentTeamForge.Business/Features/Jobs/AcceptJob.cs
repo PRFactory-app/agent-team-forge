@@ -13,7 +13,7 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// </summary>
 public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLimits limits, bool testProfile, AdmissionGate admission,
     IReadOnlyCollection<string>? backends = null, Func<string, IReadOnlyCollection<string>>? discoverModels = null, TierMap? tierMap = null,
-    HerdrPlacement? herdrPlacement = null, Func<string, string?>? checkHerdrSession = null)
+    HerdrPlacement? herdrPlacement = null, Func<string, string?>? checkHerdrSession = null, string? launchMode = null)
 {
     public const string Operation = "job_submit";
 
@@ -44,6 +44,10 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         if (!_backends.Contains(backend))
         {
             return JobResult.Fail(JobErrors.BackendUnavailable);
+        }
+        if (backend is BackendCatalog.Cursor or BackendCatalog.Droid && launchMode is not null and not "headless")
+        {
+            return JobResult.Fail($"{backend} is headless-only in ATF; choose --mode headless to run it");
         }
 
         var baseCommit = request.Worktree && cwd is not null ? JobWorktree.Head(cwd) : null;

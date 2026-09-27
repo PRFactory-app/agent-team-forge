@@ -119,11 +119,12 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         {
             case IpcProtocol.JobCapabilities:
                 return new IpcResponse(true, Outcome: "capabilities", Backends: configuredBackends ?? [],
-                    BackendAvailability: BackendAvailability.Read(configuredBackends ?? []), LaunchMode: launchMode, ModelOptions: ModelSelection.ConsoleOptions,
+                    BackendAvailability: BackendAvailability.Read(configuredBackends ?? [], launchMode), LaunchMode: launchMode, ModelOptions: ModelSelection.ConsoleOptions,
                     ModelCatalog: new Dictionary<string, IReadOnlyCollection<string>>
                     {
                         ["codex"] = modelDiscovery?.CachedModels("codex") ?? [],
-                        ["pi"] = modelDiscovery?.CachedModels("pi") ?? []
+                        ["pi"] = modelDiscovery?.CachedModels("pi") ?? [],
+                        ["cursor"] = modelDiscovery?.CachedModels("cursor") ?? []
                     },
                     Tiers: tierMap?.Settings(), HerdrPlacement: herdrPlacement?.Default, HerdrMode: herdrPlacement is not null);
             case IpcProtocol.HerdrPlacementGet:
@@ -139,7 +140,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                         new Dictionary<string, IReadOnlyCollection<string>>
                         {
                             ["codex"] = modelDiscovery?.CachedModels("codex") ?? [],
-                            ["pi"] = modelDiscovery?.CachedModels("pi") ?? []
+                            ["pi"] = modelDiscovery?.CachedModels("pi") ?? [],
+                            ["cursor"] = modelDiscovery?.CachedModels("cursor") ?? []
                         });
             case IpcProtocol.TierSettingsPut:
                 if (tierMap is null)

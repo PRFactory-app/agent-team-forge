@@ -529,6 +529,8 @@ public sealed partial class PRFactoryWorkItems(
         PRFactoryAgentType.ClaudeCode => "claude",
         PRFactoryAgentType.Codex => "codex",
         PRFactoryAgentType.PiAgent => "pi",
+        PRFactoryAgentType.CursorCli => "cursor",
+        PRFactoryAgentType.Droid => "droid",
         _ => null,
     };
 

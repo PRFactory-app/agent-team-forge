@@ -63,10 +63,19 @@ under observation and then becomes `needs_reconciliation`
 
 Headless agents run as background processes with their JSON output modes
 (Claude `-p --output-format stream-json`, `codex exec --json`, Pi
-`--mode json`) and permissions bypassed ([ADR 0006](adr/0006-bypass-permissions.md)).
+`--mode json`, Cursor `-p --output-format json`, Droid `exec --output-format json`)
+and permissions bypassed ([ADR 0006](adr/0006-bypass-permissions.md)).
 Follow-ups resume the same native session. A headless run whose daemon dies is
 cleaned up only when ATF can prove it owns the process (marker plus pidfd on
 Linux).
+
+Cursor CLI and Factory Droid are headless-only in ATF. Their CLIs have a TUI,
+but ATF does not yet have a native transcript binding for interactive results.
+A submission for either backend in Herdr, Windows Terminal or macOS terminal
+mode is rejected with a headless-only error. Their tier settings are available
+in Settings: Cursor defaults to the CLI's `auto` model (its effort setting is
+not passed to the CLI), while Droid defaults to `claude-opus-5` with a native
+reasoning-effort level. Override tier models to match your account.
 
 ## Platform notes
 

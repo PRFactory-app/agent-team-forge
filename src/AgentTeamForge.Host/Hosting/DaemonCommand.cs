@@ -142,6 +142,11 @@ public static class DaemonCommand
 
         var backends = BackendCatalog.Create(
             new FakeProcessBackend(Environment.ProcessPath!, ["fake-backend"], backendEnv, limits), profile.RealAgents && launchMode is not ("herdr" or "terminal" or "wt"));
+        if (profile.RealAgents && launchMode is "herdr" or "terminal" or "wt")
+        {
+            backends.Register(BackendCatalog.Cursor, () => new HeadlessOnlyBackend(BackendCatalog.Cursor));
+            backends.Register(BackendCatalog.Droid, () => new HeadlessOnlyBackend(BackendCatalog.Droid));
+        }
         var interactiveBackends = new List<IInteractiveSessionStop>();
         HerdrTerminal? herdrTerminal = null;
         if (launchMode == "herdr")
@@ -190,10 +195,10 @@ public static class DaemonCommand
         var herdrPlacement = herdrTerminal is null ? null : new HerdrPlacement(state.Path, Log);
         Func<string, string?>? checkHerdrSession = herdrTerminal is null ? null : herdrTerminal.CheckExistingSession;
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap,
-            herdrPlacement, checkHerdrSession);
+            herdrPlacement, checkHerdrSession, launchMode);
         // Remote claims have their own lead identity and cannot borrow the local MCP lead.
         var connectorAccept = new AcceptJob(store, new BoundPrincipal("prfactory", "connector", "connector-lead"),
-            limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap, herdrPlacement, checkHerdrSession);
+            limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap, herdrPlacement, checkHerdrSession, launchMode);
         var connectorTeams = new PRFactoryTeamStore(database);
         var connectorSessions = new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database);
         var claudeMailbox = new ClaudeWakeMailbox();
