@@ -94,6 +94,20 @@ public sealed class ClaudeCodeBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task Authentication_failure_with_success_subtype_is_a_terminal_login_error()
+    {
+        var backend = new ClaudeCodeBackend(FakeClaude("""
+            {"type":"assistant","is_api_error_message":true,"error":"authentication_failed","message":{"content":[{"type":"text","text":"Not logged in · Please run /login"}]}}
+            {"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login","session_id":"s-auth"}
+            """));
+
+        var evidence = await RunAsync(backend, new BackendRequest("j-auth", "c-auth", "work", ""));
+
+        Assert.Contains(new BackendEvidence.AgentError("agent_login_required", "Claude is not logged in; run `claude` and /login."), evidence);
+        Assert.DoesNotContain(evidence, e => e is BackendEvidence.ProtocolError or BackendEvidence.Result);
+    }
+
+    [Fact]
     public async Task Resumed_result_mentioning_a_missing_session_is_not_session_expired()
     {
         var backend = new ClaudeCodeBackend(FakeClaude("""{"type":"result","subtype":"success","is_error":false,"result":"fixed the session not found bug","session_id":"s-1"}"""));

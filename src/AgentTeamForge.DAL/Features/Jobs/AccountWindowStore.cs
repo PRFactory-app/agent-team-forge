@@ -166,7 +166,8 @@ public sealed class AccountWindowStore(JobDatabase database)
         using (var count = connection.CreateCommand())
         {
             count.Transaction = transaction;
-            count.CommandText = "SELECT (SELECT count(*) FROM prfactory_teams WHERE state='claimed') + (SELECT count(*) FROM account_admission_reservations)";
+            count.CommandText = "SELECT (" + PRFactoryTeamStore.AdmissionCountSql
+                + ") + (SELECT count(*) FROM account_admission_reservations)";
             if ((long)count.ExecuteScalar()! >= maxAccepted) { transaction.Commit(); return null; }
         }
         var token = Guid.NewGuid().ToString("N");

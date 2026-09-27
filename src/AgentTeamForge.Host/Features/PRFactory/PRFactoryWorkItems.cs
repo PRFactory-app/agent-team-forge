@@ -42,9 +42,12 @@ public sealed partial class PRFactoryWorkItems(
 
         // Accepted-but-unfinished teams are bounded separately from running processes; a full
         // backlog only stops polling, never fails already accepted work.
-        var free = maxAcceptedTeams - teams.Pending(server).Count;
+        var free = maxAcceptedTeams - teams.AdmissionCount(server);
         if (free <= 0)
         {
+            var parked = teams.ParkedCount(server);
+            log?.Invoke($"PRFactory intake paused: {maxAcceptedTeams} accepted-team slots occupied"
+                + (parked > 0 ? $"; {parked} account-parked team(s) retain admission capacity" : ""));
             return;
         }
         var offered = new List<PRFactoryWorkItem>();
@@ -67,6 +70,7 @@ public sealed partial class PRFactoryWorkItems(
             var reservation = accounts?.ReserveClaim(maxAcceptedTeams, DateTimeOffset.UtcNow);
             if (accounts is not null && reservation is null)
             {
+                log?.Invoke("PRFactory intake paused: accepted-team admission is full (active or account-parked teams)");
                 break;
             }
             try

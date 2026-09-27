@@ -115,6 +115,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             // Known before the turn ends: a stopped turn stays resumable.
             yield return new BackendEvidence.Session(correlation, sessionId);
             var final = Array.Empty<byte>();
+            string? apiError = null;
             await foreach (var line in ReadLinesAsync(_stdout, cancellationToken))
             {
                 if (line is null)
@@ -130,12 +131,19 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
                     {
                         final = line;
                     }
+                    else if (document.RootElement.ValueKind == JsonValueKind.Object
+                        && document.RootElement.TryGetProperty("is_api_error_message", out var isApiError)
+                        && isApiError.ValueKind == JsonValueKind.True)
+                    {
+                        apiError = document.RootElement.TryGetProperty("error", out var error)
+                            && error.ValueKind == JsonValueKind.String ? error.GetString() : "api_error";
+                    }
                 }
                 catch (JsonException) { }
             }
             // A successful turn may itself mention these phrases; only a turn without a
             // result is checked for a missing native session.
-            var interpreted = Interpret(correlation, final).ToList();
+            var interpreted = Interpret(correlation, final, apiError).ToList();
             if (!newSession && !interpreted.Any(e => e is BackendEvidence.Result)
                 && (BackendSessionErrors.IsExpired(Encoding.UTF8.GetString(final))
                     || await BackendSessionErrors.HasExpiredDiagnosticAsync(_stderrDrain, cancellationToken)))
@@ -304,7 +312,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
     }
 
     /// <summary>Maps claude's final result event to Session then Result or ProtocolError.</summary>
-    internal static IEnumerable<BackendEvidence> Interpret(string correlation, byte[] output)
+    internal static IEnumerable<BackendEvidence> Interpret(string correlation, byte[] output, string? apiError = null)
     {
         ClaudeResult? result;
         try
@@ -341,9 +349,23 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             yield return new BackendEvidence.Session(correlation, result.SessionId);
         }
 
-        yield return result is { Type: "result", IsError: false, Result: { } text }
-            ? new BackendEvidence.Result(correlation, text)
-            : new BackendEvidence.ProtocolError("claude_error:" + (result.Subtype ?? "unknown"));
+        if (result is { Type: "result", IsError: false, Result: { } text })
+        {
+            yield return new BackendEvidence.Result(correlation, text);
+        }
+        else if (apiError is "authentication_failed" or "authentication_error" or "not_logged_in" or "unauthorized" or "invalid_api_key"
+            || result.Result?.Contains("Not logged in", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            yield return new BackendEvidence.AgentError("agent_login_required", "Claude is not logged in; run `claude` and /login.");
+        }
+        else if (apiError is not null)
+        {
+            yield return new BackendEvidence.AgentError("agent_api_error", "Claude API error: " + apiError);
+        }
+        else
+        {
+            yield return new BackendEvidence.ProtocolError("claude_error:" + (result.Subtype ?? "unknown"));
+        }
     }
 }
 

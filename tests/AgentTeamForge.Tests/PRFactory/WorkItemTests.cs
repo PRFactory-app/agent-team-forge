@@ -82,6 +82,92 @@ public sealed class WorkItemTests
     }
 
     [Fact]
+    public async Task Failed_lead_reports_failure_to_server_and_releases_item()
+    {
+        using var dir = new TempStateDir();
+        var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var item = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            RepositoryId = Guid.NewGuid(),
+            ReadOnly = true,
+            AgentType = PRFactoryAgentType.ClaudeCode,
+            Prompt = "Do work"
+        };
+        var server = new FakeServer(item);
+        var teams = new PRFactoryTeamStore(db);
+        var jobs = new JobStore(db, DurabilityCheckpoints.None);
+        var accept = new AcceptJob(jobs, new BoundPrincipal("prfactory", "connector", "connector-lead"),
+            new SpikeLimits(), false, new AdmissionGate(), ["claude"]);
+        var adapter = new PRFactoryWorkItems("https://example.test", [new RepositoryMapping(item.RepositoryId!.Value, dir.Path)],
+            teams, new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
+            accept.Execute, jobs.GetJob, () => { });
+
+        await adapter.TickAsync(null, CancellationToken.None);
+        var claim = jobs.BeginNextAttempt()!;
+        Assert.True(jobs.EndUnsuccessfully(new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation),
+            JobStatus.Failed, "agent_login_required"));
+        await adapter.TickAsync(null, CancellationToken.None);
+
+        Assert.Contains("fail", server.Calls);
+        Assert.Equal("failed", teams.Get("https://example.test", item.Id)!.State);
+        Assert.Empty(teams.Pending("https://example.test"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Reconciliation_stalled_team_does_not_fill_claim_capacity_unless_account_is_parked(bool parked)
+    {
+        using var dir = new TempStateDir();
+        var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var repo = Guid.NewGuid();
+        var first = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            RepositoryId = repo,
+            ReadOnly = true,
+            AgentType = PRFactoryAgentType.ClaudeCode,
+            Prompt = "First"
+        };
+        var second = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            RepositoryId = repo,
+            ReadOnly = true,
+            AgentType = PRFactoryAgentType.ClaudeCode,
+            Prompt = "Second"
+        };
+        var server = new FakeServer(first);
+        var teams = new PRFactoryTeamStore(db);
+        var jobs = new JobStore(db, DurabilityCheckpoints.None);
+        var accept = new AcceptJob(jobs, new BoundPrincipal("prfactory", "connector", "connector-lead"),
+            new SpikeLimits(), false, new AdmissionGate(), ["claude"]);
+        var accounts = new AccountAdmission(new AccountWindowStore(db));
+        var logs = new List<string>();
+        var adapter = new PRFactoryWorkItems("https://example.test", [new RepositoryMapping(repo, dir.Path)],
+            teams, new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
+            accept.Execute, jobs.GetJob, () => { }, log: logs.Add, accounts: accounts, maxAcceptedTeams: 1);
+
+        await adapter.TickAsync(null, CancellationToken.None);
+        var claim = jobs.BeginNextAttempt()!;
+        Assert.True(jobs.EndUnsuccessfully(new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation),
+            JobStatus.NeedsReconciliation, "backend_uncertain"));
+        if (parked)
+        {
+            new AccountWindowStore(db).Park(claim.Job.JobId, "claude", PRFactoryWorkItems.DefaultAccount,
+                "usage_limit", "session-1", DateTimeOffset.UtcNow, null);
+        }
+        server.Item = second;
+        await adapter.TickAsync(null, CancellationToken.None);
+
+        Assert.Equal(parked ? 1 : 2, server.Claims);
+        Assert.Equal(parked ? null : "claimed", teams.Get("https://example.test", second.Id)?.State);
+        Assert.Equal("claimed", teams.Get("https://example.test", first.Id)!.State);
+        if (parked) { Assert.Contains(logs, line => line.Contains("account-parked team", StringComparison.Ordinal)); }
+    }
+
+    [Fact]
     public async Task Claim_team_jobs_artefacts_complete_and_restart_do_not_spawn_twice()
     {
         using var dir = new TempStateDir();
@@ -267,7 +353,7 @@ public sealed class WorkItemTests
 
     sealed class FakeServer(PRFactoryWorkItem item)
     {
-        public PRFactoryWorkItem Item { get; } = item;
+        public PRFactoryWorkItem Item { get; set; } = item;
         public int Claims { get; private set; }
         public int Uploads { get; private set; }
         public int Completions { get; private set; }

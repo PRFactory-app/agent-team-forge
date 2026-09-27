@@ -11,6 +11,46 @@ public sealed record PRFactoryCommandReceipt(bool Accepted, string? Reason);
 /// <summary>Local work ownership, durable acceptance identity, and job mappings.</summary>
 public sealed partial class PRFactoryTeamStore(JobDatabase database)
 {
+    // A reconciliation-stalled team retains ownership, but does not consume intake capacity.
+    // Latest member turns only: an old uncertain turn must not hide a resumed active turn.
+    internal const string AdmissionCountSql = """
+        SELECT count(*) FROM prfactory_teams t WHERE t.state='claimed' AND NOT (
+            EXISTS (SELECT 1 FROM prfactory_members m JOIN jobs j ON j.job_id=m.job_id
+                WHERE m.server=t.server AND m.work_item_id=t.work_item_id AND j.status='needs_reconciliation'
+                AND NOT EXISTS (SELECT 1 FROM prfactory_members newer WHERE newer.server=m.server
+                    AND newer.work_item_id=m.work_item_id AND newer.member=m.member AND newer.turn>m.turn))
+            AND NOT EXISTS (SELECT 1 FROM prfactory_members m JOIN jobs j ON j.job_id=m.job_id
+                WHERE m.server=t.server AND m.work_item_id=t.work_item_id AND j.status IN ('queued','running')
+                AND NOT EXISTS (SELECT 1 FROM prfactory_members newer WHERE newer.server=m.server
+                    AND newer.work_item_id=m.work_item_id AND newer.member=m.member AND newer.turn>m.turn))
+            AND NOT EXISTS (SELECT 1 FROM prfactory_members m JOIN account_parks p ON p.job_id=m.job_id
+                WHERE m.server=t.server AND m.work_item_id=t.work_item_id AND p.state IN ('parked','resuming'))
+        )
+        """;
+
+    public int AdmissionCount(string server)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = AdmissionCountSql + " AND t.server=$server";
+        command.Parameters.AddWithValue("$server", server);
+        return Convert.ToInt32(command.ExecuteScalar());
+    }
+
+    public int ParkedCount(string server)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT count(DISTINCT t.work_item_id) FROM prfactory_teams t
+            JOIN prfactory_members m ON m.server=t.server AND m.work_item_id=t.work_item_id
+            JOIN account_parks p ON p.job_id=m.job_id AND p.state IN ('parked','resuming')
+            WHERE t.server=$server AND t.state='claimed'
+            """;
+        command.Parameters.AddWithValue("$server", server);
+        return Convert.ToInt32(command.ExecuteScalar());
+    }
+
     public bool CreateIfAbsent(string server, Guid id, string claimedJson, Guid? machineId = null)
     {
         using var connection = database.OpenConnection();
