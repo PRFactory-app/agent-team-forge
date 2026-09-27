@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json.Nodes;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Host.Features.Setup;
@@ -62,6 +63,42 @@ public sealed class MacTabControlTests
         Assert.Contains("CLAUDE_CODE_MESSAGING_", wrapper);
         Assert.DoesNotContain("CLAUDE_CODE_GIT_BASH_PATH", wrapper);
         Assert.Contains("'--settings' '{\"skipDangerousModePermissionPrompt\":true}'", wrapper);
+    }
+
+    [Theory]
+    [InlineData(InteractiveAgentKind.Claude, "'--resume' 'native-1'")]
+    [InlineData(InteractiveAgentKind.Codex, "'resume' 'native-1'")]
+    [InlineData(InteractiveAgentKind.Pi, "'--continue'")]
+    public void ManagedMacWrapperCarriesPrivateMcpConfigOnResume(InteractiveAgentKind kind, string resume)
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var root = Path.Combine(state.Path, "state with spaces");
+        var configPath = ManagedChildContext.ConfigPath(root, "job-follow");
+        Directory.CreateDirectory(Path.GetDirectoryName(configPath)!);
+        File.WriteAllText(configPath, new JsonObject
+        {
+            ["mcpServers"] = new JsonObject
+            {
+                [ManagedChildContext.ServerName] = new JsonObject
+                {
+                    ["command"] = "/private/atf",
+                    ["args"] = new JsonArray("mcp", "--state-dir", root),
+                },
+            },
+        }.ToJsonString());
+        var launch = new InteractiveLaunch(kind, "atftest", root, "native-1", Path.Combine(root, "pi"),
+            Path.Combine(root, "terminal", "follow.launch.sh"))
+        { JobId = "job-follow" };
+
+        var wrapper = MacTabControl.WrapperText(launch, "task", Path.Combine(root, "terminal", "tab.pid"), "/private/atf");
+        Assert.Contains(resume, wrapper);
+        if (kind == InteractiveAgentKind.Codex)
+        {
+            Assert.Contains("'mcp_servers.agentteamforge.command=\"/private/atf\"'", wrapper);
+            Assert.Contains(MacTabControl.ShellQuote("mcp_servers.agentteamforge.args=[\"mcp\",\"--state-dir\",\"" + root + "\"]"), wrapper);
+        }
+        else { Assert.Contains(MacTabControl.ShellQuote(configPath), wrapper); }
+        if (kind == InteractiveAgentKind.Pi) { Assert.Contains("export PI_MCP_CONFIG_MODE=exclusive", wrapper); }
     }
 
     [Fact]
