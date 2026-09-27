@@ -170,7 +170,7 @@ public static class JobsMcpBridge
         long? wakeGeneration = null;
         async Task RegisterWakeAsync(CancellationToken cancellationToken)
         {
-            if (wakeTarget is null || wakeGeneration is not null)
+            if (wakeTarget is null)
             {
                 return;
             }
@@ -178,14 +178,34 @@ public static class JobsMcpBridge
             // Wake is best effort: a missing daemon or credential must not stop the bridge or fail job calls.
             try
             {
-                var registration = await SendAsync(wakeTarget with { LeadSessionId = sessionId, Workspace = workspace, JobId = managedJobId }, cancellationToken);
-                if (registration.Ok)
+                if (wakeGeneration is not null && sessionId is not null)
                 {
-                    wakeGeneration = registration.WakeGeneration;
+                    var status = await SendAsync(new IpcRequest
+                    { Op = IpcProtocol.WakeStatus, LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
+                    if (!status.Ok)
+                    {
+                        Console.Error.WriteLine($"[atf-bridge] wake status failed: {status.Error}");
+                        return;
+                    }
+                    switch (RepairWake(status.WakeStatus, wakeTarget, wakeGeneration))
+                    {
+                        case WakeRepair.Keep: return;
+                        case WakeRepair.Adopt: wakeGeneration = status.WakeStatus!.Generation; return;
+                    }
+                    wakeGeneration = null;
+                }
+                var registration = await SendAsync(wakeTarget with { LeadSessionId = sessionId, Workspace = workspace, JobId = managedJobId }, cancellationToken);
+                if (registration.Ok && registration.WakeGeneration is long generation)
+                {
+                    wakeGeneration = generation;
                     await BindWakeAsync(cancellationToken);
                 }
+                else { Console.Error.WriteLine($"[atf-bridge] wake registration failed: {registration.Error}"); }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException) { }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Console.Error.WriteLine($"[atf-bridge] wake registration failed: {ex.GetType().Name}");
+            }
         }
         if (!externalOnly)
         {
@@ -278,8 +298,10 @@ public static class JobsMcpBridge
                             : await SendAsync(new IpcRequest { Op = IpcProtocol.SessionResume, LeadSessionId = requested, Workspace = workspace, BindingKey = bindingKey }, cancellationToken);
                         if (response.Ok)
                         {
+                            // An explicit resume takes over the session's wake, even from another live bridge.
                             sessionId = response.Session!.SessionId;
-                            await BindWakeAsync(cancellationToken);
+                            wakeGeneration = null;
+                            await RegisterWakeAsync(cancellationToken);
                         }
                     }
                     else if (call.Name == "register_codex_wake")
@@ -372,7 +394,7 @@ public static class JobsMcpBridge
         {
             if (sessionId is not null && wakeTarget?.WakeKey is not null && wakeGeneration is long generation)
             {
-                await SendAsync(new IpcRequest
+                var bound = await SendAsync(new IpcRequest
                 {
                     Op = IpcProtocol.SessionBindWake,
                     LeadSessionId = sessionId,
@@ -380,6 +402,7 @@ public static class JobsMcpBridge
                     WakeKey = wakeTarget.WakeKey,
                     WakeGeneration = generation
                 }, cancellationToken);
+                if (!bound.Ok) { Console.Error.WriteLine($"[atf-bridge] wake binding failed: {bound.Error}"); }
             }
         }
 
@@ -393,6 +416,26 @@ public static class JobsMcpBridge
         try { await server.RunAsync(); }
         finally { await relayLifetime.CancelAsync(); await relay; }
         return 0;
+    }
+
+    internal enum WakeRepair { Keep, Adopt, Register }
+
+    /// <summary>Re-register a missing, unusable or legacy binding of this channel. A newer generation of our own key
+    /// is adopted, and a usable binding of another channel (a bridge that resumed this session) is never taken back,
+    /// so two live bridges cannot keep bumping generations and re-posting notices.</summary>
+    internal static WakeRepair RepairWake(AgentTeamForge.DAL.Features.Wake.WakeRegistrationStatus? status,
+        IpcRequest target, long? generation)
+    {
+        if (generation is null || status is not { Registered: true, Usable: true, Key: not null, Generation: not null })
+        {
+            return WakeRepair.Register;
+        }
+        if (status.Key != target.WakeKey)
+        {
+            return status.Kind == target.WakeKind && status.Address == target.WakeAddress ? WakeRepair.Register : WakeRepair.Keep;
+        }
+        if (status.Kind != target.WakeKind || status.Address != target.WakeAddress) { return WakeRepair.Register; }
+        return status.Generation == generation ? WakeRepair.Keep : WakeRepair.Adopt;
     }
 
     /// <summary>Only the explicit parent recipient uses the injected membership; typos never fall back upstream.</summary>
