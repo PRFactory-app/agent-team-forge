@@ -163,6 +163,7 @@ public sealed class DeliveryTests
         {
             var path = request.RequestUri!.AbsolutePath;
             if (path == "/api/work-item-blobs/capabilities") { return new(HttpStatusCode.NotFound); }
+            if (path == "/api/worker/capabilities") { return new(HttpStatusCode.NotFound); }
             var body = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
             if (path.EndsWith("/register", StringComparison.Ordinal))
             {

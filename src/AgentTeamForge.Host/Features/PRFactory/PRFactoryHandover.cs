@@ -31,6 +31,22 @@ internal sealed partial class PRFactoryBaseWipJson : JsonSerializerContext;
 
 public sealed partial class PRFactoryClient
 {
+    public async Task<bool> SupportsMultiRepoAsync(CancellationToken ct)
+    {
+        using var response = await httpClient.GetAsync("api/worker/capabilities", ct);
+        RejectToken(response.StatusCode);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            workerVersion = "1.0.0";
+            return false;
+        }
+        response.EnsureSuccessStatusCode();
+        var capabilities = await response.Content.ReadFromJsonAsync(PRFactoryBaseWipJson.Default.PRFactoryCapabilityResponse, ct);
+        var supported = capabilities?.Capabilities?.Contains("multi-repo-v1", StringComparer.Ordinal) == true;
+        workerVersion = supported ? "1.1.0" : "1.0.0";
+        return supported;
+    }
+
     public async Task<bool> SupportsBaseWipAsync(CancellationToken ct)
     {
         using var response = await httpClient.GetAsync("api/worker/capabilities", ct);

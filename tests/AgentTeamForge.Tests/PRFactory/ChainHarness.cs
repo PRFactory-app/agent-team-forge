@@ -47,6 +47,9 @@ sealed class ChainHarness : IDisposable
     public string Remote { get; }
     public string Repo { get; }
     public string BaseSha { get; }
+    public string? SecondaryRepo { get; private set; }
+    public string? SecondaryRemote { get; private set; }
+    public Guid? SecondaryId { get; private set; }
     public JobDatabase Database { get; }
     public JobStore Store { get; }
     public PRFactoryTeamStore Teams { get; }
@@ -67,12 +70,31 @@ sealed class ChainHarness : IDisposable
     public HumanWait HumanWait => new(HumanWaits, Store, Teams, Connector);
     public List<string> Logs { get; } = [];
 
+    public void AddSecondary(Guid id)
+    {
+        SecondaryId = id;
+        SecondaryRemote = root.File("secondary.git");
+        Git(root.Path, "init", "--bare", "-b", "main", SecondaryRemote);
+        SecondaryRepo = Directory.CreateDirectory(root.File("secondary")).FullName;
+        Git(SecondaryRepo, "init", "-b", "main");
+        Commit(SecondaryRepo, "base.txt", "secondary base");
+        Git(SecondaryRepo, "remote", "add", "origin", SecondaryRemote);
+        Git(SecondaryRepo, "push", "origin", "main");
+        Server.Item.ContextJson = "{\"repositories\":{\"secondary\":[{\"id\":\"" + id.ToString("D")
+            + "\",\"name\":\"secondary\",\"cloneUrl\":\"" + SecondaryRemote + "\",\"defaultBranch\":\"main\"}]}}";
+        Server.MultiRepoSupported = true;
+    }
+
     public PRFactoryWorkItems Adapter() => new(ChainServer.Url,
-        Server.Item.RepositoryId is { } repositoryId ? [new RepositoryMapping(repositoryId, Repo, ExternalMembers)] : [], Teams, Server.Client(),
+        Server.Item.RepositoryId is { } repositoryId
+            ? SecondaryId is { } secondary ? [new RepositoryMapping(repositoryId, Repo, ExternalMembers), new RepositoryMapping(secondary, SecondaryRepo!)]
+                : [new RepositoryMapping(repositoryId, Repo, ExternalMembers)] : [], Teams, Server.Client(),
         Accept.Execute, Store.GetJob, () => { }, log: Logs.Add, externalTeam: External, stopJob: Stop.Execute, followUp: FollowUp.Execute,
         authority: Authority, workspaces: new PRFactoryWorkspace(Workspaces), workspaceRoot: WorkspaceRoot, accounts: Accounts,
         publications: new PRFactoryPublicationStore(Database),
-        interaction: new PRFactoryInteraction(HumanWaits, Teams, Store, FollowUp.Execute), humanWaits: HumanWaits, allowRepoLess: AllowRepoLess);
+        interaction: new PRFactoryInteraction(HumanWaits, Teams, Store, FollowUp.Execute), humanWaits: HumanWaits, allowRepoLess: AllowRepoLess,
+        repositorySets: SecondaryId is null ? null : new PRFactoryRepositorySet(new PRFactoryRepositorySetStore(Database),
+            new PRFactoryWorkspace(Workspaces), new PRFactoryWorkspaceStore(Database), new PRFactoryHandoverStore(Database)));
 
     public Task TickAsync() => Adapter().TickAsync(Machine, CancellationToken.None);
 

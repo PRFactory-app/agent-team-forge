@@ -27,6 +27,8 @@ sealed class ChainServer(PRFactoryWorkItem item)
     public List<BlobRequest> Blobs { get; } = [];
     public List<string> PollQueries { get; } = [];
     public List<string> UploadOrder { get; } = [];
+    public bool MultiRepoSupported { get; set; }
+    public List<JsonElement> RepositoryResults { get; } = [];
     public Action? OnBlobUpload { get; set; }
 
     public sealed record BlobRequest(string ContentType, byte[] Payload, Dictionary<string, string> Fields, byte[] File);
@@ -73,6 +75,10 @@ sealed class ChainServer(PRFactoryWorkItem item)
         lock (this)
         {
             var path = request.RequestUri!.AbsolutePath;
+            if (path == "/api/worker/capabilities")
+            {
+                return Json(MultiRepoSupported ? "{\"capabilities\":[\"multi-repo-v1\"]}" : "{\"capabilities\":[]}");
+            }
             if (path == "/api/work-item-blobs/capabilities")
             {
                 return BlobsSupported ? Json("{\"protocolRevision\":2,\"capabilities\":[\"blob-attachments-v1\"]}")
@@ -110,6 +116,11 @@ sealed class ChainServer(PRFactoryWorkItem item)
                 return ManagedWire.Reply(request)!;
             }
             var body = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+            if (path.EndsWith("/repository-result", StringComparison.Ordinal))
+            {
+                RepositoryResults.Add(JsonElement.Parse(body!));
+                return Json("{\"accepted\":true}");
+            }
             if (path.EndsWith("/agent-commands/ack", StringComparison.Ordinal))
             {
                 foreach (var ack in JsonElement.Parse(body!).GetProperty("acks").EnumerateArray())

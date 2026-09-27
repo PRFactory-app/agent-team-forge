@@ -24,32 +24,25 @@ public sealed class BranchPublisher(PRFactoryPublicationStore store, Publication
     public static bool ShouldPublish(PublicationRequest request) => !request.ReadOnly &&
         (request.ProjectInit || request.Type is "Implementation" or "CodeReview" or "CustomStep");
 
+    /// <summary>Freeze every repository head before a caller starts any push.</summary>
+    public async Task<PublicationReceipt?> FreezeAsync(PublicationRequest request, CancellationToken ct = default)
+    {
+        if (!ShouldPublish(request)) { return null; }
+        await gate.WaitAsync(ct);
+        try { return await FreezeCore(request, ct); }
+        finally { gate.Release(); }
+    }
+
     public async Task<PublicationReceipt?> PublishAsync(PublicationRequest request, CancellationToken ct = default)
     {
         if (!ShouldPublish(request)) { return null; }
         await gate.WaitAsync(ct);
         try
         {
-            var cwd = request.LeadPath;
-            await Git(cwd, ct, "check-ref-format", "refs/heads/" + request.PublishBranch);
-            await Git(cwd, ct, "check-ref-format", "refs/heads/" + request.InternalBranch);
-            await ValidateRemote(request, ct);
-            if (await Git(cwd, ct, "symbolic-ref", "HEAD") != "refs/heads/" + request.InternalBranch)
-            {
-                throw new InvalidOperationException("Canonical lead branch changed.");
-            }
-            var dirty = string.Join('\n', (await Git(cwd, ct, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"))
-                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                .Where(line => !IsStagedArtefact(line, request.ArtefactFolder) && !IsGeneratedUntracked(line)));
-            if (dirty.Length != 0) { throw new InvalidOperationException("Publication requires committed output. Dirty files:\n" + dirty); }
-            var head = await Git(cwd, ct, "rev-parse", "--verify", "HEAD^{commit}");
-            var prior = store.Get(request.PublicationId);
+            var saved = await FreezeCore(request, ct);
+            var intent = saved.Intent;
+            var head = intent.HeadSha;
             var remoteHead = await RemoteHead(request, ct);
-            var intent = new PublicationIntent(request.PublicationId, request.Server, request.WorkItemId, request.LeaseToken,
-                request.MachineId, request.JobId, request.RepositoryId, request.WorkspaceKey, cwd, request.Remote,
-                request.InternalBranch, request.PublishBranch, request.BaseSha, head, prior is null ? remoteHead : prior.Intent.ExpectedRemoteSha);
-            var saved = store.SaveIntent(intent); // FULL SQLite durability before any push.
-            checkpoints?.Hit("publication.after-intent");
             if (remoteHead != head)
             {
                 // An acknowledged receipt is historical evidence, not permission to overwrite later work.
@@ -57,15 +50,12 @@ public sealed class BranchPublisher(PRFactoryPublicationStore store, Publication
                 await ValidateRemote(request, ct);
                 var allowed = await authority(request.WorkItemId, async () =>
                 {
-                    // Pin the source SHA: a moved local branch cannot silently change this push's payload.
-                    await Git(cwd, ct, "push", "--no-follow-tags", "--", request.Remote,
+                    await Git(request.LeadPath, ct, "push", "--no-follow-tags", "--", request.Remote,
                         head + ":refs/heads/" + request.PublishBranch);
                 }, ct);
                 if (!allowed) { throw new InvalidOperationException("Publication authority is not confirmed."); }
                 checkpoints?.Hit("publication.after-push");
             }
-            // Record evidence even if authority was fenced while an already admitted push ran.
-            // Completion/upload still requires a separate fresh authority check.
             if (await RemoteHead(request, CancellationToken.None) != head)
             {
                 throw new InvalidOperationException("Remote SHA does not match frozen publication head; reconciliation required.");
@@ -74,6 +64,31 @@ public sealed class BranchPublisher(PRFactoryPublicationStore store, Publication
             return store.Verify(intent);
         }
         finally { gate.Release(); }
+    }
+
+    async Task<PublicationReceipt> FreezeCore(PublicationRequest request, CancellationToken ct)
+    {
+        var cwd = request.LeadPath;
+        await Git(cwd, ct, "check-ref-format", "refs/heads/" + request.PublishBranch);
+        await Git(cwd, ct, "check-ref-format", "refs/heads/" + request.InternalBranch);
+        await ValidateRemote(request, ct);
+        if (await Git(cwd, ct, "symbolic-ref", "HEAD") != "refs/heads/" + request.InternalBranch)
+        {
+            throw new InvalidOperationException("Canonical lead branch changed.");
+        }
+        var dirty = string.Join('\n', (await Git(cwd, ct, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"))
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Where(line => !IsStagedArtefact(line, request.ArtefactFolder) && !IsGeneratedUntracked(line)));
+        if (dirty.Length != 0) { throw new InvalidOperationException("Publication requires committed output. Dirty files:\n" + dirty); }
+        var head = await Git(cwd, ct, "rev-parse", "--verify", "HEAD^{commit}");
+        var prior = store.Get(request.PublicationId);
+        var remoteHead = await RemoteHead(request, ct);
+        var intent = new PublicationIntent(request.PublicationId, request.Server, request.WorkItemId, request.LeaseToken,
+            request.MachineId, request.JobId, request.RepositoryId, request.WorkspaceKey, cwd, request.Remote,
+            request.InternalBranch, request.PublishBranch, request.BaseSha, head, prior is null ? remoteHead : prior.Intent.ExpectedRemoteSha);
+        var saved = store.SaveIntent(intent); // FULL SQLite durability before any push.
+        checkpoints?.Hit("publication.after-intent");
+        return saved;
     }
 
     // Untracked phase documents and allowlisted attachment outputs are uploaded separately.

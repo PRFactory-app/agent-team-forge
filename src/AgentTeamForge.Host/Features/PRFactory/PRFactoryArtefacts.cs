@@ -9,7 +9,8 @@ internal static partial class PRFactoryArtefacts
     // Below PRFactory's default request body limit; the whole request is frozen in SQLite.
     internal const long MaxUploadBytes = 20 * 1024 * 1024;
 
-    public static async Task<List<PRFactoryArtefactFile>> CollectAsync(PRFactoryWorkItem item, string cwd, string? resultText, CancellationToken ct)
+    public static async Task<List<PRFactoryArtefactFile>> CollectAsync(PRFactoryWorkItem item, string cwd, string? resultText, CancellationToken ct,
+        IReadOnlyList<(Guid Id, string Name, string Path)>? planRepositories = null)
     {
         var files = new List<PRFactoryArtefactFile>();
         long total = 0;
@@ -65,14 +66,19 @@ internal static partial class PRFactoryArtefacts
         {
             throw new InvalidDataException($"Missing required output {item.TicketArtefactFolder}/{expected}");
         }
-        if (item.RepositoryId is { } repositoryId && item.Type == "Planning" && JobWorktree.Head(cwd) is { } head)
+        if (item.RepositoryId is { } repositoryId && item.Type == "Planning")
         {
-            var paths = await JobWorktree.TrackedPathsAsync(cwd, ct);
-            if (paths is not null)
+            var selected = planRepositories ?? [(repositoryId, RepositoryName(item, cwd), cwd)];
+            var repositories = new List<PRFactoryPlanRepository>();
+            foreach (var (id, name, path) in selected)
             {
-                var manifest = new PRFactoryPlanBasis([new(repositoryId, RepositoryName(item, cwd), JobWorktree.Branch(cwd), head, paths)]);
-                files.Add(new("plan-basis.json", JsonSerializer.Serialize(manifest, PRFactoryWorkItemJson.Default.PRFactoryPlanBasis), "plan-basis"));
+                var head = JobWorktree.Head(path);
+                var paths = await JobWorktree.TrackedPathsAsync(path, ct);
+                if (head is null || paths is null) { throw new InvalidDataException($"Planning repository {name} has no committed basis."); }
+                repositories.Add(new(id, name, JobWorktree.Branch(path), head, paths));
             }
+            files.Add(new("plan-basis.json", JsonSerializer.Serialize(new PRFactoryPlanBasis(repositories),
+                PRFactoryWorkItemJson.Default.PRFactoryPlanBasis), "plan-basis"));
         }
         return files;
     }

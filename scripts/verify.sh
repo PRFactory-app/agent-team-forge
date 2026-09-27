@@ -32,11 +32,12 @@ if [[ "$actual" != "$PIN" ]]; then
 fi
 
 step() { echo "== $*"; }
+MSBUILD_ARGS=(-m:1 -nodeReuse:false -p:UseSharedCompilation=false)
 step "sdk $actual rid $RID dotnet $DOTNET"
-step restore;  "$DOTNET" restore AgentTeamForge.slnx
+step restore;  "$DOTNET" restore AgentTeamForge.slnx "${MSBUILD_ARGS[@]}"
 step format;   "$DOTNET" format AgentTeamForge.slnx --verify-no-changes --no-restore
-step build;    "$DOTNET" build AgentTeamForge.slnx -c Release --no-restore -warnaserror
-ATF_TEST_TMP_ROOT="$(mktemp -d /tmp/atf-verify-XXXXXX)"
+step build;    "$DOTNET" build AgentTeamForge.slnx -c Release --no-restore -warnaserror "${MSBUILD_ARGS[@]}"
+ATF_TEST_TMP_ROOT="${ATF_TEST_TMP_ROOT:-$(mktemp -d /tmp/atf-verify-XXXXXX)}"
 export ATF_TEST_TMP_ROOT
 cleanup_tmp() {
   local status="$1"
@@ -53,7 +54,7 @@ step publish-aot
 mkdir -p artifacts
 PUBLISH_DIR="$(mktemp -d "$ROOT/artifacts/$RID-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
 "$DOTNET" publish src/AgentTeamForge.Host/AgentTeamForge.Host.csproj -c Release -r "$RID" \
-  --self-contained true -p:PublishAot=true -p:TreatWarningsAsErrors=true -o "$PUBLISH_DIR"
+  --self-contained true -p:PublishAot=true -p:TreatWarningsAsErrors=true -o "$PUBLISH_DIR" "${MSBUILD_ARGS[@]}"
 step "published $PUBLISH_DIR/atf"
 step published-smoke
 DOTNET="$DOTNET" "$ROOT/scripts/published-smoke.sh" "$PUBLISH_DIR/atf"

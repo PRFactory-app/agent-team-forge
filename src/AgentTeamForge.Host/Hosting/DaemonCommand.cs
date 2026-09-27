@@ -249,11 +249,14 @@ public static class DaemonCommand
             releaseNative: dispatcher.ReleaseNative);
         var connectorStopAgent = new StopAgent(store, connectorPrincipal, backends);
         // The daemon is the sole writer of team workspaces; the singleton serializes Git mutations.
-        using var teamWorkspaces = new TeamWorkspace(new PRFactoryWorkspaceStore(database));
+        var connectorWorkspaceStore = new PRFactoryWorkspaceStore(database);
+        using var teamWorkspaces = new TeamWorkspace(connectorWorkspaceStore);
         var connectorWorkspaces = new PRFactoryWorkspace(teamWorkspaces);
         var workspaceRoot = Path.Combine(state.Path, "prfactory-workspaces");
         var connectorPublications = new PRFactoryPublicationStore(database);
         var connectorHandovers = new PRFactoryHandoverStore(database);
+        var connectorRepositorySets = new PRFactoryRepositorySet(new PRFactoryRepositorySetStore(database),
+            connectorWorkspaces, connectorWorkspaceStore, connectorHandovers);
         // One long-lived authority per connected server; ticks construct the adapter afresh.
         PRFactoryAuthority? authority = null;
         var accounts = new AccountAdmission(new AccountWindowStore(database));
@@ -302,7 +305,7 @@ public static class DaemonCommand
                     connectorFollowUp.Execute, jobLogs, authority, connectorWorkspaces, workspaceRoot, accounts,
                         publications: connectorPublications, interaction: connectorInteraction, humanWaits: humanWaits,
                         allowRepoLess: settings.TenantWideToken && settings.RepoLess,
-                        handovers: connectorHandovers).TickAsync(machineId, ct);
+                        handovers: connectorHandovers, repositorySets: connectorRepositorySets).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
             },
             onTokenRejected: ct => authority?.TransportFailureAsync(Guid.Empty, System.Net.HttpStatusCode.Unauthorized, ct) ?? Task.CompletedTask,

@@ -49,7 +49,8 @@ public sealed class PhaseBaseFreshness(PRFactoryHandoverStore store, TeamWorkspa
         return true;
     }
 
-    public async Task<BaseFreshnessResult> EnsureFreshAsync(WorkspaceSnapshot workspace, string? planBasisSha = null)
+    public async Task<BaseFreshnessResult> EnsureFreshAsync(WorkspaceSnapshot workspace, string? planBasisSha = null,
+        string? expectedCurrentSha = null)
     {
         if (workspace.RepositoryPath is null || workspace.BaseSha is null || workspace.BaseBranch is null)
         {
@@ -80,6 +81,10 @@ public sealed class PhaseBaseFreshness(PRFactoryHandoverStore store, TeamWorkspa
         var baseRef = "refs/atf/base-refresh/" + Guid.NewGuid().ToString("N");
         await Git(cwd, "fetch", "--no-tags", "--no-write-fetch-head", "origin", "+refs/heads/" + workspace.BaseBranch + ":" + baseRef);
         var current = await Git(cwd, "rev-parse", "--verify", baseRef + "^{commit}");
+        if (expectedCurrentSha is not null && !current.Equals(expectedCurrentSha, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Repository base moved during multi-repository preflight.");
+        }
         var original = await Git(cwd, "rev-parse", "HEAD");
         var behindText = await Git(cwd, "rev-list", "--count", recorded + ".." + current);
         var behind = int.Parse(behindText, System.Globalization.CultureInfo.InvariantCulture);

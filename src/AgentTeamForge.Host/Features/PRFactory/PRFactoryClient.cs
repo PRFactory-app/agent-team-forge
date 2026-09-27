@@ -43,12 +43,11 @@ public sealed class PRFactoryStreamRejectedException(HttpStatusCode statusCode)
 public sealed partial class PRFactoryClient(HttpClient httpClient)
 {
     // Server capability gate: single-repository worker contract, not the ATF product version.
-    const string WorkerVersion = "1.0.0";
+    string workerVersion = "1.0.0";
     // Only semantics that are wired and tested end to end: explicit server dispositions stop and fence
     // owned work; completion carries a pushed, ls-remote-verified branch for remote-only PR creation.
     // Not yet: human-wait-v1, readiness-parking-v1 (no auth/model probes),
-    // multi-repo-v1.
-    public static readonly string[] Capabilities = ["authority-disposition-v1", "remote-publication-v1", "workspace-continuity-v1", "blob-attachments-v1", "base-wip-v1"];
+    public static readonly string[] Capabilities = ["authority-disposition-v1", "remote-publication-v1", "workspace-continuity-v1", "blob-attachments-v1", "base-wip-v1", "multi-repo-v1"];
     bool legacyLogged;
     public enum AcceptanceResult { Confirmed, NotFound, Conflict }
     /// <summary>Server disposition: accepted, completed, cancelled, revoked or reconciliation-needed.</summary>
@@ -74,10 +73,11 @@ public sealed partial class PRFactoryClient(HttpClient httpClient)
 
     public async Task<RegisterMachineResponse> RegisterMachineAsync(CancellationToken ct)
     {
+        await SupportsMultiRepoAsync(ct);
         var request = new RegisterMachineRequest(Environment.MachineName,
             $"{Environment.MachineName}:{Environment.UserName}",
             System.Runtime.InteropServices.RuntimeInformation.OSDescription,
-            WorkerVersion, Capabilities);
+            workerVersion, Capabilities);
         using var response = await httpClient.PostAsJsonAsync("api/worker/machines/register", request,
             PRFactoryWireJson.Default.RegisterMachineRequest, ct);
         RejectToken(response.StatusCode);
@@ -107,7 +107,7 @@ public sealed partial class PRFactoryClient(HttpClient httpClient)
         int maxItems = 10)
     {
         var query = $"maxItems={maxItems}" + string.Concat(repositories.Select(id => $"&repositoryIds={id:D}"))
-            + $"&workerVersion={WorkerVersion}" + (machineId is Guid mid ? $"&machineId={mid:D}" : "");
+            + $"&workerVersion={workerVersion}" + (machineId is Guid mid ? $"&machineId={mid:D}" : "");
         using var response = await httpClient.GetAsync("api/worker/poll?" + query, ct);
         RejectToken(response.StatusCode);
         if (response.StatusCode == HttpStatusCode.NoContent)
@@ -122,7 +122,7 @@ public sealed partial class PRFactoryClient(HttpClient httpClient)
     public async Task<PRFactoryWorkItem?> ClaimAsync(Guid id, Guid? machineId, CancellationToken ct)
     {
         using var response = await httpClient.PostAsJsonAsync($"api/worker/claim/{id:D}",
-            new PRFactoryClaimRequest(Environment.MachineName, WorkerVersion, machineId), PRFactoryWorkItemJson.Default.PRFactoryClaimRequest, ct);
+            new PRFactoryClaimRequest(Environment.MachineName, workerVersion, machineId), PRFactoryWorkItemJson.Default.PRFactoryClaimRequest, ct);
         RejectToken(response.StatusCode);
         if (response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.NotFound)
         {
@@ -278,10 +278,11 @@ public sealed partial class PRFactoryClient(HttpClient httpClient)
     }
 
     public async Task CompleteAsync(Guid id, Guid? lease, string? markdown, CancellationToken ct,
-        string? branch = null, string? commit = null, PRFactoryRemotePublication? publication = null)
+        string? branch = null, string? commit = null, PRFactoryRemotePublication? publication = null,
+        List<PRFactoryRepositoryFreshnessRequest>? repositoryResults = null)
     {
         using var response = await httpClient.PostAsJsonAsync($"api/worker/complete/{id:D}",
-            new PRFactoryCompletionRequest(true, markdown, branch, commit, string.Empty, lease, publication), PRFactoryWorkItemJson.Default.PRFactoryCompletionRequest, ct);
+            new PRFactoryCompletionRequest(true, markdown, branch, commit, string.Empty, lease, publication, repositoryResults), PRFactoryWorkItemJson.Default.PRFactoryCompletionRequest, ct);
         RejectToken(response.StatusCode);
         RejectLostLease(response.StatusCode, id);
         response.EnsureSuccessStatusCode();

@@ -39,6 +39,17 @@ public sealed class PRFactoryWorkspaceStore(JobDatabase database)
         }
     }
 
+    public void RestoreBase(string key, string baseSha, string startingSha)
+    {
+        var snapshot = Get(key) ?? throw new InvalidOperationException("Workspace missing.");
+        using var db = database.OpenConnection();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "UPDATE prfactory_workspaces SET snapshot=$snapshot WHERE workspace_key=$key";
+        cmd.Parameters.AddWithValue("$key", key);
+        cmd.Parameters.AddWithValue("$snapshot", JsonSerializer.Serialize(snapshot with { BaseSha = baseSha, StartingSha = startingSha }, WorkspaceJson.Default.WorkspaceSnapshot));
+        cmd.ExecuteNonQuery();
+    }
+
     public WorkspaceIntegration? Integration(string key, int order)
     {
         using var db = database.OpenConnection();

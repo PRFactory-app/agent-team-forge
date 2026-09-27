@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 27;
+    public const int CurrentVersion = 28;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -351,7 +351,16 @@ static class Schema
             acknowledged_at TEXT NOT NULL);
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27];
+    internal const string V28 = """
+        CREATE TABLE prfactory_repository_sets (
+            workspace_key TEXT PRIMARY KEY REFERENCES prfactory_workspaces(workspace_key),
+            snapshot TEXT NOT NULL);
+        CREATE TABLE prfactory_multi_refresh (
+            workspace_key TEXT PRIMARY KEY REFERENCES prfactory_workspaces(workspace_key),
+            originals TEXT NOT NULL, state TEXT NOT NULL);
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

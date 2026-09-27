@@ -16,7 +16,8 @@ public sealed partial class PRFactoryWorkItems(
     PRFactoryAuthority? authority = null, PRFactoryWorkspace? workspaces = null, string? workspaceRoot = null,
     AccountAdmission? accounts = null, int maxAcceptedTeams = 10, PRFactoryPublicationStore? publications = null,
     PRFactoryInteraction? interaction = null, HumanWaitStore? humanWaits = null,
-    bool allowRepoLess = false, PRFactoryHandoverStore? handovers = null)
+    bool allowRepoLess = false, PRFactoryHandoverStore? handovers = null,
+    PRFactoryRepositorySet? repositorySets = null)
 {
     // Parked turns share one account binding per backend until configured accounts exist.
     public const string DefaultAccount = "default";
@@ -263,7 +264,8 @@ public sealed partial class PRFactoryWorkItems(
     {
         var item = JsonSerializer.Deserialize(team.ClaimedJson, PRFactoryWorkItemJson.Default.PRFactoryWorkItem)
             ?? throw new InvalidDataException("Invalid persisted PRFactory claim");
-        if (HasSecondaries(item))
+        var multiRepo = PRFactoryRepositorySet.HasSecondaries(item);
+        if (multiRepo && (repositorySets is null || !await client.SupportsMultiRepoAsync(ct)))
         {
             await FinishAsync(team, item, false, "multi-repository work items are unsupported", null, ct);
             return;
@@ -311,6 +313,7 @@ public sealed partial class PRFactoryWorkItems(
         {
             throw new HttpRequestException("PRFactory base-wip-v1 capability disappeared during accepted work.");
         }
+        if (multiRepo) { await repositorySets!.RecoverRefreshAsync(WorkspaceKey(item.Id)); }
         if (baseWip && workspaces is not null)
         {
             // Local rollback of ATF's own interrupted refresh; the half-rebased lead cannot be re-materialized.
@@ -320,7 +323,16 @@ public sealed partial class PRFactoryWorkItems(
         {
             try
             {
+                if (multiRepo)
+                {
+                    _ = await PRFactoryRepositorySet.ParseAsync(item, repositories, WorkspaceKey(item.Id));
+                }
                 await Guard(item.Id, async () => workspace = await PrepareWorkspaceAsync(item, repo, managedMembers, baseWip, ct), ct);
+                if (multiRepo)
+                {
+                    await Guard(item.Id, async () => _ = await repositorySets!.PrepareAsync(WorkspaceKey(item.Id),
+                        item, repositories, [.. managedMembers.Select(m => m.Name)]), ct);
+                }
             }
             catch (InvalidOperationException ex)
             {
@@ -329,42 +341,74 @@ public sealed partial class PRFactoryWorkItems(
                 return;
             }
         }
-        if (baseWip && workspace is { RepositoryPath: not null }
+        if ((baseWip || multiRepo) && workspace is { RepositoryPath: not null }
             && teams.MemberJob(server, item.Id, "lead", 0) is null)
         {
-            BaseFreshnessResult freshness = null!;
-            await Guard(item.Id, async () => freshness = await workspaces!.Freshness(handovers!)
-                .EnsureFreshAsync(workspace, item.PlanBasisCommitSha), ct);
-            workspace = workspaces!.Get(workspace.Key)!;
-            if (item.LeaseToken is not Guid lease || item.RepositoryId is not Guid repository)
+            if (multiRepo)
             {
-                throw new InvalidOperationException("Base refresh lacks accepted repository identity.");
+                var set = repositorySets!.Get(workspace.Key)!;
+                IReadOnlyList<(RepositorySetMember Entry, BaseFreshnessResult Result)> results = [];
+                await Guard(item.Id, async () => results = await repositorySets.RefreshAsync(set, item.PlanBasisCommitSha), ct);
+                foreach (var (entry, refreshed) in results)
+                {
+                    if (item.LeaseToken is not Guid multiLease) { throw new InvalidOperationException("Missing repository lease."); }
+                    var repository = Guid.Parse(entry.Id);
+                    if (refreshed.ConflictingPaths.Length > 0)
+                    {
+                        await Guard(item.Id, () => client.ReportBaseConflictAsync(item.Id,
+                            new([repository], refreshed.ConflictingPaths, multiLease), ct), ct);
+                    }
+                    var action = refreshed.Action switch { "Fetched" => 1, "Rebased" => 2, "ConflictStopped" => 3, _ => 0 };
+                    var repositoryWorkspace = workspaces!.Get(entry.WorkspaceKey)!;
+                    await Guard(item.Id, () => client.ReportFreshnessAsync(item.Id,
+                        new(multiLease, repository, refreshed.AgentMayRun ? refreshed.CurrentBaseSha : refreshed.RecordedBaseSha,
+                            repositoryWorkspace.InternalBranch!, refreshed.HeadSha, 0,
+                            refreshed.AgentMayRun ? null : "Base drift requires checkpoint or conflict resolution",
+                            repositoryWorkspace.BaseBranch!, refreshed.CurrentBaseSha, refreshed.CommitsBehind, action), ct), ct);
+                }
+                if (results.Count != set.Members.Length || results.Any(r => !r.Result.AgentMayRun)) { return; }
+                workspace = workspaces!.Get(workspace.Key)!;
             }
-
-            if (freshness.ConflictingPaths.Length > 0)
+            else
             {
-                await Guard(item.Id, () => client.ReportBaseConflictAsync(item.Id,
-                    new([repository], freshness.ConflictingPaths, lease), ct), ct);
-            }
+                BaseFreshnessResult freshness = null!;
+                await Guard(item.Id, async () => freshness = await workspaces!.Freshness(handovers!)
+                    .EnsureFreshAsync(workspace, item.PlanBasisCommitSha), ct);
+                workspace = workspaces!.Get(workspace.Key)!;
+                if (item.LeaseToken is not Guid lease || item.RepositoryId is not Guid repository)
+                {
+                    throw new InvalidOperationException("Base refresh lacks accepted repository identity.");
+                }
 
-            var action = freshness.Action switch { "Fetched" => 1, "Rebased" => 2, "ConflictStopped" => 3, _ => 0 };
-            await Guard(item.Id, () => client.ReportFreshnessAsync(item.Id,
-                new(lease, repository, freshness.AgentMayRun ? freshness.CurrentBaseSha : freshness.RecordedBaseSha,
-                    workspace.InternalBranch!, freshness.HeadSha, 0,
-                    freshness.AgentMayRun ? null : "Base drift requires a checkpoint or conflict resolution",
-                    workspace.BaseBranch!, freshness.CurrentBaseSha, freshness.CommitsBehind, action), ct), ct);
-            if (!freshness.AgentMayRun)
-            {
-                return;
+                if (freshness.ConflictingPaths.Length > 0)
+                {
+                    await Guard(item.Id, () => client.ReportBaseConflictAsync(item.Id,
+                        new([repository], freshness.ConflictingPaths, lease), ct), ct);
+                }
+
+                var action = freshness.Action switch { "Fetched" => 1, "Rebased" => 2, "ConflictStopped" => 3, _ => 0 };
+                await Guard(item.Id, () => client.ReportFreshnessAsync(item.Id,
+                    new(lease, repository, freshness.AgentMayRun ? freshness.CurrentBaseSha : freshness.RecordedBaseSha,
+                        workspace.InternalBranch!, freshness.HeadSha, 0,
+                        freshness.AgentMayRun ? null : "Base drift requires a checkpoint or conflict resolution",
+                        workspace.BaseBranch!, freshness.CurrentBaseSha, freshness.CommitsBehind, action), ct), ct);
+                if (!freshness.AgentMayRun)
+                {
+                    return;
+                }
             }
         }
         string Cwd(string member) => workspace is null ? repo!.Directory
             : member == "lead" ? workspace.LeadPath : workspace.Members.Single(m => m.Name == member).Path;
+        var instruction = multiRepo ? item.Prompt + "\n\nRepository checkout manifest: "
+            + repositorySets!.Get(WorkspaceKey(item.Id))!.ManifestPath
+            + "\nUse your lead or child paths from this manifest. Commit changes in each writable repository."
+            : item.Prompt;
         JobRecord? lead;
         try
         {
             lead = await SubmitMember(item, "lead", item.AgentType, item.Model, item.Effort,
-                item.Prompt, Cwd("lead"), workspace is not null, ct);
+                instruction, Cwd("lead"), workspace is not null, ct);
         }
         catch (PRFactoryJobSubmissionException ex)
         {
@@ -400,13 +444,13 @@ public sealed partial class PRFactoryWorkItems(
                 continue;
             }
 
-            var instruction = $"{item.Prompt}\n\nRole: {member.Role}\nMember: {member.Name}"
+            var memberInstruction = $"{instruction}\n\nRole: {member.Role}\nMember: {member.Name}"
                 + (string.IsNullOrWhiteSpace(member.Notes) ? "" : $"\nNotes: {member.Notes}");
             JobRecord? child;
             try
             {
                 child = await SubmitMember(item, member.Name, member.Backend ?? item.AgentType,
-                    member.Model ?? item.Model, member.Effort ?? item.Effort, instruction, Cwd(member.Name), workspace is not null, ct);
+                    member.Model ?? item.Model, member.Effort ?? item.Effort, memberInstruction, Cwd(member.Name), workspace is not null, ct);
             }
             catch (PRFactoryJobSubmissionException ex)
             {
@@ -662,6 +706,73 @@ public sealed partial class PRFactoryWorkItems(
         return await publisher.PublishAsync(request, ct);
     }
 
+    async Task<(PublicationReceipt? Primary, List<PRFactoryRepositoryFreshnessRequest> Results)> PublishSetAsync(
+        PRFactoryTeamRecord team, PRFactoryWorkItem item, RepositorySetSnapshot set, CancellationToken ct)
+    {
+        if (publications is null || item.LeaseToken is not Guid lease)
+        {
+            throw new InvalidOperationException("Multi-repository publication store or lease missing.");
+        }
+        using var publisher = new BranchPublisher(publications, async (id, effect, token) =>
+        {
+            if (authority is null) { await effect(); return true; }
+            return await authority.RunAsync(id, effect, token) ? true : throw new PRFactoryFencedException(id);
+        });
+        var requests = new List<(RepositorySetMember Entry, WorkspaceSnapshot Workspace, PublicationRequest Request)>();
+        foreach (var entry in set.Members)
+        {
+            var workspace = workspaces!.Get(entry.WorkspaceKey)!;
+            var request = new PublicationRequest($"{server}|{item.Id:D}|{entry.Id}", server, item.Id, lease,
+                team.MachineId?.ToString("D") ?? "legacy", team.AtfJobId ?? "legacy", entry.Id,
+                workspace.Key, workspace.LeadPath, entry.Remote, workspace.InternalBranch!, workspace.PublishBranch!,
+                workspace.BaseSha!, item.Type ?? "", entry.ReadOnly, string.Equals(item.TicketSource, "ProjectInit", StringComparison.OrdinalIgnoreCase),
+                item.TicketArtefactFolder);
+            requests.Add((entry, workspace, request));
+        }
+        // All intended heads are frozen durably before the first remote mutation.
+        foreach (var (entry, workspace, request) in requests)
+        {
+            if (entry.ReadOnly && (JobWorktree.Head(workspace.LeadPath) != workspace.BaseSha
+                || (await TeamWorkspace.Git(workspace.LeadPath, "status", "--porcelain", "--untracked-files=all")).Length != 0))
+            {
+                throw new InvalidOperationException($"Read-only repository {entry.Name} changed; local output retained.");
+            }
+            await publisher.FreezeAsync(request, ct);
+        }
+        var results = new List<PRFactoryRepositoryFreshnessRequest>();
+        PublicationReceipt? primary = null;
+        foreach (var (entry, workspace, request) in requests)
+        {
+            var head = JobWorktree.Head(workspace.LeadPath)!;
+            var writable = BranchPublisher.ShouldPublish(request);
+            var changed = head != workspace.BaseSha;
+            var state = !writable || !changed ? 1 : 2; // Skipped or Pushed.
+            var reason = !writable ? "read-only repository" : !changed ? "unchanged repository" : null;
+            PublicationReceipt? receipt = null;
+            if (state == 2)
+            {
+                try { receipt = await publisher.PublishAsync(request, ct); }
+                catch (InvalidOperationException ex)
+                {
+                    var failed = new PRFactoryRepositoryFreshnessRequest(lease, Guid.Parse(entry.Id), workspace.BaseSha!,
+                        request.PublishBranch, head, 3, ex.Message, workspace.BaseBranch!, workspace.BaseSha!, 0, 0);
+                    await Guard(item.Id, () => client.ReportFreshnessAsync(item.Id, failed, ct), ct);
+                    throw new HttpRequestException($"Repository {entry.Name} push unresolved; retry after remote evidence.", ex);
+                }
+            }
+            var outcome = new PRFactoryRepositoryFreshnessRequest(lease, Guid.Parse(entry.Id), workspace.BaseSha!,
+                request.PublishBranch, state == 2 ? head : null, state, reason, workspace.BaseBranch!, workspace.BaseSha!, 0, 0);
+            await Guard(item.Id, () => client.ReportFreshnessAsync(item.Id, outcome, ct), ct);
+            results.Add(outcome);
+            if (entry.WorkspaceKey == set.WorkspaceKey) { primary = receipt; }
+        }
+        if (results.Count != set.Members.Length || results.Any(r => r.PushState is not (1 or 2)))
+        {
+            throw new InvalidOperationException("Every repository must have a successful or skipped result before completion.");
+        }
+        return (primary, results);
+    }
+
     string WorkspaceKey(Guid id) => $"{server}|{id:D}";
 
     async Task<WorkspaceSnapshot> PrepareWorkspaceAsync(PRFactoryWorkItem item, RepositoryMapping? repo,
@@ -705,6 +816,14 @@ public sealed partial class PRFactoryWorkItems(
         try
         {
             await Guard(item.Id, () => workspaces!.IntegrateChildrenAsync(workspace, item.TicketArtefactFolder), ct);
+            if (repositorySets?.Get(workspace.Key) is { } set)
+            {
+                foreach (var entry in set.Members.Skip(1).Where(e => !e.ReadOnly))
+                {
+                    await Guard(item.Id, () => workspaces!.IntegrateChildrenAsync(workspaces.Get(entry.WorkspaceKey)!,
+                        item.TicketArtefactFolder), ct);
+                }
+            }
             foreach (var member in workspace.Members)
             {
                 var folder = string.IsNullOrWhiteSpace(item.TicketArtefactFolder) ? null : Path.Combine(member.Path, item.TicketArtefactFolder);
@@ -853,13 +972,22 @@ public sealed partial class PRFactoryWorkItems(
         cwd = job is null ? cwd : JobWorktree.WorkingDirectory(job) ?? cwd;
         var workspace = workspaces?.Get(WorkspaceKey(item.Id));
         PublicationReceipt? receipt = null;
+        List<PRFactoryRepositoryFreshnessRequest>? repositoryResults = null;
         if (success && teams.ArtefactDelivery(server, item.Id)?.Failure is null)
         {
             // Push the frozen lead head and verify the remote before any artefact upload or completion;
             // a retry after a lost response re-verifies the same intent instead of producing another commit.
             try
             {
-                receipt = await PublishAsync(team, item, workspace, ct);
+                if (repositorySets?.Get(WorkspaceKey(item.Id)) is { } set)
+                {
+                    if (!await client.SupportsMultiRepoAsync(ct))
+                    {
+                        throw new HttpRequestException("PRFactory multi-repo-v1 capability disappeared during accepted work.");
+                    }
+                    (receipt, repositoryResults) = await PublishSetAsync(team, item, set, ct);
+                }
+                else { receipt = await PublishAsync(team, item, workspace, ct); }
             }
             catch (InvalidOperationException ex)
             {
@@ -878,7 +1006,11 @@ public sealed partial class PRFactoryWorkItems(
             {
                 try
                 {
-                    var artefacts = await PRFactoryArtefacts.CollectAsync(item, cwd ?? throw new InvalidDataException("Missing lead worktree"), result, ct);
+                    var planRepositories = repositorySets?.Get(WorkspaceKey(item.Id)) is { } planSet
+                        ? planSet.Members.Select(entry => (Guid.Parse(entry.Id), entry.Name,
+                            workspaces!.Get(entry.WorkspaceKey)!.LeadPath)).ToArray() : null;
+                    var artefacts = await PRFactoryArtefacts.CollectAsync(item,
+                        cwd ?? throw new InvalidDataException("Missing lead worktree"), result, ct, planRepositories);
                     payload = JsonSerializer.Serialize(new PRFactoryArtefactRequest(artefacts, item.LeaseToken), PRFactoryWorkItemJson.Default.PRFactoryArtefactRequest);
                 }
                 catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException)
@@ -951,7 +1083,8 @@ public sealed partial class PRFactoryWorkItems(
             var (branch, commit) = receipt is not null ? (receipt.Intent.PublishBranch, receipt.Intent.HeadSha)
                 : item.RepositoryId is null || workspace is not null || item.ReadOnly || cwd is null ? (null, null) : (JobWorktree.Branch(cwd), JobWorktree.Head(cwd));
             var publication = receipt is null ? null : new PRFactoryRemotePublication(true, branch!, commit!, true);
-            await Guard(item.Id, () => client.CompleteAsync(item.Id, item.LeaseToken, result, ct, branch, commit, publication), ct);
+            await Guard(item.Id, () => client.CompleteAsync(item.Id, item.LeaseToken, result, ct, branch, commit, publication,
+                repositoryResults), ct);
             StopManagedJobs(item.Id);
             teams.Finish(server, item.Id, "completed");
             await Observe(item.Id, "completed", null, ct); // Also closes retained interactive sessions.
@@ -981,23 +1114,6 @@ public sealed partial class PRFactoryWorkItems(
                 throw new InvalidOperationException($"PRFactory job stop failed: {stopped.Error}");
             }
         }
-    }
-
-    static bool HasSecondaries(PRFactoryWorkItem item)
-    {
-        if (string.IsNullOrWhiteSpace(item.ContextJson))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(item.ContextJson);
-            return document.RootElement.TryGetProperty("repositories", out var repositories)
-                && repositories.TryGetProperty("secondary", out var secondary)
-                && secondary.ValueKind == JsonValueKind.Array && secondary.GetArrayLength() > 0;
-        }
-        catch (JsonException) { return true; }
     }
 
     static string? MapBackend(PRFactoryAgentType agent) => agent switch

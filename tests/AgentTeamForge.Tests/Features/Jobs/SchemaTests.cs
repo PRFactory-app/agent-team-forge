@@ -23,6 +23,9 @@ public sealed class SchemaTests
         {
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE prfactory_multi_refresh;
+                DROP TABLE prfactory_repository_sets;
+                DELETE FROM schema_migrations WHERE version=28;
                 DROP TABLE prfactory_wip_releases;
                 DROP TABLE prfactory_wip;
                 DROP TABLE prfactory_base_refresh;
@@ -56,7 +59,7 @@ public sealed class SchemaTests
         using var check = upgraded.OpenConnection();
         using var query = check.CreateCommand();
         query.CommandText = "SELECT max(version) FROM schema_migrations";
-        Assert.Equal(27L, query.ExecuteScalar());
+        Assert.Equal(28L, query.ExecuteScalar());
         query.CommandText = "PRAGMA foreign_key_check";
         using var violations = query.ExecuteReader();
         Assert.False(violations.Read());
@@ -180,6 +183,9 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE prfactory_multi_refresh;
+                DROP TABLE prfactory_repository_sets;
+                DELETE FROM schema_migrations WHERE version=28;
                 DROP TABLE prfactory_wip_releases;
                 DROP TABLE prfactory_wip;
                 DROP TABLE prfactory_base_refresh;
@@ -277,6 +283,9 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE prfactory_multi_refresh;
+                DROP TABLE prfactory_repository_sets;
+                DELETE FROM schema_migrations WHERE version=28;
                 DROP TABLE prfactory_wip_releases;
                 DROP TABLE prfactory_wip;
                 DROP TABLE prfactory_base_refresh;
