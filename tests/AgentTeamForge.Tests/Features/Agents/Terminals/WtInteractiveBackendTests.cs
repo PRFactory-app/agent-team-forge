@@ -540,6 +540,59 @@ public sealed class WtInteractiveBackendTests
             WtTabControl.CommandLine(["plain", "", "say \"hi\" --flag \\\"x", "C:\\dir with space\\"]));
     }
 
+    [Theory]
+    [InlineData(";", @"\;")]
+    [InlineData(@"\;", @"\\;")]
+    [InlineData(@"C:\p;calc.exe", @"C:\p\;calc.exe")]
+    [InlineData(@"C:\p\;q", @"C:\p\\;q")]
+    [InlineData("a;b;c", @"a\;b\;c")]
+    public void WtOptionDelimitersStayInOneCommand(string value, string expected) =>
+        Assert.Equal(expected, WtCommandLine.EscapeDelimiter(value));
+
+    [Theory]
+    [InlineData("plain", "plain")]
+    [InlineData("", "\"\"")]
+    [InlineData("has space", "has space")]
+    [InlineData("tab\there", "\"tab\there\"")]
+    [InlineData("quote\"inside", "\"quote\\\"inside\"")]
+    [InlineData("quote \"and space\"", "quote \\\"and space\\\"")]
+    [InlineData(@"a b\", @"a b\\")]
+    [InlineData("semi;colon", @"semi\;colon")]
+    [InlineData("mixed \"q\"; next", "mixed \\\"q\\\"\\; next")]
+    [InlineData("it's ’smart’", "it's ’smart’")]
+    [InlineData("multi\nline", "\"multi\nline\"")]
+    public void WtChildArgumentsPreserveWindowsQuotingAndUnicode(string value, string expected) =>
+        Assert.Equal(expected, WtCommandLine.ChildArgument(value));
+
+    [Fact]
+    public void WtLaunchEscapesTitleAndWrapperPathButKeepsThemSeparate()
+    {
+        var args = WtCommandLine.Arguments(
+            ["nt", "--title", "a;\"b", "-d", @"C:\é dir;test"],
+            ["powershell.exe", "-File", @"C:\state dir;test\tab.launch.ps1"]);
+
+        Assert.Equal(["nt", "--title", "a\\;\"b", "-d", @"C:\é dir\;test",
+            "--", "powershell.exe", "-File", @"C:\state dir\;test\tab.launch.ps1"], args);
+    }
+
+    [Theory]
+    [InlineData(new[] { "50% done" }, false)]
+    [InlineData(new[] { "%USERPROFILE%" }, true)]
+    [InlineData(new[] { "50%", "then 80%" }, true)]
+    [InlineData(new[] { "%", "%" }, true)]
+    public void WtExpansionGuardCountsPercentAcrossChildArguments(string[] child, bool expected) =>
+        Assert.Equal(expected, WtCommandLine.MayExpand(child));
+
+    [Fact]
+    public void UnsafeWtWrapperPathSelectsTheInteractiveConsoleFallback()
+    {
+        var options = new[] { "nt", "--title", "%TITLE%" };
+        Assert.NotNull(WtCommandLine.Arguments(options, ["powershell.exe", "-File", @"C:\state\50% done\tab.ps1"]));
+        Assert.Null(WtCommandLine.Arguments(options, ["powershell.exe", "-File", @"C:\state\%USERPROFILE%\tab.ps1"]));
+        Assert.Equal("'literal $env:USERPROFILE and %USERPROFILE%'",
+            PowerShellText.Quote("literal $env:USERPROFILE and %USERPROFILE%"));
+    }
+
     [Fact]
     public void PiTranscriptNeedsFinalStopReason()
     {
