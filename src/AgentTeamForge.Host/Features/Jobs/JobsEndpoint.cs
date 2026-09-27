@@ -17,7 +17,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     StopAgent? stopAgent = null, IReadOnlyCollection<string>? configuredBackends = null, TierMap? tierMap = null,
     BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null, ClaudeWakeMailbox? claudeMailbox = null, string? launchMode = null,
     Func<string?, string?, string?, HumanInputRequestResult>? humanInput = null, ExternalMemberStore? externalMembers = null,
-    GetJob? connectorGet = null)
+    GetJob? connectorGet = null, Func<string, string, AttemptClaim?>? takeNativeClaude = null)
 {
     JobResult ReadJob(IpcRequest request)
     {
@@ -37,6 +37,42 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         {
             return new IpcResponse(claudeMailbox?.Complete(request.NoticeId, request.WakeAddress,
                 request.WakeSecret, request.WakeHome, request.NoticePosted) == true);
+        }
+        if (request.Op is IpcProtocol.ClaudeDeliveryTake or IpcProtocol.ClaudeDeliveryComplete)
+        {
+            if (sessions is null || jobStore is null || request.LeadSessionId is null || request.Workspace is null
+                || request.JobId is null || request.WakeKind != "claude"
+                || !AgentTeamForge.Business.Features.Wake.ClaudeChannel.Valid(request.WakeAddress, request.WakeSecret, request.WakeHome))
+            {
+                return new IpcResponse(false, JobErrors.InvalidRequest);
+            }
+            var childId = request.Op == IpcProtocol.ClaudeDeliveryTake ? request.JobId
+                : jobStore.NativeClaudeAttempt(request.JobId)?.ChildJobId;
+            if (childId is null || !sessions.IsManagedChild(request.LeadSessionId, request.Workspace, childId)
+                || jobStore.ManagedClaudeChannel(childId) is not { } channel
+                || channel.Address != request.WakeAddress || channel.Secret != request.WakeSecret || channel.Host != request.WakeHome)
+            {
+                return new IpcResponse(false, IpcProtocol.AccessDenied);
+            }
+            if (request.Op == IpcProtocol.ClaudeDeliveryTake)
+            {
+                if (takeNativeClaude is null || string.IsNullOrWhiteSpace(request.Text)) { return new IpcResponse(true); }
+                var claim = takeNativeClaude(childId, request.Text);
+                return new IpcResponse(true, ClaudeDelivery: claim is null ? null
+                    : new NativeClaudeOffer(claim.Job.JobId, claim.RunId, claim.Correlation, claim.Job.Instruction));
+            }
+            if (request.NativeCorrelation is null || request.NativeRunId is null) { return new IpcResponse(false, JobErrors.InvalidRequest); }
+            var attempt = jobStore.NativeClaudeAttempt(request.JobId);
+            if (attempt is null || attempt.Correlation != request.NativeCorrelation || attempt.State != "posting")
+            {
+                return new IpcResponse(false, JobErrors.InvalidRequest);
+            }
+            if (!request.NativeWriteStarted)
+            {
+                return new IpcResponse(jobStore.RevertNativeClaudeAttempt(new RunRef(request.JobId, request.NativeRunId, 1, request.NativeCorrelation)));
+            }
+            if (request.NoticePosted) { jobStore.RecordNativeClaudePost(request.JobId, request.NativeCorrelation); }
+            return new IpcResponse(true);
         }
         if (request.Op is IpcProtocol.ExternalJoin or IpcProtocol.ExternalSend or IpcProtocol.ExternalRead or IpcProtocol.ExternalSetWake or IpcProtocol.ExternalLeave)
         {

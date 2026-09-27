@@ -23,7 +23,7 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
             {
                 return JobResult.Fail(JobErrors.NotFound);
             }
-            // A native Codex turn owns no process here; stopping releases its N5 fence.
+            // A native Codex or Claude mailbox turn owns no process here; stopping releases its N5 fence.
             if (!interrupt && releaseNative?.Invoke(current) == true)
             {
                 return JobResult.Ok(GetJob.ToView(store.GetJob(jobId)!), "native_released");

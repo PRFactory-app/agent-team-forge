@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 25;
+    public const int CurrentVersion = 26;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -322,7 +322,20 @@ static class Schema
         CREATE INDEX native_codex_unresolved ON native_codex_attempts(thread_id, state);
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25];
+    /// <summary>v26: per-child durable Claude delivery offers and frozen posting attempts.</summary>
+    internal const string V26 = """
+        CREATE TABLE native_claude_attempts(
+            job_id TEXT PRIMARY KEY REFERENCES jobs(job_id),
+            child_job_id TEXT NOT NULL REFERENCES jobs(job_id),
+            session_id TEXT NOT NULL,
+            claude_home TEXT NOT NULL,
+            correlation TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('posting','posted','received','settled','released')),
+            created_at TEXT NOT NULL);
+        CREATE INDEX native_claude_unresolved ON native_claude_attempts(session_id, state);
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

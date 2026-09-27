@@ -117,6 +117,13 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         {
             return new ParentNotReady();
         }
+        if (Scalar(connection, tx, """
+            SELECT count(*) FROM native_claude_attempts n JOIN jobs j ON j.job_id=n.job_id
+            WHERE n.state IN ('posting','posted') AND j.principal=$p AND j.team=$t AND j.target_agent=$a
+            """, ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent)) > 0)
+        {
+            return new ParentNotReady();
+        }
 
         var active = Scalar(connection, tx, "SELECT count(*) FROM jobs WHERE status IN ('queued','running')");
         if (active >= queueLimit)
@@ -145,6 +152,11 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             // ordinary resume attempts. An uncertain queue call may still present later.
             if (parent.SessionId is { } thread && Scalar(connection, tx,
                 "SELECT count(*) FROM native_codex_attempts WHERE thread_id=$thread AND state='sent'", ("$thread", thread)) > 0)
+            {
+                return new ParentNotReady();
+            }
+            if (parent.SessionId is { } claudeSession && Scalar(connection, tx,
+                "SELECT count(*) FROM native_claude_attempts WHERE session_id=$session AND state IN ('posting','posted')", ("$session", claudeSession)) > 0)
             {
                 return new ParentNotReady();
             }
@@ -224,6 +236,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
               AND NOT EXISTS (SELECT 1 FROM jobs p WHERE p.job_id=j.parent_job_id AND p.status='queued')
               AND NOT EXISTS (SELECT 1 FROM jobs p JOIN native_codex_attempts n ON n.thread_id=p.session_id
                   WHERE p.job_id=j.parent_job_id AND n.state='sent')
+              AND NOT EXISTS (SELECT 1 FROM jobs p JOIN native_claude_attempts n ON n.session_id=p.session_id
+                  WHERE p.job_id=j.parent_job_id AND n.state IN ('posting','posted'))
               AND (j.queue_deadline IS NULL OR j.queue_deadline > $now) AND NOT EXISTS (
                 SELECT 1 FROM jobs p JOIN jobs k ON (k.status='running' OR k.session_fenced=1 OR {settlingSql})
                 WHERE p.job_id = j.parent_job_id
@@ -332,6 +346,145 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return null;
     });
 
+    /// <summary>The child's bridge takes one durable offer. The posting fence commits before any socket write.</summary>
+    public AttemptClaim? BeginNativeClaudeAttempt(string childJobId, string claudeHome, Func<string, bool> idle) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        var candidates = new List<JobRecord>();
+        using (var command = Command(connection, tx, $"SELECT {JobColumns} FROM jobs j JOIN dispatch_intents i ON i.job_id=j.job_id WHERE i.state='unattempted' AND j.status='queued' AND (j.queue_deadline IS NULL OR j.queue_deadline>$now) AND instr(j.options,';native_claude=1')>0 ORDER BY i.created_at,i.rowid", ("$now", Now())))
+        using (var reader = command.ExecuteReader())
+        {
+            while (reader.Read()) { candidates.Add(ReadJob(reader)); }
+        }
+        foreach (var job in candidates)
+        {
+            if (job.ParentJobId is not { } parentId || GetJob(connection, tx, parentId) is not { SessionId: { } session } parent
+                || parent.Backend != "claude" || parent.Status is not (JobStatus.Completed or JobStatus.Cancelled)
+                || SessionFenced(connection, tx, parentId)
+                || Scalar(connection, tx, "SELECT count(*) FROM native_claude_attempts WHERE session_id=$session AND state IN ('posting','posted')", ("$session", session)) > 0
+                || Scalar(connection, tx, "SELECT count(*) FROM native_codex_attempts WHERE thread_id=$session AND state='sent'", ("$session", session)) > 0)
+            {
+                continue;
+            }
+            // An earlier ordinary resume or native turn owns the session first.
+            if (Scalar(connection, tx, """
+                SELECT count(*) FROM jobs k LEFT JOIN jobs q ON q.job_id=k.parent_job_id
+                WHERE k.job_id<>$id AND k.status IN ('queued','running')
+                  AND (k.session_id=$session OR q.session_id=$session)
+                  AND k.rowid < (SELECT rowid FROM jobs WHERE job_id=$id)
+                """, ("$id", job.JobId), ("$session", session)) > 0)
+            {
+                continue;
+            }
+            var root = parent;
+            while (root.ParentJobId is { } ancestor)
+            {
+                root = GetJob(connection, tx, ancestor)!;
+            }
+            if (root.JobId != childJobId || !idle(session)) { continue; }
+            var runId = "run_" + Guid.CreateVersion7().ToString("N");
+            var correlation = Guid.NewGuid().ToString("N");
+            var now = Now();
+            Execute(connection, tx, "UPDATE dispatch_intents SET state='attempted' WHERE job_id=$id", ("$id", job.JobId));
+            Execute(connection, tx, "INSERT INTO runs(run_id,job_id,generation,correlation,state,started_at) VALUES ($run,$id,1,$corr,'started',$now)",
+                ("$run", runId), ("$id", job.JobId), ("$corr", correlation), ("$now", now));
+            Execute(connection, tx, "UPDATE jobs SET status='running',session_id=$session,updated_at=$now WHERE job_id=$id",
+                ("$id", job.JobId), ("$session", session), ("$now", now));
+            Execute(connection, tx, "INSERT INTO native_claude_attempts(job_id,child_job_id,session_id,claude_home,correlation,state,created_at) VALUES ($id,$child,$session,$home,$corr,'posting',$now)",
+                ("$id", job.JobId), ("$child", childJobId), ("$session", session), ("$home", claudeHome), ("$corr", correlation), ("$now", now));
+            Execute(connection, tx, "INSERT INTO events(job_id,run_id,kind,created_at) VALUES ($id,$run,'attempt_started',$now)",
+                ("$id", job.JobId), ("$run", runId), ("$now", now));
+            tx.Commit();
+            return new AttemptClaim(GetJob(connection, null, job.JobId)!, runId, 1, correlation);
+        }
+        return null;
+    });
+
+    public NativeClaudeAttempt? NativeClaudeAttempt(string jobId) => Read(connection =>
+    {
+        using var command = Command(connection, null, "SELECT job_id,child_job_id,session_id,claude_home,correlation,state FROM native_claude_attempts WHERE job_id=$id", ("$id", jobId));
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? new NativeClaudeAttempt(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetString(5)) : null;
+    });
+
+    public (string Address, string Secret, string Host)? ManagedClaudeChannel(string jobId) => Read<(string Address, string Secret, string Host)?>(connection =>
+    {
+        var root = GetJob(connection, null, jobId);
+        while (root?.ParentJobId is { } parent) { root = GetJob(connection, null, parent); }
+        if (root is null) { return null; }
+        using var command = Command(connection, null, """
+            SELECT t.address,t.secret,t.home FROM lead_sessions s JOIN wake_targets t ON t.target_key=s.wake_key
+            WHERE s.binding_key=$binding AND s.closed_at IS NULL AND t.active=1 AND t.kind='claude'
+            ORDER BY s.updated_at DESC LIMIT 1
+            """, ("$binding", "managed-child:" + root.JobId));
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? (reader.GetString(0), reader.GetString(1), reader.GetString(2)) : null;
+    });
+
+    public IReadOnlyList<NativeClaudeAttempt> UnresolvedNativeClaudeAttempts() => Read(connection =>
+    {
+        using var command = Command(connection, null, "SELECT job_id,child_job_id,session_id,claude_home,correlation,state FROM native_claude_attempts WHERE state IN ('posting','posted','received')");
+        using var reader = command.ExecuteReader();
+        var rows = new List<NativeClaudeAttempt>();
+        while (reader.Read()) { rows.Add(new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetString(5))); }
+        return rows;
+    });
+
+    public void RecordNativeClaudePost(string jobId, string correlation) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        Execute(connection, tx, "UPDATE native_claude_attempts SET state='posted' WHERE job_id=$id AND correlation=$corr AND state='posting'",
+            ("$id", jobId), ("$corr", correlation));
+        Execute(connection, tx, "UPDATE runs SET submitted_at=coalesce(submitted_at,$now) WHERE job_id=$id AND correlation=$corr",
+            ("$id", jobId), ("$corr", correlation), ("$now", Now()));
+        tx.Commit();
+        return 0;
+    });
+
+    public void RecordNativeClaudeReceipt(string jobId, string correlation) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        if (Execute(connection, tx, "UPDATE native_claude_attempts SET state='received' WHERE job_id=$id AND correlation=$corr AND state IN ('posting','posted')",
+            ("$id", jobId), ("$corr", correlation)) == 1)
+        {
+            Execute(connection, tx, "UPDATE runs SET acked=1,acknowledged_at=coalesce(acknowledged_at,$now) WHERE job_id=$id AND correlation=$corr",
+                ("$id", jobId), ("$corr", correlation), ("$now", Now()));
+        }
+        tx.Commit();
+        return 0;
+    });
+
+    public bool SettleNativeClaudeAttempt(string jobId, string correlation, string result) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        if (Execute(connection, tx, "UPDATE native_claude_attempts SET state='settled' WHERE job_id=$id AND correlation=$corr AND state IN ('posting','posted','received')",
+            ("$id", jobId), ("$corr", correlation)) != 1) { return false; }
+        var now = Now();
+        Execute(connection, tx, "UPDATE runs SET state='completed',acked=1,acknowledged_at=coalesce(acknowledged_at,$now),finished_at=$now WHERE job_id=$id AND correlation=$corr",
+            ("$id", jobId), ("$corr", correlation), ("$now", now));
+        Execute(connection, tx, "UPDATE jobs SET status='completed',session_fenced=0,reason_code=NULL,result_text=$result,updated_at=$now WHERE job_id=$id",
+            ("$id", jobId), ("$result", result), ("$now", now));
+        Execute(connection, tx, "INSERT INTO events(job_id,kind,created_at) VALUES ($id,'completed',$now)", ("$id", jobId), ("$now", now));
+        tx.Commit();
+        return true;
+    });
+
+    /// <summary>Only a proven pre-write failure can return to the resume carrier.</summary>
+    public bool RevertNativeClaudeAttempt(RunRef run) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        if (Execute(connection, tx, "UPDATE native_claude_attempts SET state='released' WHERE job_id=$id AND correlation=$corr AND state='posting'",
+            ("$id", run.JobId), ("$corr", run.Correlation)) != 1) { return false; }
+        var now = Now();
+        Execute(connection, tx, "UPDATE runs SET state='failed',reason_code='native_not_started',finished_at=$now WHERE run_id=$run AND state='started'",
+            ("$run", run.RunId), ("$now", now));
+        Execute(connection, tx, "UPDATE jobs SET status='queued',session_id=NULL,options=replace(options,';native_claude=1',''),updated_at=$now WHERE job_id=$id AND status='running'",
+            ("$id", run.JobId), ("$now", now));
+        Execute(connection, tx, "UPDATE dispatch_intents SET state='unattempted' WHERE job_id=$id", ("$id", run.JobId));
+        tx.Commit();
+        return true;
+    });
+
     /// <summary>The job's native attempt in any state, including a released one.</summary>
     public NativeCodexAttempt? NativeAttempt(string jobId) => Read(connection =>
     {
@@ -427,7 +580,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         using var tx = connection.BeginTransaction(deferred: false);
         var job = GetJob(connection, tx, jobId);
         if (job is null || job.Principal != principal || job.Team != team
-            || Execute(connection, tx, "UPDATE native_codex_attempts SET state='released' WHERE job_id=$id AND state IN ('sent','received')", ("$id", jobId)) != 1)
+            || Execute(connection, tx, "UPDATE native_codex_attempts SET state='released' WHERE job_id=$id AND state IN ('sent','received')", ("$id", jobId))
+               + Execute(connection, tx, "UPDATE native_claude_attempts SET state='released' WHERE job_id=$id AND state IN ('posting','posted','received')", ("$id", jobId)) != 1)
         {
             return new CancelOutcome(job, false, false);
         }

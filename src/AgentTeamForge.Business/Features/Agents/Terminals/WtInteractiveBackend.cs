@@ -117,6 +117,12 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
 
     public bool HasIdleSession(string sessionId) => _liveSessions.IsAlive(sessionId, _tabs.IsAlive);
 
+    public bool HasLiveClaudeSession(string sessionId) => _kind == InteractiveAgentKind.Claude
+        && _jobs.Values.Any(launch => launch.NativeTranscript?.SessionId == sessionId && _tabs.IsAlive(launch));
+
+    public bool HasIdleClaudeSession(string sessionId) => _kind == InteractiveAgentKind.Claude
+        && _liveSessions.IsAlive(sessionId, launch => launch.NativeTranscript?.SessionId == sessionId && _tabs.IsAlive(launch));
+
     public bool StopIdleSession(string sessionId) => _liveSessions.Stop(sessionId);
 
     public void StopAllIdleSessions() => _liveSessions.StopAll();
