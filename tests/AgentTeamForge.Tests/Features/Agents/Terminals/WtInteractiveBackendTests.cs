@@ -427,7 +427,7 @@ public sealed class WtInteractiveBackendTests
     [Fact]
     public void WindowsLaunchersRequestBreakawayButKeepWrapperCleanupLocal()
     {
-        Assert.Equal(WindowsConsoleProcess.BreakawayFromJob | WindowsConsoleProcess.NewProcessGroup,
+        Assert.Equal(WindowsConsoleProcess.BreakawayFromJob | WindowsConsoleProcess.NewProcessGroup | WindowsConsoleProcess.NoWindow,
             WindowsConsoleProcess.CreationFlags(newConsole: false));
         Assert.Equal(WindowsConsoleProcess.BreakawayFromJob | WindowsConsoleProcess.NewProcessGroup | WindowsConsoleProcess.NewConsole,
             WindowsConsoleProcess.CreationFlags(newConsole: true));

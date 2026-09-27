@@ -9,11 +9,12 @@ internal sealed class WindowsConsoleProcess(nint handle) : IDisposable
     internal const uint BreakawayFromJob = 0x01000000;
     internal const uint NewProcessGroup = 0x00000200;
     internal const uint NewConsole = 0x00000010;
+    internal const uint NoWindow = 0x08000000;
 
     public bool HasExited => WindowsTabNative.GetExitCodeProcess(handle, out var code) && code != 259;
     public int ExitCode => WindowsTabNative.GetExitCodeProcess(handle, out var code) ? unchecked((int)code) : -1;
 
-    internal static uint CreationFlags(bool newConsole) => NewProcessGroup | BreakawayFromJob | (newConsole ? NewConsole : 0);
+    internal static uint CreationFlags(bool newConsole) => NewProcessGroup | BreakawayFromJob | (newConsole ? NewConsole : NoWindow);
 
     public static WindowsConsoleProcess StartConsole(string script) => Start("powershell.exe",
         ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], newConsole: true);
