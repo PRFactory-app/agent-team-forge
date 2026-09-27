@@ -37,6 +37,8 @@ public static partial class DarwinProcess
         return raw is null ? null : ParseKinfoStartTime(raw);
     }
 
+    public static bool PidAlive(int pid) => pid > 0 && (Kill(pid, 0) == 0 || Marshal.GetLastPInvokeError() == 1); // EPERM still proves the PID exists.
+
     /// <summary>Darwin kern.procargs2: argc, executable path, padding, argv, then environment.</summary>
     public static (string[] Args, string[] Environment)? Arguments(int pid)
     {
