@@ -86,10 +86,8 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
                 continue;
             }
 
-            if (!store.IsCurrent(target))
-            {
-                continue;
-            }
+            using var routing = await WakeRoutingGate.EnterAsync(cancellationToken);
+            if (!store.IsCurrent(target)) { continue; }
             // Notice-only: job IDs and result content stay in get_job.
             var notice = snapshot.External
                 ? $"[AgentTeamForge wake] {snapshot.Unread} external message(s) await reading. Call mcp__agentteamforge__external_read or mcp__agentteamforge__read_messages."

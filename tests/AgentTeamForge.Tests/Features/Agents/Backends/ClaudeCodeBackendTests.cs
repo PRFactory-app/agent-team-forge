@@ -12,14 +12,17 @@ public sealed class ClaudeCodeBackendTests : IDisposable
     /// <summary>Fake claude: records argv, cwd and stdin, then prints canned JSON.</summary>
     string FakeClaude(string json)
     {
-        File.WriteAllText(_dir.File("reply.json"), json);
-        var script = _dir.File("claude");
+        // A previous invocation may still have this script open when its next
+        // test turn starts. Linux refuses an in-place rewrite with ETXTBSY.
+        var script = _dir.File("claude-" + Guid.NewGuid().ToString("N"));
+        var reply = script + ".reply.json";
+        File.WriteAllText(reply, json);
         File.WriteAllText(script, $"""
             #!/usr/bin/env bash
             printf '%s\n' "$@" > '{_dir.File("argv")}'
             pwd > '{_dir.File("cwd")}'
             cat > '{_dir.File("stdin")}'
-            cat '{_dir.File("reply.json")}'
+            cat '{reply}'
             """.ReplaceLineEndings("\n"));
         File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return script;

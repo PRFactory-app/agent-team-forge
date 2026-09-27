@@ -14,11 +14,11 @@ public sealed class StartupProgressTests
         using var f = new JobFixture();
         var job = f.Submit("startup");
         var claim = f.Store.BeginNextAttempt()!;
-        void Check(string phase)
+        void Check(string? phase)
         {
-            var get = f.Get().Execute(job.JobId).Job!.Startup!;
-            var list = f.List().Execute(new()).Page!.Jobs.Single().Startup!;
-            Assert.Equal(phase, get.Phase);
+            var get = f.Get().Execute(job.JobId).Job!.Startup;
+            var list = f.List().Execute(new()).Page!.Jobs.Single().Startup;
+            Assert.Equal(phase, get?.Phase);
             Assert.Equal(get, list);
             Assert.Equal(get, f.Get().List().Jobs!.Single().Startup);
         }
@@ -26,7 +26,7 @@ public sealed class StartupProgressTests
         var backend = new ProgressBackend(Check);
         using var dispatch = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
         await dispatch.RunAttemptAsync(claim, TestContext.Current.CancellationToken);
-        Check("acknowledged");
+        Check(null);
         var run = f.Store.GetRuns(job.JobId).Single();
         Assert.NotNull(run.ReadyAt);
         Assert.NotNull(run.SubmittedAt);
@@ -35,6 +35,19 @@ public sealed class StartupProgressTests
         // Late and stale diagnostic callbacks cannot rewrite a finished run.
         f.Store.RecordStartup(new(job.JobId, claim.RunId, claim.Generation, claim.Correlation), "ready");
         Assert.Equal(run, f.Store.GetRuns(job.JobId).Single());
+    }
+
+    [Theory]
+    [InlineData(JobStatus.Completed)]
+    [InlineData(JobStatus.Failed)]
+    [InlineData(JobStatus.Cancelled)]
+    [InlineData(JobStatus.NeedsReconciliation)]
+    public void Terminal_status_never_projects_startup(string status)
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("terminal");
+        f.Store.BeginNextAttempt();
+        Assert.Null(StartupProgress.Read(f.Store, job.JobId, status, "codex", null));
     }
 
     [Theory]
@@ -64,7 +77,7 @@ public sealed class StartupProgressTests
         Assert.Null(f.Store.GetRuns(job.JobId).Single().SubmittedAt);
     }
 
-    sealed class ProgressBackend(Action<string> check) : IJobBackend
+    sealed class ProgressBackend(Action<string?> check) : IJobBackend
     {
         public IBackendRun Start(BackendRequest request)
         {
@@ -74,7 +87,7 @@ public sealed class StartupProgressTests
         }
     }
 
-    sealed class Run(BackendRequest request, Action<string> check) : IBackendRun
+    sealed class Run(BackendRequest request, Action<string?> check) : IBackendRun
     {
         public int? ProcessId => null;
         public Task DeliverAsync(CancellationToken cancellationToken)
@@ -87,6 +100,7 @@ public sealed class StartupProgressTests
         {
             yield return new BackendEvidence.Ack(request.Correlation);
             await Task.Yield();
+            check(null);
             yield return new BackendEvidence.Result(request.Correlation, "done");
         }
         public void TerminateOwnedChild() { }
