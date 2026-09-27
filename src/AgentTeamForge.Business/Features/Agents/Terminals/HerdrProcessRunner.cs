@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Processes;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
@@ -18,7 +19,7 @@ interface IHerdrProcessRunner
     /// <summary>Runs a launcher that detaches its payload and exits; throws when it cannot start or fails.</summary>
     Task StartDetachedAsync(ProcessStartInfo psi, TimeSpan timeout, CancellationToken cancellationToken);
 
-    /// <summary>Every process whose argv is exactly <c>herdr --session NAME server</c>.</summary>
+    /// <summary>The named server, including Herdr's legacy default <c>herdr server</c>.</summary>
     IReadOnlyList<ProcessIdentity> FindServers(string sessionName);
 
     ProcessIdentity? Identity(int pid);
@@ -38,7 +39,7 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout);
-        using var p = Process.Start(psi) ?? throw new InvalidOperationException($"could not start {psi.FileName}");
+        using var p = NonInteractiveProcess.Start(psi) ?? throw new InvalidOperationException($"could not start {psi.FileName}");
         var stdout = CaptureAsync(p.StandardOutput.BaseStream, maxStdoutBytes, deadline.Token);
         var stderr = CaptureAsync(p.StandardError.BaseStream, maxStderrBytes, deadline.Token);
         try
@@ -62,7 +63,7 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout);
-        using var p = Process.Start(psi) ?? throw new InvalidOperationException($"could not start {psi.FileName}");
+        using var p = NonInteractiveProcess.Start(psi) ?? throw new InvalidOperationException($"could not start {psi.FileName}");
         try
         {
             await p.WaitForExitAsync(deadline.Token);
@@ -86,8 +87,8 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
         {
             foreach (var pid in DarwinProcess.Pids())
             {
-                if (DarwinProcess.Arguments(pid) is { Args: [var executable, "--session", var name, "server"] }
-                    && Path.GetFileName(executable) == "herdr" && name == sessionName && Identity(pid) is { } identity)
+                if (DarwinProcess.Arguments(pid) is { Args: var args }
+                    && ServerArgv(args, sessionName) && Identity(pid) is { } identity)
                 {
                     result.Add(identity);
                 }
@@ -97,13 +98,20 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
         foreach (var dir in Directory.EnumerateDirectories("/proc"))
         {
             if (int.TryParse(Path.GetFileName(dir), NumberStyles.None, CultureInfo.InvariantCulture, out var pid) &&
-                Argv(pid) is ["herdr", "--session", var n, "server"] && n == sessionName && Identity(pid) is { } id)
+                Argv(pid) is { } args && ServerArgv(args, sessionName) && Identity(pid) is { } id)
             {
                 result.Add(id);
             }
         }
         return result;
     }
+
+    static bool ServerArgv(string[] args, string name) => args switch
+    {
+        [var executable, "server"] when name == "default" && Path.GetFileName(executable) == "herdr" => true,
+        [var executable, "--session", var session, "server"] when session == name && Path.GetFileName(executable) == "herdr" => true,
+        _ => false,
+    };
 
     public ProcessIdentity? Identity(int pid) => OperatingSystem.IsMacOS()
         ? DarwinProcess.CreationToken(pid) is { } token ? new(pid, token) : null

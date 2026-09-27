@@ -35,7 +35,7 @@
   let modelOptions = {};
   let tierSettings = [];
   let herdrMode = false;
-  let defaultPlacement = 'own-session';
+  let defaultPlacement = 'herdr-session:default';
   const recentCwds = new Map();
   let pickedDirectory = null;
   let timer = null;
@@ -141,7 +141,7 @@
     modelOptions = r?.model_options || {};
     tierSettings = r?.tiers || tierSettings;
     herdrMode = !!r?.herdr_mode;
-    defaultPlacement = r?.herdr_placement || 'own-session';
+    defaultPlacement = r?.herdr_placement || 'herdr-session:default';
     $('new-agent-placement-field').hidden = !herdrMode;
     $('herdr-settings').hidden = !herdrMode;
     setPlacementControls('new-agent', defaultPlacement);

@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using AgentTeamForge.Business.Features.Processes;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -103,7 +104,7 @@ public static partial class DarwinProcess
             var info = new ProcessStartInfo("/bin/ps") { UseShellExecute = false, RedirectStandardOutput = true };
             info.ArgumentList.Add("-axo");
             info.ArgumentList.Add("pid=");
-            using var process = Process.Start(info);
+            using var process = NonInteractiveProcess.Start(info);
             if (process is null)
             {
                 return [];
@@ -136,7 +137,7 @@ public static partial class DarwinProcess
                 info.ArgumentList.Add(arg);
             }
 
-            using var process = Process.Start(info);
+            using var process = NonInteractiveProcess.Start(info);
             if (process is null)
             {
                 return null;
