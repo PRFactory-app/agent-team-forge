@@ -799,14 +799,14 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     /// work still grows with the caller's total jobs; only the returned rows are capped.
     /// </summary>
     public IReadOnlyList<JobSummaryRecord> ListJobs(string principal, string team, string? status, string? backend, string? since, string? beforeJobId, int take,
-        string? leadSessionId = null, string? workspace = null, bool orderByActivity = false) => Read(connection =>
+        string? leadSessionId = null, string? workspace = null, bool orderByActivity = false, bool includeConnector = false) => Read(connection =>
     {
         using var command = Command(connection, null, """
             SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at, j.worktree_path, j.worktree_branch,
                    j.backend, j.session_id, j.parent_job_id, j.lead_session_id, j.target_agent, j.options,
-                   (SELECT s.workspace FROM lead_sessions s WHERE s.session_id=j.lead_session_id AND s.closed_at IS NULL), j.cwd
+                   (SELECT s.workspace FROM lead_sessions s WHERE s.session_id=j.lead_session_id AND s.closed_at IS NULL), j.cwd, j.principal='prfactory' AND j.team='connector'
             FROM jobs j
-            WHERE j.principal=$p AND j.team=$t
+            WHERE ((j.principal=$p AND j.team=$t) OR ($connector=1 AND j.principal='prfactory' AND j.team='connector'))
               -- A malformed pre-release row must not break this page or its cursor.
               AND typeof(j.job_id)='text' AND typeof(j.status)='text'
               AND typeof(j.accepted_at)='text' AND typeof(j.updated_at)='text'
@@ -822,7 +822,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             ORDER BY CASE WHEN $activity=1 THEN j.updated_at ELSE j.job_id END DESC, j.job_id DESC
             LIMIT $take
             """,
-            ("$p", principal), ("$t", team), ("$lead", leadSessionId), ("$workspace", workspace), ("$status", status), ("$backend", backend), ("$since", since), ("$before", beforeJobId), ("$activity", orderByActivity ? 1 : 0), ("$take", take));
+            ("$p", principal), ("$t", team), ("$connector", includeConnector ? 1 : 0), ("$lead", leadSessionId), ("$workspace", workspace), ("$status", status), ("$backend", backend), ("$since", since), ("$before", beforeJobId), ("$activity", orderByActivity ? 1 : 0), ("$take", take));
         using var reader = command.ExecuteReader();
         var jobs = new List<JobSummaryRecord>();
         while (reader.Read())
@@ -840,6 +840,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 Options = NullableText(reader, 13),
                 LeadWorkspace = NullableText(reader, 14),
                 Cwd = NullableText(reader, 15),
+                Connector = reader.GetBoolean(16),
             });
         }
 

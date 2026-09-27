@@ -10,6 +10,46 @@ namespace AgentTeamForge.Tests.Scenarios;
 public sealed class ExternalJoinScenarios
 {
     [Fact]
+    public async Task Ticket_and_join_responses_explain_qualified_external_tool_routing()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        await rig.StartDaemonAsync();
+        var (_, lead) = await rig.StartBridgeAsync("routing-lead");
+        var (_, member) = await rig.StartBridgeAsync(externalOnly: true);
+
+        var ticketCall = await lead.CallToolAsync("create_join_ticket", new Dictionary<string, object?> { ["name"] = "codex" },
+            cancellationToken: TestContext.Current.CancellationToken);
+        var ticketText = Assert.IsType<TextContentBlock>(Assert.Single(ticketCall.Content)).Text;
+        var ticketResponse = JsonDocument.Parse(ticketText);
+        using (ticketResponse)
+        {
+            var prompt = ticketResponse.RootElement.GetProperty("join_prompt").GetString()!;
+            Assert.Contains("mcp__agentteamforge__join_team", prompt);
+            Assert.Contains("mcp__agentteamforge__external_read", prompt);
+            Assert.Contains("mcp__agentteamforge__external_send", prompt);
+            Assert.Contains("separate from Codex built-in collaboration", prompt);
+        }
+        var ticket = JsonSerializer.Deserialize(ticketText, IpcJson.Default.IpcResponse)!.Ticket!;
+
+        var joinCall = await member.CallToolAsync("join_team", new Dictionary<string, object?>
+        {
+            ["session_id"] = ticket.SessionId,
+            ["token"] = ticket.Token,
+        }, cancellationToken: TestContext.Current.CancellationToken);
+        var joinText = Assert.IsType<TextContentBlock>(Assert.Single(joinCall.Content)).Text;
+        using var joinResponse = JsonDocument.Parse(joinText);
+        var joinPrompt = joinResponse.RootElement.GetProperty("join_prompt").GetString()!;
+        Assert.Contains("mcp__agentteamforge__external_read", joinPrompt);
+        Assert.Contains("mcp__agentteamforge__external_send", joinPrompt);
+        Assert.Contains("separate from Codex built-in collaboration", joinPrompt);
+    }
+
+    [Fact]
     public async Task External_read_pages_large_messages_without_losing_unread_work()
     {
         if (!OperatingSystem.IsLinux())

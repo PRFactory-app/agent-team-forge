@@ -8,6 +8,12 @@
     : (j.backend || 'agent') + '-' + j.job_id.slice(-8);
   const tokenKey = 'atf.web.token';
   const themeKey = 'atf.web.theme';
+  const teamsKey = 'atf.web.teams';
+  let savedTeams = {};
+  try {
+    const saved = JSON.parse(localStorage.getItem(teamsKey) || '{}');
+    if (saved && typeof saved === 'object' && !Array.isArray(saved)) savedTeams = saved;
+  } catch { /* Keep in-tab defaults. */ }
   let theme = 'auto';
   try {
     const saved = localStorage.getItem(themeKey);
@@ -591,10 +597,10 @@
     expiry.dataset.leadId = leadId;
     container.append(expiry);
     copyable(container, 'Ticket', ticket.token);
-    const call = 'join_team(session_id="' + ticket.session_id + '", token="' + ticket.token + '")';
+    const call = 'mcp__agentteamforge__join_team(session_id="' + ticket.session_id + '", token="' + ticket.token + '")';
     copyable(container, 'Claude Desktop · external-member MCP entry',
       'Join my AgentTeamForge team as ' + ticket.name + '. Call ' + call
-      + '. Save member_token from the reply. Use external_read(member_token=...) to read work and external_send(member_token=..., text=...) to reply.');
+      + '. This AgentTeamForge external team is separate from Codex built-in collaboration. Save member_token from the reply. Use mcp__agentteamforge__external_read(member_token=...) to read work and mcp__agentteamforge__external_send(member_token=..., text=...) to reply.');
     copyable(container, 'Codex Desktop · external-member MCP entry', ticket.join_prompt || call);
   }
 
@@ -811,7 +817,7 @@
     panel.dataset.expandKey = key;
     panel.id = 'panel-' + key.replaceAll(/[^a-zA-Z0-9-]/g, '-');
     panel.hidden = expandedKey !== key;
-    composer(panel, key, targets, lead, stopTarget);
+    if (!stopTarget?.connector) composer(panel, key, targets, lead, stopTarget);
     if (leadSession?.workspace) joinTicketForm(panel, leadSession.id, leadSession.workspace);
     const jobId = composerState(key).targetJobId || stopTarget?.job_id;
     if (jobId) {
@@ -845,6 +851,21 @@
       if (open) panel.openCard?.();
     }
     window.scrollTo(0, scroll);
+  }
+
+  function teamOpen(key, needsAttention) {
+    return Object.hasOwn(savedTeams, key) ? savedTeams[key] === true : needsAttention;
+  }
+
+  function toggleTeam(key, section) {
+    const button = section.querySelector('.team-toggle');
+    const body = section.querySelector('.team-content');
+    const open = body.hidden;
+    body.hidden = !open;
+    button.setAttribute('aria-expanded', String(open));
+    button.setAttribute('aria-label', (open ? 'Collapse ' : 'Expand ') + key.slice(5));
+    savedTeams[key] = open;
+    try { localStorage.setItem(teamsKey, JSON.stringify(savedTeams)); } catch { /* Keep the in-tab choice. */ }
   }
 
   function connect(value) {
@@ -900,10 +921,17 @@
     for (const j of jobs) {
       const color = Object.hasOwn(counts, j.light) ? j.light : 'red';
       counts[color]++;
-      const lead = j.lead_session_id || 'No lead session';
-      if (j.lead_session_id && j.lead_workspace) knownLeads.set(j.lead_session_id, j.lead_workspace);
+      const lead = j.connector ? 'PRFactory' : j.lead_session_id || 'No lead session';
+      if (!j.connector && j.lead_session_id && j.lead_workspace) knownLeads.set(j.lead_session_id, j.lead_workspace);
       if (!groups.has(lead)) groups.set(lead, []);
       groups.get(lead).push(j);
+    }
+    const membersByLead = new Map();
+    for (const member of (r.external_members || [])) {
+      if (member.workspace) knownLeads.set(member.lead_session_id, member.workspace);
+      if (!membersByLead.has(member.lead_session_id)) membersByLead.set(member.lead_session_id, []);
+      membersByLead.get(member.lead_session_id).push(member);
+      if (!groups.has(member.lead_session_id)) groups.set(member.lead_session_id, []);
     }
     syncLeadOptions();
     const lights = $('lights');
@@ -916,13 +944,33 @@
     $('elapsed').textContent = earliest ? age(earliest) : '—';
     const recent = (a, b) => (b.updated_at || '').localeCompare(a.updated_at || '');
     for (const groupJobs of groups.values()) groupJobs.sort(recent);
-    const sortedGroups = [...groups].sort((a, b) => recent(a[1][0], b[1][0]));
+    const sortedGroups = [...groups].sort((a, b) => recent(a[1][0] || {}, b[1][0] || {}));
     for (const [lead, groupJobs] of sortedGroups) {
       const section = element('section', 'lead-group');
+      const members = membersByLead.get(lead) || [];
       const groupRunning = groupJobs.filter(j => j.status === 'running').length;
-      const groupQueued = groupJobs.filter(j => j.status === 'queued').length;
+      const groupQueued = groupJobs.filter(j => j.status === 'queued').length + members.length;
       const groupFailed = groupJobs.filter(j => j.light === 'red').length;
       const groupColor = groupFailed ? 'red' : groupRunning ? 'green' : groupQueued ? 'yellow' : 'grey';
+      const teamKey = 'team:' + lead;
+      const isOpen = teamOpen(teamKey, groupFailed > 0 || groupRunning > 0 || groupQueued > 0);
+      const teamToggle = element('button', 'team-toggle');
+      teamToggle.type = 'button';
+      teamToggle.dataset.toggleKey = teamKey;
+      teamToggle.setAttribute('aria-expanded', String(isOpen));
+      teamToggle.setAttribute('aria-label', (isOpen ? 'Collapse ' : 'Expand ') + lead);
+      teamToggle.append(light(groupColor, groupFailed ? 'Needs attention' : groupRunning ? 'Running' : groupQueued ? 'Waiting' : 'Done'),
+        element('strong', 'team-name', lead === 'PRFactory' ? 'PRFactory' : lead === 'No lead session' ? 'Unassigned' : 'Lead ' + lead.slice(0, 8)),
+        element('span', 'team-counts', `${groupRunning} running · ${groupQueued} waiting · ${groupFailed} failed`),
+        element('span', 'team-urgency badge ' + groupColor, groupFailed ? 'Needs attention' : groupRunning ? 'Running' : groupQueued ? 'Waiting' : 'Done'),
+        element('span', 'team-chevron', isOpen ? '▾' : '▸'));
+      const teamContent = element('div', 'team-content');
+      teamContent.hidden = !isOpen;
+      teamToggle.addEventListener('click', () => {
+        toggleTeam(teamKey, section);
+        teamToggle.querySelector('.team-chevron').textContent = teamContent.hidden ? '▸' : '▾';
+      });
+      section.append(teamToggle, teamContent);
       const leadKey = 'lead:' + lead;
       const leadCard = element('div', 'lead-card ' + (groupFailed ? 'is-failed' : groupQueued && !groupRunning ? 'is-waiting' : '')
         + (expandedKey === leadKey ? ' selected' : ''));
@@ -936,7 +984,7 @@
       const firstAccepted = groupJobs.map(j => j.accepted_at).filter(Boolean).sort()[0];
       const meta = element('div', 'node-meta');
       if (firstAccepted) meta.append(element('span', '', 'first shown job accepted ' + age(firstAccepted) + ' ago'));
-      if (groupJobs[0].updated_at) meta.append(element('span', '', 'latest update ' + age(groupJobs[0].updated_at) + ' ago'));
+      if (groupJobs[0]?.updated_at) meta.append(element('span', '', 'latest update ' + age(groupJobs[0].updated_at) + ' ago'));
       leadBody.append(identity, activity, meta);
       const leadToggle = element('button', 'lead-toggle');
       leadToggle.type = 'button';
@@ -948,11 +996,11 @@
       leadToggle.append(leadDot, leadBody, element('span', 'lead-count', groupJobs.length + (groupJobs.length === 1 ? ' job' : ' jobs')));
       leadCard.append(leadToggle);
       const leadTargets = groupJobs.filter(j => j.session_id);
-      const leadWorkspace = groupJobs.find(j => j.lead_workspace)?.lead_workspace;
+      const leadWorkspace = groupJobs.find(j => j.lead_workspace)?.lead_workspace || members[0]?.workspace;
       const leadPanel = cardPanel(leadCard, leadKey, leadTargets, true, null,
-        lead === 'No lead session' ? null : { id: lead, workspace: leadWorkspace });
+        lead === 'No lead session' || lead === 'PRFactory' ? null : { id: lead, workspace: leadWorkspace });
       leadToggle.setAttribute('aria-controls', leadPanel.id);
-      section.append(leadCard);
+      if (lead !== 'PRFactory') teamContent.append(leadCard);
       const tree = element('div', 'agent-tree');
       for (const j of groupJobs) {
         const key = 'job:' + j.job_id;
@@ -982,7 +1030,8 @@
         row.append(chips, state);
         open.append(row);
         if (j.startup) {
-          open.append(element('span', 'card-activity', 'Startup: ' + j.startup.phase + ' · ' + j.startup.elapsed_seconds + 's'));
+          const startup = j.startup.no_marker_since_launch ? 'no state marker since launch' : j.startup.phase;
+          open.append(element('span', 'card-activity', 'Startup: ' + startup + ' · ' + j.startup.elapsed_seconds + 's'));
           if (j.startup.hint) open.append(element('span', 'card-activity', j.startup.hint));
         }
         if (preview) open.append(element('span', 'card-activity', '› ' + preview));
@@ -1011,11 +1060,17 @@
         open.setAttribute('aria-controls', panel.id);
         tree.append(card);
       }
-      section.append(tree);
+      for (const member of members) {
+        const node = element('article', 'agent-node external-node');
+        node.append(light('yellow', 'External member'), element('strong', 'node-name', member.name),
+          element('span', 'badge yellow', 'external · waiting'));
+        tree.append(node);
+      }
+      teamContent.append(tree);
       overview.append(section);
     }
-    if (!jobs.length) overview.textContent = 'No jobs on this page.';
-    const openPanel = [...overview.querySelectorAll('.card-expanded')].find(panel => !panel.hidden);
+    if (!groups.size) overview.textContent = 'No jobs on this page.';
+    const openPanel = [...overview.querySelectorAll('.card-expanded')].find(panel => !panel.hidden && !panel.closest('.team-content')?.hidden);
     if (!openPanel) expandedKey = null;
     if (focus) {
       const same = [...document.querySelectorAll('[data-composer-key], [data-toggle-key]')]

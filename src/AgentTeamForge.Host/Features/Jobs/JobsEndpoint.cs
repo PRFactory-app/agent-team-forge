@@ -5,6 +5,7 @@ using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Features.Sessions;
+using AgentTeamForge.DAL.Features.External;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Host.Transport;
 
@@ -15,8 +16,16 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     WakeStore? wakeStore = null, PruneJob? prune = null, JobLogs? logs = null, JobStore? jobStore = null, LeadSessionStore? sessions = null, ExternalTeam? external = null,
     StopAgent? stopAgent = null, IReadOnlyCollection<string>? configuredBackends = null, TierMap? tierMap = null,
     BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null, ClaudeWakeMailbox? claudeMailbox = null, string? launchMode = null,
-    Func<string?, string?, string?, HumanInputRequestResult>? humanInput = null)
+    Func<string?, string?, string?, HumanInputRequestResult>? humanInput = null, ExternalMemberStore? externalMembers = null,
+    GetJob? connectorGet = null)
 {
+    JobResult ReadJob(IpcRequest request)
+    {
+        var result = get.Execute(request.JobId ?? string.Empty);
+        return result.Error == JobErrors.NotFound && request.IncludeConnector && request.LeadSessionId is null && connectorGet is not null
+            ? connectorGet.Execute(request.JobId ?? string.Empty) : result;
+    }
+
     public IpcResponse Handle(IpcRequest request)
     {
         // Relay requests must not acquire WakeRoutingGate: the coordinator holds it while awaiting this receipt.
@@ -206,14 +215,14 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             case IpcProtocol.JobStopAgent:
                 return stopAgent is null ? new IpcResponse(false, JobErrors.BackendUnavailable) : Map(stopAgent.Execute(request.JobId ?? string.Empty));
             case IpcProtocol.JobGet:
-                var found = get.Execute(request.JobId ?? string.Empty);
+                var found = ReadJob(request);
                 if (found.Error is null && LeadWake(request) is { Key: { } readKey, Generation: long generation } && wakeStore is not null)
                 {
                     wakeStore.MarkRead(request.JobId!, readKey, generation);
                 }
                 return Map(WithLocation(found)) with { HerdrMode = herdrPlacement is not null };
             case IpcProtocol.JobOutput:
-                var outputJob = get.Execute(request.JobId ?? string.Empty);
+                var outputJob = ReadJob(request);
                 if (outputJob.Error is not null)
                 {
                     return new IpcResponse(false, outputJob.Error);
@@ -224,7 +233,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 }
                 return new IpcResponse(true, Outcome: "output", Output: logs.Read(request.JobId!, request.Offset ?? 0, request.MaxBytes ?? JobLogs.MaxReadBytes));
             case IpcProtocol.JobActivity:
-                var activityJob = get.Execute(request.JobId ?? string.Empty);
+                var activityJob = ReadJob(request);
                 if (activityJob.Error is not null)
                 {
                     return new IpcResponse(false, activityJob.Error);
@@ -241,8 +250,10 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     AllWorkspace = request.AllWorkspace,
                     Workspace = request.Workspace,
                     OrderByActivity = request.OrderByActivity,
+                    IncludeConnector = request.IncludeConnector && request.LeadSessionId is null,
                 });
-                return listed.Error is null ? new IpcResponse(true, Outcome: "listed", Page: WithLocations(listed.Page!)) : new IpcResponse(false, listed.Error);
+                return listed.Error is null ? new IpcResponse(true, Outcome: "listed", Page: WithLocations(listed.Page!),
+                    ExternalMembers: request.IncludeConnector ? externalMembers?.ActiveMcpMembers() : null) : new IpcResponse(false, listed.Error);
             case IpcProtocol.JobPrune:
                 if (prune is null || request.OlderThanDays is not (>= 1 and <= 36500))
                 {

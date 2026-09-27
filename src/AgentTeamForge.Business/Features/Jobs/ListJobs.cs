@@ -11,7 +11,7 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// Reports committed state only: `running` means an attempt-start is committed,
 /// not that a live process was observed. Never dispatches, acknowledges or resends.
 /// </summary>
-public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? logs = null)
+public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? logs = null, bool interactiveLaunch = false)
 {
     public const int DefaultPageSize = 20;
     public const int MaxPageSize = 50;
@@ -34,7 +34,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
             // One extra row decides truncation without a separate count query.
             var since = request.Since is null ? null : DateTimeOffset.Parse(request.Since, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind).ToUniversalTime().ToString("O");
             rows = store.ListJobs(principal.Principal, principal.Team, request.Status, request.Backend, since, request.Cursor, limit + 1,
-                request.LeadSessionId, request.AllWorkspace ? request.Workspace : null, request.OrderByActivity);
+                request.LeadSessionId, request.AllWorkspace ? request.Workspace : null, request.OrderByActivity, request.IncludeConnector);
         }
         catch (StorageException ex)
         {
@@ -44,7 +44,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
         var hasMore = rows.Count > limit;
         var jobs = rows.Take(limit).Select(r => new JobSummary(r.JobId, r.Status, r.ReasonCode, r.Attempts, r.AcceptedAt, r.UpdatedAt)
         {
-            Startup = StartupProgress.Read(store, r.JobId, r.Status, r.Backend, r.ReasonCode),
+            Startup = StartupProgress.Read(store, r.JobId, r.Status, r.Backend, r.ReasonCode, interactiveLaunch),
             WorktreePath = r.WorktreePath,
             WorktreeBranch = r.WorktreeBranch,
             Backend = r.Backend,
@@ -57,6 +57,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
             LeadSessionId = r.LeadSessionId,
             LeadWorkspace = r.LeadWorkspace,
             TargetAgent = r.TargetAgent,
+            Connector = r.Connector,
             LastActivity = logs?.LastActivity(r.JobId, r.Backend ?? ""),
         }).ToList();
         return new JobListResult(new JobListPage(jobs, limit, hasMore, hasMore ? jobs[^1].JobId : null), null);
@@ -70,6 +71,7 @@ public sealed record ListJobsRequest(string? Status = null, int? Limit = null, s
     public bool AllWorkspace { get; init; }
     public string? Workspace { get; init; }
     public bool OrderByActivity { get; init; }
+    public bool IncludeConnector { get; init; }
 }
 
 /// <summary>Inspection view of a job; use job_get for its result.</summary>
@@ -91,6 +93,7 @@ public sealed record JobSummary(string JobId, string Status, string? ReasonCode,
     public string? LeadSessionId { get; init; }
     public string? LeadWorkspace { get; init; }
     public string? TargetAgent { get; init; }
+    public bool Connector { get; init; }
     public string Light => Status switch
     {
         JobStatus.Queued or "waiting" or "parked" => "yellow",

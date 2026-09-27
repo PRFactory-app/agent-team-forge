@@ -25,6 +25,10 @@ it in that tab's session storage and removes it from the address bar.
 
 ## Use it
 
+- **Teams.** Each lead session has a collapsible group for its jobs and joined
+  external members. PRFactory jobs have their own group. The header shows
+  running, waiting and failed counts; the browser remembers which groups you
+  opened or closed.
 - **Cards.** Each lead session and agent has a card with a one-line preview of
   the latest activity. Click a card (Escape to close) to see its composer,
   result and live activity transcript. **Raw logs** shows the full output
