@@ -46,6 +46,8 @@ public sealed record IpcRequest
     public string? WakeKind { get; init; }
     public string? WakeAddress { get; init; }
     public string? WakeSecret { get; init; }
+    public string? NoticeId { get; init; }
+    public bool NoticePosted { get; init; }
     public string? WakeHome { get; init; }
     public string? MemberName { get; init; }
     public string? MemberToken { get; init; }
@@ -59,7 +61,7 @@ public sealed record IpcRequest
     public string? CodexThreadId { get; init; }
 }
 
-public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, AgentTeamForge.DAL.Features.External.JoinTicket? Ticket = null, AgentTeamForge.DAL.Features.External.JoinedMember? Member = null, AgentTeamForge.DAL.Features.External.ExternalInbox? Inbox = null, JobActivityPage? Activity = null, bool? AlreadyLeft = null, string? LeftName = null, IReadOnlyCollection<string>? Backends = null, IReadOnlyDictionary<string, AgentModelOptions>? ModelOptions = null, string? ErrorDetail = null, IReadOnlyList<TierSetting>? Tiers = null, IReadOnlyDictionary<string, IReadOnlyCollection<string>>? ModelCatalog = null, string? HerdrPlacement = null, bool HerdrMode = false, AgentTeamForge.DAL.Features.Wake.WakeRegistrationStatus? WakeStatus = null)
+public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, AgentTeamForge.DAL.Features.External.JoinTicket? Ticket = null, AgentTeamForge.DAL.Features.External.JoinedMember? Member = null, AgentTeamForge.DAL.Features.External.ExternalInbox? Inbox = null, JobActivityPage? Activity = null, bool? AlreadyLeft = null, string? LeftName = null, IReadOnlyCollection<string>? Backends = null, IReadOnlyDictionary<string, AgentModelOptions>? ModelOptions = null, string? ErrorDetail = null, IReadOnlyList<TierSetting>? Tiers = null, IReadOnlyDictionary<string, IReadOnlyCollection<string>>? ModelCatalog = null, string? HerdrPlacement = null, bool HerdrMode = false, AgentTeamForge.DAL.Features.Wake.WakeRegistrationStatus? WakeStatus = null, AgentTeamForge.Business.Features.Wake.ClaudeWakeNotice? ClaudeNotice = null)
 {
     // Flat aliases keep the external MCP replies usable by win-agent-teams skills.
     public bool Success => Ok;
@@ -97,6 +99,8 @@ public static class IpcProtocol
     public const string JobStopAgent = "job_stop_agent";
     public const string JobList = "job_list";
     public const string JobPrune = "job_prune";
+    public const string ClaudeWakeTake = "claude_wake_take";
+    public const string ClaudeWakeComplete = "claude_wake_complete";
     public const string WakeRegister = "wake_register";
     public const string WakeClear = "wake_clear";
     public const string WakeStatus = "wake_status";

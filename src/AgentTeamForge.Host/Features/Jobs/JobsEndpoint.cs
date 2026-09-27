@@ -14,10 +14,20 @@ namespace AgentTeamForge.Host.Features.Jobs;
 public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob followUp, ListJobs list, StopJob stop, DurabilityCheckpoints checkpoints, Action onAccepted,
     WakeStore? wakeStore = null, PruneJob? prune = null, JobLogs? logs = null, JobStore? jobStore = null, LeadSessionStore? sessions = null, ExternalTeam? external = null,
     StopAgent? stopAgent = null, IReadOnlyCollection<string>? configuredBackends = null, TierMap? tierMap = null,
-    BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null)
+    BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null, ClaudeWakeMailbox? claudeMailbox = null)
 {
     public IpcResponse Handle(IpcRequest request)
     {
+        // Relay requests must not acquire WakeRoutingGate: the coordinator holds it while awaiting this receipt.
+        if (request.Op == IpcProtocol.ClaudeWakeTake)
+        {
+            return new IpcResponse(true, ClaudeNotice: claudeMailbox?.Take(request.WakeAddress, request.WakeSecret, request.WakeHome));
+        }
+        if (request.Op == IpcProtocol.ClaudeWakeComplete)
+        {
+            return new IpcResponse(claudeMailbox?.Complete(request.NoticeId, request.WakeAddress,
+                request.WakeSecret, request.WakeHome, request.NoticePosted) == true);
+        }
         if (request.Op is IpcProtocol.ExternalJoin or IpcProtocol.ExternalSend or IpcProtocol.ExternalRead or IpcProtocol.ExternalSetWake or IpcProtocol.ExternalLeave)
         {
             using var routing = request.Op == IpcProtocol.ExternalSetWake ? WakeRoutingGate.Enter() : null;
@@ -31,7 +41,9 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 IpcProtocol.ExternalJoin => external.Join(request.LeadSessionId, request.TicketToken),
                 IpcProtocol.ExternalSend => external.Send(request.MemberToken, request.Text),
                 IpcProtocol.ExternalRead => external.Read(request.MemberToken, request.SinceSeq, request.Limit, request.FromAgent, request.Full, request.MaxChars),
-                IpcProtocol.ExternalSetWake => external.SetWake(request.MemberToken, request.CodexThreadId, request.WakeHome),
+                IpcProtocol.ExternalSetWake => request.WakeKind == "claude"
+                    ? external.SetClaudeWake(request.MemberToken, request.WakeAddress, request.WakeSecret, request.WakeHome)
+                    : external.SetWake(request.MemberToken, request.CodexThreadId, request.WakeHome),
                 _ => external.Leave(request.MemberToken)
             });
         }
