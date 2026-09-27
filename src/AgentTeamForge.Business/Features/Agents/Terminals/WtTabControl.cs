@@ -62,7 +62,11 @@ internal sealed class WtTabControl : IWtTabControl
         }
         await File.WriteAllBytesAsync(wrapper, WrapperBytes(launch, prompt, sidecar, _codexHome), cancellationToken);
 
-        if (FindExecutable("wt.exe") is not { } wt)
+        var wt = FindExecutable("wt.exe");
+        var args = WtCommandLine.Arguments(
+            ["-w", "wt-atf", "nt", "--title", launch.AgentName, "--suppressApplicationTitle"],
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", wrapper]);
+        if (wt is null || args is null)
         {
             await StartConsoleAsync(launch, wrapper, sidecar, cancellationToken);
             return;
@@ -74,8 +78,6 @@ internal sealed class WtTabControl : IWtTabControl
             // Windows Terminal is MSIX-packaged; its tabs see a virtualized AppData\Local and cannot find the wrapper.
             throw new IOException($"state directory is under {localAppData}, which Windows Terminal tabs cannot read; use a --state-dir outside it");
         }
-        var args = new[] { "-w", "wt-atf", "nt", "--title", launch.AgentName,
-            "--suppressApplicationTitle", "--", "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", wrapper };
         WindowsConsoleProcess? launcher = null;
         try
         {
