@@ -580,7 +580,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         using var tx = connection.BeginTransaction(deferred: false);
         var job = GetJob(connection, tx, jobId);
         if (job is null || job.Principal != principal || job.Team != team
-            || Execute(connection, tx, "UPDATE native_codex_attempts SET state='released' WHERE job_id=$id AND state IN ('sent','received')", ("$id", jobId)) != 1)
+            || Execute(connection, tx, "UPDATE native_codex_attempts SET state='released' WHERE job_id=$id AND state IN ('sent','received')", ("$id", jobId))
+               + Execute(connection, tx, "UPDATE native_claude_attempts SET state='released' WHERE job_id=$id AND state IN ('posting','posted','received')", ("$id", jobId)) != 1)
         {
             return new CancelOutcome(job, false, false);
         }

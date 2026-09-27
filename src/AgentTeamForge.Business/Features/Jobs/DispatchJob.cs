@@ -844,7 +844,8 @@ public sealed class DispatchJob : IDisposable
     {
         lock (_nativeSubmitGate)
         {
-            if (_running.ContainsKey(job.JobId) || store.NativeAttempt(job.JobId) is not { Unresolved: true }) { return false; }
+            if (_running.ContainsKey(job.JobId) || (store.NativeAttempt(job.JobId) is not { Unresolved: true }
+                && store.NativeClaudeAttempt(job.JobId) is not { State: "posting" or "posted" or "received" })) { return false; }
             return store.ReleaseNativeAttempt(job.JobId, job.Principal, job.Team).Changed;
         }
     }

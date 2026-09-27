@@ -45,6 +45,35 @@ public sealed class NativeClaudeDeliveryTests
     }
 
     [Fact]
+    public async Task Stop_releases_a_stuck_claude_post_for_the_agent()
+    {
+        using var fixture = new JobFixture();
+        var catalog = Catalog(new ScriptedBackend(request =>
+        [
+            new BackendEvidence.Session(request.Correlation, "claude-stuck"),
+            new BackendEvidence.Result(request.Correlation, "ready")
+        ]));
+        var parent = Accept(fixture, catalog).Execute(new SubmitJobRequest("parent", "work", null, false)
+        { Backend = BackendCatalog.Claude, TargetAgent = "stuckagent" }).Job!;
+        using var dispatcher = new DispatchJob(fixture.Store, catalog, fixture.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
+        var follow = new FollowUpJob(fixture.Store, JobFixture.Operator, Accept(fixture, catalog));
+        var child = follow.Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+        var claim = fixture.Store.BeginNativeClaudeAttempt(parent.JobId, "/tmp/claude-home", _ => true)!;
+        fixture.Store.RecordNativeClaudePost(child.JobId, claim.Correlation); // bridge wrote, no receipt yet
+        Assert.Equal(JobErrors.ParentNotReady, follow.Execute(new FollowUpRequest(parent.JobId, "retry", "retry")).Error);
+
+        var stop = new StopJob(fixture.Store, JobFixture.Operator, dispatcher.CancelRunning, releaseNative: dispatcher.ReleaseNative);
+        Assert.Equal("native_released", stop.Execute(child.JobId).Outcome);
+        Assert.Equal(JobStatus.Cancelled, fixture.Store.GetJob(child.JobId)!.Status);
+        Assert.Empty(fixture.Store.UnresolvedNativeClaudeAttempts());
+        Assert.False(fixture.Store.SettleNativeClaudeAttempt(child.JobId, claim.Correlation, "late"));
+        Assert.NotNull(follow.Execute(new FollowUpRequest(parent.JobId, "retry", "retry")).Job);
+        Assert.NotNull(Accept(fixture, catalog).Execute(new SubmitJobRequest("fresh", "work", null, false)
+        { Backend = BackendCatalog.Claude, TargetAgent = "stuckagent" }).Job);
+    }
+
+    [Fact]
     public void Busy_child_waits_until_parent_turn_ends()
     {
         using var fixture = new JobFixture();
