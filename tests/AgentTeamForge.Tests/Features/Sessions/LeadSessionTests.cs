@@ -135,6 +135,57 @@ public sealed class LeadSessionTests
     }
 
     [Fact]
+    public void Spawned_lead_cannot_register_another_leads_valid_native_thread()
+    {
+        using var f = new JobFixture();
+        var sessions = new LeadSessionStore(f.Database);
+        var parent = sessions.Start("/workspace/shared", "parent=1");
+        var endpoint = Endpoint(f, sessions, new WakeStore(f.Database));
+        var firstJob = Submit(endpoint, parent, "first");
+        var secondJob = Submit(endpoint, parent, "second");
+        var firstThread = Guid.NewGuid().ToString("D");
+        var secondThread = Guid.NewGuid().ToString("D");
+        using (var connection = f.Database.OpenConnection())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "UPDATE jobs SET backend='codex',session_id=$thread WHERE job_id=$job";
+            command.Parameters.AddWithValue("$thread", firstThread);
+            command.Parameters.AddWithValue("$job", firstJob);
+            command.ExecuteNonQuery();
+            command.Parameters["$thread"].Value = secondThread;
+            command.Parameters["$job"].Value = secondJob;
+            command.ExecuteNonQuery();
+        }
+        var first = sessions.Start("/workspace/shared", "managed-child:" + firstJob);
+        var second = sessions.Start("/workspace/shared", "managed-child:" + secondJob);
+        var request = new IpcRequest
+        {
+            Op = IpcProtocol.WakeRegister,
+            LeadSessionId = second.SessionId,
+            Workspace = second.Workspace,
+            JobId = secondJob,
+            WakeKey = "codex:" + firstThread,
+            WakeKind = "codex",
+            WakeAddress = firstThread,
+            WakeHome = "/tmp"
+        };
+        Assert.False(endpoint.Handle(request).Ok);
+        Assert.True(endpoint.Handle(request with { WakeKey = "codex:" + secondThread, WakeAddress = secondThread }).Ok);
+        Assert.False(endpoint.Handle(request with { LeadSessionId = first.SessionId }).Ok);
+        // A managed Claude child's socket comes from its host process, not a self-reported thread.
+        Assert.True(endpoint.Handle(request with
+        {
+            LeadSessionId = first.SessionId,
+            JobId = firstJob,
+            WakeKey = "claude:/tmp/child.sock",
+            WakeKind = "claude",
+            WakeAddress = "/tmp/child.sock",
+            WakeSecret = "token",
+            WakeHome = null
+        }).Ok);
+    }
+
+    [Fact]
     public void Other_folders_are_not_recoverable_or_visible()
     {
         using var f = new JobFixture();

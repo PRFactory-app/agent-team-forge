@@ -137,6 +137,8 @@ public static class JobsMcpBridge
         var workspace = Path.GetFullPath(Environment.CurrentDirectory);
         var parentId = Environment.GetEnvironmentVariable("WIN_AGENT_TEAMS_PARENT_ID") ?? ParentPid().ToString(System.Globalization.CultureInfo.InvariantCulture);
         var bindingKey = childBinding ?? $"identity=team-lead\nparent={parentId}\ncwd={workspace}";
+        var managedJobId = childBinding is not null && childBinding.StartsWith("managed-child:", StringComparison.Ordinal)
+            ? childBinding["managed-child:".Length..] : null;
         string? sessionId = null;
         async Task<IpcResponse> EnsureSessionAsync(CancellationToken cancellationToken)
         {
@@ -164,7 +166,7 @@ public static class JobsMcpBridge
             // Wake is best effort: a missing daemon or credential must not stop the bridge or fail job calls.
             try
             {
-                var registration = await SendAsync(wakeTarget, cancellationToken);
+                var registration = await SendAsync(wakeTarget with { LeadSessionId = sessionId, Workspace = workspace, JobId = managedJobId }, cancellationToken);
                 if (registration.Ok)
                 {
                     wakeGeneration = registration.WakeGeneration;
@@ -175,8 +177,8 @@ public static class JobsMcpBridge
         }
         if (!externalOnly)
         {
-            await RegisterWakeAsync(CancellationToken.None);
             await EnsureSessionAsync(CancellationToken.None);
+            await RegisterWakeAsync(CancellationToken.None);
         }
         var tools = new List<Tool>
         {
@@ -190,6 +192,8 @@ public static class JobsMcpBridge
             new() { Name = "resume_session", Description = "Adopt a prior lead session and its jobs after a restart.", InputSchema = Parse(ResumeSchema) },
             new() { Name = "close_team", Description = "Close this lead session and revoke all external member tokens.", InputSchema = Parse(EmptySchema) },
             new() { Name = "register_codex_wake", Description = "Register this Codex conversation for native job notices before submitting jobs. Read CODEX_THREAD_ID with a shell tool and pass it here; Codex does not always pass it to MCP servers.", InputSchema = Parse(CodexWakeSchema) },
+            new() { Name = "clear_wake", Description = "Clear this lead's native wake registration. Unread jobs remain available and can be rebound later.", InputSchema = Parse(EmptySchema) },
+            new() { Name = "wake_status", Description = "Show this lead's current native wake registration.", InputSchema = Parse(EmptySchema) },
             new() { Name = "create_join_ticket", Description = "Issue a one-time, ten-minute ticket for a manually started member of this lead session.", InputSchema = Parse(TicketSchema) },
             new() { Name = "join_team", Description = "Join a lead session using its one-time ticket. Save member_token for subsequent calls.", InputSchema = Parse(JoinSchema) },
             new() { Name = "external_send", Description = "Send a durable message to the joined lead using member_token.", InputSchema = Parse(MemberSendSchema) },
@@ -258,13 +262,22 @@ public static class JobsMcpBridge
                         var home = host?.Kind == "codex" ? HostSessionWake.CodexHome(host.Value.Pid) : null;
                         var target = home is null ? null : HostSessionWake.ForCodexThread(String(args, "thread_id"), home);
                         response = target is null ? new IpcResponse(false, JobErrors.InvalidRequest)
-                            : await SendAsync(target, cancellationToken);
+                            : await SendAsync(target with { LeadSessionId = sessionId, Workspace = workspace, JobId = managedJobId }, cancellationToken);
                         if (response.Ok && response.WakeGeneration is long generation)
                         {
                             wakeTarget = target;
                             wakeGeneration = generation;
                             await BindWakeAsync(cancellationToken);
                         }
+                    }
+                    else if (call.Name == "clear_wake")
+                    {
+                        response = await SendAsync(new IpcRequest { Op = IpcProtocol.WakeClear, LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
+                        if (response.Ok) { wakeTarget = null; wakeGeneration = null; }
+                    }
+                    else if (call.Name == "wake_status")
+                    {
+                        response = await SendAsync(new IpcRequest { Op = IpcProtocol.WakeStatus, LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
                     }
                     else if (call.Name == "close_team")
                     {
