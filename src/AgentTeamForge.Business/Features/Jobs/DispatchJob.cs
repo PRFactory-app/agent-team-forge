@@ -505,6 +505,9 @@ public sealed class DispatchJob : IDisposable
                         case BackendEvidence.NotStarted rejected:
                             End(run, JobStatus.Failed, "backend_not_started", rejected.Details);
                             return;
+                        case BackendEvidence.LaunchFailed failed:
+                            End(run, JobStatus.Failed, "launch_failed", failed.Details);
+                            return;
                         case BackendEvidence.EndOfOutput:
                             End(run, JobStatus.NeedsReconciliation, "backend_eof");
                             return;

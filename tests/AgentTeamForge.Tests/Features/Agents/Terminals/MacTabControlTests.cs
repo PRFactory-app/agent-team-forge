@@ -38,6 +38,8 @@ public sealed class MacTabControlTests
         Assert.Contains("cd " + MacTabControl.ShellQuote(cwd), wrapper);
         Assert.Contains("'/tmp/atf'\"'\"'binary' terminal-token --pid \"$$\"", wrapper);
         Assert.Contains(MacTabControl.ShellQuote(value + "'; echo unsafe"), wrapper);
+        Assert.Contains("if [ ! -x ", wrapper);
+        Assert.Contains("/tmp/atf.start-error", wrapper);
         Assert.Contains("exec ", wrapper);
     }
 

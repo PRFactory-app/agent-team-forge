@@ -53,6 +53,48 @@ public sealed class WtInteractiveBackendTests
     }
 
     [Fact]
+    public async Task WrapperStartFailureFailsJobWithoutFence()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("wt-failed-start");
+        var claim = f.Store.BeginNextAttempt()!;
+        var tabs = new FakeTabs { Failure = "The specified executable is not a valid application" };
+        var backend = new WtInteractiveBackend(tabs, new FakeReader(null), InteractiveAgentKind.Claude,
+            Path.GetTempPath(), "wt", TimeSpan.FromSeconds(2));
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        await dispatcher.RunAttemptAsync(claim, CancellationToken.None);
+
+        var record = f.Store.GetJob(job.JobId)!;
+        Assert.Equal(JobStatus.Failed, record.Status);
+        Assert.Equal("launch_failed", record.ReasonCode);
+        Assert.Contains("not a valid application", record.ResultText);
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+        Assert.True(tabs.Stopped);
+    }
+
+    [Fact]
+    public void InvalidWindowsAgentImageIsRejectedBeforeTabLaunch()
+    {
+        using var state = new TempStateDir();
+        var bogus = Path.Combine(state.Path, "claude.exe");
+        File.WriteAllBytes(bogus, [0x4d, 0x5a, 0, 0]);
+        Assert.Throws<BackendNotStartedException>(() => WtTabControl.ValidateWindowsAgentBinary(bogus));
+        Assert.Throws<BackendNotStartedException>(() => WtTabControl.ValidateWindowsAgentBinary(Path.Combine(state.Path, "missing.exe")));
+    }
+
+    [Fact]
+    public void PreflightFailureDoesNotOpenTab()
+    {
+        var tabs = new FakeTabs { FailPreflight = true };
+        var backend = new WtInteractiveBackend(tabs, new FakeReader(null), InteractiveAgentKind.Claude, Path.GetTempPath());
+        Assert.Throws<BackendNotStartedException>(() => backend.Start(new BackendRequest("job", "corr", "work", "")
+        { WorkingDirectory = Path.GetTempPath() }));
+        Assert.Null(tabs.Launch);
+    }
+
+    [Fact]
     public async Task LateTabLaunchCompletesAfterCorrelatedNativeRecord()
     {
         var tabs = new LateSidecarTabs();
@@ -131,7 +173,24 @@ public sealed class WtInteractiveBackendTests
         Assert.Contains("$start.WorkingDirectory = '" + cwd.Replace("'", "''") + "'", wrapper);
         Assert.Contains("$env:CODEX_HOME = 'C:\\daemon\\codex'", wrapper);
         Assert.Contains("$PID.ToString() + '|'", wrapper);
+        Assert.Contains("WriteAllText('C:\\state\\tab.start-error'", wrapper);
         Assert.EndsWith("exit 0\r\n", wrapper);
+    }
+
+    [Fact]
+    public void RecordedWrapperFailureAndExitedPidAreObservedWithoutAWindowProbe()
+    {
+        using var state = new TempStateDir();
+        var wrapper = Path.Combine(state.Path, "tab.launch.ps1");
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", state.Path, null, null, wrapper);
+        var sidecar = Path.ChangeExtension(wrapper, ".pid");
+        var tabs = new WtTabControl();
+        File.WriteAllText(sidecar, $"{int.MaxValue}|{DateTime.UtcNow.Ticks}");
+        Assert.Equal("interactive wrapper exited before agent acknowledgement", tabs.StartFailure(launch));
+        File.WriteAllText(Path.ChangeExtension(wrapper, ".start-error"), "bad image");
+        Assert.Equal("interactive agent could not start: bad image", tabs.StartFailure(launch));
+        tabs.StopOwned(launch);
+        Assert.False(File.Exists(sidecar));
     }
 
     [Fact]
@@ -392,10 +451,16 @@ public sealed class WtInteractiveBackendTests
     {
         public bool Preflighted { get; private set; }
         public bool FailLaunch { get; init; }
+        public bool FailPreflight { get; init; }
+        public string? Failure { get; init; }
         public bool Stopped { get; private set; }
         public string Prompt { get; private set; } = "";
         public InteractiveLaunch? Launch { get; private set; }
-        public void Preflight(InteractiveAgentKind kind) => Preflighted = true;
+        public void Preflight(InteractiveAgentKind kind)
+        {
+            Preflighted = true;
+            if (FailPreflight) { throw new BackendNotStartedException("agent launcher is invalid"); }
+        }
         public Task StartAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken)
         {
             if (FailLaunch)
@@ -408,6 +473,7 @@ public sealed class WtInteractiveBackendTests
             return Task.CompletedTask;
         }
         public bool IsAlive(InteractiveLaunch launch) => !Stopped;
+        public string? StartFailure(InteractiveLaunch launch) => Failure;
         public int? ProcessId(InteractiveLaunch launch) => Prompt.Length > 0 ? 4242 : null;
         public void StopOwned(InteractiveLaunch launch) => Stopped = true;
     }
@@ -423,6 +489,7 @@ public sealed class WtInteractiveBackendTests
             throw new IOException("tab readiness timed out after handing off the wrapper");
         }
         public bool IsAlive(InteractiveLaunch launch) => Interlocked.Increment(ref _probes) > 2;
+        public string? StartFailure(InteractiveLaunch launch) => null;
         public int? ProcessId(InteractiveLaunch launch) => Volatile.Read(ref _probes) > 2 ? 4242 : null;
         public void StopOwned(InteractiveLaunch launch) { }
     }

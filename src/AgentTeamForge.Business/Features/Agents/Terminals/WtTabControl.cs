@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.Reflection.PortableExecutable;
 using System.Runtime.InteropServices;
 using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
@@ -25,12 +26,13 @@ internal sealed class WtTabControl : IWtTabControl
         }
         if (kind == InteractiveAgentKind.Pi)
         {
-            _ = WindowsPiLauncher();
+            ValidateWindowsAgentBinary(WindowsPiLauncher()[0]);
         }
         else
         {
             var binary = WindowsAgentBinary(kind == InteractiveAgentKind.Claude ? "claude" : "codex");
             EnsureInteractiveCodexNative(kind, binary);
+            ValidateWindowsAgentBinary(binary);
         }
     }
 
@@ -39,12 +41,14 @@ internal sealed class WtTabControl : IWtTabControl
         Preflight(launch.Kind);
         var wrapper = launch.BootstrapPath;
         var sidecar = Path.ChangeExtension(wrapper, ".pid");
+        var startError = Path.ChangeExtension(wrapper, ".start-error");
         var promptFile = Path.ChangeExtension(wrapper, ".prompt.txt");
         Directory.CreateDirectory(Path.GetDirectoryName(wrapper)!);
         if (File.Exists(sidecar))
         {
             File.Delete(sidecar);
         }
+        if (File.Exists(startError)) { File.Delete(startError); }
 
         if (launch.JobId is { } jobId)
         {
@@ -87,20 +91,12 @@ internal sealed class WtTabControl : IWtTabControl
                 return;
             }
         }
-        catch (TabExitedException) when (!cancellationToken.IsCancellationRequested)
-        {
-            // A tab can attach to a degraded WT window with no usable TTY.
-        }
         finally { launcher?.Dispose(); }
-        // Retry only when the wrapper provably never ran (wt.exe did not start) or its tab
-        // exited during startup. A timeout or wt.exe error is ambiguous: the tab may still
-        // run the wrapper, so a retry could run the agent twice (as in the reference).
+        // Keep the existing console fallback when wt.exe did not return a launcher.
+        // A wrapper whose PID was seen is never retried; its agent may have started.
         // A fresh console remains interactive; never switch to a pipe/headless run.
         await StartConsoleAsync(launch, wrapper, sidecar, cancellationToken);
     }
-
-    /// <summary>The wrapper started and exited within the settle window, so a retry cannot double-run it.</summary>
-    internal sealed class TabExitedException() : IOException("Windows Terminal tab exited during startup");
 
     async Task StartConsoleAsync(InteractiveLaunch launch, string wrapper, string sidecar, CancellationToken token)
     {
@@ -133,15 +129,17 @@ internal sealed class WtTabControl : IWtTabControl
     {
         while (true)
         {
-            if (TryReadOwned(sidecar, wrapper) is { } tab && TryIdentity(tab.Pid) == tab.Created)
+            if (TryReadOwned(sidecar, wrapper) is { } tab)
             {
+                if (TryIdentity(tab.Pid) != tab.Created) { return; }
                 _tabs[launch.AgentName] = tab;
                 WindowsTabJob.Assign(tab.Pid);
                 await Task.Delay(TimeSpan.FromSeconds(2), token);
                 if (!IsAlive(launch))
                 {
-                    _tabs.TryRemove(launch.AgentName, out _);
-                    throw new TabExitedException();
+                    // The wrapper ran. A retry could launch the agent twice; evidence
+                    // distinguishes its proven pre-ack exit from an uncertain handoff.
+                    return;
                 }
                 return;
             }
@@ -172,9 +170,28 @@ internal sealed class WtTabControl : IWtTabControl
 
     public bool IsAlive(InteractiveLaunch launch) => Owned(launch) is not null;
 
+    public string? StartFailure(InteractiveLaunch launch)
+    {
+        var error = Path.ChangeExtension(launch.BootstrapPath, ".start-error");
+        try
+        {
+            var file = new FileInfo(error);
+            if (file.Exists && file.LinkTarget is null && file.Length <= 4096)
+            {
+                return "interactive agent could not start: " + File.ReadAllText(error).Trim();
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+
+        var sidecar = Path.ChangeExtension(launch.BootstrapPath, ".pid");
+        return TryReadOwned(sidecar, launch.BootstrapPath) is { } tab && TryIdentity(tab.Pid) != tab.Created
+            ? "interactive wrapper exited before agent acknowledgement" : null;
+    }
+
     public void StopOwned(InteractiveLaunch launch)
     {
-        if (Owned(launch) is not { } tab)
+        var tab = Owned(launch) ?? TryReadOwned(Path.ChangeExtension(launch.BootstrapPath, ".pid"), launch.BootstrapPath);
+        if (tab is null)
         {
             return;
         }
@@ -218,6 +235,7 @@ internal sealed class WtTabControl : IWtTabControl
         try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".job")); } catch (IOException) { }
         try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".hook.ps1")); } catch (IOException) { }
         try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".hook.cmd")); } catch (IOException) { }
+        try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".start-error")); } catch (IOException) { }
         return true;
     }
 
@@ -270,7 +288,11 @@ internal sealed class WtTabControl : IWtTabControl
             "$start.Arguments = " + Quote(CommandLine(args.Skip(1))),
             "$start.WorkingDirectory = " + Quote(launch.WorkingDirectory),
             "$start.UseShellExecute = $false",
-            "$agent = [System.Diagnostics.Process]::Start($start)",
+            "try { $agent = [System.Diagnostics.Process]::Start($start) } catch {",
+            "  [System.IO.File]::WriteAllText(" + Quote(Path.ChangeExtension(sidecar, ".start-error")) + ", $_.Exception.GetBaseException().Message)",
+            // WT's default close-on-graceful-exit policy closes the failed tab.
+            "  exit 0",
+            "}",
             "$agent.WaitForExit()",
             "exit 0"
         };
@@ -290,7 +312,7 @@ internal sealed class WtTabControl : IWtTabControl
         }
         if (args[0].EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
         {
-            lines.RemoveRange(lines.Count - 8, 7);
+            lines.RemoveRange(lines.Count - 11, 10);
             lines.Insert(lines.Count - 1, "& " + Quote(args[0]) + " " + string.Join(' ', args.Skip(1).Select(WindowsCliLaunch.ShimArgument).Select(Quote)));
         }
         // PowerShell 5.1 needs a UTF-8 BOM. Joining lines explicitly preserves
@@ -339,6 +361,29 @@ internal sealed class WtTabControl : IWtTabControl
         if (kind == InteractiveAgentKind.Codex && binary.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
         {
             throw new BackendNotStartedException("interactive Codex requires native codex.exe; install the native Codex CLI instead of the .cmd shim");
+        }
+    }
+
+    internal static void ValidateWindowsAgentBinary(string binary)
+    {
+        try
+        {
+            using var stream = File.OpenRead(binary);
+            if (binary.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) && stream.Length > 0) { return; }
+            if (!binary.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new BackendNotStartedException($"agent launcher is not an executable or command script: {binary}");
+            }
+            using var pe = new PEReader(stream);
+            if (pe.PEHeaders.PEHeader is null ||
+                !pe.PEHeaders.CoffHeader.Characteristics.HasFlag(Characteristics.ExecutableImage))
+            {
+                throw new BadImageFormatException("missing executable PE header");
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or BadImageFormatException)
+        {
+            throw new BackendNotStartedException($"agent launcher is missing or invalid: {binary}", ex);
         }
     }
 
