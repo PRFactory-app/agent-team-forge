@@ -242,6 +242,17 @@ public sealed class IpcClientDeadlineTests
         Assert.False(File.Exists(Path.Combine(state.Path, "start.lock")));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Access_denied_response_uses_endpoint_specific_detail(bool windowsPipe)
+    {
+        var response = IpcClient.AccessDeniedResponse(windowsPipe);
+
+        Assert.Equal(IpcProtocol.AccessDenied, response.Error);
+        Assert.Equal(windowsPipe ? WindowsPipe.AccessDeniedMessage : IpcClient.AccessDeniedDetail, response.ErrorDetail);
+    }
+
     [Fact]
     public async Task Denied_start_gate_returns_error_instead_of_throwing()
     {
