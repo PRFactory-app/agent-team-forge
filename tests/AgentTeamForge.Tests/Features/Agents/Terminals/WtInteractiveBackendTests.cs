@@ -103,6 +103,24 @@ public sealed class WtInteractiveBackendTests
     }
 
     [Fact]
+    public async Task UnverifiedLivePidDoesNotTimeOutDelivery()
+    {
+        var tabs = new FakeTabs { Unverified = true };
+        var backend = new WtInteractiveBackend(tabs, new UnverifiedReader(tabs), InteractiveAgentKind.Claude,
+            Path.GetTempPath(), "wt", TimeSpan.FromMilliseconds(20));
+        await using var run = backend.Start(new BackendRequest("job", "corr", "work", "") { WorkingDirectory = Path.GetTempPath() });
+        await run.DeliverAsync(CancellationToken.None);
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var evidence = new List<BackendEvidence>();
+        await foreach (var item in run.ReadEvidenceAsync(cancellation.Token))
+        {
+            evidence.Add(item);
+        }
+        Assert.Contains(new BackendEvidence.Result("corr", "done"), evidence);
+        Assert.True(tabs.UnverifiedChecks >= 2);
+    }
+
+    [Fact]
     public async Task WrapperStartFailureFailsJobWithoutFence()
     {
         using var f = new JobFixture();
@@ -618,6 +636,8 @@ public sealed class WtInteractiveBackendTests
     {
         public bool Preflighted { get; private set; }
         public bool FailLaunch { get; init; }
+        public bool Unverified { get; init; }
+        public int UnverifiedChecks { get; private set; }
         public bool FailPreflight { get; init; }
         public string? Failure { get; init; }
         public bool Stopped { get; private set; }
@@ -640,6 +660,11 @@ public sealed class WtInteractiveBackendTests
             return Task.CompletedTask;
         }
         public bool IsAlive(InteractiveLaunch launch) => !Stopped;
+        public bool IsUnverified(InteractiveLaunch launch)
+        {
+            UnverifiedChecks++;
+            return Unverified;
+        }
         public bool Exited { get; init; }
         public string? StartFailure(InteractiveLaunch launch) => Failure;
         public bool WrapperExited(InteractiveLaunch launch) => Exited;
@@ -675,6 +700,13 @@ public sealed class WtInteractiveBackendTests
     {
         public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started) => transcript;
         public string? FindPiSessionDirectory(string root, string sessionId) => Path.Combine(root, sessionId);
+    }
+
+    sealed class UnverifiedReader(FakeTabs tabs) : IInteractiveTranscriptReader
+    {
+        public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started) =>
+            tabs.UnverifiedChecks >= 2 ? new InteractiveTranscript("session-1", "done", Completed: true) : null;
+        public string? FindPiSessionDirectory(string root, string sessionId) => null;
     }
 
     sealed class SequenceReader(params InteractiveTranscript[] snapshots) : IInteractiveTranscriptReader

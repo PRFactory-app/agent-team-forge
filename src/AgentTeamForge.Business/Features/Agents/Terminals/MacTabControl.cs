@@ -10,6 +10,17 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 /// <summary>Terminal.app or kitty hosts an agent process; only its PID and Darwin start token are owned.</summary>
 internal sealed class MacTabControl(string provider, string? kittyAddress, string? kittyBinary) : IWtTabControl
 {
+    internal enum IdentityState { Gone, Ours, Unverified, Different }
+
+    internal static IdentityState Identity(ulong expected, ulong? current, bool pidAlive) => !pidAlive ? IdentityState.Gone : current switch
+    {
+        { } token when token == expected => IdentityState.Ours,
+        not null => IdentityState.Different,
+        _ => IdentityState.Unverified,
+    };
+
+    static IdentityState Identity(int pid, ulong expected) => Identity(expected, DarwinProcess.CreationToken(pid), DarwinProcess.PidAlive(pid));
+
     readonly ConcurrentDictionary<string, OwnedTab> _tabs = [];
     readonly string? _codexHome = CodexPaths.LaunchHome(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
 
@@ -66,7 +77,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
             {
                 if (TryReadSidecar(sidecar) is { } identity)
                 {
-                    if (DarwinProcess.CreationToken(identity.Pid) != identity.Token) { return; }
+                    if (Identity(identity.Pid, identity.Token) is IdentityState.Gone or IdentityState.Different) { return; }
                     _tabs[launch.AgentName] = new(identity.Pid, identity.Token, wrapper, sidecar);
                     await Task.Delay(TimeSpan.FromSeconds(1), deadline.Token);
                     if (!IsAlive(launch))
@@ -91,7 +102,10 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
     public int? ProcessId(InteractiveLaunch launch) => _tabs.TryGetValue(launch.AgentName, out var tab) ? tab.Pid : null;
 
     public bool IsAlive(InteractiveLaunch launch) =>
-        _tabs.TryGetValue(launch.AgentName, out var tab) && DarwinProcess.CreationToken(tab.Pid) == tab.Token;
+        _tabs.TryGetValue(launch.AgentName, out var tab) && Identity(tab.Pid, tab.Token) is IdentityState.Ours or IdentityState.Unverified;
+
+    public bool IsUnverified(InteractiveLaunch launch) =>
+        _tabs.TryGetValue(launch.AgentName, out var tab) && Identity(tab.Pid, tab.Token) == IdentityState.Unverified;
 
     public string? StartFailure(InteractiveLaunch launch)
     {
@@ -110,7 +124,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
 
     public bool WrapperExited(InteractiveLaunch launch) =>
         TryReadSidecar(Path.ChangeExtension(launch.BootstrapPath, ".pid")) is { } identity
-        && DarwinProcess.CreationToken(identity.Pid) != identity.Token;
+        && Identity(identity.Pid, identity.Token) is IdentityState.Gone or IdentityState.Different;
 
     public void StopOwned(InteractiveLaunch launch)
     {
@@ -120,25 +134,30 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
             if (TryReadSidecar(sidecar) is not { } identity) { return; }
             tab = new(identity.Pid, identity.Token, launch.BootstrapPath, sidecar);
         }
-        if (DarwinProcess.CreationToken(tab.Pid) == tab.Token)
+        if (Identity(tab.Pid, tab.Token) == IdentityState.Unverified)
+        {
+            throw new InvalidOperationException($"PID {tab.Pid} is alive but its creation token is unreadable; retaining terminal ownership");
+        }
+        if (Identity(tab.Pid, tab.Token) == IdentityState.Ours)
         {
             DarwinProcess.SignalIfSame(tab.Pid, tab.Token, 15);
-            for (var i = 0; i < 20 && DarwinProcess.CreationToken(tab.Pid) == tab.Token; i++)
+            for (var i = 0; i < 20 && Identity(tab.Pid, tab.Token) is IdentityState.Ours or IdentityState.Unverified; i++)
             {
                 Thread.Sleep(100);
             }
-            if (DarwinProcess.CreationToken(tab.Pid) == tab.Token)
+            if (Identity(tab.Pid, tab.Token) == IdentityState.Ours)
             {
                 DarwinProcess.SignalIfSame(tab.Pid, tab.Token, 9);
             }
-            OrphanedBackendProcess.TerminateMarked([launch.AgentName]);
         }
-        _tabs.TryRemove(launch.AgentName, out _);
-        if (DarwinProcess.CreationToken(tab.Pid) != tab.Token)
+        if (Identity(tab.Pid, tab.Token) is IdentityState.Ours or IdentityState.Unverified)
         {
-            try { File.Delete(tab.Sidecar); File.Delete(tab.Wrapper); File.Delete(Path.ChangeExtension(tab.Wrapper, ".start-error")); }
-            catch (IOException) { }
+            throw new InvalidOperationException($"PID {tab.Pid} is still live; retaining terminal ownership");
         }
+        OrphanedBackendProcess.TerminateMarked([launch.AgentName]);
+        _tabs.TryRemove(launch.AgentName, out _);
+        try { File.Delete(tab.Sidecar); File.Delete(tab.Wrapper); File.Delete(Path.ChangeExtension(tab.Wrapper, ".start-error")); }
+        catch (IOException) { }
     }
 
     /// <summary>Find surviving owned processes after a daemon crash without stopping a live TUI.</summary>
@@ -157,7 +176,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
             {
                 log($"terminal ownership sidecar unreadable: {sidecar}; left for reconciliation");
             }
-            else if (DarwinProcess.CreationToken(identity.Value.Pid) == identity.Value.Token)
+            else if (Identity(identity.Value.Pid, identity.Value.Token) is IdentityState.Ours or IdentityState.Unverified)
             {
                 log($"terminal agent still live after restart: PID {identity.Value.Pid}; left for reconciliation");
             }
