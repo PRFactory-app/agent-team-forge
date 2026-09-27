@@ -17,6 +17,34 @@ namespace AgentTeamForge.Tests.PRFactory;
 public sealed class ExternalJoinTests
 {
     [Fact]
+    public async Task Kill_before_join_settles_previously_dispatched_message_before_completion()
+    {
+        using var dir = new TempStateDir();
+        var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var server = new FakeServer();
+        var store = new PRFactoryTeamStore(db);
+        var jobs = new JobStore(db, DurabilityCheckpoints.None);
+        var principal = new BoundPrincipal("prfactory", "connector", "connector-lead");
+        var accept = new AcceptJob(jobs, principal, new SpikeLimits(), false, new AdmissionGate(), ["codex"]);
+        var stop = new StopJob(jobs, principal, _ => { });
+        PRFactoryWorkItems Adapter() => new("https://example.test",
+            [new(server.Item.RepositoryId, dir.Path, ["visitor"])], store,
+            new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
+            accept.Execute, jobs.GetJob, () => { }, externalTeam: new ExternalTeam(new ExternalMemberStore(db), new WakeStore(db)), stopJob: stop.Execute);
+        var send = new PRFactoryCommand(Guid.NewGuid(), "SendMessage", "visitor", "waiting");
+        server.Commands.Add(send);
+        await Adapter().TickAsync(null, CancellationToken.None);
+        Assert.Empty(server.Acknowledged);
+        server.Commands.Clear(); // Real server withholds Dispatched rows until the redelivery window expires.
+        server.Commands.Add(new(Guid.NewGuid(), "KillAgent", "visitor", null));
+        await Adapter().TickAsync(null, CancellationToken.None);
+        Assert.Contains(send.CommandId, server.Acknowledged);
+        Assert.Equal(new PRFactoryCommandReceipt(false, "member_closed"), store.CommandReceipt("https://example.test", server.Item.Id, send.CommandId));
+        Assert.Empty(store.PendingCommands("https://example.test", server.Item.Id));
+        Assert.Equal("completed", store.Get("https://example.test", server.Item.Id)!.State);
+    }
+
+    [Fact]
     public async Task External_member_ticket_prompt_reply_restart_and_kill_are_durable()
     {
         using var dir = new TempStateDir();
@@ -44,7 +72,7 @@ public sealed class ExternalJoinTests
         var store = new PRFactoryTeamStore(database);
         var external = store.External("https://example.test", server.Item.Id, "visitor")!;
         // The tenant-visible stream gets a notice; the bearer ticket stays in the private snapshot.
-        Assert.DoesNotContain(external.TicketToken, Assert.Single(server.Lines).Text);
+        Assert.DoesNotContain(external.TicketToken, Assert.Single(server.Lines, l => l.AgentName == "visitor").Text);
         var state = StateDirectory.Open(dir.Path);
         PRFactoryConnection.PublishJoinTickets(state, store, "https://example.test");
         Assert.Contains(external.TicketToken, Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(dir.File("prfactory-joins.json"))));
@@ -113,7 +141,7 @@ public sealed class ExternalJoinTests
         Assert.NotEqual(first.TicketToken, renewed.TicketToken);
         Assert.Equal(first.ActualName, renewed.ActualName);
         Assert.True(renewed.TicketExpires > now);
-        Assert.Single(server.Lines); // The notice is not re-published; the private snapshot carries the ticket.
+        Assert.Single(server.Lines, l => l.AgentName == "visitor"); // The notice is not re-published; the private snapshot carries the ticket.
         PRFactoryConnection.PublishJoinTickets(StateDirectory.Open(dir.Path), store, "https://example.test");
         var snapshot = Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(dir.File("prfactory-joins.json")));
         Assert.Contains(renewed.TicketToken, snapshot);
@@ -302,6 +330,7 @@ public sealed class ExternalJoinTests
         {
             Id = Guid.NewGuid(),
             RepositoryId = Guid.NewGuid(),
+            ReadOnly = true,
             AgentType = PRFactoryAgentType.Codex,
             Prompt = "Review",
             LeaseToken = Guid.NewGuid(),

@@ -54,7 +54,11 @@ intake; local jobs continue.
   session). Command IDs are deduplicated (`prfactory_command_receipts`).
 - **Output.** Job status, results and logs are uploaded through PRFactory's
   agent-stream endpoint with persisted positions. Artifacts are uploaded before
-  completion.
+  completion. Managed uploads persist the exact pending batch before HTTP, so
+  a lost acknowledgement or daemon restart replays the same sequence numbers.
+- **Writable work.** Writable jobs run in ATF job worktrees. Completion reports
+  the lead's actual worktree branch and HEAD, including after a follow-up or
+  branch switch; read-only work omits branch and commit metadata.
 - **Wake** stays local: ATF's commit-then-notice mechanism
   ([ADR 0005](adr/0005-native-wake.md)). PRFactory only receives persisted
   events.
@@ -74,6 +78,9 @@ A recipe member mapped with `--external` is a person's own interactive session
   new one on the next tick.
 - A `SendMessage` to a member who has not joined stays unacknowledged until
   they join; one to a member who has left is rejected with `member_left`.
+  Drained commands are retained locally until acknowledged. If `KillAgent`
+  revokes an unjoined member, its waiting messages are rejected with
+  `member_closed` before the work item finishes.
   Member replies are uploaded to the agent stream from a persisted cursor.
 
 ## Disconnects and restarts
@@ -88,3 +95,8 @@ is offline. That server-side durable acceptance (tied to machine, work item
 and ATF job identity, reconciled idempotently after a lost response) is the
 part being finalized in PRFactory. If the server revokes authority, ATF keeps
 local results but stops publishing them.
+
+The connector advertises worker contract version `1.0.0` consistently during
+registration, polling and claiming. This is PRFactory's single-repository
+compatibility level, independent of the ATF product version; it does not claim
+the newer multi-repository capability.

@@ -83,6 +83,7 @@ public sealed record PRFactoryStreamResponse(bool Accepted, Dictionary<string, l
 [JsonSerializable(typeof(PRFactoryFailureResponse))]
 [JsonSerializable(typeof(PRFactoryWorkItem))]
 [JsonSerializable(typeof(PRFactoryCommandDrainResponse))]
+[JsonSerializable(typeof(PRFactoryCommand))]
 [JsonSerializable(typeof(PRFactoryCommandAckRequest))]
 [JsonSerializable(typeof(PRFactoryCommandAckResponse))]
 [JsonSerializable(typeof(PRFactoryStreamBatch))]

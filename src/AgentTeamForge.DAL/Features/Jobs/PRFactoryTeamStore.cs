@@ -9,7 +9,7 @@ public sealed record PRFactoryExternalRecord(string Member, string ActualName, s
 public sealed record PRFactoryCommandReceipt(bool Accepted, string? Reason);
 
 /// <summary>Local work ownership, durable acceptance identity, and job mappings.</summary>
-public sealed class PRFactoryTeamStore(JobDatabase database)
+public sealed partial class PRFactoryTeamStore(JobDatabase database)
 {
     public bool CreateIfAbsent(string server, Guid id, string claimedJson, Guid? machineId = null)
     {

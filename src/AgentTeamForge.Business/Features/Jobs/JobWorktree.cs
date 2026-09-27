@@ -23,6 +23,8 @@ public static class JobWorktree
         return root is null ? null : Git(cwd, QueryTimeout, "rev-parse", "--verify", "HEAD");
     }
 
+    public static string? Branch(string cwd) => Git(cwd, QueryTimeout, "symbolic-ref", "--quiet", "--short", "HEAD");
+
     public static bool Prepare(JobRecord job)
     {
         if (job.WorktreePath is null)

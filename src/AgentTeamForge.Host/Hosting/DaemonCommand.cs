@@ -236,7 +236,9 @@ public static class DaemonCommand
                     connectorAccept.Execute, store.GetJob, dispatcher.Signal,
                     cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId, Log, externalTeam,
                     new StopJob(store, new BoundPrincipal("prfactory", "connector", "connector-lead"),
-                        dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership).Execute).TickAsync(machineId, ct);
+                        dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership).Execute,
+                    new FollowUpJob(store, new BoundPrincipal("prfactory", "connector", "connector-lead"), connectorAccept,
+                        dispatcher.InterruptRunning).Execute, jobLogs).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
             });
         var firstStopped = await Task.WhenAny(serving, dispatching);

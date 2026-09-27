@@ -6,11 +6,12 @@ using AgentTeamForge.DAL.Features.Jobs;
 namespace AgentTeamForge.Host.Features.PRFactory;
 
 /// <summary>Polls claims and reconciles server ownership before dispatch or publication.</summary>
-public sealed class PRFactoryWorkItems(
+public sealed partial class PRFactoryWorkItems(
     string server, IReadOnlyList<RepositoryMapping> repositories, PRFactoryTeamStore teams,
     PRFactoryClient client, Func<SubmitJobRequest, JobResult> submit, Func<string, JobRecord?> getJob,
     Action onAccepted, Func<string, string?>? leadSessionFor = null, Action<string>? log = null,
-    ExternalTeam? externalTeam = null, Func<string, JobResult>? stopJob = null)
+    ExternalTeam? externalTeam = null, Func<string, JobResult>? stopJob = null,
+    Func<FollowUpRequest, JobResult>? followUp = null, JobLogs? jobLogs = null)
 {
     public async Task TickAsync(Guid? machineId, CancellationToken ct)
     {
@@ -261,8 +262,14 @@ public sealed class PRFactoryWorkItems(
                 active++;
             }
         }
+        await AdvanceCommandsAsync(item, ct);
+        var outputDrained = await UploadManagedAsync(item, ct);
+        allJobs = [.. teams.ManagedMembers(server, item.Id).GroupBy(m => m.Member)
+            .Select(g => getJob(g.Last().JobId)!)];
+        lead = allJobs.First(j => j.JobId == teams.ManagedMembers(server, item.Id).Last(m => m.Member == "lead").JobId);
         var waitForManaged = managedMembers.Length > 0 || externalNames.Length == 0;
-        if (allJobs.Count != managedMembers.Length + 1 || !externalRepliesDrained
+        if (allJobs.Count != managedMembers.Length + 1 || !externalRepliesDrained || !outputDrained
+            || teams.PendingCommands(server, item.Id).Count > 0
             || (waitForManaged
                 ? allJobs.Any(j => j.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation)
                 : teams.ExternalMembers(server, item.Id).Any(e => !e.Closed)))
@@ -311,6 +318,7 @@ public sealed class PRFactoryWorkItems(
         {
             Backend = backend,
             Cwd = cwd,
+            Worktree = !item.ReadOnly,
             Model = model,
             Effort = effort?.ToString().ToLowerInvariant(),
             LeadSessionId = leadSessionFor?.Invoke(cwd),
@@ -376,59 +384,6 @@ public sealed class PRFactoryWorkItems(
             }
         }
 
-        var lease = item.LeaseToken ?? throw new InvalidDataException("PRFactory external work requires a lease token");
-        var acks = new List<PRFactoryCommandAck>();
-        foreach (var command in await client.DrainCommandsAsync(item.Id, lease, ct))
-        {
-            if (!names.Contains(command.TargetAgentName, StringComparer.Ordinal))
-            {
-                continue;
-            }
-
-            var receipt = teams.CommandReceipt(server, item.Id, command.CommandId);
-            if (receipt is null)
-            {
-                if (command.Kind.Equals("SendMessage", StringComparison.OrdinalIgnoreCase))
-                {
-                    var target = teams.External(server, item.Id, command.TargetAgentName)!;
-                    if (target.Closed)
-                    {
-                        receipt = new(false, "member_closed");
-                    }
-                    else
-                    {
-                        var sent = actor.SendToMemberOnce(target.TeamId, target.ActualName, command.Text, "prfactory", command.CommandId.ToString("D"));
-                        if (sent.Error == "member_not_found" && !actor.HasLeft(target.TeamId, target.ActualName))
-                        {
-                            continue; // Await the participant joining before acknowledging.
-                        }
-
-                        receipt = new(sent.Ok, sent.Error == "member_not_found" ? "member_left" : sent.Error);
-                    }
-                }
-                else if (command.Kind.Equals("KillAgent", StringComparison.OrdinalIgnoreCase))
-                {
-                    var target = teams.External(server, item.Id, command.TargetAgentName)!;
-                    receipt = new(actor.RevokeMember(target.TeamId, target.ActualName), null);
-                    if (receipt.Accepted)
-                    {
-                        teams.MarkExternalClosed(server, item.Id, target.Member);
-                    }
-                }
-                else
-                {
-                    receipt = new(false, "unknown_kind");
-                }
-
-                teams.RecordCommand(server, item.Id, command.CommandId, receipt.Accepted, receipt.Reason);
-            }
-            acks.Add(new(command.CommandId, receipt.Accepted, receipt.Reason));
-        }
-        if (acks.Count > 0)
-        {
-            await client.AckCommandsAsync(item.Id, lease, acks, ct);
-        }
-
         var externals = teams.ExternalMembers(server, item.Id);
         foreach (var external in externals.Where(e => !e.Closed && actor.HasLeft(e.TeamId, e.ActualName)))
         {
@@ -469,6 +424,9 @@ public sealed class PRFactoryWorkItems(
     async Task FinishAsync(PRFactoryTeamRecord team, PRFactoryWorkItem item, bool success, string error,
         string? cwd, CancellationToken ct, string? result = null)
     {
+        var leadId = teams.ManagedMembers(server, item.Id).LastOrDefault(m => m.Member == "lead")?.JobId;
+        var job = leadId is null ? null : getJob(leadId);
+        cwd = job is null ? cwd : JobWorktree.WorkingDirectory(job) ?? cwd;
         var file = cwd is not null && item.ExpectedOutput is { Length: > 0 } output
             ? ArtefactPath(cwd, item.TicketArtefactFolder ?? string.Empty, output) ?? string.Empty
             : null;
@@ -489,7 +447,9 @@ public sealed class PRFactoryWorkItems(
         }
         if (success)
         {
-            await client.CompleteAsync(item.Id, item.LeaseToken, result, ct);
+            await client.CompleteAsync(item.Id, item.LeaseToken, result, ct,
+                !item.ReadOnly && cwd is not null ? JobWorktree.Branch(cwd) : null,
+                !item.ReadOnly && cwd is not null ? JobWorktree.Head(cwd) : null);
             StopManagedJobs(item.Id);
             teams.Finish(server, item.Id, "completed");
         }

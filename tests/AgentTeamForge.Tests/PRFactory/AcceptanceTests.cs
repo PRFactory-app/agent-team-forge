@@ -154,6 +154,7 @@ public sealed class AcceptanceTests
     {
         Id = Guid.NewGuid(),
         RepositoryId = Guid.NewGuid(),
+        ReadOnly = true,
         LeaseToken = Guid.NewGuid(),
         AgentType = PRFactoryAgentType.Codex,
         Prompt = "Do work"
@@ -190,6 +191,7 @@ public sealed class AcceptanceTests
         public HttpResponseMessage Reply(HttpRequestMessage request)
         {
             var path = request.RequestUri!.AbsolutePath;
+            if (ManagedWire.Reply(request) is { } managed) { return managed; }
             if (path.EndsWith("/poll", StringComparison.Ordinal))
             {
                 return Json("{\"workItems\":[" + JsonSerializer.Serialize(Item, PRFactoryWorkItemJson.Default.PRFactoryWorkItem) + "]}");

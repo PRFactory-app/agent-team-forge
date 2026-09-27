@@ -26,6 +26,7 @@ public sealed class WorkItemTests
         {
             Id = Guid.NewGuid(),
             RepositoryId = Guid.NewGuid(),
+            ReadOnly = true,
             AgentType = PRFactoryAgentType.Codex,
             Prompt = "Do work"
         };
@@ -62,6 +63,7 @@ public sealed class WorkItemTests
         {
             Id = Guid.NewGuid(),
             RepositoryId = Guid.NewGuid(),
+            ReadOnly = true,
             AgentType = PRFactoryAgentType.Codex,
             Prompt = "Do work"
         };
@@ -91,6 +93,7 @@ public sealed class WorkItemTests
         {
             Id = Guid.NewGuid(),
             RepositoryId = Guid.NewGuid(),
+            ReadOnly = true,
             AgentType = PRFactoryAgentType.Codex,
             Prompt = "Do work",
             ExpectedOutput = "result.md",
@@ -163,6 +166,7 @@ public sealed class WorkItemTests
         {
             Id = Guid.NewGuid(),
             RepositoryId = Guid.NewGuid(),
+            ReadOnly = true,
             Prompt = "Do work",
             ContextJson = "{\"repositories\":{\"secondary\":[{\"id\":\"" + Guid.NewGuid().ToString("D") + "\"}]}}"
         });
@@ -188,6 +192,7 @@ public sealed class WorkItemTests
         {
             Id = Guid.NewGuid(),
             RepositoryId = Guid.NewGuid(),
+            ReadOnly = true,
             AgentType = PRFactoryAgentType.Codex,
             Prompt = "Do work",
             ExpectedOutput = "secret.md",
@@ -218,6 +223,7 @@ public sealed class WorkItemTests
         {
             Id = Guid.NewGuid(),
             RepositoryId = Guid.NewGuid(),
+            ReadOnly = true,
             AgentType = PRFactoryAgentType.Codex,
             Prompt = "Do work"
         };
@@ -273,6 +279,7 @@ public sealed class WorkItemTests
         public HttpResponseMessage Reply(HttpRequestMessage request)
         {
             var path = request.RequestUri!.AbsolutePath;
+            if (ManagedWire.Reply(request) is { } managed) { return managed; }
             if (path.EndsWith("/poll", StringComparison.Ordinal))
             {
                 Calls.Add("poll");

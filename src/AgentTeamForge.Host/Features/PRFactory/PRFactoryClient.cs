@@ -35,7 +35,8 @@ public sealed class WorkerTokenRejectedException : Exception
 
 public sealed class PRFactoryClient(HttpClient httpClient)
 {
-    const string WorkerVersion = "0.1.0";
+    // Server capability gate: single-repository worker contract, not the ATF product version.
+    const string WorkerVersion = "1.0.0";
     bool legacyLogged;
     public enum AcceptanceResult { Confirmed, NotFound, Conflict }
 
@@ -62,7 +63,7 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         var request = new RegisterMachineRequest(Environment.MachineName,
             $"{Environment.MachineName}:{Environment.UserName}",
             System.Runtime.InteropServices.RuntimeInformation.OSDescription,
-            typeof(PRFactoryClient).Assembly.GetName().Version?.ToString());
+            WorkerVersion);
         using var response = await httpClient.PostAsJsonAsync("api/worker/machines/register", request,
             PRFactoryWireJson.Default.RegisterMachineRequest, ct);
         RejectToken(response.StatusCode);
@@ -213,10 +214,11 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         response.EnsureSuccessStatusCode();
     }
 
-    public async Task CompleteAsync(Guid id, Guid? lease, string? markdown, CancellationToken ct)
+    public async Task CompleteAsync(Guid id, Guid? lease, string? markdown, CancellationToken ct,
+        string? branch = null, string? commit = null)
     {
         using var response = await httpClient.PostAsJsonAsync($"api/worker/complete/{id:D}",
-            new PRFactoryCompletionRequest(true, markdown, null, null, string.Empty, lease), PRFactoryWorkItemJson.Default.PRFactoryCompletionRequest, ct);
+            new PRFactoryCompletionRequest(true, markdown, branch, commit, string.Empty, lease), PRFactoryWorkItemJson.Default.PRFactoryCompletionRequest, ct);
         RejectToken(response.StatusCode);
         RejectLostLease(response.StatusCode, id);
         response.EnsureSuccessStatusCode();
