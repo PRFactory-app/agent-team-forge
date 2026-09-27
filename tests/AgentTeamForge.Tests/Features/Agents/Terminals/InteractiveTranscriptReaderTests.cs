@@ -12,6 +12,7 @@ public sealed class InteractiveTranscriptReaderTests
         $$$"""{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"{{{text}}}"}}""";
     static string ClaudeAssistant(string text, string? stop) =>
         $$$"""{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":{{{(stop is null ? "null" : "\"" + stop + "\"")}}},"content":[{"type":"text","text":"{{{text}}}"}]}}""";
+    const string ClaudeApiError = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","isApiErrorMessage":true,"error":"authentication_failed","message":{"role":"assistant","model":"<synthetic>","stop_reason":"end_turn","content":[{"type":"text","text":"Not logged in · Please run /login"}]}}""";
     const string ClaudeThinkingEnd = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"x"}]}}""";
     const string ClaudeToolResult = """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}""";
     const string ClaudeBackground = """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"Running in background"}]},"toolUseResult":{"backgroundTaskId":"task-1"}}""";
@@ -113,6 +114,23 @@ public sealed class InteractiveTranscriptReaderTests
         Assert.Equal(message, transcript.Message);
         Assert.Equal(completed, transcript.Completed);
         Assert.DoesNotContain(transcript.Progress, text => text.StartsWith("human", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Claude_api_error_is_only_terminal_if_retry_does_not_continue_the_turn()
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Claude);
+        File.WriteAllLines(file, [ClaudeUser(Marker), ClaudeApiError]);
+        var error = reader.Read(launch, Marker, DateTimeOffset.UtcNow);
+        Assert.Equal("agent_login_required", error?.ApiError?.Code);
+        Assert.Contains("/login", error?.ApiError?.Message);
+
+        File.AppendAllLines(file, [ClaudeAssistant("retry succeeded", "end_turn")]);
+        var retried = reader.Read(launch, Marker, DateTimeOffset.UtcNow);
+        Assert.Null(retried?.ApiError);
+        Assert.True(retried?.Completed);
+        Assert.Equal("retry succeeded", retried?.Message);
     }
 
     public static TheoryData<InteractiveAgentKind, string[]> Unbound => new()

@@ -140,6 +140,9 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
         string? _sessionId = request.ResumeSessionId;
         string? _notStartedError;
         int _loggedMessages;
+        DateTimeOffset? _apiErrorSince;
+        InteractiveApiError? _observedApiError;
+        int _apiErrorProgressCount;
         public int? ProcessId => tabs.ProcessId(launch);
 
         public async Task DeliverAsync(CancellationToken cancellationToken)
@@ -199,7 +202,22 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
                     _sessionId = nativeId;
                     yield return new BackendEvidence.Session(request.Correlation, nativeId);
                 }
-                if (output?.Completed == true && output.Message is { Length: > 0 } message && session is not null)
+                if (output?.ApiError is { } apiError && session is not null)
+                {
+                    if (_observedApiError != apiError || _apiErrorProgressCount != output.Progress.Count)
+                    {
+                        _observedApiError = apiError;
+                        _apiErrorProgressCount = output.Progress.Count;
+                        _apiErrorSince = DateTimeOffset.UtcNow;
+                    }
+                    if (DateTimeOffset.UtcNow - _apiErrorSince >= TimeSpan.FromSeconds(1))
+                    {
+                        yield return new BackendEvidence.AgentError(apiError.Code, apiError.Message);
+                        yield break;
+                    }
+                }
+                else { _apiErrorSince = null; _observedApiError = null; }
+                if (output is { Completed: true, ApiError: null, Message: { Length: > 0 } message } && session is not null)
                 {
                     yield return new BackendEvidence.Result(request.Correlation, message);
                     yield return new BackendEvidence.EndOfOutput();

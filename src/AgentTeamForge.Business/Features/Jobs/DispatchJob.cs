@@ -529,6 +529,9 @@ public sealed class DispatchJob : IDisposable
                         case BackendEvidence.ProtocolError error:
                             End(run, error.Code == JobErrors.SessionExpired ? JobStatus.Failed : JobStatus.NeedsReconciliation, error.Code);
                             return;
+                        case BackendEvidence.AgentError error:
+                            End(run, JobStatus.Failed, error.Code, error.Details);
+                            return;
                         case BackendEvidence.NotStarted rejected:
                             End(run, JobStatus.Failed, "backend_not_started", rejected.Details);
                             return;

@@ -23,6 +23,9 @@ public abstract record BackendEvidence
 
     public sealed record Result(string Correlation, string Output) : BackendEvidence;
 
+    /// <summary>The agent ended its turn with a reported API failure.</summary>
+    public sealed record AgentError(string Code, string Details) : BackendEvidence;
+
     public sealed record ProtocolError(string Code) : BackendEvidence;
 
     /// <summary>CLI rejected its arguments before a turn began; no job effect occurred.</summary>

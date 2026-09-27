@@ -130,6 +130,9 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         bool _stopped;
         string? _sessionId = request.ResumeSessionId;
         int _loggedMessages;
+        DateTimeOffset? _apiErrorSince;
+        InteractiveApiError? _observedApiError;
+        int _apiErrorProgressCount;
         public bool OwnedSessionStopped { get; private set; }
         public int? ProcessId => null; // The Herdr server owns the TUI process, not this daemon.
 
@@ -205,7 +208,22 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                     _sessionId = nativeId;
                     yield return new BackendEvidence.Session(request.Correlation, nativeId);
                 }
-                if (output is { Completed: true, Message: { Length: > 0 } message } && session is not null)
+                if (output?.ApiError is { } apiError && session is not null)
+                {
+                    if (_observedApiError != apiError || _apiErrorProgressCount != output.Progress.Count)
+                    {
+                        _observedApiError = apiError;
+                        _apiErrorProgressCount = output.Progress.Count;
+                        _apiErrorSince = DateTimeOffset.UtcNow;
+                    }
+                    if (DateTimeOffset.UtcNow - _apiErrorSince >= TimeSpan.FromSeconds(1))
+                    {
+                        yield return new BackendEvidence.AgentError(apiError.Code, apiError.Message);
+                        yield break;
+                    }
+                }
+                else { _apiErrorSince = null; _observedApiError = null; }
+                if (output is { Completed: true, ApiError: null, Message: { Length: > 0 } message } && session is not null)
                 {
                     yield return new BackendEvidence.Result(request.Correlation, message);
                     yield return new BackendEvidence.EndOfOutput();
@@ -365,9 +383,11 @@ internal interface IInteractiveTranscriptReader
 }
 
 internal sealed record InteractiveTranscript(string SessionId, string? Message, IReadOnlyList<string>? Messages = null, bool Completed = false,
-    bool PendingBackgroundTasks = false, string? BindingError = null)
+    bool PendingBackgroundTasks = false, string? BindingError = null, InteractiveApiError? ApiError = null)
 {
     public IReadOnlyList<string> Progress => Messages ?? [];
 }
+
+internal sealed record InteractiveApiError(string Code, string Message);
 
 internal sealed record NativeTranscriptBinding(string SessionId, string Path);

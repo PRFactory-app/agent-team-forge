@@ -8,7 +8,7 @@ those machines).
 | Platform | Status |
 | --- | --- |
 | **Linux x64** (glibc) | Tested end to end with real Claude Code, Codex and Pi agents, in Herdr and headless modes. v0.0.2 was tagged after a full Linux run. |
-| **Windows x64** | Partially verified on a Windows 11 VM (v0.0.1 and v0.0.2). Fixes for the v0.0.2 failures are merged but not yet re-validated on Windows. |
+| **Windows x64** | Partially verified on a Windows 11 VM through v0.0.3. Interactive Claude and Codex work; the not-logged-in Claude fix in this branch awaits a Windows re-check. |
 | **macOS arm64** | Release built; untested. Testers welcome. |
 | Linux arm64, musl | Not supported. |
 
@@ -20,16 +20,40 @@ those machines).
 | Headless Claude Code / Codex | Tested | Untested | Untested |
 | Headless Pi | Tested | Untested (Pi not installed on the test VM) | Untested |
 | Interactive agents | Herdr: tested | Windows Terminal (`wt`): Claude and Codex tested; see open items | Terminal.app / kitty: untested |
-| Daemon restart keeps live TUIs | Tested (Herdr) | Implemented; awaiting re-validation | Untested |
+| Daemon restart keeps live TUIs | Tested (Herdr) | Tested (v0.0.3) | Untested |
 | Native wake: Claude lead/member | Host-local relay live-tested with an external member | Named-pipe transport implemented; runtime untested | Unix-socket transport implemented; runtime untested |
 | Native wake: Codex lead | Tested | Untested in ATF | Untested |
 | Native wake: Pi lead | Tested | Untested | Untested |
 | External members (Codex Desktop) | Tested | Untested | Untested |
-| Web console | Tested | Tested (v0.0.2) | Untested |
+| Web console | Tested | Tested (v0.0.3) | Untested |
 | Login autostart | systemd user unit | Run key + hidden launcher; untested | LaunchAgent; untested |
 | Native AOT release build | CI + local | CI (`windows-latest`) | Local build script |
 
-## Windows results (v0.0.2, 2026-09-27)
+## Windows results (v0.0.3, 2026-09-27)
+
+On a Windows 11 VM, the v0.0.3 end-to-end pass confirmed that the daemon
+survives 800 sequential client calls (A), a bogus agent binary fails promptly
+and the next job still runs (B), and an agent exiting before acknowledgement
+becomes `needs_reconciliation` promptly (B). Claude's first-run case fails
+promptly with `agent_first_run_required` (C). Claude and Codex completed jobs
+in new paths with spaces. Web console authentication, a low-integrity client's
+access-denied message, stopping a hung interactive job, and live tabs surviving
+`atf stop` and daemon restart also passed.
+
+The remaining C case exposed a transcript completion bug: an onboarded Claude
+profile without credentials produced a synthetic `authentication_failed`
+assistant API error, but the job remained `running`. This branch maps the
+terminal transcript error to `failed`/`agent_login_required`; the Windows
+re-check is pending. Other terminal Claude API errors map to
+`failed`/`agent_api_error` with Claude's message.
+
+The observed 10-minute run had not reached ATF's default one-hour real-agent
+turn limit. The three-minute interactive startup limit applies only before
+transcript acknowledgement. An accepted interactive turn without terminal
+evidence reaches `needs_reconciliation` at the one-hour limit unless the job
+has an explicit shorter timeout.
+
+## Earlier Windows results (v0.0.2, 2026-09-27)
 
 Passed: Codex and Claude in Windows Terminal tabs (new folders, paths with
 spaces and mixed case, an existing `untrusted` Codex entry), no trust prompt or
@@ -53,7 +77,7 @@ locked; `atf stop` printed raw `taskkill` output.
 
 ## Open items
 
-- Re-run the Windows matrix on the current release, including Pi.
+- Re-check the not-logged-in Claude case on Windows and run the remaining matrix, including Pi.
 - Validate Claude native wake on Windows and macOS, including pipe ACLs, server PID proof, stalled-reader cancellation and macOS host ancestry.
 - Validate specific Claude Desktop channel exports; sessions without an exported channel or recognizable host retain manual `external_read`.
 - Validate `install.ps1` and upgrade/uninstall on Windows.

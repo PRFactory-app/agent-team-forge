@@ -13,6 +13,27 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 public sealed class WtInteractiveBackendTests
 {
     [Fact]
+    public async Task Claude_synthetic_login_error_fails_bound_wt_job()
+    {
+        using var f = new JobFixture();
+        using var transcript = new ClaudeApiErrorTranscript();
+        var job = f.Submit("wt-api-login");
+        var claim = f.Store.BeginNextAttempt()!;
+        transcript.Write(claim.Correlation, endTurn: true);
+        var backend = new WtInteractiveBackend(new FakeTabs(), transcript.Reader, InteractiveAgentKind.Claude, Path.GetTempPath());
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await dispatcher.RunAttemptAsync(claim, deadline.Token);
+
+        var record = f.Store.GetJob(job.JobId)!;
+        Assert.Equal(JobStatus.Failed, record.Status);
+        Assert.Equal("agent_login_required", record.ReasonCode);
+        Assert.Contains("run `claude` and /login", record.ResultText);
+        Assert.Equal("claude-native", record.SessionId);
+    }
+
+    [Fact]
     public async Task Config_preflight_fails_before_any_tab_and_does_not_fence_the_job()
     {
         using var state = new TempStateDir();

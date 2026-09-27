@@ -11,6 +11,27 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 public sealed class HerdrInteractiveBackendTests
 {
     [Fact]
+    public async Task Claude_synthetic_api_error_fails_bound_herdr_job()
+    {
+        using var f = new JobFixture();
+        using var transcript = new ClaudeApiErrorTranscript();
+        var job = f.Submit("herdr-api-error");
+        var claim = f.Store.BeginNextAttempt()!;
+        transcript.Write(claim.Correlation, "overloaded_error", "Claude is overloaded");
+        var backend = new HerdrInteractiveBackend(new FakeControl(), transcript.Reader, InteractiveAgentKind.Claude, Path.GetTempPath());
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await dispatcher.RunAttemptAsync(claim, deadline.Token);
+
+        var record = f.Store.GetJob(job.JobId)!;
+        Assert.Equal(JobStatus.Failed, record.Status);
+        Assert.Equal("agent_api_error", record.ReasonCode);
+        Assert.Contains("Claude is overloaded", record.ResultText);
+        Assert.Equal("claude-native", record.SessionId);
+    }
+
+    [Fact]
     public async Task Verified_exited_session_releases_fence_after_cleanup()
     {
         using var f = new JobFixture();

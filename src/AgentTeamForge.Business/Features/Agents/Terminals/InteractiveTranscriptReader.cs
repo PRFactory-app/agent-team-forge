@@ -202,6 +202,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             var completed = false;
             var ended = false;
             string? last = null;
+            InteractiveApiError? apiError = null;
             var progress = new List<string>();
             var backgroundTools = new HashSet<string>();
             var backgroundTasks = new HashSet<string>();
@@ -239,6 +240,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                         // The notification starts a continuation, not a human turn. Its
                         // own final assistant record must arrive before completion.
                         if (wasPending) { completed = false; }
+                        if (wasPending) { apiError = null; }
                         continue;
                     }
                     if (userText is not null)
@@ -261,6 +263,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                         if (Str(root, "type") == "assistant")
                         {
                             completed = CompletedTurn(root, kind) && backgroundTools.Count == 0 && backgroundTasks.Count == 0;
+                            apiError = ApiError(root);
                         }
                     }
                     else { completed |= CompletedTurn(root, kind); }
@@ -272,13 +275,28 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                 }
             }
             return markerSeen ? new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress, completed,
-                !ended && (backgroundTools.Count > 0 || backgroundTasks.Count > 0)) : null;
+                !ended && (backgroundTools.Count > 0 || backgroundTasks.Count > 0),
+                ApiError: backgroundTools.Count == 0 && backgroundTasks.Count == 0 ? apiError : null) : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             WarnUnreadable(path, e);
             return null;
         }
+    }
+
+    static InteractiveApiError? ApiError(JsonElement root)
+    {
+        if (!Flag(root, "isApiErrorMessage") || !root.TryGetProperty("message", out var message)) { return null; }
+        var error = Str(root, "error") ?? Str(message, "error");
+        var text = AssistantText(root, InteractiveAgentKind.Claude);
+        if (text is { Length: > MaxResultChars }) { text = text[^MaxResultChars..]; }
+        var login = error is "authentication_failed" or "authentication_error" or "not_logged_in" or "unauthorized" or "invalid_api_key"
+            || text?.Contains("Not logged in", StringComparison.OrdinalIgnoreCase) == true;
+        return login
+            ? new("agent_login_required", "Claude is not logged in; run `claude` and /login."
+                + (string.IsNullOrWhiteSpace(text) ? "" : " " + text))
+            : new("agent_api_error", string.IsNullOrWhiteSpace(text) ? $"Claude API error: {error ?? "unknown"}" : text);
     }
 
     static void TrackBackgroundTasks(JsonElement root, HashSet<string> tools, HashSet<string> tasks, HashSet<string> knownTasks)
