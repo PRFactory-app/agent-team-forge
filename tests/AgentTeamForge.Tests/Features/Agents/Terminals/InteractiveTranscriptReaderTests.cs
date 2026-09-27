@@ -16,6 +16,7 @@ public sealed class InteractiveTranscriptReaderTests
         $$$"""{"type":"user","isMeta":true,"isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"Another Claude session sent a message:\n{{{text}}}"}}""";
     const string ClaudeApiError = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","isApiErrorMessage":true,"error":"authentication_failed","message":{"role":"assistant","model":"<synthetic>","stop_reason":"end_turn","content":[{"type":"text","text":"Not logged in · Please run /login"}]}}""";
     const string ClaudeConnectionLost = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","isApiErrorMessage":true,"error":"server_error","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"API Error: Connection lost mid-response."}]}}""";
+    const string ClaudeUsageLimit = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","timestamp":"2026-09-27T18:04:31Z","isApiErrorMessage":true,"error":"rate_limit","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"You've hit your monthly spend limit · your session limit resets 8:20pm (Europe/Berlin)"}]}}""";
     const string ClaudeTurnDuration = """{"type":"system","subtype":"turn_duration","durationMs":1000,"isMeta":false,"sessionId":"claude-native"}""";
     const string ClaudeThinkingEnd = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":"x"}]}}""";
     const string ClaudeToolResult = """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}""";
@@ -169,6 +170,40 @@ public sealed class InteractiveTranscriptReaderTests
         var receipt = InteractiveTranscriptReader.ReadClaudeSession(Path.Combine(state.Path, "claude"), "claude-native", "turn-1");
         Assert.Equal("delivered", receipt?.Message);
         Assert.True(receipt?.Completed);
+    }
+
+    [Fact]
+    public void Claude_monthly_spend_limit_maps_to_rate_limit_with_utc_reset()
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Claude);
+        File.WriteAllLines(file, [ClaudeUser(Marker), ClaudeUsageLimit, ClaudeTurnDuration]);
+
+        var error = reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError;
+
+        Assert.Equal("agent_rate_limited", error?.Code);
+        Assert.Contains("2026-09-27T18:20:00", error?.Message);
+        Assert.True(error?.TurnEnded);
+    }
+
+    [Theory]
+    // No minutes, rolls over to the next local day.
+    [InlineData("2026-09-27T21:00:00Z", "You've hit your session limit · resets 3pm (Europe/Berlin)", "2026-09-28T13:00:00")]
+    // Same local day, across the end of summer time (03:00 CET = 02:00Z).
+    [InlineData("2026-10-24T22:30:00Z", "Your limit will reset at 3am (Europe/Berlin)", "2026-10-25T02:00:00")]
+    [InlineData("2026-09-27T10:00:00Z", "You've hit your session limit · resets 12:30am (America/New_York)", "2026-09-28T04:30:00")]
+    public void Claude_limit_reset_times_are_resolved_in_their_zone(string observed, string text, string expectedUtc)
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Claude);
+        var limit = ClaudeUsageLimit.Replace("2026-09-27T18:04:31Z", observed)
+            .Replace("You've hit your monthly spend limit · your session limit resets 8:20pm (Europe/Berlin)", text);
+        File.WriteAllLines(file, [ClaudeUser(Marker), limit, ClaudeTurnDuration]);
+
+        var error = reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError;
+
+        Assert.Equal("agent_rate_limited", error?.Code);
+        Assert.Contains("resets at " + expectedUtc, error?.Message);
     }
 
     public static TheoryData<InteractiveAgentKind, string[]> Unbound => new()

@@ -48,13 +48,109 @@ public sealed class BranchPublisherTests
     public async Task Dirty_output_fails_with_paths_without_push_or_auto_commit()
     {
         using var rig = await Rig.Create();
+        Directory.CreateDirectory(Path.Combine(rig.Request.LeadPath, "__pycache__"));
+        File.WriteAllText(Path.Combine(rig.Request.LeadPath, "__pycache__", "app.cpython-314.pyc"), "generated");
         File.WriteAllText(Path.Combine(rig.Request.LeadPath, "leftover.cs"), "dirty");
         using var publisher = rig.Publisher();
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => publisher.PublishAsync(rig.Request, TestContext.Current.CancellationToken));
         Assert.Contains("leftover.cs", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("app.cpython-314.pyc", error.Message, StringComparison.Ordinal);
         Assert.Null(rig.Store.Get(rig.Request.PublicationId));
         Assert.Equal("", await rig.RemoteHead());
         Assert.Equal(rig.Head, await Git(rig.Request.LeadPath, "rev-parse", "HEAD"));
+    }
+
+    [Fact]
+    public async Task Generated_untracked_files_do_not_block_publication_or_get_committed()
+    {
+        using var rig = await Rig.Create();
+        var cwd = rig.Request.LeadPath;
+        Directory.CreateDirectory(Path.Combine(cwd, "__pycache__"));
+        File.WriteAllText(Path.Combine(cwd, "__pycache__", "app.cpython-314.pyc"), "generated");
+        File.WriteAllText(Path.Combine(cwd, "__pycache__", "test_app.cpython-314.pyc"), "generated");
+        Directory.CreateDirectory(Path.Combine(cwd, ".pytest_cache"));
+        File.WriteAllText(Path.Combine(cwd, ".pytest_cache", "cache"), "generated");
+        using var publisher = rig.Publisher();
+
+        var receipt = await publisher.PublishAsync(rig.Request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(rig.Head, receipt!.Intent.HeadSha);
+        Assert.Equal(rig.Head, await rig.RemoteHead());
+        Assert.Contains("__pycache__/app.cpython-314.pyc", await Git(cwd, "status", "--porcelain", "--untracked-files=all"));
+        Assert.Equal("", await Git(cwd, "ls-tree", "-r", "--name-only", "HEAD"));
+    }
+
+    [Fact]
+    public async Task Tracked_generated_file_changes_still_block_publication()
+    {
+        using var rig = await Rig.Create();
+        var cwd = rig.Request.LeadPath;
+        Directory.CreateDirectory(Path.Combine(cwd, "__pycache__"));
+        var path = Path.Combine(cwd, "__pycache__", "app.pyc");
+        File.WriteAllText(path, "initial");
+        await Git(cwd, "add", "__pycache__/app.pyc");
+        await Git(cwd, "commit", "-m", "tracked output");
+        File.WriteAllText(path, "changed");
+        using var publisher = rig.Publisher();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => publisher.PublishAsync(rig.Request, TestContext.Current.CancellationToken));
+
+        Assert.Contains("__pycache__/app.pyc", error.Message, StringComparison.Ordinal);
+        Assert.Equal("", await rig.RemoteHead());
+    }
+
+    [Fact]
+    public async Task Untracked_source_under_build_or_bin_still_blocks_publication()
+    {
+        using var rig = await Rig.Create();
+        var cwd = rig.Request.LeadPath;
+        Directory.CreateDirectory(Path.Combine(cwd, "build"));
+        File.WriteAllText(Path.Combine(cwd, "build", "Build.cs"), "source");
+        Directory.CreateDirectory(Path.Combine(cwd, "bin"));
+        File.WriteAllText(Path.Combine(cwd, "bin", "deploy.sh"), "source");
+        using var publisher = rig.Publisher();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => publisher.PublishAsync(rig.Request, TestContext.Current.CancellationToken));
+
+        Assert.Contains("build/Build.cs", error.Message, StringComparison.Ordinal);
+        Assert.Contains("bin/deploy.sh", error.Message, StringComparison.Ordinal);
+        Assert.Equal("", await rig.RemoteHead());
+    }
+
+    [Theory]
+    [InlineData("gitignore")]
+    [InlineData("info-exclude")]
+    [InlineData("core-excludes-file")]
+    public async Task Git_ignore_sources_are_honoured(string source)
+    {
+        using var rig = await Rig.Create();
+        var cwd = rig.Request.LeadPath;
+        const string pattern = "ignored-output/";
+        switch (source)
+        {
+            case "gitignore":
+                File.WriteAllText(Path.Combine(cwd, ".gitignore"), pattern);
+                await Git(cwd, "add", ".gitignore");
+                await Git(cwd, "commit", "-m", "ignore output");
+                break;
+            case "info-exclude":
+                File.AppendAllText(Path.Combine(cwd, ".git", "info", "exclude"), "\n" + pattern);
+                break;
+            case "core-excludes-file":
+                var excludes = Path.Combine(Path.GetDirectoryName(cwd)!, "global-excludes");
+                File.WriteAllText(excludes, pattern);
+                await Git(cwd, "config", "core.excludesFile", excludes);
+                break;
+        }
+        Directory.CreateDirectory(Path.Combine(cwd, "ignored-output"));
+        File.WriteAllText(Path.Combine(cwd, "ignored-output", "result.cs"), "generated");
+        using var publisher = rig.Publisher();
+
+        var receipt = await publisher.PublishAsync(rig.Request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(await Git(cwd, "rev-parse", "HEAD"), receipt!.Intent.HeadSha);
+        Assert.Equal(receipt.Intent.HeadSha, await rig.RemoteHead());
+        Assert.Equal("", await Git(cwd, "status", "--porcelain", "--untracked-files=all"));
     }
 
     [Fact]

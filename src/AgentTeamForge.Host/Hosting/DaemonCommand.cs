@@ -204,7 +204,6 @@ public static class DaemonCommand
         var connectorPrincipal = new BoundPrincipal("prfactory", "connector", "connector-lead");
         var authorityRows = new PRFactoryAuthorityStore(database);
         var humanWaits = new HumanWaitStore(database);
-        var humanWait = new HumanWait(humanWaits, store, connectorTeams, connectorPrincipal);
         var claudeMailbox = new ClaudeWakeMailbox();
         dispatcher.ClaudeBridgeReady = claudeMailbox.HasRecentRelay;
         var interactiveLaunch = launchMode is "herdr" or "terminal" or "wt";
@@ -212,8 +211,8 @@ public static class DaemonCommand
             new ListJobs(store, profile.Bound, jobLogs, interactiveLaunch),
             new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning, dispatcher.ReleaseNative), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
             new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
-            (token, question, key) => PRFactoryInteraction.RequestFromManagedChild(humanWait, store, authorityRows,
-            externalTeam.ManagedChildName(token), question, key), externalMembers, new GetJob(store, connectorPrincipal), dispatcher.TakeNativeClaude);
+            (token, _, _) => PRFactoryInteraction.RequestFromManagedChild(authorityRows,
+                externalTeam.ManagedChildName(token)), externalMembers, new GetJob(store, connectorPrincipal), dispatcher.TakeNativeClaude);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
@@ -269,8 +268,15 @@ public static class DaemonCommand
         };
         dispatcher.AgentErrorObserved = (job, code, details) =>
         {
-            // Only backend-owned error evidence; the connector resumes the parked session after reset.
-            if (job.Principal == connectorPrincipal.Principal
+            // Backend-owned limit evidence blocks new account work. A live interactive turn keeps running;
+            // other parked turns can resume after reset through their saved session.
+            if (job.Principal != connectorPrincipal.Principal) { return; }
+            if (code == "agent_rate_limited"
+                && accounts.BlockIfLimited(job.Backend, PRFactoryWorkItems.DefaultAccount, code, details, DateTimeOffset.UtcNow))
+            {
+                Log($"job {job.JobId} {job.Status}: {job.Backend} account blocked by usage limit ({details})");
+            }
+            else if (code != "agent_rate_limited"
                 && accounts.ParkIfLimited(job.JobId, job.Backend, PRFactoryWorkItems.DefaultAccount, job.SessionId,
                     AccountAdmission.EvidenceCode(job.Backend, code), details, DateTimeOffset.UtcNow))
             {

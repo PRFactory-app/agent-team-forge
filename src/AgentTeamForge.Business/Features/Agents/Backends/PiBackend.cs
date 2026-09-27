@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using AgentTeamForge.Business.Features.Jobs;
 
 namespace AgentTeamForge.Business.Features.Agents.Backends;
 
@@ -213,6 +214,7 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
         bool _finished;
         string? _text;
         string? _stopReason;
+        string? _errorMessage;
         bool _skippedLine;
 
         public bool Started { get; private set; }
@@ -252,6 +254,8 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
                     case "message_end" when root.TryGetProperty("message", out var message) && IsAssistant(message):
                         _text = TextOf(message);
                         _stopReason = message.TryGetProperty("stopReason", out var stop) ? stop.GetString() : null;
+                        _errorMessage = message.TryGetProperty("errorMessage", out var error) && error.ValueKind == JsonValueKind.String
+                            ? error.GetString() : null;
                         break;
                     case "agent_settled" when Finish(correlation) is { } final:
                         yield return final;
@@ -272,6 +276,8 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
             {
                 (null, _) when _skippedLine => new BackendEvidence.ProtocolError("backend_malformed_output"),
                 (null, _) => new BackendEvidence.Result(correlation, string.Empty),
+                (_, "error" or "aborted") when AccountLimitDetector.Inspect("pi", "default", "cli_nonzero_exit",
+                    _errorMessage, DateTimeOffset.UtcNow) is not null => new BackendEvidence.AgentError("agent_rate_limited", _errorMessage!),
                 (_, "error" or "aborted") => new BackendEvidence.ProtocolError("pi_" + _stopReason),
                 ({ Length: > MaxResultChars }, _) => new BackendEvidence.ProtocolError("backend_result_too_long"),
                 var (text, _) => new BackendEvidence.Result(correlation, text),

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using AgentTeamForge.Business.Features.Jobs;
 
 namespace AgentTeamForge.Business.Features.Agents.Backends;
 
@@ -332,6 +333,12 @@ internal sealed class CodexEventParser(string correlation)
                     var output = _lastMessage ?? string.Empty;
                     return [new BackendEvidence.Result(correlation, output.Length > CodexExecBackend.MaxResultChars ? output[..CodexExecBackend.MaxResultChars] : output)];
                 case "turn.failed":
+                    _completed = true;
+                    var failure = root.TryGetProperty("error", out var turnError) ? String(turnError, "message") : null;
+                    if (AccountLimitDetector.Inspect("codex", "default", "cli_nonzero_exit", failure, DateTimeOffset.UtcNow) is not null)
+                    {
+                        return [new BackendEvidence.AgentError("agent_rate_limited", failure!)];
+                    }
                     return [new BackendEvidence.ProtocolError("codex_turn_failed")];
                 case "error":
                     _error = String(root, "message") ?? "error";
@@ -343,7 +350,11 @@ internal sealed class CodexEventParser(string correlation)
     }
 
     /// <summary>At end of output: a stream error that never reached a completed turn is fatal.</summary>
-    public BackendEvidence? Finish() => !_completed && _error is not null ? new BackendEvidence.ProtocolError("codex_error") : null;
+    public BackendEvidence? Finish() => !_completed && _error is not null
+        ? AccountLimitDetector.Inspect("codex", "default", "cli_nonzero_exit", _error, DateTimeOffset.UtcNow) is not null
+            ? new BackendEvidence.AgentError("agent_rate_limited", _error)
+            : new BackendEvidence.ProtocolError("codex_error")
+        : null;
 
     static string? String(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;

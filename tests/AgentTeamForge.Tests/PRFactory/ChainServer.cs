@@ -22,6 +22,8 @@ sealed class ChainServer(PRFactoryWorkItem item)
     public bool BlobsSupported { get; set; }
     public bool LoseBlobResponse { get; set; }
     public HttpStatusCode? BlobRejection { get; set; }
+    public HttpStatusCode? StreamRejection { get; set; }
+    public int StreamPosts { get; private set; }
     public List<BlobRequest> Blobs { get; } = [];
     public List<string> PollQueries { get; } = [];
     public List<string> UploadOrder { get; } = [];
@@ -100,6 +102,8 @@ sealed class ChainServer(PRFactoryWorkItem item)
             }
             if (path.EndsWith("/agent-stream", StringComparison.Ordinal))
             {
+                StreamPosts++;
+                if (StreamRejection is { } rejection) { return new HttpResponseMessage(rejection); }
                 var stream = request.Content!.ReadAsStringAsync().GetAwaiter().GetResult();
                 Lines.AddRange(JsonSerializer.Deserialize(stream, PRFactoryWorkItemJson.Default.PRFactoryStreamBatch)!.Lines);
                 request.Content = new StringContent(stream);

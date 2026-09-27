@@ -5,10 +5,6 @@ namespace AgentTeamForge.Host.Features.PRFactory;
 
 public sealed partial class PRFactoryWorkItems
 {
-    public const string HumanInputHint = "If you need a decision from the human owner to continue, call the request_human_input tool "
-        + "of the agentteamforge MCP server with your question, then end your turn. The answer resumes this same session. "
-        + "Never wait on stdin, an approval prompt or a poll loop for a human.";
-
     /// <summary>
     /// Advances every open wait under authority: reserved answers resume the saved session once, a completed
     /// resumed turn marks the answer applied, and each state change is streamed as a frozen, replayable notice.
@@ -38,7 +34,7 @@ public sealed partial class PRFactoryWorkItems
         var current = humanWaits.ForTeam(server, item.Id).Select(w => (w, w.Member + ":questions"));
         foreach (var (questionId, status, seq, frozen) in humanWaits.PendingNotices(server, item.Id, current, (wait, agent, seq) => Notice(item, wait, agent, seq)))
         {
-            var batch = JsonSerializer.Deserialize(frozen, PRFactoryWorkItemJson.Default.PRFactoryStreamBatch)!;
+            var batch = WithoutLegacyLifecycle(JsonSerializer.Deserialize(frozen, PRFactoryWorkItemJson.Default.PRFactoryStreamBatch)!);
             PRFactoryStreamResponse response = null!;
             await Guard(item.Id, async () => response = await client.UploadStreamAsync(item.Id, batch, ct), ct);
             var agentName = batch.Lines[0].AgentName;
@@ -52,14 +48,7 @@ public sealed partial class PRFactoryWorkItems
 
     string Notice(PRFactoryWorkItem item, HumanWaitRecord wait, string agent, long seq)
     {
-        var state = wait.Status switch
-        {
-            "ending_turn" or "waiting" => "WaitingForHuman",
-            "answer_reserved" => "AnswerQueued",
-            "resumed" => "Running",
-            "applied" => "AnswerApplied",
-            _ => "Failed"
-        };
+        var state = HumanWaitLifecycle(wait.Status);
         var text = JsonSerializer.Serialize(new PRFactoryHumanWaitNotice(wait.QuestionId, wait.Question, wait.Status,
             wait.AnswerCommandId, wait.Error), PRFactoryWorkItemJson.Default.PRFactoryHumanWaitNotice);
         var backend = wait.JobId is null ? "external" : getJob(wait.JobId)?.Backend ?? "";
@@ -67,6 +56,28 @@ public sealed partial class PRFactoryWorkItems
             [new("member", item.Id.ToString("D"), wait.Member, backend, state, item.RepositoryId, wait.Member == "lead" ? null : "lead")],
             [new(agent, seq, DateTimeOffset.UtcNow, "Record", text, "human-wait")]), PRFactoryWorkItemJson.Default.PRFactoryStreamBatch);
     }
+
+    // PRFactory's lifecycle enum is deliberately coarser than ATF's durable question status.
+    internal static string HumanWaitLifecycle(string status) => status switch
+    {
+        "ending_turn" or "waiting" or "answer_reserved" => "Waiting",
+        "resumed" or "applied" => "Running",
+        _ => "Failed"
+    };
+
+    // Notices frozen before the lifecycle mapping carry states PRFactory rejected with 400, so none was stored.
+    internal static PRFactoryStreamBatch WithoutLegacyLifecycle(PRFactoryStreamBatch batch) => batch with
+    {
+        Events = [.. batch.Events.Select(e => e with
+        {
+            State = e.State switch
+            {
+                "WaitingForHuman" or "AnswerQueued" => "Waiting",
+                "AnswerApplied" => "Running",
+                var state => state
+            }
+        })]
+    };
 
     /// <summary>Open waits hold completion; a failed or cancelled wait finishes the team as a failure.</summary>
     HumanWaitRecord? BlockingWait(Guid id, out bool failed)

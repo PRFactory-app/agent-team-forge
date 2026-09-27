@@ -94,6 +94,64 @@ public sealed class ClaudeCodeBackendTests : IDisposable
     }
 
     [Fact]
+    public async Task Authentication_failure_with_success_subtype_is_a_terminal_login_error()
+    {
+        var backend = new ClaudeCodeBackend(FakeClaude("""
+            {"type":"assistant","is_api_error_message":true,"error":"authentication_failed","message":{"content":[{"type":"text","text":"Not logged in · Please run /login"}]}}
+            {"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login","session_id":"s-auth"}
+            """));
+
+        var evidence = await RunAsync(backend, new BackendRequest("j-auth", "c-auth", "work", ""));
+
+        Assert.Contains(new BackendEvidence.AgentError("agent_login_required", "Claude is not logged in; run `claude` and /login."), evidence);
+        Assert.DoesNotContain(evidence, e => e is BackendEvidence.ProtocolError or BackendEvidence.Result);
+    }
+
+    [Fact]
+    public async Task Rejected_five_hour_limit_with_success_subtype_reports_reset()
+    {
+        var backend = new ClaudeCodeBackend(FakeClaude("""
+            {"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1790533200}}
+            {"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790533200,"rateLimitType":"five_hour"}}
+            {"type":"assistant","is_api_error_message":true,"error":"rate_limit","message":{"content":[{"type":"text","text":"Usage limit"}]}}
+            {"type":"result","subtype":"success","is_error":true,"result":"Usage limit","session_id":"s-limit"}
+            """));
+
+        var evidence = await RunAsync(backend, new BackendRequest("j-limit", "c-limit", "work", ""));
+
+        Assert.Contains(new BackendEvidence.AgentError("agent_rate_limited", "usage limit reached; resets at 2026-09-27T18:20:00.0000000+00:00"), evidence);
+        Assert.DoesNotContain(evidence, e => e is BackendEvidence.ProtocolError or BackendEvidence.Result);
+    }
+
+    [Fact]
+    public async Task Successful_result_wins_over_a_rejected_limit_event()
+    {
+        var backend = new ClaudeCodeBackend(FakeClaude("""
+            {"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790533200,"rateLimitType":"five_hour","isUsingOverage":true}}
+            {"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s-overage"}
+            """));
+
+        var evidence = await RunAsync(backend, new BackendRequest("j-overage", "c-overage", "work", ""));
+
+        Assert.Contains(new BackendEvidence.Result("c-overage", "done"), evidence);
+        Assert.DoesNotContain(evidence, e => e is BackendEvidence.AgentError);
+    }
+
+    [Fact]
+    public async Task Allowed_limit_warning_does_not_fail_a_successful_turn()
+    {
+        var backend = new ClaudeCodeBackend(FakeClaude("""
+            {"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1790533200,"overageStatus":"rejected"}}
+            {"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s-ok"}
+            """));
+
+        var evidence = await RunAsync(backend, new BackendRequest("j-ok", "c-ok", "work", ""));
+
+        Assert.Contains(new BackendEvidence.Result("c-ok", "done"), evidence);
+        Assert.DoesNotContain(evidence, e => e is BackendEvidence.AgentError);
+    }
+
+    [Fact]
     public async Task Resumed_result_mentioning_a_missing_session_is_not_session_expired()
     {
         var backend = new ClaudeCodeBackend(FakeClaude("""{"type":"result","subtype":"success","is_error":false,"result":"fixed the session not found bug","session_id":"s-1"}"""));

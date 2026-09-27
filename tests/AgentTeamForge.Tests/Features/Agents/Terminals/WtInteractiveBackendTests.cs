@@ -34,6 +34,30 @@ public sealed class WtInteractiveBackendTests
     }
 
     [Fact]
+    public async Task Live_claude_limit_keeps_wt_tab_until_later_completion()
+    {
+        var details = "usage limit reached; resets at 2099-09-27T18:20:00Z";
+        var reader = new MutableReader(new InteractiveTranscript("claude-native", details,
+            [details], ApiError: new InteractiveApiError("agent_rate_limited", details, TurnEnded: true)));
+        var tabs = new FakeTabs();
+        var backend = new WtInteractiveBackend(tabs, reader, InteractiveAgentKind.Claude, Path.GetTempPath());
+        await using var run = backend.Start(new BackendRequest("job", "corr", "work", "") { WorkingDirectory = Path.GetTempPath() });
+        await run.DeliverAsync(CancellationToken.None);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await using var evidence = run.ReadEvidenceAsync(deadline.Token).GetAsyncEnumerator(deadline.Token);
+        Assert.True(await evidence.MoveNextAsync()); // Ack
+        Assert.True(await evidence.MoveNextAsync()); // Session
+        Assert.True(await evidence.MoveNextAsync());
+        Assert.Equal(new BackendEvidence.AccountLimit(details), evidence.Current);
+        Assert.False(tabs.Stopped);
+
+        reader.Output = new InteractiveTranscript("claude-native", "DONE", [details, "DONE"], Completed: true);
+        Assert.True(await evidence.MoveNextAsync());
+        Assert.Equal(new BackendEvidence.Result("corr", "DONE"), evidence.Current);
+        Assert.False(tabs.Stopped);
+    }
+
+    [Fact]
     public async Task Config_preflight_fails_before_any_tab_and_does_not_fence_the_job()
     {
         using var state = new TempStateDir();
@@ -700,6 +724,13 @@ public sealed class WtInteractiveBackendTests
     {
         public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started) => transcript;
         public string? FindPiSessionDirectory(string root, string sessionId) => Path.Combine(root, sessionId);
+    }
+
+    sealed class MutableReader(InteractiveTranscript? transcript) : IInteractiveTranscriptReader
+    {
+        public InteractiveTranscript? Output { get; set; } = transcript;
+        public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started) => Output;
+        public string? FindPiSessionDirectory(string root, string sessionId) => null;
     }
 
     sealed class UnverifiedReader(FakeTabs tabs) : IInteractiveTranscriptReader

@@ -34,6 +34,12 @@ public sealed class WorkerTokenRejectedException : Exception
     public WorkerTokenRejectedException() : base("PRFactory rejected the worker token") { }
 }
 
+public sealed class PRFactoryStreamRejectedException(HttpStatusCode statusCode)
+    : Exception($"PRFactory agent-stream rejected with HTTP {(int)statusCode}")
+{
+    public HttpStatusCode StatusCode { get; } = statusCode;
+}
+
 public sealed partial class PRFactoryClient(HttpClient httpClient)
 {
     // Server capability gate: single-repository worker contract, not the ATF product version.
@@ -237,6 +243,10 @@ public sealed partial class PRFactoryClient(HttpClient httpClient)
             batch, PRFactoryWorkItemJson.Default.PRFactoryStreamBatch, ct);
         RejectToken(response.StatusCode);
         RejectLostLease(response.StatusCode, id);
+        if ((int)response.StatusCode is >= 400 and < 500 and not (408 or 429))
+        {
+            throw new PRFactoryStreamRejectedException(response.StatusCode);
+        }
         response.EnsureSuccessStatusCode();
         var receipt = await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryStreamResponse, ct);
         if (receipt?.Accepted != true)
@@ -282,10 +292,10 @@ public sealed partial class PRFactoryClient(HttpClient httpClient)
         }
     }
 
-    public async Task FailAsync(Guid id, Guid? lease, string error, CancellationToken ct)
+    public async Task FailAsync(Guid id, Guid? lease, string error, CancellationToken ct, bool shouldRetry = false)
     {
         using var response = await httpClient.PostAsJsonAsync($"api/worker/fail/{id:D}",
-            new PRFactoryFailureRequest(error, string.Empty, false, string.Empty, lease), PRFactoryWorkItemJson.Default.PRFactoryFailureRequest, ct);
+            new PRFactoryFailureRequest(error, string.Empty, shouldRetry, string.Empty, lease), PRFactoryWorkItemJson.Default.PRFactoryFailureRequest, ct);
         RejectToken(response.StatusCode);
         RejectLostLease(response.StatusCode, id);
         response.EnsureSuccessStatusCode();
