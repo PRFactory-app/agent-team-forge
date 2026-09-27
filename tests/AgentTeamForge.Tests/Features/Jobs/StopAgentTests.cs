@@ -10,6 +10,26 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 public sealed class StopAgentTests
 {
     [Fact]
+    public void Stopping_idle_parent_cancels_its_queued_deferred_child()
+    {
+        using var f = new JobFixture();
+        var parent = f.Submit("parent");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        f.Store.RecordSession(run, "native-1");
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
+            .Execute(new FollowUpRequest(parent.JobId, "next", "child") { Defer = true }).Job!;
+        f.Store.Complete(run, "done");
+        var backend = new OwnedBackend();
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+
+        Assert.Equal("agent_stopped", new StopAgent(f.Store, JobFixture.Operator, catalog).Execute(parent.JobId).Outcome);
+        var stored = f.NewStore().GetJob(child.JobId)!;
+        Assert.Equal((JobStatus.Cancelled, "parent_stopped", 0), (stored.Status, stored.ReasonCode, stored.Attempts));
+        Assert.Null(f.Store.BeginNextAttempt());
+    }
+
+    [Fact]
     public void Completed_job_can_stop_only_its_owned_idle_session()
     {
         using var f = new JobFixture();

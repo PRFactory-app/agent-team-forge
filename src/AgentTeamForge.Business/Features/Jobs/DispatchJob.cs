@@ -345,7 +345,8 @@ public sealed class DispatchJob : IDisposable
                             return;
                         }
 
-                        claim = store.BeginNextAttempt([.. _running.Keys]);
+                        claim = store.BeginNextAttempt([.. _running.Keys],
+                            (correlations, pids) => OrphanedBackendProcess.HasMarkedProcess(correlations, pids));
                     }
                 }
                 finally

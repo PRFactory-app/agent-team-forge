@@ -26,6 +26,7 @@ public sealed class StopAgent(JobStore store, BoundPrincipal principal, BackendC
             {
                 return JobResult.Fail(JobErrors.InvalidRequest);
             }
+            store.CancelDeferredChildren(job.JobId);
             var backend = backends.Resolve(job.Backend);
             var stopped = false;
             if (backend is HerdrInteractiveBackend herdr)

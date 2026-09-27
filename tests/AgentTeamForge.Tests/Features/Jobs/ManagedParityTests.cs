@@ -9,6 +9,90 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 
 public sealed class ManagedParityTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Stop_parent_cancels_queued_deferred_children_but_interrupt_preserves_them(bool running)
+    {
+        using var f = new JobFixture();
+        var parent = f.Submit("first");
+        if (running)
+        {
+            var claim = f.Store.BeginNextAttempt()!;
+            f.Store.RecordSession(new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation), "native");
+        }
+        var follow = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept());
+        var first = follow.Execute(new FollowUpRequest(parent.JobId, "next", "child-1") { Defer = true }).Job!;
+        var second = follow.Execute(new FollowUpRequest(parent.JobId, "later", "child-2") { Defer = true }).Job!;
+        var stop = new StopJob(f.Store, JobFixture.Operator, _ => { }, interruptRunning: _ => { });
+        stop.Execute(parent.JobId);
+
+        foreach (var child in new[] { first, second })
+        {
+            var stored = f.NewStore().GetJob(child.JobId)!;
+            Assert.Equal((JobStatus.Cancelled, "parent_stopped", 0), (stored.Status, stored.ReasonCode, stored.Attempts));
+            Assert.Empty(f.Store.GetRuns(child.JobId));
+        }
+        Assert.Null(f.Store.BeginNextAttempt());
+
+        // An interrupt is meant to hand the session to its queued follow-up.
+        using var other = new JobFixture();
+        var interruptedParent = other.Submit("first");
+        var interruptedClaim = other.Store.BeginNextAttempt()!;
+        other.Store.RecordSession(new RunRef(interruptedParent.JobId, interruptedClaim.RunId,
+            interruptedClaim.Generation, interruptedClaim.Correlation), "native");
+        var pending = new FollowUpJob(other.Store, JobFixture.Operator, other.Accept())
+            .Execute(new FollowUpRequest(interruptedParent.JobId, "next", "child") { Defer = true }).Job!;
+        new StopJob(other.Store, JobFixture.Operator, _ => { }, interruptRunning: _ => { })
+            .Execute(interruptedParent.JobId, true);
+        Assert.Equal(JobStatus.Queued, other.Store.GetJob(pending.JobId)!.Status);
+    }
+
+    [Fact]
+    public void Deferred_child_of_failed_parent_waits_for_orphaned_process_check_before_claim()
+    {
+        using var f = new JobFixture();
+        var parent = f.Submit("first");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        f.Store.RecordSession(run, "native");
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
+            .Execute(new FollowUpRequest(parent.JobId, "next", "child") { Defer = true }).Job!;
+        f.Store.EndUnsuccessfully(run, JobStatus.Failed, "backend_eof");
+
+        Assert.Null(f.Store.BeginNextAttempt(hasMarkedProcess: (correlations, pids) => true));
+        Assert.Equal((JobStatus.Queued, 0), (f.Store.GetJob(child.JobId)!.Status, f.Store.GetJob(child.JobId)!.Attempts));
+        var checkedMarker = false;
+        var resumed = f.Store.BeginNextAttempt(hasMarkedProcess: (correlations, pids) =>
+        {
+            checkedMarker = true;
+            Assert.Equal([claim.Correlation], correlations);
+            Assert.Empty(pids);
+            return false;
+        });
+        Assert.True(checkedMarker);
+        Assert.Equal(child.JobId, resumed!.Job.JobId);
+        Assert.Equal("native", f.Store.GetJob(parent.JobId)!.SessionId);
+    }
+
+    [Fact]
+    public void Stop_of_completed_parent_cancels_queued_deferred_child()
+    {
+        using var f = new JobFixture();
+        var parent = f.Submit("first");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        f.Store.RecordSession(run, "native");
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
+            .Execute(new FollowUpRequest(parent.JobId, "next", "child") { Defer = true }).Job!;
+        f.Store.Complete(run, "done");
+
+        Assert.Equal("unchanged", new StopJob(f.Store, JobFixture.Operator, _ => { }).Execute(parent.JobId).Outcome);
+        Assert.Equal((JobStatus.Cancelled, "parent_stopped"),
+            (f.Store.GetJob(child.JobId)!.Status, f.Store.GetJob(child.JobId)!.ReasonCode));
+        Assert.Null(f.Store.BeginNextAttempt());
+    }
+
     [Fact]
     public async Task Deferred_turn_waits_for_parent_and_survives_store_restart_exactly_once()
     {

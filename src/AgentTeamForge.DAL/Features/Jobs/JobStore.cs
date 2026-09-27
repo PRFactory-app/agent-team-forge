@@ -192,15 +192,19 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     /// running (the parent itself, a job holding that session, or another
     /// follow-up of a job holding it), so turns on one session never overlap.
     /// </summary>
-    public AttemptClaim? BeginNextAttempt(IReadOnlyCollection<string>? settlingJobs = null) => Write(connection =>
+    public AttemptClaim? BeginNextAttempt(IReadOnlyCollection<string>? settlingJobs = null,
+        Func<string[], int[], bool>? hasMarkedProcess = null) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         // A terminal commit can precede backend disposal (retaining an interactive
         // tab or reaping a headless child). The dispatcher still owns those turns.
         var settling = settlingJobs?.Select((id, index) => ("$settling" + index, (object?)id)).ToArray() ?? [];
         var settlingSql = settling.Length == 0 ? "0" : "k.job_id IN (" + string.Join(",", settling.Select(p => p.Item1)) + ")";
-        var jobId = QueryString(connection, tx, $"""
-            SELECT i.job_id FROM dispatch_intents i JOIN jobs j ON j.job_id = i.job_id
+        var candidates = new List<(string JobId, string? ParentId, string? ParentStatus, string? ParentSession, string Options)>();
+        using (var command = Command(connection, tx, $"""
+            SELECT i.job_id, p.job_id, p.status, p.session_id, j.options
+            FROM dispatch_intents i JOIN jobs j ON j.job_id = i.job_id
+            LEFT JOIN jobs p ON p.job_id = j.parent_job_id
             WHERE i.state='unattempted' AND j.status='queued'
               AND NOT EXISTS (SELECT 1 FROM jobs p WHERE p.job_id=j.parent_job_id AND p.status='queued')
               AND (j.queue_deadline IS NULL OR j.queue_deadline > $now) AND NOT EXISTS (
@@ -208,8 +212,36 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 WHERE p.job_id = j.parent_job_id
                   AND k.backend=p.backend AND (k.job_id = p.job_id OR k.session_id = p.session_id OR EXISTS (
                       SELECT 1 FROM jobs q WHERE q.job_id = k.parent_job_id AND q.session_id = p.session_id)))
-            ORDER BY i.created_at, i.rowid LIMIT 1
-            """, [("$now", Now()), .. settling]);
+            ORDER BY i.created_at, i.rowid
+            """, [("$now", Now()), .. settling]))
+        using (var reader = command.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                candidates.Add((reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2), reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetString(4)));
+            }
+        }
+        string? jobId = null;
+        foreach (var (candidateJobId, parentId, parentStatus, parentSession, options) in candidates)
+        {
+            if (parentStatus == JobStatus.Failed && options.Contains(";defer=1", StringComparison.Ordinal))
+            {
+                if (parentSession is null || hasMarkedProcess is null) { continue; }
+                using var runs = Command(connection, tx, "SELECT correlation, backend_pid FROM runs WHERE job_id=$id", ("$id", parentId));
+                using var reader = runs.ExecuteReader();
+                var correlations = new List<string>();
+                var pids = new List<int>();
+                while (reader.Read())
+                {
+                    correlations.Add(reader.GetString(0));
+                    if (!reader.IsDBNull(1)) { pids.Add(reader.GetInt32(1)); }
+                }
+                if (correlations.Count == 0 || hasMarkedProcess([.. correlations], [.. pids])) { continue; }
+            }
+            jobId = candidateJobId;
+            break;
+        }
         if (jobId is null)
         {
             return null;
@@ -308,7 +340,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
         var running = job.Status == JobStatus.Running;
         var changed = CancelInTransaction(connection, tx, job, reason);
-        if (changed)
+        var childrenChanged = reason == "interrupted" ? 0 : CancelDeferredChildren(connection, tx, jobId);
+        if (changed || childrenChanged > 0)
         {
             tx.Commit();
             job = GetJob(connection, null, jobId)!;
@@ -316,6 +349,31 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
         return new CancelOutcome(job, running, changed);
     });
+
+    /// <summary>Stops queued deferred turns of an idle agent before its session is closed.</summary>
+    public void CancelDeferredChildren(string parentJobId) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        CancelDeferredChildren(connection, tx, parentJobId);
+        tx.Commit();
+        return 0;
+    });
+
+    static int CancelDeferredChildren(SqliteConnection connection, SqliteTransaction tx, string parentJobId)
+    {
+        var ids = new List<string>();
+        using (var command = Command(connection, tx,
+            "SELECT job_id FROM jobs WHERE parent_job_id=$id AND status='queued' AND instr(options, ';defer=1')>0", ("$id", parentJobId)))
+        using (var reader = command.ExecuteReader())
+        {
+            while (reader.Read()) { ids.Add(reader.GetString(0)); }
+        }
+        foreach (var id in ids)
+        {
+            CancelInTransaction(connection, tx, GetJob(connection, tx, id)!, "parent_stopped");
+        }
+        return ids.Count;
+    }
 
     /// <summary>Records a verified stop of an uncertain run and releases its session fence.</summary>
     public CancelOutcome CancelReconciled(string jobId, string principal, string team) => Write(connection =>
@@ -337,6 +395,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             UPDATE jobs SET status='cancelled', session_fenced=0, reason_code='stopped', updated_at=$now WHERE job_id=$id;
             INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'cancelled', $now);
             """, ("$id", jobId), ("$now", now));
+        CancelDeferredChildren(connection, tx, jobId);
         tx.Commit();
         return new CancelOutcome(GetJob(connection, null, jobId), false, true);
     });
@@ -655,12 +714,6 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
     static string? NullableText(SqliteDataReader reader, int ordinal) => !reader.IsDBNull(ordinal) && reader.GetFieldType(ordinal) == typeof(string)
         ? reader.GetString(ordinal) : null;
-
-    static string? QueryString(SqliteConnection connection, SqliteTransaction? tx, string sql, params (string, object?)[] parameters)
-    {
-        using var command = Command(connection, tx, sql, parameters);
-        return command.ExecuteScalar() as string;
-    }
 
     static long Scalar(SqliteConnection connection, SqliteTransaction? tx, string sql, params (string, object?)[] parameters)
     {
