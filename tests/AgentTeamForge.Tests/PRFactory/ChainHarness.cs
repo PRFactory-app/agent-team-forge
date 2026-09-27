@@ -59,13 +59,16 @@ sealed class ChainHarness : IDisposable
     public PRFactoryAuthority Authority { get; }
     public string WorkspaceRoot => root.File("workspaces");
     public AccountAdmission? Accounts { get; set; }
+    public string[]? ExternalMembers { get; set; }
+    public AgentTeamForge.Business.Features.External.ExternalTeam External => new(
+        new AgentTeamForge.DAL.Features.External.ExternalMemberStore(Database), new AgentTeamForge.DAL.Features.Wake.WakeStore(Database));
     public HumanWaitStore HumanWaits => new(Database);
     public HumanWait HumanWait => new(HumanWaits, Store, Teams, Connector);
     public List<string> Logs { get; } = [];
 
     public PRFactoryWorkItems Adapter() => new(ChainServer.Url,
-        [new RepositoryMapping(Server.Item.RepositoryId, Repo)], Teams, Server.Client(),
-        Accept.Execute, Store.GetJob, () => { }, log: Logs.Add, stopJob: Stop.Execute, followUp: FollowUp.Execute,
+        [new RepositoryMapping(Server.Item.RepositoryId, Repo, ExternalMembers)], Teams, Server.Client(),
+        Accept.Execute, Store.GetJob, () => { }, log: Logs.Add, externalTeam: External, stopJob: Stop.Execute, followUp: FollowUp.Execute,
         authority: Authority, workspaces: new PRFactoryWorkspace(Workspaces), workspaceRoot: WorkspaceRoot, accounts: Accounts,
         publications: new PRFactoryPublicationStore(Database),
         interaction: new PRFactoryInteraction(HumanWaits, Teams, Store, FollowUp.Execute), humanWaits: HumanWaits);

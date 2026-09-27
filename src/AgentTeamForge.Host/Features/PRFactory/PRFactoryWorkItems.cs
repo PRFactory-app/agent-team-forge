@@ -358,6 +358,7 @@ public sealed partial class PRFactoryWorkItems(
         }
         var waitForManaged = managedMembers.Length > 0 || externalNames.Length == 0;
         if (allJobs.Count != managedMembers.Length + 1 || !externalRepliesDrained || !outputDrained
+            || (workspace is { ReadOnly: false } && allJobs.Any(j => j.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation))
             || (waitForManaged
                 ? allJobs.Any(j => j.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation)
                 : teams.ExternalMembers(server, item.Id).Any(e => !e.Closed)))

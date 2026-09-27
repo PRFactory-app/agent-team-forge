@@ -6,6 +6,30 @@ namespace AgentTeamForge.Tests.PRFactory;
 /// <summary>Claim → owned workspace → agent commits → artefacts → verified push → completion, and cancellation.</summary>
 public sealed class PublicationChainTests
 {
+    [Fact]
+    public async Task External_members_leaving_cannot_publish_while_the_managed_lead_is_still_running()
+    {
+        var item = Implementation();
+        item.TeamPlan = new PRFactoryTeamPlan
+        {
+            Members = [new PRFactoryTeamMember { Name = "visitor", Role = "Reviewer" }]
+        };
+        using var h = new ChainHarness(item) { ExternalMembers = ["visitor"] };
+        await h.TickAsync();
+        var (lead, run) = h.StartOne();
+        ChainHarness.Commit(lead.Cwd!, "partial.txt", "still working");
+        var external = h.Teams.External(ChainServer.Url, item.Id, "visitor")!;
+        var token = h.External.Join(external.TeamId, external.TicketToken).Member!.MemberToken;
+        Assert.True(h.External.Leave(token).Ok);
+        await h.TickAsync();
+        Assert.Null(h.RemoteHead("prfactory/" + item.Id));
+        Assert.Empty(h.Server.Completions);
+        Assert.Equal(JobStatus.Running, h.Store.GetJob(lead.JobId)!.Status);
+        Assert.True(h.Store.Complete(run, "done"));
+        await h.TickAsync();
+        Assert.Single(h.Server.Completions);
+    }
+
     static PRFactoryWorkItem Implementation() => new()
     {
         Id = Guid.NewGuid(),
