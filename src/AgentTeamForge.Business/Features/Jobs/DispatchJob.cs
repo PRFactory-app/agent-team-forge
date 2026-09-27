@@ -34,6 +34,7 @@ public sealed class DispatchJob : IDisposable
     readonly Action<string> log;
     readonly JobLogs? jobLogs;
     readonly ManagedChildContext? childContext;
+    readonly string? piHome;
     string? _haltReason;
 
     /// <summary>Single-backend convenience: serves jobs whose backend is "fake".</summary>
@@ -42,7 +43,7 @@ public sealed class DispatchJob : IDisposable
     {
     }
 
-    public DispatchJob(JobStore store, BackendCatalog backends, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log, JobLogs? jobLogs = null, ManagedChildContext? childContext = null)
+    public DispatchJob(JobStore store, BackendCatalog backends, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log, JobLogs? jobLogs = null, ManagedChildContext? childContext = null, string? piHome = null)
     {
         // Validated before the daemon reports readiness; CancelAfter would otherwise fault the loop.
         if (limits.MaxFakeRuntime <= TimeSpan.Zero || limits.MaxFakeRuntime > MaxAllowedRuntime)
@@ -60,6 +61,7 @@ public sealed class DispatchJob : IDisposable
         this.log = log;
         this.jobLogs = jobLogs;
         this.childContext = childContext;
+        this.piHome = piHome;
     }
 
     /// <summary>
@@ -445,6 +447,11 @@ public sealed class DispatchJob : IDisposable
                 Output = jobLogs?.BeginRun(claim.Job.JobId, claim.RunId, claim.Job.Backend),
             };
             request = childContext?.Prepare(request) ?? request;
+            if (claim.Job.Backend == BackendCatalog.Pi && request.ManagedMcpConfig is not null && !PiMcpAdapter.IsInstalled(piHome))
+            {
+                End(run, JobStatus.Failed, "pi_mcp_adapter_missing", PiMcpAdapter.InstallHint);
+                return;
+            }
             var starting = Task.Run(() => backend.Start(request), CancellationToken.None);
             try
             {
@@ -494,6 +501,9 @@ public sealed class DispatchJob : IDisposable
                             break;
                         case BackendEvidence.ProtocolError error:
                             End(run, error.Code == JobErrors.SessionExpired ? JobStatus.Failed : JobStatus.NeedsReconciliation, error.Code);
+                            return;
+                        case BackendEvidence.NotStarted rejected:
+                            End(run, JobStatus.Failed, "backend_not_started", rejected.Details);
                             return;
                         case BackendEvidence.EndOfOutput:
                             End(run, JobStatus.NeedsReconciliation, "backend_eof");
