@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using AgentTeamForge.Business.Features.Processes;
 
 namespace AgentTeamForge.Host.Features.Wake;
 
@@ -11,7 +12,7 @@ internal static class MacHostAncestry
         {
             var start = new ProcessStartInfo("/bin/ps") { UseShellExecute = false, RedirectStandardOutput = true };
             foreach (var arg in new[] { "-axo", "pid=,ppid=,comm=" }) { start.ArgumentList.Add(arg); }
-            using var process = Process.Start(start);
+            using var process = NonInteractiveProcess.Start(start);
             if (process is null) { return null; }
             var output = process.StandardOutput.ReadToEndAsync();
             if (!process.WaitForExit(3000)) { process.Kill(); return null; }

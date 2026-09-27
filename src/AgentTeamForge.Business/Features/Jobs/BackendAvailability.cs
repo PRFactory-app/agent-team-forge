@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using AgentTeamForge.Business.Features.Processes;
 
 namespace AgentTeamForge.Business.Features.Jobs;
 
@@ -36,18 +37,16 @@ public static class BackendAvailability
     {
         try
         {
-            using var process = new Process
+            var info = new ProcessStartInfo("cursor-agent")
             {
-                StartInfo = new ProcessStartInfo("cursor-agent")
-                {
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                }
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
             };
-            process.StartInfo.ArgumentList.Add("status");
-            if (!process.Start()) { return "unknown"; }
+            info.ArgumentList.Add("status");
+            using var process = NonInteractiveProcess.Start(info);
+            if (process is null) { return "unknown"; }
             var output = process.StandardOutput.ReadToEndAsync();
             var error = process.StandardError.ReadToEndAsync();
             if (!process.WaitForExit(3000))
