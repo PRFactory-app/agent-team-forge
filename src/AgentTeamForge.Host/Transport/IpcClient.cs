@@ -49,10 +49,11 @@ public sealed class IpcClient
         var credential = Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(_state.CredentialFile)).Trim();
         using var budget = new CancellationTokenSource(_budget, _timeProvider);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, budget.Token);
+        var windowsPipe = OperatingSystem.IsWindows();
         var requestWriteStarted = false;
         try
         {
-            if (OperatingSystem.IsWindows())
+            if (windowsPipe)
             {
                 // ConnectAsync polls an absent pipe until the deadline; a missing daemon must fail fast.
                 if (!await WindowsPipe.AppearsAsync(() => WindowsPipe.Exists(_state.Socket), TimeSpan.FromMilliseconds(250), deadline.Token))
@@ -93,12 +94,12 @@ public sealed class IpcClient
         catch (UnauthorizedAccessException)
         {
             return requestWriteStarted ? new IpcResponse(false, IpcProtocol.OutcomeUnknown)
-                : new IpcResponse(false, IpcProtocol.AccessDenied, ErrorDetail: AccessDeniedDetail);
+                : AccessDeniedResponse(windowsPipe);
         }
         catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AccessDenied)
         {
             return requestWriteStarted ? new IpcResponse(false, IpcProtocol.OutcomeUnknown)
-                : new IpcResponse(false, IpcProtocol.AccessDenied, ErrorDetail: AccessDeniedDetail);
+                : AccessDeniedResponse(windowsPipe);
         }
         catch (FrameException ex)
         {
@@ -112,4 +113,7 @@ public sealed class IpcClient
     }
 
     internal const string AccessDeniedDetail = "Access to the daemon endpoint was denied. Check its owner and permissions.";
+
+    internal static IpcResponse AccessDeniedResponse(bool windowsPipe) =>
+        new(false, IpcProtocol.AccessDenied, ErrorDetail: windowsPipe ? WindowsPipe.AccessDeniedMessage : AccessDeniedDetail);
 }
