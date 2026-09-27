@@ -76,7 +76,10 @@ public sealed record PRFactoryAtfAcceptanceResponse(string? AtfJobId, System.Tex
 public sealed record PRFactoryLeaseHeartbeatRequest(Guid LeaseToken);
 public sealed record PRFactoryArtefactFile(string FileName, string Content, string? Kind);
 public sealed record PRFactoryArtefactRequest(List<PRFactoryArtefactFile> Artefacts, Guid? LeaseToken);
-public sealed record PRFactoryCompletionRequest(bool Success, string? ResultMarkdown, string? ResultBranch, string? ResultCommitSha, string Metadata, Guid? LeaseToken);
+public sealed record PRFactoryCompletionRequest(bool Success, string? ResultMarkdown, string? ResultBranch, string? ResultCommitSha, string Metadata, Guid? LeaseToken,
+    PRFactoryRemotePublication? Publication = null);
+// remote-publication-v1: the branch/head were pushed and verified with ls-remote; the server opens the PR remotely.
+public sealed record PRFactoryRemotePublication(bool Remote, string Branch, string HeadSha, bool Verified);
 public sealed record PRFactoryFailureRequest(string ErrorMessage, string ErrorDetails, bool ShouldRetry, string PartialResult, Guid? LeaseToken);
 public sealed record PRFactoryCompletionResponse(bool Accepted);
 public sealed record PRFactoryFailureResponse(bool Acknowledged);

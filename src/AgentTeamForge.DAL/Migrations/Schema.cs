@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 20;
+    public const int CurrentVersion = 21;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -277,7 +277,10 @@ static class Schema
     /// <summary>v20: account usage windows, parked turns and claim reservations (slice 9a).</summary>
     internal const string V20 = AccountAdmissionMigration.Sql;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20];
+    /// <summary>v21: PRFactory branch publication intents and verified receipts (slice 6).</summary>
+    internal const string V21 = PRFactoryPublicationMigration.Sql;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

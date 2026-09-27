@@ -7,7 +7,8 @@ namespace AgentTeamForge.Host.Features.PRFactory;
 
 // Worker wire contract ported from PRFactory.Worker/Api/PRFactoryClient.cs
 // and Models/MachineRegistrationModels.cs.
-public sealed record RegisterMachineRequest(string MachineName, string MachineFingerprint, string? OperatingSystem, string? WorkerVersion);
+public sealed record RegisterMachineRequest(string MachineName, string MachineFingerprint, string? OperatingSystem, string? WorkerVersion,
+    string[]? Capabilities = null);
 public sealed class RegisterMachineResponse
 {
     public Guid MachineId { get; set; }
@@ -37,6 +38,11 @@ public sealed class PRFactoryClient(HttpClient httpClient)
 {
     // Server capability gate: single-repository worker contract, not the ATF product version.
     const string WorkerVersion = "1.0.0";
+    // Only semantics that are wired and tested end to end: explicit server dispositions stop and fence
+    // owned work; completion carries a pushed, ls-remote-verified branch for remote-only PR creation.
+    // Not yet: workspace-continuity-v1 (no authoritative start SHA on the wire), human-wait-v1,
+    // readiness-parking-v1 (no auth/model probes), multi-repo-v1, attachments-v1.
+    public static readonly string[] Capabilities = ["authority-disposition-v1", "remote-publication-v1"];
     bool legacyLogged;
     public enum AcceptanceResult { Confirmed, NotFound, Conflict }
     /// <summary>Server disposition: accepted, completed, cancelled, revoked or reconciliation-needed.</summary>
@@ -65,7 +71,7 @@ public sealed class PRFactoryClient(HttpClient httpClient)
         var request = new RegisterMachineRequest(Environment.MachineName,
             $"{Environment.MachineName}:{Environment.UserName}",
             System.Runtime.InteropServices.RuntimeInformation.OSDescription,
-            WorkerVersion);
+            WorkerVersion, Capabilities);
         using var response = await httpClient.PostAsJsonAsync("api/worker/machines/register", request,
             PRFactoryWireJson.Default.RegisterMachineRequest, ct);
         RejectToken(response.StatusCode);
@@ -262,10 +268,10 @@ public sealed class PRFactoryClient(HttpClient httpClient)
     }
 
     public async Task CompleteAsync(Guid id, Guid? lease, string? markdown, CancellationToken ct,
-        string? branch = null, string? commit = null)
+        string? branch = null, string? commit = null, PRFactoryRemotePublication? publication = null)
     {
         using var response = await httpClient.PostAsJsonAsync($"api/worker/complete/{id:D}",
-            new PRFactoryCompletionRequest(true, markdown, branch, commit, string.Empty, lease), PRFactoryWorkItemJson.Default.PRFactoryCompletionRequest, ct);
+            new PRFactoryCompletionRequest(true, markdown, branch, commit, string.Empty, lease, publication), PRFactoryWorkItemJson.Default.PRFactoryCompletionRequest, ct);
         RejectToken(response.StatusCode);
         RejectLostLease(response.StatusCode, id);
         response.EnsureSuccessStatusCode();

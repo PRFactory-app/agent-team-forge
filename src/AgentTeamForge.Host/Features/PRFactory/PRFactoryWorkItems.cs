@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Business.Features.Jobs.Publication;
 using AgentTeamForge.Business.Features.External;
 using AgentTeamForge.DAL.Features.Jobs;
 
@@ -13,7 +14,7 @@ public sealed partial class PRFactoryWorkItems(
     ExternalTeam? externalTeam = null, Func<string, JobResult>? stopJob = null,
     Func<FollowUpRequest, JobResult>? followUp = null, JobLogs? jobLogs = null,
     PRFactoryAuthority? authority = null, PRFactoryWorkspace? workspaces = null, string? workspaceRoot = null,
-    AccountAdmission? accounts = null, int maxAcceptedTeams = 10)
+    AccountAdmission? accounts = null, int maxAcceptedTeams = 10, PRFactoryPublicationStore? publications = null)
 {
     // Parked turns share one account binding per backend until configured accounts exist.
     public const string DefaultAccount = "default";
@@ -490,6 +491,38 @@ public sealed partial class PRFactoryWorkItems(
         return held;
     }
 
+    async Task<PublicationReceipt?> PublishAsync(PRFactoryTeamRecord team, PRFactoryWorkItem item, WorkspaceSnapshot? workspace,
+        CancellationToken ct)
+    {
+        if (publications is null || workspace is not
+            {
+                RepositoryId: { } repositoryId, Remote: { } remote, InternalBranch: { } internalBranch,
+                PublishBranch: { } publishBranch, BaseSha: { } baseSha
+            })
+        {
+            return null; // Scratch or unconfigured: nothing to publish, never an invented repository.
+        }
+        var request = new PublicationRequest($"{server}|{item.Id:D}|{repositoryId}", server, item.Id, item.LeaseToken ?? Guid.Empty,
+            team.MachineId?.ToString("D") ?? "legacy", team.AtfJobId ?? "legacy", repositoryId, workspace.Key, workspace.LeadPath,
+            remote, internalBranch, publishBranch, baseSha, item.Type ?? "", workspace.ReadOnly || item.ReadOnly,
+            string.Equals(item.TicketSource, "ProjectInit", StringComparison.OrdinalIgnoreCase), item.TicketArtefactFolder);
+        if (!BranchPublisher.ShouldPublish(request))
+        {
+            return null;
+        }
+        using var publisher = new BranchPublisher(publications, async (id, effect, token) =>
+        {
+            if (authority is null)
+            {
+                await effect();
+                return true;
+            }
+            // Unconfirmed authority defers (retried next tick), it never fails the phase.
+            return await authority.RunAsync(id, effect, token) ? true : throw new PRFactoryFencedException(id);
+        });
+        return await publisher.PublishAsync(request, ct);
+    }
+
     string WorkspaceKey(Guid id) => $"{server}|{id:D}";
 
     async Task<WorkspaceSnapshot> PrepareWorkspaceAsync(PRFactoryWorkItem item, RepositoryMapping repo,
@@ -656,6 +689,21 @@ public sealed partial class PRFactoryWorkItems(
         var leadId = teams.ManagedMembers(server, item.Id).LastOrDefault(m => m.Member == "lead")?.JobId;
         var job = leadId is null ? null : getJob(leadId);
         cwd = job is null ? cwd : JobWorktree.WorkingDirectory(job) ?? cwd;
+        var workspace = workspaces?.Get(WorkspaceKey(item.Id));
+        PublicationReceipt? receipt = null;
+        if (success && teams.ArtefactDelivery(server, item.Id)?.Failure is null)
+        {
+            // Push the frozen lead head and verify the remote before any artefact upload or completion;
+            // a retry after a lost response re-verifies the same intent instead of producing another commit.
+            try
+            {
+                receipt = await PublishAsync(team, item, workspace, ct);
+            }
+            catch (InvalidOperationException ex)
+            {
+                (success, error) = (false, $"Publication of {workspace?.PublishBranch} failed: {ex.Message} Local output retained in {workspace?.LeadPath}");
+            }
+        }
         var delivery = teams.ArtefactDelivery(server, item.Id);
         if (delivery is null)
         {
@@ -707,9 +755,11 @@ public sealed partial class PRFactoryWorkItems(
             {
                 result = null;
             }
-            await Guard(item.Id, () => client.CompleteAsync(item.Id, item.LeaseToken, result, ct,
-                !item.ReadOnly && cwd is not null ? JobWorktree.Branch(cwd) : null,
-                !item.ReadOnly && cwd is not null ? JobWorktree.Head(cwd) : null), ct);
+            // Owned workspaces report only the verified public branch; the internal atf/team branch never leaves.
+            var (branch, commit) = receipt is not null ? (receipt.Intent.PublishBranch, receipt.Intent.HeadSha)
+                : workspace is not null || item.ReadOnly || cwd is null ? (null, null) : (JobWorktree.Branch(cwd), JobWorktree.Head(cwd));
+            var publication = receipt is null ? null : new PRFactoryRemotePublication(true, branch!, commit!, true);
+            await Guard(item.Id, () => client.CompleteAsync(item.Id, item.LeaseToken, result, ct, branch, commit, publication), ct);
             StopManagedJobs(item.Id);
             teams.Finish(server, item.Id, "completed");
             await Observe(item.Id, "completed", null, ct); // Also closes retained interactive sessions.

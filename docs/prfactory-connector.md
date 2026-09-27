@@ -42,8 +42,8 @@ intake; local jobs continue.
 
 - **Claim → jobs.** A claimed work item is stored in `prfactory_teams` and
   acknowledged to the server (`atf-acceptance`) before dispatch. The recipe's
-  lead and members become ordinary ATF jobs in the mapped checkout, in the
-  launch mode chosen at setup. Each member submission is keyed by server, work
+  lead and members become ordinary ATF jobs in an owned team workspace (see
+  below), in the launch mode chosen at setup. Each member submission is keyed by server, work
   item, member and turn (`prfactory_members`), so a repeated claim never
   starts a second job. One mapped repository per work item; multi-repository
   work is refused.
@@ -56,9 +56,8 @@ intake; local jobs continue.
   agent-stream endpoint with persisted positions. Artifacts are uploaded before
   completion. Managed uploads persist the exact pending batch before HTTP, so
   a lost acknowledgement or daemon restart replays the same sequence numbers.
-- **Writable work.** Writable jobs run in ATF job worktrees. Completion reports
-  the lead's actual worktree branch and HEAD, including after a follow-up or
-  branch switch; read-only work omits branch and commit metadata.
+- **Writable work.** See *Workspaces and publication* below. Completion reports
+  only a pushed, verified public branch and HEAD; other phases omit them.
 - **Wake** stays local: ATF's commit-then-notice mechanism
   ([ADR 0005](adr/0005-native-wake.md)). PRFactory only receives persisted
   events.
@@ -101,6 +100,61 @@ registration, polling and claiming. This is PRFactory's single-repository
 compatibility level, independent of the ATF product version; it does not claim
 the newer multi-repository capability.
 
+## Authority and cancellation
+
+Each connected server has one long-lived authority gate (`prfactory_authority`).
+Acceptance reads carry the server's disposition (`accepted`, `completed`,
+`cancelled`, `revoked`, `reconciliation-needed`; older servers are mapped from
+the work-item status and anything unknown becomes reconciliation). Every side
+effect — job submit, follow-up, external invite/send, stream/ack upload,
+artefact upload, push, completion, failure — is admitted individually and only
+while the team is freshly confirmed. The dispatcher launches a queued connector
+turn only under that confirmation, so restart, outage or fencing hold new turns.
+
+A cancel, revoke or completion from the server durably fences first, then stops
+every owned turn (including deferred follow-ups and retained interactive
+sessions) and revokes external members without touching their processes. Stops
+retry every tick and after restart until the dispatcher proves the run has
+unwound. Reconciliation pauses and quiesces work but keeps polling for a
+definitive disposition; fencing is sticky. Local files are never deleted. A
+push that was already admitted cannot be undone; its receipt is kept and the
+completion is still refused. A rejected token fences all owned work.
+
+## Workspaces and publication
+
+Every claim gets an owned checkout set under `<state>/prfactory-workspaces`,
+created from the fetched base, never from the user's working copy. The mapping's
+`remote`/`baseBranch` pin origin and base (otherwise read once from the
+checkout's `origin` and the remote's HEAD). ProjectInit resumes its existing
+`init/<KEY>` branch; `StartFromBranch` handover without an authoritative start
+SHA fails visibly. Remote, base, start SHA, internal and publish branch are
+recorded before dispatch and reused on restart. Children get separate
+checkouts; when all succeed, their commits are merged into the lead branch in
+declared order (conflicts fail with the file list, nothing is auto-resolved),
+their ticket documents are staged, and the lead gets one finalization turn.
+
+Implementation, CodeReview, writable CustomStep and ProjectInit publish: the
+lead must have committed its code (untracked files in the ticket artefact
+folder are the only exclusion); the frozen HEAD is pushed without force to the
+publish branch (`prfactory/<work-item>` or the server's `PublishBranch`) using
+the user's own Git credentials, verified with `ls-remote`, and recorded before
+completion. Completion sends that branch/SHA plus a verified `publication`
+block so PRFactory can open the PR without a server checkout. Dirty trees and
+push failures fail the phase; read-only phases never push.
+
+## Account limits and backlog
+
+A connector turn whose backend reports a usage limit is parked with its
+session; other connector turns on that backend stay queued while other
+backends continue. After the reported reset the same session resumes once and
+the team completes normally; an unknown reset waits for explicit recovery.
+Accepted-but-unfinished teams are capped (10) and polling asks only for free
+slots. Pruning never removes turns of accepted teams or unresumed parks.
+
+Registration advertises `authority-disposition-v1` and `remote-publication-v1`.
+Not yet wired: workspace continuity with authoritative start SHAs, mid-turn
+human wait, readiness probes, multi-repository work and binary attachments.
+
 ## Phase artefacts
 
 Built-in phases collect top-level Markdown and HTML documents from the latest
@@ -108,8 +162,8 @@ lead job's ticket folder. Decomposition additionally collects JSON. Filename
 stems determine kinds, including `qa`/`questions` → `qa-po` for TicketRefinement
 and `qa-dev` otherwise, and numbered plan/code review reports. Custom steps
 upload only their named `ExpectedOutput` as `custom-step`, matching the worker's
-custom-step result contract. Child deliverables must be present in the lead
-workspace; the connector does not merge independent child worktrees.
+custom-step result contract. Child documents are staged for the lead's
+finalization turn; the lead chooses the canonical copies in its ticket folder.
 
 Planning adds `plan-basis.json` with the repository ID, actual branch/HEAD and
 tracked paths when Git can report them. As with the worker, an unreadable basis

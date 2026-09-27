@@ -243,6 +243,7 @@ public static class DaemonCommand
         using var teamWorkspaces = new TeamWorkspace(new PRFactoryWorkspaceStore(database));
         var connectorWorkspaces = new PRFactoryWorkspace(teamWorkspaces);
         var workspaceRoot = Path.Combine(state.Path, "prfactory-workspaces");
+        var connectorPublications = new PRFactoryPublicationStore(database);
         // One long-lived authority per connected server; ticks construct the adapter afresh.
         PRFactoryAuthority? authority = null;
         var accounts = new AccountAdmission(new AccountWindowStore(database));
@@ -280,7 +281,8 @@ public static class DaemonCommand
                     cwd => connectorSessions.Start(cwd, "prfactory:" + settings.Url).SessionId, Log, externalTeam,
                     connectorStop.Execute,
                     new FollowUpJob(store, connectorPrincipal, connectorAccept,
-                        dispatcher.InterruptRunning).Execute, jobLogs, authority, connectorWorkspaces, workspaceRoot, accounts).TickAsync(machineId, ct);
+                        dispatcher.InterruptRunning).Execute, jobLogs, authority, connectorWorkspaces, workspaceRoot, accounts,
+                        publications: connectorPublications).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
             },
             onTokenRejected: ct => authority?.TransportFailureAsync(Guid.Empty, System.Net.HttpStatusCode.Unauthorized, ct) ?? Task.CompletedTask);
