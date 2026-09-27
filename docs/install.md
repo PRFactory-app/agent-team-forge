@@ -15,12 +15,29 @@ curl -fsSLO https://github.com/PRFactory-app/agent-team-forge/releases/download/
 sh install.sh --version 0.0.1
 ```
 
+For the Windows x64 tester build, run this in Windows PowerShell 5.1 or newer
+without administrator rights:
+
+```powershell
+irm https://github.com/PRFactory-app/agent-team-forge/releases/latest/download/install.ps1 | iex
+atf setup --mode wt
+```
+
+If `atf` is not found, open a new terminal after installation. The Windows
+installer adds `%USERPROFILE%\.local\share\agentteamforge\bin` to your user
+PATH. It keeps state in `%USERPROFILE%\.local\state\agentteamforge`. To pin a
+release, download its `install.ps1` asset and run
+`powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.0.1`.
+Rerun the one-liner to upgrade after active jobs finish.
+Windows arm64 is recognized by the installer but requires a matching
+`win-arm64` release archive; none is published by the current workflow.
+
 The installer downloads the archive and its checksum from the same tag. This
 detects transfer corruption; it is not an independent publisher signature, and
 the downloaded installer is trusted before archive verification.
 
 Install and log in to whichever backend CLIs you use: Claude Code, Codex, or Pi.
-On the first interactive run, setup asks you to choose Herdr for visible agent
+On Linux, the first interactive setup asks you to choose Herdr for visible agent
 windows or headless for background agents. If Herdr cannot run, setup explains
 why and recommends headless; it never switches modes silently. For unattended
 setup, pass `--mode headless` or `--mode herdr` explicitly. Setup registers each
@@ -30,7 +47,7 @@ while preserving other settings. Reload installed clients afterward. Run
 `"$HOME/.local/bin/atf" doctor` to check the result. The daemon starts on first
 use; `atf start` is optional.
 
-The installer does not edit your shell startup files. The absolute command above
+The Unix installer does not edit your shell startup files. The absolute command above
 works even when `~/.local/bin` is absent from PATH. To use `atf` directly, add
 `export PATH="$HOME/.local/bin:$PATH"` to `~/.bashrc` (Bash) or `~/.zshrc`
 (Zsh), then open a new shell.
@@ -66,7 +83,8 @@ to finish first. It preserves the profile, launch mode, state, and stable MCP
 executable path; reload agent clients after an upgrade. If setup used a custom
 `--state-dir`, pass the same directory to the installer.
 
-Run `"$HOME/.local/bin/atf" uninstall` to remove the binaries, ATF-owned client
-registrations, Pi wake entry, and login autostart. Shared Pi adapter packages,
-unrelated client settings, and state remain. To remove the selected state as well,
-use `uninstall --purge`; use `--state-dir DIR` for a custom state directory.
+Run `"$HOME/.local/bin/atf" uninstall` (or `atf uninstall` on Windows) to remove
+the binaries, ATF-owned client registrations, Pi wake entry, and login
+autostart. Shared Pi adapter packages, unrelated client settings, and state
+remain. To remove the selected state as well, use `uninstall --purge`; use
+`--state-dir DIR` for a custom state directory.
