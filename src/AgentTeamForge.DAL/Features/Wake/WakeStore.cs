@@ -4,7 +4,8 @@ namespace AgentTeamForge.DAL.Features.Wake;
 
 public sealed record WakeRegistration(string Key, long Generation, string Kind, string Address, string Secret, string Home);
 public sealed record WakeRegistrationStatus(bool Registered, string? Key, long? Generation, string? Kind, string? Address, bool Usable = false);
-public sealed record WakeSnapshot(WakeRegistration Target, int Unread, long LatestSeq, long NotifiedSeq, DateTimeOffset? LastSuccess, bool Outstanding, bool External = false);
+public sealed record WakeSnapshot(WakeRegistration Target, int Unread, long LatestSeq, long NotifiedSeq, DateTimeOffset? LastSuccess, bool Outstanding, bool External = false,
+    string? ParkJobId = null, string? ReaderId = null);
 
 /// <summary>Committed wake routing and unread state. A posted notice is only a doorbell, never a read receipt.</summary>
 public sealed class WakeStore(JobDatabase database)
@@ -119,6 +120,7 @@ public sealed class WakeStore(JobDatabase database)
             FROM wake_targets t
             JOIN wake_jobs w ON w.target_key=t.target_key AND w.read_at IS NULL
             JOIN jobs j ON j.job_id=w.job_id AND j.status IN ('completed','failed','needs_reconciliation','cancelled')
+                AND (j.reason_code IS NULL OR j.reason_code!='interactive_completion_unobserved')
             JOIN events e ON e.job_id=j.job_id AND e.kind IN ('completed','failed','needs_reconciliation','cancelled')
             WHERE t.active=1 GROUP BY t.target_key;
             """;
@@ -158,11 +160,41 @@ public sealed class WakeStore(JobDatabase database)
         return result;
     }
 
+    public IReadOnlyList<WakeSnapshot> PendingParks()
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT t.target_key,t.generation,t.kind,t.address,t.secret,t.home,s.session_id,j.job_id
+            FROM jobs j
+            JOIN lead_sessions s ON s.session_id=j.lead_session_id AND s.closed_at IS NULL
+            JOIN wake_targets t ON t.target_key=s.wake_key AND t.active=1
+            WHERE j.status='needs_reconciliation' AND j.reason_code='interactive_completion_unobserved'
+              AND NOT EXISTS (SELECT 1 FROM wake_park_acks a WHERE a.reader_id=s.session_id AND a.job_id=j.job_id)
+            """;
+        using var reader = command.ExecuteReader();
+        var result = new List<WakeSnapshot>();
+        while (reader.Read())
+        {
+            var target = new WakeRegistration(reader.GetString(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetString(5));
+            result.Add(new WakeSnapshot(target, 1, 1, 0, null, false, ParkJobId: reader.GetString(7), ReaderId: reader.GetString(6)));
+        }
+        return result;
+    }
+
     public bool MarkNotified(WakeSnapshot snapshot, DateTimeOffset now)
     {
         using var connection = database.OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = snapshot.External ? """
+        command.CommandText = snapshot.ParkJobId is not null ? """
+            INSERT OR IGNORE INTO wake_park_acks(reader_id,job_id,notified_at)
+            SELECT $reader,$job,$now WHERE EXISTS (
+                SELECT 1 FROM jobs j JOIN lead_sessions s ON s.session_id=j.lead_session_id
+                JOIN wake_targets t ON t.target_key=s.wake_key
+                WHERE j.job_id=$job AND s.session_id=$reader AND s.closed_at IS NULL
+                  AND j.status='needs_reconciliation' AND j.reason_code='interactive_completion_unobserved'
+                  AND t.target_key=$key AND t.generation=$generation AND t.active=1);
+            """ : snapshot.External ? """
             UPDATE wake_targets SET external_notified_seq=max(external_notified_seq,$seq), last_external_success=$now
             WHERE target_key=$key AND generation=$generation AND active=1;
             """ : """
@@ -173,6 +205,11 @@ public sealed class WakeStore(JobDatabase database)
         command.Parameters.AddWithValue("$now", now.ToString("O"));
         command.Parameters.AddWithValue("$key", snapshot.Target.Key);
         command.Parameters.AddWithValue("$generation", snapshot.Target.Generation);
+        if (snapshot.ParkJobId is not null)
+        {
+            command.Parameters.AddWithValue("$job", snapshot.ParkJobId);
+            command.Parameters.AddWithValue("$reader", snapshot.ReaderId!);
+        }
         return command.ExecuteNonQuery() == 1;
     }
 

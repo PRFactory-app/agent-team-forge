@@ -1,6 +1,7 @@
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.DAL.Features.Wake;
+using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Features.Sessions;
 using AgentTeamForge.DAL.Features.External;
 using AgentTeamForge.Business.Features.External;
@@ -44,6 +45,85 @@ public sealed class WakeTests
         var claim = fixture.Store.BeginNextAttempt()!;
         Assert.True(fixture.Store.Complete(new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "secret result"));
         return claim.Job.JobId;
+    }
+
+    static string Park(JobFixture fixture, string leadSessionId, string key)
+    {
+        var accepted = fixture.Accept().Execute(new SubmitJobRequest(key, "work", null, false)
+        { LeadSessionId = leadSessionId });
+        Assert.Equal("accepted", accepted.Outcome);
+        var claim = fixture.Store.BeginNextAttempt()!;
+        Assert.True(fixture.Store.EndUnsuccessfully(
+            new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation),
+            JobStatus.NeedsReconciliation, "interactive_completion_unobserved"));
+        return claim.Job.JobId;
+    }
+
+    [Fact]
+    public async Task Interactive_park_notifies_once()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/park", "parent=1");
+        var target = wake.Register("codex:park", "codex", "thread", "", "/tmp");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        Park(fixture, lead.SessionId, "park-once");
+        Assert.Empty(wake.Pending());
+
+        var poster = new FakePoster();
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+
+        Assert.Single(poster.Attempts);
+        Assert.Contains("idle without a native completion", poster.Attempts[0].Notice);
+        Assert.Empty(wake.PendingParks());
+    }
+
+    [Fact]
+    public async Task Registration_after_interactive_park_catches_up()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/park", "parent=2");
+        Park(fixture, lead.SessionId, "park-before-registration");
+        Assert.Empty(wake.PendingParks());
+
+        var target = wake.Register("codex:late", "codex", "thread", "", "/tmp");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        var poster = new FakePoster();
+        await new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero)
+            .TickAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(target, Assert.Single(poster.Attempts).Target);
+    }
+
+    [Fact]
+    public async Task Acknowledged_park_stays_quiet_after_reregistration_and_restart()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/park", "parent=3");
+        var first = wake.Register("codex:park", "codex", "old", "", "/tmp");
+        sessions.BindWake(lead.SessionId, first.Key, first.Generation);
+        Park(fixture, lead.SessionId, "park-acked");
+        var firstPoster = new FakePoster();
+        await new WakeCoordinator(wake, firstPoster, _ => { }, coalesce: TimeSpan.Zero)
+            .TickAsync(TestContext.Current.CancellationToken);
+        Assert.Single(firstPoster.Attempts);
+
+        var second = wake.Register("codex:new", "codex", "new", "", "/tmp");
+        sessions.BindWake(lead.SessionId, second.Key, second.Generation);
+        var reopened = AgentTeamForge.DAL.Sqlite.JobDatabase.Open(fixture.Database.Path, TimeSpan.FromSeconds(2));
+        var restarted = new WakeStore(reopened);
+        Assert.Empty(restarted.PendingParks());
+        var poster = new FakePoster();
+        await new WakeCoordinator(restarted, poster, _ => { }, coalesce: TimeSpan.Zero)
+            .TickAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(poster.Attempts);
     }
 
     [Fact]
