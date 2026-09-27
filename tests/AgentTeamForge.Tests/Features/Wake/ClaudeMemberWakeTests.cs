@@ -107,6 +107,11 @@ public sealed class ClaudeMemberWakeTests
     {
         var mailbox = new ClaudeWakeMailbox();
         var target = new WakeRegistration("external:test", 1, "claude", "/tmp/123.sock", "secret", "123");
+        // No relay has polled this channel yet: fail fast instead of holding the coordinator.
+        Assert.False(await mailbox.PostAsync(target, "notice only", TestContext.Current.CancellationToken));
+        Assert.Null(mailbox.Take(target.Address, "wrong", target.Home));
+        Assert.False(await mailbox.PostAsync(target, "notice only", TestContext.Current.CancellationToken));
+        Assert.Null(mailbox.Take(target.Address, target.Secret, target.Home));
         var pending = mailbox.PostAsync(target, "notice only", TestContext.Current.CancellationToken);
         Assert.Null(mailbox.Take(target.Address, "wrong", target.Home));
         Assert.Null(mailbox.Take(target.Address, target.Secret, "456"));
