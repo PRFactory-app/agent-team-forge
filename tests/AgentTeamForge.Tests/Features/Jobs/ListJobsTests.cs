@@ -11,6 +11,33 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 public sealed class ListJobsTests
 {
     [Fact]
+    public void Console_scope_lists_every_lead_and_connector_but_no_unrelated_principal()
+    {
+        using var f = new JobFixture();
+        var sessions = new LeadSessionStore(f.Database);
+        var workspace = Environment.CurrentDirectory;
+        var first = sessions.Start(workspace, "console-first");
+        var second = sessions.Start(workspace, "console-second");
+        var leadOne = f.Accept().Execute(new SubmitJobRequest("lead-one", "one", null, false)
+        { LeadSessionId = first.SessionId, Cwd = workspace }).Job!;
+        var leadTwo = f.Accept().Execute(new SubmitJobRequest("lead-two", "two", null, false)
+        { LeadSessionId = second.SessionId, Cwd = workspace }).Job!;
+        var connector = f.Accept(principal: new BoundPrincipal("prfactory", "connector", "connector-lead"))
+            .Execute(new SubmitJobRequest("connector", "three", null, false)).Job!;
+        f.Accept(principal: new BoundPrincipal("unrelated", "other", "agent"))
+            .Execute(new SubmitJobRequest("other", "four", null, false));
+
+        var normal = f.List().Execute(new ListJobsRequest()).Page!;
+        var console = f.List().Execute(new ListJobsRequest { IncludeConnector = true, OrderByActivity = true }).Page!;
+
+        Assert.Equal(2, normal.Jobs.Count);
+        Assert.Equal(new[] { leadOne.JobId, leadTwo.JobId, connector.JobId }.Order(),
+            console.Jobs.Select(j => j.JobId).Order());
+        Assert.Equal(2, console.Jobs.Count(j => j.LeadSessionId is not null && !j.Connector));
+        Assert.Equal(connector.JobId, Assert.Single(console.Jobs, j => j.Connector).JobId);
+    }
+
+    [Fact]
     public void Malformed_legacy_row_is_skipped_without_losing_page_cursor()
     {
         using var f = new JobFixture();

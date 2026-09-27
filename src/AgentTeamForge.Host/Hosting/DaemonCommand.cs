@@ -211,7 +211,7 @@ public static class DaemonCommand
             new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
             new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
             (token, question, key) => PRFactoryInteraction.RequestFromManagedChild(humanWait, store, authorityRows,
-                externalTeam.ManagedChildName(token), question, key));
+                externalTeam.ManagedChildName(token), question, key), externalMembers, new GetJob(store, connectorPrincipal));
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,

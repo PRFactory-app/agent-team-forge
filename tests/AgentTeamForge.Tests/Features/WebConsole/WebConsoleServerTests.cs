@@ -439,6 +439,8 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
         var call = Assert.Single(_forwarded);
         Assert.Equal((IpcProtocol.JobList, "needs_reconciliation", "job_012345"),
             (call.Op, call.Status, call.Cursor));
+        Assert.True(call.IncludeConnector);
+        Assert.Equal(ListJobs.MaxPageSize, call.Limit);
     }
 
     [Fact]
