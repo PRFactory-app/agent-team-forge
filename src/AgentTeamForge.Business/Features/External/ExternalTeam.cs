@@ -212,6 +212,17 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
         };
     }
 
+    public ExternalResult SetClaudeWake(string? token, string? address, string? channelSecret, string? hostPid)
+    {
+        var secret = MemberSecret(token);
+        if (secret is null) { return new("invalid_request"); }
+        if (!members.IsActive(secret)) { return new("membership_revoked"); }
+        if (!ClaudeChannel.Valid(address, channelSecret, hostPid)) { return new("invalid_claude_wake"); }
+        var key = "external:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(secret))).ToLowerInvariant();
+        var registration = wake.Register(key, "claude", address!, channelSecret!, hostPid!);
+        return members.SetMemberWake(secret, key) ? new(WakeGeneration: registration.Generation) : new("membership_revoked");
+    }
+
     public ExternalResult SetWake(string? token, string? threadId, string? home)
     {
         var secret = MemberSecret(token);

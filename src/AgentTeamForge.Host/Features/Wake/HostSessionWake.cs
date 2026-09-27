@@ -11,7 +11,7 @@ public static class HostSessionWake
     public static IpcRequest? Resolve(StateDirectory state)
     {
         var host = OperatingSystem.IsLinux() ? NearestHost()
-            : OperatingSystem.IsWindows() ? WindowsHostAncestry.NearestHost() : null;
+            : OperatingSystem.IsWindows() ? WindowsHostAncestry.NearestHost() : MacHostAncestry.NearestHost();
         if ((host is null && !OperatingSystem.IsLinux() || host?.Kind == "codex")
             && Environment.GetEnvironmentVariable("CODEX_THREAD_ID") is { Length: > 0 } thread)
         {
@@ -20,7 +20,7 @@ public static class HostSessionWake
             return ForCodexThread(thread, home);
         }
 
-        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsWindows())
+        if (ClaudeChannel.Transport(ClaudeChannel.Platform) is null)
         {
             return null;
         }
@@ -30,28 +30,10 @@ public static class HostSessionWake
             return null;
         }
 
-        if (host.Value.Kind == "claude" && OperatingSystem.IsLinux())
+        if (host.Value.Kind == "claude")
         {
-            var socket = Environment.GetEnvironmentVariable("CLAUDE_CODE_MESSAGING_SOCKET");
-            var token = Environment.GetEnvironmentVariable("CLAUDE_CODE_MESSAGING_TOKEN");
-            if (string.IsNullOrEmpty(socket) || string.IsNullOrEmpty(token) || !File.Exists(socket))
-            {
-                return null;
-            }
-            var name = Path.GetFileName(socket);
-            if (name.EndsWith(".sock", StringComparison.Ordinal) && int.TryParse(name[..^5], out var socketPid)
-                && socketPid != host.Value.Pid)
-            {
-                return null;
-            }
-            return new IpcRequest
-            {
-                Op = IpcProtocol.WakeRegister,
-                WakeKey = "claude:" + socket,
-                WakeKind = "claude",
-                WakeAddress = socket,
-                WakeSecret = token
-            };
+            return ForClaudeChannel(host, Environment.GetEnvironmentVariable("CLAUDE_CODE_MESSAGING_SOCKET"),
+                Environment.GetEnvironmentVariable("CLAUDE_CODE_MESSAGING_TOKEN"));
         }
 
         if (host.Value.Kind == "pi")
@@ -66,6 +48,27 @@ public static class HostSessionWake
             };
         }
         return null;
+    }
+
+    internal static IpcRequest? ForClaudeChannel((int Pid, string Kind)? host, string? address, string? token,
+        string? platform = null)
+    {
+        var platformName = platform ?? ClaudeChannel.Platform;
+        var pid = host?.Pid.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (host?.Kind != "claude" || !ClaudeChannel.Valid(address, token, pid, platformName)
+            || ClaudeChannel.Transport(platformName) == "unix" && !File.Exists(address))
+        {
+            return null;
+        }
+        return new IpcRequest
+        {
+            Op = IpcProtocol.WakeRegister,
+            WakeKey = "claude:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(address!))).ToLowerInvariant(),
+            WakeKind = "claude",
+            WakeAddress = address,
+            WakeSecret = token,
+            WakeHome = pid
+        };
     }
 
     /// <summary>Same-user, self-reported thread ID as in the reference; Codex does not always pass it to MCP servers.</summary>

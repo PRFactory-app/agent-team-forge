@@ -103,8 +103,10 @@ When a job finishes, its result is stored first; then the lead's host gets a
 short notice naming `list_jobs` and `get_job`. The notice carries no result.
 See [ADR 0005](adr/0005-native-wake.md).
 
-- **Claude Code** (Linux): works after setup. Not available on Windows or
-  macOS; poll `get_job` there.
+- **Claude Code:** its own MCP bridge posts the native notice; no hook is
+  installed. Linux is live-tested. Windows named pipes and macOS Unix sockets
+  are implemented but runtime-untested. A session without an exported native
+  channel uses manual reading.
 - **Codex:** if Codex does not pass `CODEX_THREAD_ID` to MCP, read it with a
   shell tool and call `register_codex_wake(thread_id="...")` once before
   submitting. A Codex lead in a new repository may show **Trust this folder**
@@ -142,7 +144,12 @@ an external member and exchange messages with it.
 3. For Codex queue notices, the member reads `CODEX_THREAD_ID` and absolute
    `CODEX_HOME` in its session and calls
    `external_set_wake(member_token=..., codex_thread_id=..., codex_home=...)`.
-   Claude Desktop members have no wake and poll `external_read`.
+   Claude members register their own host channel automatically on join when
+   available; `external_set_wake(member_token=..., kind="claude")` re-registers
+   it. No channel credentials are model arguments. An empty `codex_thread_id`
+   without `kind` clears either backend's registration. A Desktop session
+   without exported channel credentials or a recognizable Claude ancestor
+   reports the manual `external_read` fallback.
 4. The lead sends with `send_message(to="codex-desktop", text=...)` and reads
    replies with `read_messages()`. The member reads with
    `external_read(member_token=...)` and replies with

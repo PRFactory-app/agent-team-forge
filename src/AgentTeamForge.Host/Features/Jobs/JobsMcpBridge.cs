@@ -98,7 +98,15 @@ public static class JobsMcpBridge
     const string MemberReadSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"from_agent":{"type":"string"},"since_seq":{"type":"integer","minimum":0},"full":{"type":"boolean"},"limit":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0}},"required":["member_token"]}""";
     const string LeadReadSchema = """{"type":"object","properties":{"from_agent":{"type":"string"},"since_seq":{"type":"integer","minimum":0},"full":{"type":"boolean"},"limit":{"type":"integer","minimum":0,"maximum":10000},"max_chars":{"type":"integer","minimum":0}}}""";
     const string LeaveSchema = """{"type":"object","properties":{"member_token":{"type":"string"}},"required":["member_token"]}""";
-    const string MemberWakeSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"codex_thread_id":{"type":"string"},"codex_home":{"type":"string"}},"required":["member_token","codex_thread_id"]}""";
+    internal static IpcRequest ClaudeMemberWake(IpcRequest request, IpcRequest? host) => request with
+    {
+        WakeKind = "claude",
+        WakeAddress = host?.WakeKind == "claude" ? host.WakeAddress : null,
+        WakeSecret = host?.WakeKind == "claude" ? host.WakeSecret : null,
+        WakeHome = host?.WakeKind == "claude" ? host.WakeHome : null
+    };
+
+    const string MemberWakeSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"kind":{"type":"string","enum":["claude","codex"]},"codex_thread_id":{"type":"string"},"codex_home":{"type":"string"}},"required":["member_token"]}""";
 
     public static async Task<int> RunAsync(StateDirectory state, bool testProfile, string? managedContextPath = null)
     {
@@ -206,7 +214,7 @@ public static class JobsMcpBridge
             new() { Name = "join_team", Description = "Join a lead session using its one-time ticket. Save member_token for subsequent calls.", InputSchema = Parse(JoinSchema) },
             new() { Name = "external_send", Description = "Send a durable message to the joined lead using member_token.", InputSchema = Parse(MemberSendSchema) },
             new() { Name = "external_read", Description = "Read this member's inbox using member_token and an optional cursor.", InputSchema = Parse(MemberReadSchema) },
-            new() { Name = "external_set_wake", Description = "Opt this member into Codex queue notices. Pass an empty codex_thread_id to clear.", InputSchema = Parse(MemberWakeSchema) },
+            new() { Name = "external_set_wake", Description = "Register native member notices: kind=claude uses this host’s own channel; kind=codex uses codex_thread_id. Pass an empty codex_thread_id without kind to clear. No hooks are installed.", InputSchema = Parse(MemberWakeSchema) },
             new() { Name = "leave_team", Description = "Revoke this external membership without stopping its process.", InputSchema = Parse(LeaveSchema) },
             new() { Name = "send_message", Description = "Send a durable message to your ATF parent (team-lead, managed children only) or a joined external member of your own lead session. Use follow_up for managed downstream work. This tool does not reach win-agent-teams members.", InputSchema = Parse(LeadSendSchema) },
             new() { Name = "read_messages", Description = "Read durable messages from external members of this lead session.", InputSchema = Parse(LeadReadSchema) },
@@ -233,9 +241,14 @@ public static class JobsMcpBridge
                     if (externalOnly)
                     {
                         var (memberRequest, rejection) = Map(call.Name, args, testProfile);
+                        if (memberRequest?.Op == IpcProtocol.ExternalSetWake && String(args, "kind") == "claude")
+                        {
+                            memberRequest = ClaudeMemberWake(memberRequest, wakeTarget);
+                        }
                         var memberResponse = memberRequest is null || tools.All(tool => tool.Name != call.Name)
                             ? new IpcResponse(false, rejection ?? IpcProtocol.UnknownOp)
                             : await SendAsync(memberRequest, cancellationToken);
+                        memberResponse = await BindJoinedClaudeAsync(call.Name, memberResponse, cancellationToken);
                         return new CallToolResult
                         {
                             IsError = !memberResponse.Ok,
@@ -299,6 +312,10 @@ public static class JobsMcpBridge
                     {
                         var (ipc, rejection) = Map(call.Name, args, testProfile);
                         ipc = RouteParent(ipc, parentMemberToken);
+                        if (ipc?.Op == IpcProtocol.ExternalSetWake && String(args, "kind") == "claude")
+                        {
+                            ipc = ClaudeMemberWake(ipc, wakeTarget);
+                        }
                         if (ipc is not null && wakeTarget is not null && wakeGeneration is not null
                             && ipc.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp or IpcProtocol.JobGet)
                         {
@@ -310,6 +327,7 @@ public static class JobsMcpBridge
                                 or IpcProtocol.ExternalSetWake or IpcProtocol.ExternalLeave ? ipc
                                 : ipc with { LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
                     }
+                    response = await BindJoinedClaudeAsync(call.Name, response, cancellationToken);
                     return new CallToolResult
                     {
                         IsError = !response.Ok,
@@ -318,6 +336,22 @@ public static class JobsMcpBridge
                 },
             },
         };
+
+        async Task<IpcResponse> BindJoinedClaudeAsync(string name, IpcResponse response, CancellationToken cancellationToken)
+        {
+            if (name != "join_team" || !response.Ok || response.MemberToken is not { } memberToken) { return response; }
+            if (wakeTarget?.WakeKind != "claude")
+            {
+                return response with { ErrorDetail = "Native Claude channel unavailable; use external_read or register Codex wake." };
+            }
+            var registered = await SendAsync(ClaudeMemberWake(new IpcRequest
+            { Op = IpcProtocol.ExternalSetWake, MemberToken = memberToken }, wakeTarget), cancellationToken);
+            return response with
+            {
+                WakeGeneration = registered.WakeGeneration,
+                ErrorDetail = registered.Ok ? null : "Claude wake unavailable; use external_read. " + registered.Error
+            };
+        }
 
         async Task BindWakeAsync(CancellationToken cancellationToken)
         {
@@ -339,7 +373,10 @@ public static class JobsMcpBridge
             await BindWakeAsync(CancellationToken.None);
         }
         await using var server = McpServer.Create(new StdioServerTransport("agentteamforge"), options);
-        await server.RunAsync();
+        using var relayLifetime = new CancellationTokenSource();
+        var relay = ClaudeWakeRelay.RunAsync(wakeTarget, client, relayLifetime.Token);
+        try { await server.RunAsync(); }
+        finally { await relayLifetime.CancelAsync(); await relay; }
         return 0;
     }
 

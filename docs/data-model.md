@@ -104,6 +104,10 @@ These are the atomic operations in `DAL/Features/Jobs/JobStore.cs`:
 | `wake_targets` | Native wake target per `target_key`: `kind` (`claude`, `codex`, `pi`), `address`, `secret`, `home`, increasing `generation`, notification progress (`notified_seq`, `external_notified_seq`, last success times) and `active` |
 | `wake_jobs` | Jobs routed to a wake target; `read_at` is set when the lead reads the result. Unread rows keep a job from being pruned |
 
+For Claude registrations, the kind-specific `home` field stores the owning
+host PID. The relay's transient notice offers are in memory; the existing
+SQLite unread messages/jobs are the durable source for retry after failure.
+
 ## External members
 
 Desktop sessions that join a lead with a one-time ticket
