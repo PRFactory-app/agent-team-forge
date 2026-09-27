@@ -1,5 +1,7 @@
 using System.Buffers.Binary;
 using System.Net.Sockets;
+using AgentTeamForge.Business;
+using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Transport;
 using AgentTeamForge.Tests.Support;
 
@@ -44,8 +46,8 @@ public sealed class PrivateBoundaryScenarios
             Assert.Equal(IpcProtocol.FrameTooLarge, response!.Error);
         }
 
-        var oversized = await rig.SubmitAsync("big", new string('x', 5_000));
-        Assert.Equal("invalid_request", oversized.Error);
+        var oversized = await rig.SubmitAsync("big", new string('x', new SpikeLimits().MaxInstructionChars + 1));
+        Assert.Equal(JobErrors.InstructionTooLong, oversized.Error);
 
         var logs = string.Join('\n', rig.DaemonLog);
         Assert.DoesNotContain(rig.Credential, logs, StringComparison.Ordinal);
