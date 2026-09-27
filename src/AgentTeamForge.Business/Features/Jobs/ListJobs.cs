@@ -11,7 +11,7 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// Reports committed state only: `running` means an attempt-start is committed,
 /// not that a live process was observed. Never dispatches, acknowledges or resends.
 /// </summary>
-public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? logs = null)
+public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? logs = null, bool interactiveLaunch = false)
 {
     public const int DefaultPageSize = 20;
     public const int MaxPageSize = 50;
@@ -44,7 +44,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
         var hasMore = rows.Count > limit;
         var jobs = rows.Take(limit).Select(r => new JobSummary(r.JobId, r.Status, r.ReasonCode, r.Attempts, r.AcceptedAt, r.UpdatedAt)
         {
-            Startup = StartupProgress.Read(store, r.JobId, r.Status, r.Backend, r.ReasonCode),
+            Startup = StartupProgress.Read(store, r.JobId, r.Status, r.Backend, r.ReasonCode, interactiveLaunch),
             WorktreePath = r.WorktreePath,
             WorktreeBranch = r.WorktreeBranch,
             Backend = r.Backend,
