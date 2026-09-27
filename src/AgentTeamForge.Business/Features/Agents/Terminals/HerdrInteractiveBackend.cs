@@ -44,7 +44,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         }
 
         var started = DateTimeOffset.UtcNow;
-        if (request.ResumeSessionId is { } resumeId && HasIdleSession(resumeId) && _liveSessions.TryTake(resumeId, out var live))
+        if (request.ResumeSessionId is { } resumeId && RetainedTabMayBeLive(resumeId) && _liveSessions.TryTake(resumeId, out var live))
         {
             var (model, effort) = InteractiveLaunch.Selection(request.Options);
             if (live.Model == model && live.Effort == effort)
@@ -79,6 +79,14 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult() != InteractiveAgentStatus.Gone;
     });
+
+    // Only a verified Gone tab is dropped; a slow or failed probe keeps the prior
+    // reuse path so it cannot surface as a start timeout that fences the session.
+    bool RetainedTabMayBeLive(string sessionId)
+    {
+        try { return HasIdleSession(sessionId); }
+        catch (Exception e) when (e is HerdrLaunchException or InteractiveTerminalUnavailableException or IOException or OperationCanceledException) { return true; }
+    }
 
     public bool StopIdleSession(string sessionId) => _liveSessions.Stop(sessionId);
 
