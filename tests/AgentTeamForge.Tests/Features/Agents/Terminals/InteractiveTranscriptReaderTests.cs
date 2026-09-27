@@ -12,6 +12,8 @@ public sealed class InteractiveTranscriptReaderTests
         $$$"""{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"{{{text}}}"}}""";
     static string ClaudeAssistant(string text, string? stop) =>
         $$$"""{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":{{{(stop is null ? "null" : "\"" + stop + "\"")}}},"content":[{"type":"text","text":"{{{text}}}"}]}}""";
+    static string ClaudeInbox(string text) =>
+        $$$"""{"type":"user","isMeta":true,"isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"Another Claude session sent a message:\n{{{text}}}"}}""";
     const string ClaudeApiError = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","isApiErrorMessage":true,"error":"authentication_failed","message":{"role":"assistant","model":"<synthetic>","stop_reason":"end_turn","content":[{"type":"text","text":"Not logged in · Please run /login"}]}}""";
     const string ClaudeConnectionLost = """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","isApiErrorMessage":true,"error":"server_error","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"API Error: Connection lost mid-response."}]}}""";
     const string ClaudeTurnDuration = """{"type":"system","subtype":"turn_duration","durationMs":1000,"isMeta":false,"sessionId":"claude-native"}""";
@@ -151,6 +153,22 @@ public sealed class InteractiveTranscriptReaderTests
         var ended = reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError;
         Assert.True(ended?.TurnEnded);
         Assert.Equal(TimeSpan.FromSeconds(1), ended?.QuietWindow);
+    }
+
+    [Fact]
+    public void Claude_inbox_user_record_is_a_receipt_and_next_inbox_turn_is_a_boundary()
+    {
+        using var state = new TempStateDir();
+        var dir = Directory.CreateDirectory(Path.Combine(state.Path, "claude", "projects", "scratch"));
+        File.WriteAllLines(Path.Combine(dir.FullName, "claude-native.jsonl"),
+        [
+            ClaudeUser("initial"), ClaudeAssistant("ready", "end_turn"),
+            ClaudeInbox("follow-up atf-corr:turn-1"), ClaudeAssistant("delivered", "end_turn"),
+            ClaudeInbox("later atf-corr:turn-2"), ClaudeAssistant("later", "end_turn")
+        ]);
+        var receipt = InteractiveTranscriptReader.ReadClaudeSession(Path.Combine(state.Path, "claude"), "claude-native", "turn-1");
+        Assert.Equal("delivered", receipt?.Message);
+        Assert.True(receipt?.Completed);
     }
 
     public static TheoryData<InteractiveAgentKind, string[]> Unbound => new()

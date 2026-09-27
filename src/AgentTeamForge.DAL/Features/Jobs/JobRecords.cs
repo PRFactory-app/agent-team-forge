@@ -88,6 +88,9 @@ public sealed record NativeCodexAttempt(string JobId, string ThreadId, string Co
     public bool Unresolved => State is "sent" or "received";
 }
 
+public sealed record NativeClaudeAttempt(string JobId, string ChildJobId, string SessionId, string ClaudeHome,
+    string Correlation, string State);
+
 public sealed record CancelOutcome(JobRecord? Job, bool WasRunning, bool Changed);
 
 public sealed record EventRecord(long Seq, string JobId, string? RunId, string Kind);

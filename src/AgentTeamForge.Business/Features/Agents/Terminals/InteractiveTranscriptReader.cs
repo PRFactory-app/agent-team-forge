@@ -39,6 +39,25 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
         return null;
     }
 
+    /// <summary>Read only the bound Claude session's native user record and response.</summary>
+    internal static InteractiveTranscript? ReadClaudeSession(string home, string sessionId, string correlation)
+    {
+        var projects = Path.Combine(home, "projects");
+        if (!Directory.Exists(projects)) { return null; }
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(projects, sessionId + ".jsonl", SearchOption.AllDirectories))
+            {
+                if (HeaderId(path, InteractiveAgentKind.Claude) == sessionId && IsParent(path, InteractiveAgentKind.Claude) == true)
+                {
+                    return Parse(path, InteractiveAgentKind.Claude, "atf-corr:" + correlation);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        return null;
+    }
+
     public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started)
     {
         if (launch.NativeTranscript is { } retained)
@@ -243,7 +262,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                 using (json)
                 {
                     var root = json.RootElement;
-                    var userText = UserText(root, kind);
+                    var userText = UserText(root, kind) ?? (kind == InteractiveAgentKind.Claude ? ClaudeInboxText(root) : null);
                     if (!markerSeen)
                     {
                         // Bind only on a native user record; echoes and metadata never bind.
@@ -476,6 +495,17 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
         // Image-only (or otherwise text-less) input is still a user turn boundary.
         var wanted = kind == InteractiveAgentKind.Codex ? "input_text" : "text";
         return string.Concat(content.EnumerateArray().Where(item => Str(item, "type") == wanted).Select(item => Str(item, "text")));
+    }
+
+    // Claude's authenticated inbox persists the posted user line as isMeta=true.
+    // Only this native channel shape is a turn boundary; other meta rows remain metadata.
+    static string? ClaudeInboxText(JsonElement root)
+    {
+        if (Str(root, "type") != "user" || !Flag(root, "isMeta")
+            || !root.TryGetProperty("message", out var message) || Str(message, "role") != "user") { return null; }
+        var content = Str(message, "content");
+        return content?.StartsWith("Another Claude session sent a message:\n", StringComparison.Ordinal) == true
+            ? content : null;
     }
 
     static string? EventType(JsonElement root) =>

@@ -87,6 +87,9 @@ public sealed class DispatchJob : IDisposable
     /// <summary>Optional owner admission (PRFactory authority, account windows); false leaves the job queued.</summary>
     public Func<string, bool>? LaunchGate { get; set; }
 
+    /// <summary>Only a recently polling child bridge can take the Claude mailbox.</summary>
+    public Func<string, string, string, bool>? ClaudeBridgeReady { get; set; }
+
     /// <summary>Observes backend-owned agent errors after the failed turn has ended (account-limit parking).</summary>
     public Action<JobRecord, string, string?>? AgentErrorObserved { get; set; }
 
@@ -333,6 +336,7 @@ public sealed class DispatchJob : IDisposable
                 {
                     SweepExpiredQueued();
                     ReconcileNativeCodex();
+                    ReconcileNativeClaude();
                     nativeTasks.RemoveAll(task => task.IsCompleted);
                     if (nativeTasks.Count < limits.MaxConcurrentJobs)
                     {
@@ -384,12 +388,39 @@ public sealed class DispatchJob : IDisposable
 
     AttemptClaim? ClaimNativeCodex() => store.BeginNativeCodexAttempt(CanNativeCodex, codexHome, Eligible);
 
+    bool CanNativeClaude(JobRecord parent)
+    {
+        if (parent.SessionId is not { } session) { return false; }
+        var live = backends.Resolve(parent.Backend) switch
+        {
+            HerdrInteractiveBackend herdr => herdr.HasLiveClaudeSession(session),
+            WtInteractiveBackend wt => wt.HasLiveClaudeSession(session),
+            _ => false
+        };
+        if (!live) { return false; }
+        var channel = store.ManagedClaudeChannel(parent.JobId);
+        return channel is { } current && ClaudeBridgeReady?.Invoke(current.Address, current.Secret, current.Host) == true;
+    }
+
+    public AttemptClaim? TakeNativeClaude(string childJobId, string claudeHome)
+    {
+        if (!Eligible(childJobId)) { return null; }
+        Func<string, bool>? idle = backends.Resolve(BackendCatalog.Claude) switch
+        {
+            HerdrInteractiveBackend herdr => herdr.HasIdleClaudeSession,
+            WtInteractiveBackend wt => wt.HasIdleClaudeSession,
+            _ => null
+        };
+        return idle is null ? null : store.BeginNativeClaudeAttempt(childJobId, claudeHome, idle);
+    }
+
     bool EligibleOrdinary(string jobId)
     {
         if (!Eligible(jobId)) { return false; }
         var job = store.GetJob(jobId);
-        return job is null || JobOptions.Read(job.Options, "native_codex") != "1"
-            || job.ParentJobId is not { } parentId || store.GetJob(parentId) is not { } parent || !CanNativeCodex(parent);
+        if (job?.ParentJobId is not { } parentId || store.GetJob(parentId) is not { } parent) { return true; }
+        if (JobOptions.Read(job.Options, "native_codex") == "1" && CanNativeCodex(parent)) { return false; }
+        return JobOptions.Read(job.Options, "native_claude") != "1" || !CanNativeClaude(parent);
     }
 
     internal void SweepExpiredQueued()
@@ -744,6 +775,20 @@ public sealed class DispatchJob : IDisposable
             if (receipt is { Completed: true, Message: { Length: > 0 } message })
             {
                 store.SettleNativeAttempt(attempt.JobId, attempt.Correlation, message);
+                Signal();
+            }
+        }
+    }
+
+    void ReconcileNativeClaude()
+    {
+        foreach (var attempt in store.UnresolvedNativeClaudeAttempts())
+        {
+            var receipt = InteractiveTranscriptReader.ReadClaudeSession(attempt.ClaudeHome, attempt.SessionId, attempt.Correlation);
+            if (receipt is not null) { store.RecordNativeClaudeReceipt(attempt.JobId, attempt.Correlation); }
+            if (receipt is { Completed: true, Message: { Length: > 0 } message })
+            {
+                store.SettleNativeClaudeAttempt(attempt.JobId, attempt.Correlation, message);
                 Signal();
             }
         }

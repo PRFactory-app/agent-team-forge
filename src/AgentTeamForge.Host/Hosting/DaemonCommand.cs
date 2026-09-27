@@ -206,13 +206,14 @@ public static class DaemonCommand
         var humanWaits = new HumanWaitStore(database);
         var humanWait = new HumanWait(humanWaits, store, connectorTeams, connectorPrincipal);
         var claudeMailbox = new ClaudeWakeMailbox();
+        dispatcher.ClaudeBridgeReady = claudeMailbox.HasRecentRelay;
         var interactiveLaunch = launchMode is "herdr" or "terminal" or "wt";
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound, interactiveLaunch), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
             new ListJobs(store, profile.Bound, jobLogs, interactiveLaunch),
             new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning, dispatcher.ReleaseNative), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
             new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
             (token, question, key) => PRFactoryInteraction.RequestFromManagedChild(humanWait, store, authorityRows,
-                externalTeam.ManagedChildName(token), question, key), externalMembers, new GetJob(store, connectorPrincipal));
+            externalTeam.ManagedChildName(token), question, key), externalMembers, new GetJob(store, connectorPrincipal), dispatcher.TakeNativeClaude);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,

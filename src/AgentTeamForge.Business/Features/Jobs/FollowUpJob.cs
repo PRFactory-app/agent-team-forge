@@ -52,6 +52,10 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
         var nativeCodex = parent.Backend == BackendCatalog.Codex && parent.SessionId is not null
             && !request.Interrupt && request.ReplaceIfIdle && Encoding.UTF8.GetByteCount(request.Instruction) <= 16 * 1024
             && request.Model is null && request.Effort is null;
+        // Leave room for the fixed correlation marker in Claude's 16 KiB inbox line.
+        var nativeClaude = parent.Backend == BackendCatalog.Claude && parent.SessionId is not null
+            && !request.Interrupt && request.ReplaceIfIdle && Encoding.UTF8.GetByteCount(request.Instruction) <= 16 * 1024 - 256
+            && request.Model is null && request.Effort is null;
         var defer = request.Defer;
 
         var interruptRunning = request.Interrupt && parent.Status == JobStatus.Running;
@@ -131,6 +135,7 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
         }
         var options = "behavior=complete;hold=0" + (request.Interrupt ? ";interrupt=1" : "")
             + (defer ? ";defer=1" : "") + (nativeCodex ? ";native_codex=1" : "")
+            + (nativeClaude ? ";native_claude=1" : "")
             + (!request.ReplaceIfIdle ? ";replace_if_idle=0" : "");
         if (selection.model is not null)
         {

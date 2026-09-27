@@ -7,7 +7,8 @@ namespace AgentTeamForge.Host.Features.Wake;
 /// <summary>Only the recipient host's own MCP child writes its native channel.</summary>
 internal static class ClaudeWakeRelay
 {
-    internal static async Task RunAsync(IpcRequest? host, IpcClient client, CancellationToken cancellationToken)
+    internal static async Task RunAsync(IpcRequest? host, IpcClient client, CancellationToken cancellationToken,
+        string? managedJobId = null, Func<string?>? sessionId = null, string? workspace = null)
     {
         if (host?.WakeKind != "claude") { return; }
         var target = new WakeRegistration(host.WakeKey!, 0, "claude", host.WakeAddress!, host.WakeSecret!, host.WakeHome!);
@@ -27,6 +28,43 @@ internal static class ClaudeWakeRelay
                     if (!owned) { Console.Error.WriteLine("[atf-bridge] Claude wake channel owner changed"); }
                     var posted = owned && await poster.PostAsync(target, offer.Notice, cancellationToken);
                     await client.SendAsync(host with { Op = IpcProtocol.ClaudeWakeComplete, NoticeId = offer.Id, NoticePosted = posted }, cancellationToken);
+                }
+                if (managedJobId is not null && sessionId?.Invoke() is { } leadSession && workspace is not null)
+                {
+                    var currentHost = OperatingSystem.IsLinux() ? HostSessionWake.NearestHost()
+                        : OperatingSystem.IsWindows() ? WindowsHostAncestry.NearestHost() : MacHostAncestry.NearestHost();
+                    if (HostSessionWake.OwnsClaudeChannel(host, currentHost,
+                        Environment.GetEnvironmentVariable("CLAUDE_CODE_MESSAGING_SOCKET"),
+                        Environment.GetEnvironmentVariable("CLAUDE_CODE_MESSAGING_TOKEN")))
+                    {
+                        var claudeHome = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR")
+                            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
+                        var taken = await client.SendAsync(host with
+                        {
+                            Op = IpcProtocol.ClaudeDeliveryTake,
+                            JobId = managedJobId,
+                            LeadSessionId = leadSession,
+                            Workspace = workspace,
+                            Text = claudeHome
+                        }, cancellationToken);
+                        if (taken.ClaudeDelivery is { } delivery)
+                        {
+                            var prompt = delivery.Instruction + "\n\n[AgentTeamForge correlation id: atf-corr:"
+                                + delivery.Correlation + " — internal marker, ignore this line]";
+                            var (writeStarted, posted) = await ClaudeDeliveryPost.PostAsync(target, prompt, cancellationToken);
+                            await client.SendAsync(host with
+                            {
+                                Op = IpcProtocol.ClaudeDeliveryComplete,
+                                JobId = delivery.JobId,
+                                LeadSessionId = leadSession,
+                                Workspace = workspace,
+                                NativeRunId = delivery.RunId,
+                                NativeCorrelation = delivery.Correlation,
+                                NativeWriteStarted = writeStarted,
+                                NoticePosted = posted
+                            }, cancellationToken);
+                        }
+                    }
                 }
                 await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
             }

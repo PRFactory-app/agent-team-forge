@@ -22,6 +22,15 @@ public sealed class ClaudeWakeMailbox : IWakePoster
     readonly Dictionary<string, long> polled = [];
     const long RelayFreshMs = 15_000;
 
+    public bool HasRecentRelay(string address, string secret, string host)
+    {
+        lock (sync)
+        {
+            return polled.TryGetValue(Channel(address, secret, host), out var seen)
+                && Environment.TickCount64 - seen <= RelayFreshMs;
+        }
+    }
+
     public async Task<bool> PostAsync(WakeRegistration target, string notice, CancellationToken cancellationToken)
     {
         var offer = new Offer(target, notice);

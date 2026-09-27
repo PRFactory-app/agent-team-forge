@@ -91,6 +91,32 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         catch (Exception ex) when (ex is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
     }
 
+    public bool HasIdleClaudeSession(string sessionId)
+    {
+        if (_kind != InteractiveAgentKind.Claude || !_nativeSessions.TryGetValue(sessionId, out var launch)
+            || launch.NativeTranscript is not { SessionId: var bound } || bound != sessionId) { return false; }
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult()
+                is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done;
+        }
+        catch (Exception ex) when (ex is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
+    }
+
+    public bool HasLiveClaudeSession(string sessionId)
+    {
+        if (_kind != InteractiveAgentKind.Claude || !_nativeSessions.TryGetValue(sessionId, out var launch)
+            || launch.NativeTranscript is not { SessionId: var bound } || bound != sessionId) { return false; }
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult()
+                is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Working or InteractiveAgentStatus.Done;
+        }
+        catch (Exception ex) when (ex is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
+    }
+
     public bool HasIdleSession(string sessionId) => _liveSessions.IsAlive(sessionId, launch =>
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));

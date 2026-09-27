@@ -412,7 +412,8 @@ public static class JobsMcpBridge
         }
         await using var server = McpServer.Create(new StdioServerTransport("agentteamforge"), options);
         using var relayLifetime = new CancellationTokenSource();
-        var relay = ClaudeWakeRelay.RunAsync(wakeTarget, client, relayLifetime.Token);
+        var relay = ClaudeWakeRelay.RunAsync(wakeTarget, client, relayLifetime.Token,
+            managedJobId, () => sessionId, workspace);
         try { await server.RunAsync(); }
         finally { await relayLifetime.CancelAsync(); await relay; }
         return 0;
