@@ -39,7 +39,8 @@ public sealed class BranchPublisher(PRFactoryPublicationStore store, Publication
                 throw new InvalidOperationException("Canonical lead branch changed.");
             }
             var dirty = string.Join('\n', (await Git(cwd, ct, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"))
-                .Split('\n', StringSplitOptions.RemoveEmptyEntries).Where(line => !IsStagedArtefact(line, request.ArtefactFolder)));
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Where(line => !IsStagedArtefact(line, request.ArtefactFolder) && !IsGeneratedUntracked(line)));
             if (dirty.Length != 0) { throw new InvalidOperationException("Publication requires committed output. Dirty files:\n" + dirty); }
             var head = await Git(cwd, ct, "rev-parse", "--verify", "HEAD^{commit}");
             var prior = store.Get(request.PublicationId);
@@ -90,6 +91,26 @@ public sealed class BranchPublisher(PRFactoryPublicationStore store, Publication
         return !relative.Contains('/') && Path.GetExtension(path).ToLowerInvariant() is ".md" or ".html"
             || relative.StartsWith("attachments/", StringComparison.Ordinal)
             && !relative["attachments/".Length..].Contains('/') && AttachmentFiles.MediaType(path) is not null;
+    }
+
+    // Git status already honours .gitignore, .git/info/exclude and core.excludesFile.
+    // Only discard untracked build output: a tracked change always requires a commit.
+    internal static bool IsGeneratedUntracked(string porcelain)
+    {
+        if (!porcelain.StartsWith("?? ", StringComparison.Ordinal)) { return false; }
+        var path = porcelain[3..].Trim('"').Replace('\\', '/');
+        var parts = path.Split('/');
+        if (parts[..^1].Any(part => part is "__pycache__" or ".pytest_cache" or "node_modules" or
+                "bin" or "obj" or ".venv" or "dist" or "build" or ".mypy_cache" or
+                ".ruff_cache" or ".tox" or ".nox" or ".next" or ".turbo" or
+                ".parcel-cache" or "coverage" or "htmlcov")) { return true; }
+        var name = parts[^1];
+        return name.EndsWith(".pyc", StringComparison.OrdinalIgnoreCase) ||
+            name is ".coverage" or "coverage.xml" or "lcov.info" ||
+            name.StartsWith(".coverage.", StringComparison.Ordinal) ||
+            name.EndsWith(".lcov", StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith(".gcda", StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith(".gcno", StringComparison.OrdinalIgnoreCase);
     }
 
     static async Task ValidateRemote(PublicationRequest request, CancellationToken ct)
