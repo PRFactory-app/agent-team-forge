@@ -138,9 +138,13 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
     public async Task<InteractiveAgentStatus> StatusAsync(InteractiveLaunch launch, CancellationToken cancellationToken)
     {
         var (session, binding) = Binding(launch);
+        if (terminal.HasUnverifiedLiveIdentity(binding))
+        {
+            return InteractiveAgentStatus.Unverified;
+        }
         if (await terminal.VerifyBindingAsync(binding, cancellationToken) is not null)
         {
-            return InteractiveAgentStatus.Gone;
+            return terminal.HasUnverifiedLiveIdentity(binding) ? InteractiveAgentStatus.Unverified : InteractiveAgentStatus.Gone;
         }
         JsonNode state;
         try { state = await terminal.RunOwnedAsync(session, cancellationToken, "agent", "get", binding.PaneId); }

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
+using AgentTeamForge.Business.Features.Processes;
 using AgentTeamForge.DAL.Features.Wake;
 using Microsoft.Data.Sqlite;
 
@@ -91,7 +92,6 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                RedirectStandardInput = true,
                 WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
             };
             start.ArgumentList.Add("queue"); start.ArgumentList.Add("--thread"); start.ArgumentList.Add(target.Address);
@@ -103,13 +103,11 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
             }
 
             start.Environment["CODEX_HOME"] = target.Home;
-            using var process = Process.Start(start);
+            using var process = NonInteractiveProcess.Start(start);
             if (process is null)
             {
                 return false;
             }
-
-            process.StandardInput.Close();
             try
             {
                 var stdout = process.StandardOutput.ReadToEndAsync(deadline.Token);

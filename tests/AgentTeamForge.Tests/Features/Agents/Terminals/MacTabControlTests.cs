@@ -9,6 +9,15 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 public sealed class MacTabControlTests
 {
     [Fact]
+    public void ProcessIdentitySeparatesUnreadableLivePidFromReusedAndDeadPid()
+    {
+        Assert.Equal(MacTabControl.IdentityState.Unverified, MacTabControl.Identity(11, null, true));
+        Assert.Equal(MacTabControl.IdentityState.Different, MacTabControl.Identity(11, 22, true));
+        Assert.Equal(MacTabControl.IdentityState.Ours, MacTabControl.Identity(11, 11, true));
+        Assert.Equal(MacTabControl.IdentityState.Gone, MacTabControl.Identity(11, null, false));
+    }
+
+    [Fact]
     public void ShellQuotingRoundTripsQuotesBackslashesAndUnicode()
     {
         if (OperatingSystem.IsWindows())
