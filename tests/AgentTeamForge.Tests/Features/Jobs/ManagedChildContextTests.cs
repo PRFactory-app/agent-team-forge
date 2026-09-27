@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
+using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.External;
@@ -15,6 +16,25 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 
 public sealed class ManagedChildContextTests
 {
+    [Fact]
+    public void Prfactory_child_context_hides_unanswerable_human_input()
+    {
+        using var f = new JobFixture();
+        var root = Path.GetDirectoryName(f.DatabasePath)!;
+        var lead = new LeadSessionStore(f.Database).Start(root, "parent");
+        var team = new ExternalTeam(new ExternalMemberStore(f.Database), new WakeStore(f.Database));
+        var principal = new BoundPrincipal("prfactory", "connector", "connector-lead");
+        var accept = new AcceptJob(f.Store, principal, f.Limits, f.TestProfile, f.Admission, ["codex"]);
+        var job = accept.Execute(new SubmitJobRequest("prf:question", "task", null, false)
+        { Backend = "codex", LeadSessionId = lead.SessionId }).Job!;
+        var context = new ManagedChildContext(f.Store, team, root, "/private/atf");
+
+        var prepared = context.Prepare(new BackendRequest(job.JobId, "correlation", "task", "{}"));
+        var args = JsonNode.Parse(File.ReadAllText(prepared.ManagedMcpConfig!))!["mcpServers"]![ManagedChildContext.ServerName]!["args"]!.AsArray();
+        var saved = JsonNode.Parse(File.ReadAllText(args[4]!.GetValue<string>()))!;
+        Assert.False(saved["human_input_available"]!.GetValue<bool>());
+    }
+
     [Fact]
     public async Task Lead_bound_pi_without_adapter_fails_before_launch_and_without_fence()
     {

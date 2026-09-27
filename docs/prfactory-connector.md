@@ -173,23 +173,16 @@ slots. Pruning never removes turns of accepted teams or unresumed parks.
 
 ## Human questions during a turn
 
-Managed agents get a `request_human_input(question, idempotency_key)` tool on
-their private agentteamforge MCP server, authenticated by the managed child's
-own member token (never a caller-supplied job ID). The daemon records the
-question against the asking turn, and the agent ends its turn; nobody waits on
-stdin or an approval prompt. The team cannot complete while a question is open.
-Question state is streamed as `human-wait` records (agent `<member>:questions`)
-with frozen, replayable batches. A server command carrying `questionId` is an
-answer: its ACK means a durable reservation (or an explicit error such as
-`max_iterations_exceeded` or `stale_question`). The answer resumes the saved
-session once, in the same workspace, under a fixed key, even after restart or a
-redelivered command; it counts as applied when that resumed turn completes.
-Commands poll every ~2 s while teams are active. Cursor/Droid are refused.
+PRFactory jobs do not offer `request_human_input` while the server has no
+`questionId` answer-command wire. A call from an existing session is rejected
+with guidance to proceed using best judgement or record open questions in its
+artefact. Local jobs retain their existing human-input tool. Existing durable
+question records can still be resumed and streamed; ATF maps their internal
+statuses to PRFactory's coarse lifecycle values.
 
 Registration advertises `authority-disposition-v1`, `remote-publication-v1`,
 `workspace-continuity-v1` and `blob-attachments-v1`.
-Not advertised yet: `human-wait-v1` (needs native transcript receipts and
-real CLI session proofs, plus the server's `questionId` wire), readiness probes,
+Not advertised yet: `human-wait-v1` (needs the server's `questionId` wire), readiness probes,
 external-member human waits and multi-repository work.
 
 ## Phase artefacts

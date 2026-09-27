@@ -171,6 +171,12 @@ public sealed partial class PRFactoryWorkItems(
             teams.Finish(server, team.WorkItemId, "failed");
             log?.Invoke($"PRFactory work item {team.WorkItemId:D} lease_lost; local team closed");
         }
+        catch (PRFactoryStreamRejectedException ex)
+        {
+            log?.Invoke($"PRFactory work item {team.WorkItemId:D} agent-stream rejected ({(int)ex.StatusCode}); reporting failure");
+            var item = JsonSerializer.Deserialize(team.ClaimedJson, PRFactoryWorkItemJson.Default.PRFactoryWorkItem)!;
+            await FinishAsync(team, item, false, $"PRFactory agent-stream rejected with HTTP {(int)ex.StatusCode}", null, ct);
+        }
     }
 
     async Task<bool> ConfirmAcceptanceAsync(PRFactoryTeamRecord team, CancellationToken ct)
@@ -317,7 +323,7 @@ public sealed partial class PRFactoryWorkItems(
         try
         {
             lead = await SubmitMember(item, "lead", item.AgentType, item.Model, item.Effort,
-                humanWaits is null ? item.Prompt : item.Prompt + "\n\n" + HumanInputHint, Cwd("lead"), workspace is not null, ct);
+                item.Prompt, Cwd("lead"), workspace is not null, ct);
         }
         catch (PRFactoryJobSubmissionException ex)
         {
@@ -354,8 +360,7 @@ public sealed partial class PRFactoryWorkItems(
             }
 
             var instruction = $"{item.Prompt}\n\nRole: {member.Role}\nMember: {member.Name}"
-                + (string.IsNullOrWhiteSpace(member.Notes) ? "" : $"\nNotes: {member.Notes}")
-                + (humanWaits is null ? "" : "\n\n" + HumanInputHint);
+                + (string.IsNullOrWhiteSpace(member.Notes) ? "" : $"\nNotes: {member.Notes}");
             JobRecord? child;
             try
             {

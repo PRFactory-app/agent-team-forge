@@ -9,6 +9,7 @@ namespace AgentTeamForge.Host.Features.PRFactory;
 public sealed class PRFactoryInteraction(HumanWaitStore waits, PRFactoryTeamStore teams, JobStore jobs,
     Func<FollowUpRequest, JobResult> followUp, ExternalTeam? external = null)
 {
+    public const string HumanInputUnavailable = "PRFactory cannot answer request_human_input yet. Proceed with your best judgement or record open questions in your artefact.";
     public HumanWaitResult Answer(string server, Guid workItemId, string member, string questionId,
         Guid commandId, string answer, int? maxIterations, DateTimeOffset now)
     {
@@ -44,29 +45,18 @@ public sealed class PRFactoryInteraction(HumanWaitStore waits, PRFactoryTeamStor
     }
 
     /// <summary>
-    /// request_human_input for a managed child authenticated as live member "child-&lt;root job&gt;". The asking
-    /// turn is the root's one running descendant owned by a PRFactory team; scope comes from durable mapping.
+    /// Reject a managed PRFactory child's question while the server lacks the questionId answer-command wire.
     /// </summary>
-    public static HumanInputRequestResult RequestFromManagedChild(HumanWait humanWait, JobStore jobs, PRFactoryAuthorityStore owners,
-        string? memberName, string? question, string? key)
+    public static HumanInputRequestResult RequestFromManagedChild(PRFactoryAuthorityStore owners, string? memberName)
     {
         const string prefix = "child-";
         if (memberName is null || !memberName.StartsWith(prefix, StringComparison.Ordinal)
-            || owners.OwnerOf(memberName[prefix.Length..]) is not { } owner)
+            || owners.OwnerOf(memberName[prefix.Length..]) is null)
         {
             return new(null, JobErrors.NotFound);
         }
-        var root = memberName[prefix.Length..];
-        var running = owners.OwnedTurns(owner.Server, owner.WorkItemId).Select(jobs.GetJob)
-            .Where(job => job is { Status: JobStatus.Running } && RootOf(jobs, job) == root).ToList();
-        return running.Count != 1 ? new(null, "turn_not_running")
-            : humanWait.Request(running[0]!.JobId, owner.Server, owner.WorkItemId, question ?? "", key ?? "");
-    }
-
-    static string RootOf(JobStore jobs, JobRecord? job)
-    {
-        while (job?.ParentJobId is { } parent) { job = jobs.GetJob(parent); }
-        return job?.JobId ?? "";
+        // PRFactory does not provide the questionId answer-command wire yet. Never persist an unanswerable wait.
+        return new(null, HumanInputUnavailable);
     }
 
     public bool BlocksCompletion(string server, Guid workItemId) => waits.BlocksCompletion(server, workItemId)
