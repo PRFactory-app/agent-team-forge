@@ -160,10 +160,14 @@ push failures fail the phase; read-only phases never push.
 
 ## Account limits and backlog
 
-A connector turn whose backend reports a usage limit is parked with its
-session; other connector turns on that backend stay queued while other
-backends continue. After the reported reset the same session resumes once and
-the team completes normally; an unknown reset waits for explicit recovery.
+A headless connector turn that reports a usage or spend limit fails with
+`agent_rate_limited`; PRFactory receives `/fail` with `shouldRetry=true`. The
+backend's default account is then blocked for new claims until the reported
+reset (one hour when none is reported) while other backends continue. An
+interactive turn (Herdr, terminal tabs) keeps its live TUI instead: the limit
+blocks the account, and the TUI's later native completion settles the job; its
+turn deadline restarts at the reset (at most 24 hours when unknown), so a TUI
+that never resumes is still quarantined.
 Accepted-but-unfinished teams are capped (10) and polling asks only for free
 slots. Pruning never removes turns of accepted teams or unresumed parks.
 

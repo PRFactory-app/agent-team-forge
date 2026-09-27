@@ -267,8 +267,15 @@ public static class DaemonCommand
         };
         dispatcher.AgentErrorObserved = (job, code, details) =>
         {
-            // Only backend-owned error evidence; the connector resumes the parked session after reset.
-            if (job.Principal == connectorPrincipal.Principal
+            // Backend-owned limit evidence blocks new account work. A live interactive turn keeps running;
+            // other parked turns can resume after reset through their saved session.
+            if (job.Principal != connectorPrincipal.Principal) { return; }
+            if (code == "agent_rate_limited"
+                && accounts.BlockIfLimited(job.Backend, PRFactoryWorkItems.DefaultAccount, code, details, DateTimeOffset.UtcNow))
+            {
+                Log($"job {job.JobId} {job.Status}: {job.Backend} account blocked by usage limit ({details})");
+            }
+            else if (code != "agent_rate_limited"
                 && accounts.ParkIfLimited(job.JobId, job.Backend, PRFactoryWorkItems.DefaultAccount, job.SessionId,
                     AccountAdmission.EvidenceCode(job.Backend, code), details, DateTimeOffset.UtcNow))
             {

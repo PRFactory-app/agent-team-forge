@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using AgentTeamForge.DAL.Files;
 using AgentTeamForge.Business.Features.Agents.Backends;
 
@@ -222,6 +223,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             var ended = false;
             string? last = null;
             InteractiveApiError? apiError = null;
+            DateTimeOffset? rateLimitReset = null;
             var progress = new List<string>();
             var backgroundTools = new HashSet<string>();
             var backgroundTasks = new HashSet<string>();
@@ -278,11 +280,22 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                     }
                     if (kind == InteractiveAgentKind.Claude)
                     {
+                        if (Str(root, "type") == "rate_limit_event"
+                            && root.TryGetProperty("rate_limit_info", out var limit)
+                            && limit.ValueKind == JsonValueKind.Object
+                            && Str(limit, "status") == "rejected"
+                            && limit.TryGetProperty("resetsAt", out var resetsAt)
+                            && resetsAt.ValueKind == JsonValueKind.Number
+                            && resetsAt.TryGetInt64(out var epoch))
+                        {
+                            try { rateLimitReset = DateTimeOffset.FromUnixTimeSeconds(epoch); }
+                            catch (ArgumentOutOfRangeException) { }
+                        }
                         TrackBackgroundTasks(root, backgroundTools, backgroundTasks, knownTasks);
                         if (Str(root, "type") == "assistant")
                         {
                             completed = CompletedTurn(root, kind) && backgroundTools.Count == 0 && backgroundTasks.Count == 0;
-                            apiError = ApiError(root);
+                            apiError = ApiError(root, rateLimitReset);
                         }
                         else if (apiError is not null && Str(root, "type") == "system" && Str(root, "subtype") == "turn_duration")
                         {
@@ -308,7 +321,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
         }
     }
 
-    static InteractiveApiError? ApiError(JsonElement root)
+    static InteractiveApiError? ApiError(JsonElement root, DateTimeOffset? reportedReset)
     {
         if (!Flag(root, "isApiErrorMessage") || !root.TryGetProperty("message", out var message)) { return null; }
         var error = Str(root, "error") ?? Str(message, "error");
@@ -316,10 +329,42 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
         if (text is { Length: > MaxResultChars }) { text = text[^MaxResultChars..]; }
         var login = error is "authentication_failed" or "authentication_error" or "not_logged_in" or "unauthorized" or "invalid_api_key"
             || text?.Contains("Not logged in", StringComparison.OrdinalIgnoreCase) == true;
+        var limited = error is "rate_limit" or "rate_limit_error" or "rate_limit_exceeded"
+            || text?.Contains("monthly spend limit", StringComparison.OrdinalIgnoreCase) == true
+            || text?.Contains("session limit", StringComparison.OrdinalIgnoreCase) == true;
+        if (limited)
+        {
+            var observed = DateTimeOffset.TryParse(Str(root, "timestamp"), out var timestamp) ? timestamp : DateTimeOffset.UtcNow;
+            var reset = reportedReset ?? LocalReset(text, observed);
+            return new("agent_rate_limited", "usage limit reached"
+                + (reset is { } at ? "; resets at " + at.ToUniversalTime().ToString("O") : "; reset time unknown"));
+        }
         return login
             ? new("agent_login_required", "Claude is not logged in; run `claude` and /login."
                 + (string.IsNullOrWhiteSpace(text) ? "" : " " + text))
             : new("agent_api_error", string.IsNullOrWhiteSpace(text) ? $"Claude API error: {error ?? "unknown"}" : text);
+    }
+
+    static DateTimeOffset? LocalReset(string? text, DateTimeOffset observed)
+    {
+        var match = Regex.Match(text ?? "", @"\bresets?\s+(?:at\s+)?(?<hour>\d{1,2})(?::(?<minute>\d\d))?\s*(?<meridiem>am|pm)\s*\((?<zone>[^)]+)\)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success) { return null; }
+        try
+        {
+            var zone = TimeZoneInfo.FindSystemTimeZoneById(match.Groups["zone"].Value);
+            var local = TimeZoneInfo.ConvertTime(observed, zone);
+            var hour = int.Parse(match.Groups["hour"].Value) % 12
+                + (match.Groups["meridiem"].Value.Equals("pm", StringComparison.OrdinalIgnoreCase) ? 12 : 0);
+            var reset = new DateTime(local.Year, local.Month, local.Day, hour,
+                match.Groups["minute"].Success ? int.Parse(match.Groups["minute"].Value) : 0, 0, DateTimeKind.Unspecified);
+            if (TimeZoneInfo.ConvertTimeToUtc(reset, zone) <= observed.UtcDateTime) { reset = reset.AddDays(1); }
+            return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(reset, zone), TimeSpan.Zero);
+        }
+        catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException or ArgumentException)
+        {
+            return null;
+        }
     }
 
     static void TrackBackgroundTasks(JsonElement root, HashSet<string> tools, HashSet<string> tasks, HashSet<string> knownTasks)

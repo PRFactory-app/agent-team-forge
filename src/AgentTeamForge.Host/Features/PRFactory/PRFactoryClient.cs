@@ -292,10 +292,10 @@ public sealed partial class PRFactoryClient(HttpClient httpClient)
         }
     }
 
-    public async Task FailAsync(Guid id, Guid? lease, string error, CancellationToken ct)
+    public async Task FailAsync(Guid id, Guid? lease, string error, CancellationToken ct, bool shouldRetry = false)
     {
         using var response = await httpClient.PostAsJsonAsync($"api/worker/fail/{id:D}",
-            new PRFactoryFailureRequest(error, string.Empty, false, string.Empty, lease), PRFactoryWorkItemJson.Default.PRFactoryFailureRequest, ct);
+            new PRFactoryFailureRequest(error, string.Empty, shouldRetry, string.Empty, lease), PRFactoryWorkItemJson.Default.PRFactoryFailureRequest, ct);
         RejectToken(response.StatusCode);
         RejectLostLease(response.StatusCode, id);
         response.EnsureSuccessStatusCode();

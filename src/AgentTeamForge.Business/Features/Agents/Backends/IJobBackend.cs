@@ -26,6 +26,9 @@ public abstract record BackendEvidence
     /// <summary>The agent ended its turn with a reported API failure.</summary>
     public sealed record AgentError(string Code, string Details) : BackendEvidence;
 
+    /// <summary>A live interactive agent is waiting for its account limit to reset; its turn is still running.</summary>
+    public sealed record AccountLimit(string Details) : BackendEvidence;
+
     public sealed record ProtocolError(string Code) : BackendEvidence;
 
     /// <summary>CLI rejected its arguments before a turn began; no job effect occurred.</summary>

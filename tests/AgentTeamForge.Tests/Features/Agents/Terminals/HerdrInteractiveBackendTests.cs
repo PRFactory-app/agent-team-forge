@@ -32,6 +32,41 @@ public sealed class HerdrInteractiveBackendTests
     }
 
     [Fact]
+    public async Task Live_claude_limit_keeps_job_running_until_tui_resumes_and_completes()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("herdr-limit");
+        var claim = f.Store.BeginNextAttempt()!;
+        var details = "usage limit reached; resets at 2099-09-27T18:20:00Z";
+        var reader = new MutableReader(new InteractiveTranscript("claude-native", details,
+            [details], ApiError: new InteractiveApiError("agent_rate_limited", details, TurnEnded: true)));
+        var control = new FakeControl { Status = InteractiveAgentStatus.Blocked };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(),
+            settleTimeout: TimeSpan.FromMilliseconds(20));
+        var accounts = new AccountAdmission(new AccountWindowStore(f.Database));
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        dispatcher.AgentErrorObserved = (_, code, message) =>
+            accounts.BlockIfLimited("claude", "default", code, message, DateTimeOffset.UtcNow);
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var attempt = dispatcher.RunAttemptAsync(claim, deadline.Token);
+        while (f.Store.GetJob(job.JobId)?.ReasonCode != "agent_rate_limited")
+        {
+            await Task.Delay(10, deadline.Token);
+        }
+        await Task.Delay(100, deadline.Token); // Longer than the ordinary idle settle timeout.
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(job.JobId)!.Status);
+        Assert.False(control.Stopped);
+        Assert.False(accounts.CanStart("claude", "default", DateTimeOffset.UtcNow));
+
+        reader.Output = new InteractiveTranscript("claude-native", "DONE", [details, "DONE"], Completed: true);
+        await attempt.WaitAsync(deadline.Token);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(job.JobId)!.Status);
+        Assert.Equal("DONE", f.Store.GetJob(job.JobId)!.ResultText);
+        Assert.False(control.Stopped);
+    }
+
+    [Fact]
     public async Task Verified_exited_session_releases_fence_after_cleanup()
     {
         using var f = new JobFixture();
@@ -771,6 +806,13 @@ public sealed class HerdrInteractiveBackendTests
     {
         public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started) => output;
         public string? FindPiSessionDirectory(string root, string sessionId) => "/tmp/pi-one";
+    }
+
+    sealed class MutableReader(InteractiveTranscript? output) : IInteractiveTranscriptReader
+    {
+        public InteractiveTranscript? Output { get; set; } = output;
+        public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started) => Output;
+        public string? FindPiSessionDirectory(string root, string sessionId) => null;
     }
 
     sealed class SequenceReader(params InteractiveTranscript?[] snapshots) : IInteractiveTranscriptReader

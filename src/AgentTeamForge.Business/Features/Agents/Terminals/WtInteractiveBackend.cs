@@ -142,6 +142,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
         int _loggedMessages;
         DateTimeOffset? _apiErrorSince;
         InteractiveApiError? _observedApiError;
+        string? _reportedLimitDetails;
         int _apiErrorProgressCount;
         public int? ProcessId => tabs.ProcessId(launch);
 
@@ -204,19 +205,30 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
                 }
                 if (output?.ApiError is { } apiError && session is not null)
                 {
-                    if (_observedApiError != apiError || _apiErrorProgressCount != output.Progress.Count)
+                    if (apiError.Code == "agent_rate_limited")
                     {
-                        _observedApiError = apiError;
-                        _apiErrorProgressCount = output.Progress.Count;
-                        _apiErrorSince = DateTimeOffset.UtcNow;
+                        if (_reportedLimitDetails != apiError.Message)
+                        {
+                            _reportedLimitDetails = apiError.Message;
+                            yield return new BackendEvidence.AccountLimit(apiError.Message);
+                        }
                     }
-                    if (DateTimeOffset.UtcNow - _apiErrorSince >= apiError.QuietWindow)
+                    else
                     {
-                        yield return new BackendEvidence.AgentError(apiError.Code, apiError.Message);
-                        yield break;
+                        if (_observedApiError != apiError || _apiErrorProgressCount != output.Progress.Count)
+                        {
+                            _observedApiError = apiError;
+                            _apiErrorProgressCount = output.Progress.Count;
+                            _apiErrorSince = DateTimeOffset.UtcNow;
+                        }
+                        if (DateTimeOffset.UtcNow - _apiErrorSince >= apiError.QuietWindow)
+                        {
+                            yield return new BackendEvidence.AgentError(apiError.Code, apiError.Message);
+                            yield break;
+                        }
                     }
                 }
-                else { _apiErrorSince = null; _observedApiError = null; }
+                else { _apiErrorSince = null; _observedApiError = null; _reportedLimitDetails = null; }
                 if (output is { Completed: true, ApiError: null, Message: { Length: > 0 } message } && session is not null)
                 {
                     yield return new BackendEvidence.Result(request.Correlation, message);

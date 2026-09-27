@@ -150,6 +150,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         int _loggedMessages;
         DateTimeOffset? _apiErrorSince;
         InteractiveApiError? _observedApiError;
+        string? _reportedLimitDetails;
         int _apiErrorProgressCount;
         public bool OwnedSessionStopped { get; private set; }
         public int? ProcessId => null; // The Herdr server owns the TUI process, not this daemon.
@@ -230,19 +231,30 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 }
                 if (output?.ApiError is { } apiError && session is not null)
                 {
-                    if (_observedApiError != apiError || _apiErrorProgressCount != output.Progress.Count)
+                    if (apiError.Code == "agent_rate_limited")
                     {
-                        _observedApiError = apiError;
-                        _apiErrorProgressCount = output.Progress.Count;
-                        _apiErrorSince = DateTimeOffset.UtcNow;
+                        if (_reportedLimitDetails != apiError.Message)
+                        {
+                            _reportedLimitDetails = apiError.Message;
+                            yield return new BackendEvidence.AccountLimit(apiError.Message);
+                        }
                     }
-                    if (DateTimeOffset.UtcNow - _apiErrorSince >= apiError.QuietWindow)
+                    else
                     {
-                        yield return new BackendEvidence.AgentError(apiError.Code, apiError.Message);
-                        yield break;
+                        if (_observedApiError != apiError || _apiErrorProgressCount != output.Progress.Count)
+                        {
+                            _observedApiError = apiError;
+                            _apiErrorProgressCount = output.Progress.Count;
+                            _apiErrorSince = DateTimeOffset.UtcNow;
+                        }
+                        if (DateTimeOffset.UtcNow - _apiErrorSince >= apiError.QuietWindow)
+                        {
+                            yield return new BackendEvidence.AgentError(apiError.Code, apiError.Message);
+                            yield break;
+                        }
                     }
                 }
-                else { _apiErrorSince = null; _observedApiError = null; }
+                else { _apiErrorSince = null; _observedApiError = null; _reportedLimitDetails = null; }
                 if (output is { Completed: true, ApiError: null, Message: { Length: > 0 } message } && session is not null)
                 {
                     yield return new BackendEvidence.Result(request.Correlation, message);
@@ -269,7 +281,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                     await Task.Delay(250, cancellationToken);
                     continue;
                 }
-                if (status == InteractiveAgentStatus.Blocked)
+                if (status == InteractiveAgentStatus.Blocked && output?.ApiError?.Code != "agent_rate_limited")
                 {
                     yield return new BackendEvidence.ProtocolError("interactive_agent_blocked");
                     yield break;
@@ -283,7 +295,8 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 }
                 var progressed = output is not null && output.Progress.Count != seenMessages;
                 seenMessages = output?.Progress.Count ?? 0;
-                if (status is not (InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done) || progressed || output is { PendingBackgroundTasks: true })
+                if (status is not (InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done) || progressed
+                    || output is { PendingBackgroundTasks: true } || output?.ApiError?.Code == "agent_rate_limited")
                 {
                     quietSince = DateTimeOffset.UtcNow;
                 }
@@ -414,9 +427,8 @@ internal sealed record InteractiveTranscript(string SessionId, string? Message, 
 
 /// <summary>
 /// A Claude API-error record ending the transcript. Claude can still continue the turn on its own
-/// (e.g. seconds after "Connection lost mid-response"), so a non-login error is terminal only once
-/// the turn has ended (a turn_duration record follows it) or the transcript stays quiet for longer.
-/// A login error is synthetic and never retried.
+/// (e.g. seconds after "Connection lost mid-response"), so ordinary API errors settle only once
+/// the turn has ended or the transcript stays quiet. Rate limits keep the live TUI under observation.
 /// </summary>
 internal sealed record InteractiveApiError(string Code, string Message, bool TurnEnded = false)
 {
