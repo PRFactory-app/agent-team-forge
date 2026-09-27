@@ -23,6 +23,28 @@ public sealed class MultiRepositoryTests
     }
 
     [Fact]
+    public async Task Server_without_multi_repo_capability_keeps_old_version_and_refusal()
+    {
+        var item = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            Type = "Implementation",
+            RepositoryId = Guid.NewGuid(),
+            LeaseToken = Guid.NewGuid(),
+            AgentType = PRFactoryAgentType.Codex,
+            Prompt = "Edit both"
+        };
+        using var h = new ChainHarness(item);
+        h.AddSecondary(Guid.NewGuid());
+        h.Server.MultiRepoSupported = false;
+        await h.TickAsync();
+        Assert.All(h.Server.PollQueries, q => Assert.Contains("workerVersion=1.0.0", q));
+        Assert.Contains("multi-repository work items are unsupported", Assert.Single(h.Server.Failures));
+        Assert.Null(new PRFactoryRepositorySetStore(h.Database).Get($"{ChainServer.Url}|{item.Id:D}"));
+        Assert.Empty(h.Server.RepositoryResults);
+    }
+
+    [Fact]
     public async Task Conflict_in_second_repository_restores_first_local_base_refresh()
     {
         var item = new PRFactoryWorkItem
