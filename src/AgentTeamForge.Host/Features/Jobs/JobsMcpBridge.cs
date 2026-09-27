@@ -187,7 +187,11 @@ public static class JobsMcpBridge
                         Console.Error.WriteLine($"[atf-bridge] wake status failed: {status.Error}");
                         return;
                     }
-                    if (!NeedsWakeRegistration(status.WakeStatus, wakeTarget, wakeGeneration)) { return; }
+                    switch (RepairWake(status.WakeStatus, wakeTarget, wakeGeneration))
+                    {
+                        case WakeRepair.Keep: return;
+                        case WakeRepair.Adopt: wakeGeneration = status.WakeStatus!.Generation; return;
+                    }
                     wakeGeneration = null;
                 }
                 var registration = await SendAsync(wakeTarget with { LeadSessionId = sessionId, Workspace = workspace, JobId = managedJobId }, cancellationToken);
@@ -294,8 +298,10 @@ public static class JobsMcpBridge
                             : await SendAsync(new IpcRequest { Op = IpcProtocol.SessionResume, LeadSessionId = requested, Workspace = workspace, BindingKey = bindingKey }, cancellationToken);
                         if (response.Ok)
                         {
+                            // An explicit resume takes over the session's wake, even from another live bridge.
                             sessionId = response.Session!.SessionId;
-                            await BindWakeAsync(cancellationToken);
+                            wakeGeneration = null;
+                            await RegisterWakeAsync(cancellationToken);
                         }
                     }
                     else if (call.Name == "register_codex_wake")
@@ -412,11 +418,25 @@ public static class JobsMcpBridge
         return 0;
     }
 
-    internal static bool NeedsWakeRegistration(AgentTeamForge.DAL.Features.Wake.WakeRegistrationStatus? status,
-        IpcRequest target, long? generation) => generation is null || status is not
-        { Registered: true, Usable: true, Key: not null, Generation: not null, Kind: not null, Address: not null }
-        || status.Key != target.WakeKey || status.Generation != generation
-        || status.Kind != target.WakeKind || status.Address != target.WakeAddress;
+    internal enum WakeRepair { Keep, Adopt, Register }
+
+    /// <summary>Re-register a missing, unusable or legacy binding of this channel. A newer generation of our own key
+    /// is adopted, and a usable binding of another channel (a bridge that resumed this session) is never taken back,
+    /// so two live bridges cannot keep bumping generations and re-posting notices.</summary>
+    internal static WakeRepair RepairWake(AgentTeamForge.DAL.Features.Wake.WakeRegistrationStatus? status,
+        IpcRequest target, long? generation)
+    {
+        if (generation is null || status is not { Registered: true, Usable: true, Key: not null, Generation: not null })
+        {
+            return WakeRepair.Register;
+        }
+        if (status.Key != target.WakeKey)
+        {
+            return status.Kind == target.WakeKind && status.Address == target.WakeAddress ? WakeRepair.Register : WakeRepair.Keep;
+        }
+        if (status.Kind != target.WakeKind || status.Address != target.WakeAddress) { return WakeRepair.Register; }
+        return status.Generation == generation ? WakeRepair.Keep : WakeRepair.Adopt;
+    }
 
     /// <summary>Only the explicit parent recipient uses the injected membership; typos never fall back upstream.</summary>
     internal static IpcRequest? RouteParent(IpcRequest? request, string? memberToken) =>

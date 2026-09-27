@@ -169,6 +169,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     : MapExternal(external.ReadLead(request.LeadSessionId, request.Workspace, request.SinceSeq, request.Limit,
                         request.FromAgent, request.Full, request.MaxChars));
             case IpcProtocol.JobSubmit:
+                var submitWake = LeadWake(request);
                 return Accepted(accept.Execute(new SubmitJobRequest(request.IdempotencyKey ?? string.Empty, request.Instruction ?? string.Empty, request.Behavior, request.Hold)
                 {
                     Backend = request.Backend,
@@ -182,10 +183,11 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     TimeoutSeconds = request.TimeoutSeconds,
                     QueueTtlSeconds = request.QueueTtlSeconds,
                     LeadSessionId = request.LeadSessionId,
-                    WakeKey = request.WakeKey,
-                    WakeGeneration = request.WakeGeneration,
+                    WakeKey = submitWake.Key,
+                    WakeGeneration = submitWake.Generation,
                 }));
             case IpcProtocol.JobFollowUp:
+                var followUpWake = LeadWake(request);
                 return Accepted(followUp.Execute(new FollowUpRequest(request.JobId ?? string.Empty, request.Instruction ?? string.Empty, request.IdempotencyKey ?? string.Empty)
                 {
                     TimeoutSeconds = request.TimeoutSeconds,
@@ -196,8 +198,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     ReplaceIfIdle = request.ReplaceIfIdle,
                     Model = request.Model,
                     Effort = request.Effort,
-                    WakeKey = request.WakeKey,
-                    WakeGeneration = request.WakeGeneration,
+                    WakeKey = followUpWake.Key,
+                    WakeGeneration = followUpWake.Generation,
                 }));
             case IpcProtocol.JobStop:
                 return Map(stop.Execute(request.JobId ?? string.Empty, request.Interrupt));
@@ -205,9 +207,9 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 return stopAgent is null ? new IpcResponse(false, JobErrors.BackendUnavailable) : Map(stopAgent.Execute(request.JobId ?? string.Empty));
             case IpcProtocol.JobGet:
                 var found = get.Execute(request.JobId ?? string.Empty);
-                if (found.Error is null && request.WakeKey is not null && request.WakeGeneration is long generation && wakeStore is not null)
+                if (found.Error is null && LeadWake(request) is { Key: { } readKey, Generation: long generation } && wakeStore is not null)
                 {
-                    wakeStore.MarkRead(request.JobId!, request.WakeKey, generation);
+                    wakeStore.MarkRead(request.JobId!, readKey, generation);
                 }
                 return Map(WithLocation(found)) with { HerdrMode = herdrPlacement is not null };
             case IpcProtocol.JobOutput:
@@ -309,6 +311,11 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 return new IpcResponse(false, IpcProtocol.UnknownOp);
         }
     }
+
+    // The lead session's current binding wins over a bridge's cached key, so a stale bridge never drops a job's wake.
+    (string? Key, long? Generation) LeadWake(IpcRequest request) =>
+        request.LeadSessionId is not null && wakeStore?.Status(request.LeadSessionId) is { Registered: true, Key: { } key, Generation: { } generation }
+            ? (key, generation) : (request.WakeKey, request.WakeGeneration);
 
     static bool ValidWorkspace(IpcRequest request) => request.Workspace is { Length: > 0 and <= 4096 } workspace
         && Path.IsPathFullyQualified(workspace) && request.BindingKey is { Length: > 0 and <= 4096 };
