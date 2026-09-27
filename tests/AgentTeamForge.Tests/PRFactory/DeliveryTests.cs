@@ -69,6 +69,21 @@ public sealed class DeliveryTests
         Assert.Equal("failed", f.Teams.Get(Fixture.Url, f.Item.Id)!.State);
     }
 
+    [Fact]
+    public async Task Message_after_kill_of_idle_member_does_not_resume_its_session()
+    {
+        using var f = new Fixture();
+        await f.Adapter().TickAsync(null, CancellationToken.None);
+        var id = f.Teams.MemberJob(Fixture.Url, f.Item.Id, "lead", 0)!;
+        f.Finish(id, "done");
+        var send = new PRFactoryCommand(Guid.NewGuid(), "SendMessage", "lead", "must not restart after kill");
+        f.Commands.Add(new(Guid.NewGuid(), "KillAgent", "lead", null));
+        f.Commands.Add(send);
+        await f.Adapter().TickAsync(null, CancellationToken.None);
+        Assert.Single(f.Jobs.ListJobs("prfactory", "connector", 10));
+        Assert.Equal("member_closed", f.Acks[send.CommandId].Reason);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

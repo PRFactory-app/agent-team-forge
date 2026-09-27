@@ -45,6 +45,43 @@ public sealed class ExternalJoinTests
     }
 
     [Fact]
+    public async Task Message_waiting_for_unjoined_member_does_not_block_mixed_team_completion()
+    {
+        using var dir = new TempStateDir();
+        var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var server = new FakeServer();
+        server.Item.TeamPlan = new PRFactoryTeamPlan
+        {
+            MaxConcurrentChildren = 1,
+            Members = [new PRFactoryTeamMember { Name = "visitor", Role = "Reviewer", Order = 1 }, new PRFactoryTeamMember { Name = "coder", Role = "Coder", Order = 2 }]
+        };
+        var store = new PRFactoryTeamStore(db);
+        var jobs = new JobStore(db, DurabilityCheckpoints.None);
+        var principal = new BoundPrincipal("prfactory", "connector", "connector-lead");
+        var accept = new AcceptJob(jobs, principal, new SpikeLimits(), false, new AdmissionGate(), ["codex"]);
+        var stop = new StopJob(jobs, principal, _ => { });
+        PRFactoryWorkItems Adapter() => new("https://example.test",
+            [new(server.Item.RepositoryId, dir.Path, ["visitor"])], store,
+            new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
+            accept.Execute, jobs.GetJob, () => { }, externalTeam: new ExternalTeam(new ExternalMemberStore(db), new WakeStore(db)), stopJob: stop.Execute);
+        var send = new PRFactoryCommand(Guid.NewGuid(), "SendMessage", "visitor", "waiting");
+        server.Commands.Add(send);
+        await Adapter().TickAsync(null, CancellationToken.None);
+        Assert.Empty(server.Acknowledged);
+        for (var run = jobs.BeginNextAttempt(); run is not null; run = jobs.BeginNextAttempt())
+        {
+            Assert.True(jobs.Complete(new(run.Job.JobId, run.RunId, run.Generation, run.Correlation), "done"));
+        }
+        for (var i = 0; i < 5 && store.Get("https://example.test", server.Item.Id)!.State != "completed"; i++)
+        {
+            await Adapter().TickAsync(null, CancellationToken.None);
+        }
+        Assert.Equal("completed", store.Get("https://example.test", server.Item.Id)!.State);
+        Assert.Equal(new PRFactoryCommandReceipt(false, "member_closed"), store.CommandReceipt("https://example.test", server.Item.Id, send.CommandId));
+        Assert.Contains(send.CommandId, server.Acknowledged);
+    }
+
+    [Fact]
     public async Task External_member_ticket_prompt_reply_restart_and_kill_are_durable()
     {
         using var dir = new TempStateDir();

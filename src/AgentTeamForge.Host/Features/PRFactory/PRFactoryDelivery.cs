@@ -51,14 +51,16 @@ public sealed partial class PRFactoryWorkItems
                     if (kill)
                     {
                         // Stop every turn, including a deferred follow-up accepted before this command.
+                        // Mark first: an idle (completed) member has nothing to cancel, yet must stay closed.
+                        teams.MarkManagedKilled(server, item.Id, command.TargetAgentName);
                         outcome = JobResult.Fail("member_not_found");
-                        foreach (var member in teams.ManagedMembers(server, item.Id).Where(m => m.Member == command.TargetAgentName))
+                        foreach (var member in teams.ManagedMembers(server, item.Id).Where(m => m.Member == command.TargetAgentName).Reverse())
                         {
                             outcome = stopJob?.Invoke(member.JobId) ?? JobResult.Fail(JobErrors.DaemonUnhealthy);
                             if (outcome.Error is not null) { break; }
                         }
                     }
-                    else if (getJob(parent)?.Status == JobStatus.Cancelled)
+                    else if (teams.IsManagedKilled(server, item.Id, command.TargetAgentName) || getJob(parent)?.Status == JobStatus.Cancelled)
                     {
                         outcome = JobResult.Fail("member_closed");
                     }

@@ -255,6 +255,9 @@ static class Schema
             offset INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL DEFAULT 0,
             status TEXT, pending TEXT, result_offset INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(server, work_item_id, job_id));
+        CREATE TABLE prfactory_killed_members(
+            server TEXT NOT NULL, work_item_id TEXT NOT NULL, member TEXT NOT NULL,
+            PRIMARY KEY(server, work_item_id, member));
         """;
 
     static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16];

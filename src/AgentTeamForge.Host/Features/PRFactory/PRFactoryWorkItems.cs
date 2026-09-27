@@ -269,7 +269,6 @@ public sealed partial class PRFactoryWorkItems(
         lead = allJobs.First(j => j.JobId == teams.ManagedMembers(server, item.Id).Last(m => m.Member == "lead").JobId);
         var waitForManaged = managedMembers.Length > 0 || externalNames.Length == 0;
         if (allJobs.Count != managedMembers.Length + 1 || !externalRepliesDrained || !outputDrained
-            || teams.PendingCommands(server, item.Id).Count > 0
             || (waitForManaged
                 ? allJobs.Any(j => j.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation)
                 : teams.ExternalMembers(server, item.Id).Any(e => !e.Closed)))
@@ -291,6 +290,15 @@ public sealed partial class PRFactoryWorkItems(
                 }
                 return;
             }
+        }
+        // After revoking: messages still waiting for an unjoined member settle as member_closed next tick.
+        if (teams.PendingCommands(server, item.Id).Count > 0)
+        {
+            return;
+        }
+        if (externalNames.Length > 0)
+        {
+            var externals = teams.ExternalMembers(server, item.Id);
             externalTeam!.CloseTeam(externals[0].TeamId);
             teams.MarkExternalClosed(server, item.Id);
         }

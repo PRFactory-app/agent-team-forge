@@ -127,6 +127,7 @@ public sealed class SchemaTests
             command.CommandText = """
                 DROP TABLE prfactory_pending_commands;
                 DROP TABLE prfactory_stream_positions;
+                DROP TABLE prfactory_killed_members;
                 DELETE FROM schema_migrations WHERE version=16;
                 ALTER TABLE wake_targets DROP COLUMN active;
                 DELETE FROM schema_migrations WHERE version=15;
@@ -192,6 +193,7 @@ public sealed class SchemaTests
             command.CommandText = """
                 DROP TABLE prfactory_pending_commands;
                 DROP TABLE prfactory_stream_positions;
+                DROP TABLE prfactory_killed_members;
                 DELETE FROM schema_migrations WHERE version=16;
                 ALTER TABLE wake_targets DROP COLUMN active;
                 DELETE FROM schema_migrations WHERE version=15;

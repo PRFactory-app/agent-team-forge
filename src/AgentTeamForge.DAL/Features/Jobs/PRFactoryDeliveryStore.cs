@@ -19,6 +19,29 @@ public sealed partial class PRFactoryTeamStore
         return rows;
     }
 
+    /// <summary>A killed managed member stays closed: later messages must not resume its session.</summary>
+    public void MarkManagedKilled(string server, Guid id, string member)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT OR IGNORE INTO prfactory_killed_members VALUES ($server,$id,$member)";
+        command.Parameters.AddWithValue("$server", server);
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        command.Parameters.AddWithValue("$member", member);
+        command.ExecuteNonQuery();
+    }
+
+    public bool IsManagedKilled(string server, Guid id, string member)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM prfactory_killed_members WHERE server=$server AND work_item_id=$id AND member=$member";
+        command.Parameters.AddWithValue("$server", server);
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        command.Parameters.AddWithValue("$member", member);
+        return command.ExecuteScalar() is not null;
+    }
+
     public void SavePendingCommand(string server, Guid id, Guid commandId, string payload, string? parentJob)
     {
         using var connection = database.OpenConnection();
