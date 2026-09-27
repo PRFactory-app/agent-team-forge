@@ -7,10 +7,31 @@ namespace AgentTeamForge.Host.Features.PRFactory;
 public enum PRFactoryAgentType { ClaudeCode, Codex, CursorCli, PiAgent, Droid }
 [JsonConverter(typeof(JsonStringEnumConverter<PRFactoryEffort>))]
 public enum PRFactoryEffort { Low, Medium, High, XHigh, Max, Ultra }
+public enum PRFactoryWorkItemType
+{
+    TicketRefinement, Planning, TestPlan, Implementation, CodeReview, Discovery, VisualQa,
+    PlanReview, ClarifyingQuestions, Decomposition, HostingNeedsDerivation, HostingResearch, CustomStep
+}
 
 public sealed class PRFactoryWorkItem
 {
     public Guid Id { get; set; }
+    public string? Type
+    {
+        get;
+        // Worker enum names are camel-cased on the server wire; older fixtures use PascalCase.
+        set => field = Enum.TryParse<PRFactoryWorkItemType>(value, ignoreCase: true, out var type) ? type.ToString() : value;
+    }
+    public Guid TicketId { get; set; }
+    public string? TicketKey { get; set; }
+    public string? TicketSource { get; set; }
+    public string? StepKey { get; set; }
+    public string? StartFromBranch { get; set; }
+    public string? PublishBranch { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
+    // Repository set/default base are carried in ContextJson by the worker contract.
+    // Retain repository outcomes (including base SHA/branch) for publication slices.
+    public System.Text.Json.JsonElement? RepositoryResults { get; set; }
     public Guid RepositoryId { get; set; }
     public PRFactoryAgentType AgentType { get; set; }
     public string? Model { get; set; }
@@ -77,6 +98,7 @@ public sealed record PRFactoryStreamResponse(bool Accepted, Dictionary<string, l
 [JsonSerializable(typeof(PRFactoryAtfAcceptanceResponse))]
 [JsonSerializable(typeof(PRFactoryLeaseHeartbeatRequest))]
 [JsonSerializable(typeof(PRFactoryArtefactRequest))]
+[JsonSerializable(typeof(PRFactoryPlanBasis))]
 [JsonSerializable(typeof(PRFactoryCompletionRequest))]
 [JsonSerializable(typeof(PRFactoryFailureRequest))]
 [JsonSerializable(typeof(PRFactoryCompletionResponse))]

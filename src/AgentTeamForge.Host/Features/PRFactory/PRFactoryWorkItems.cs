@@ -435,26 +435,57 @@ public sealed partial class PRFactoryWorkItems(
         var leadId = teams.ManagedMembers(server, item.Id).LastOrDefault(m => m.Member == "lead")?.JobId;
         var job = leadId is null ? null : getJob(leadId);
         cwd = job is null ? cwd : JobWorktree.WorkingDirectory(job) ?? cwd;
-        var file = cwd is not null && item.ExpectedOutput is { Length: > 0 } output
-            ? ArtefactPath(cwd, item.TicketArtefactFolder ?? string.Empty, output) ?? string.Empty
-            : null;
-        if (file == string.Empty)
+        var delivery = teams.ArtefactDelivery(server, item.Id);
+        if (delivery is null)
         {
-            // A server-supplied path that escapes the mapping fails the item instead of retrying forever.
-            (success, error, file) = (false, "artefact path is outside the mapped repository", null);
-        }
-        if (!team.Uploaded)
-        {
-            var artefacts = new List<PRFactoryArtefactFile>();
-            if (file is not null && File.Exists(file))
+            string? payload = null;
+            if (!success && leadId is not null)
             {
-                artefacts.Add(new PRFactoryArtefactFile(item.ExpectedOutput!, await File.ReadAllTextAsync(file, ct), null));
+                error += $". Lead job: {leadId}; worktree: {cwd ?? "none"}; inspect local job results and logs";
             }
-            await client.UploadArtefactsAsync(item.Id, item.LeaseToken, artefacts, ct);
-            teams.SetUploaded(server, item.Id);
+            if (success)
+            {
+                try
+                {
+                    var artefacts = await PRFactoryArtefacts.CollectAsync(item, cwd ?? throw new InvalidDataException("Missing lead worktree"), ct);
+                    payload = JsonSerializer.Serialize(new PRFactoryArtefactRequest(artefacts, item.LeaseToken), PRFactoryWorkItemJson.Default.PRFactoryArtefactRequest);
+                }
+                catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException)
+                {
+                    success = false;
+                    error = $"Cannot collect {item.Type ?? "work item"} artefacts: {ex.Message}. Lead job: {leadId ?? "none"}; worktree: {cwd ?? "none"}";
+                }
+            }
+            teams.FreezeArtefacts(server, item.Id, payload, success ? null : error);
+            delivery = teams.ArtefactDelivery(server, item.Id)!;
+        }
+        if (delivery.Failure is { } failure) { (success, error) = (false, failure); }
+        if (success && !team.Uploaded)
+        {
+            try
+            {
+                await client.UploadArtefactPayloadAsync(item.Id, delivery.Payload!, ct);
+                teams.SetUploaded(server, item.Id);
+            }
+            catch (InvalidDataException ex)
+            {
+                (success, error) = (false, ex.Message);
+                teams.FreezeArtefacts(server, item.Id, null, error);
+            }
         }
         if (success)
         {
+            // The server treats resultMarkdown as a replacement document for several phases.
+            // Built-ins already uploaded their documents; never overwrite those with CLI chatter.
+            if (item.Type == "CustomStep")
+            {
+                result = JsonSerializer.Deserialize(delivery.Payload!, PRFactoryWorkItemJson.Default.PRFactoryArtefactRequest)!
+                    .Artefacts.Single().Content;
+            }
+            else if (item.Type is not (null or "Implementation" or "HostingNeedsDerivation" or "HostingResearch"))
+            {
+                result = null;
+            }
             await client.CompleteAsync(item.Id, item.LeaseToken, result, ct,
                 !item.ReadOnly && cwd is not null ? JobWorktree.Branch(cwd) : null,
                 !item.ReadOnly && cwd is not null ? JobWorktree.Head(cwd) : null);
@@ -484,27 +515,6 @@ public sealed partial class PRFactoryWorkItems(
                 throw new InvalidOperationException($"PRFactory job stop failed: {stopped.Error}");
             }
         }
-    }
-
-    static string? ArtefactPath(string cwd, string folder, string output)
-    {
-        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(cwd));
-        var file = Path.GetFullPath(Path.Combine(root, folder, output));
-        if (Path.GetFileName(output) != output || !file.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-        {
-            return null;
-        }
-
-        var current = root;
-        foreach (var part in Path.GetRelativePath(root, Path.GetDirectoryName(file)!).Split(Path.DirectorySeparatorChar))
-        {
-            current = Path.Combine(current, part);
-            if (new DirectoryInfo(current).LinkTarget is not null)
-            {
-                return null;
-            }
-        }
-        return new FileInfo(file).LinkTarget is null ? file : null;
     }
 
     static bool HasSecondaries(PRFactoryWorkItem item)

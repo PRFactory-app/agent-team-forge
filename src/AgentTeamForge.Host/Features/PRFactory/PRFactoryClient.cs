@@ -207,10 +207,21 @@ public sealed class PRFactoryClient(HttpClient httpClient)
 
     public async Task UploadArtefactsAsync(Guid id, Guid? lease, List<PRFactoryArtefactFile> artefacts, CancellationToken ct)
     {
-        using var response = await httpClient.PostAsJsonAsync($"api/worker/artefacts/{id:D}",
-            new PRFactoryArtefactRequest(artefacts, lease), PRFactoryWorkItemJson.Default.PRFactoryArtefactRequest, ct);
+        await UploadArtefactPayloadAsync(id, System.Text.Json.JsonSerializer.Serialize(
+            new PRFactoryArtefactRequest(artefacts, lease), PRFactoryWorkItemJson.Default.PRFactoryArtefactRequest), ct);
+    }
+
+    public async Task UploadArtefactPayloadAsync(Guid id, string payload, CancellationToken ct)
+    {
+        using var content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+        using var response = await httpClient.PostAsync($"api/worker/artefacts/{id:D}", content, ct);
         RejectToken(response.StatusCode);
         RejectLostLease(response.StatusCode, id);
+        if ((int)response.StatusCode is >= 400 and < 500 and not (408 or 429))
+        {
+            var details = await response.Content.ReadAsStringAsync(ct);
+            throw new InvalidDataException($"PRFactory rejected artefacts (HTTP {(int)response.StatusCode}): {details[..Math.Min(details.Length, 2000)]}");
+        }
         response.EnsureSuccessStatusCode();
     }
 

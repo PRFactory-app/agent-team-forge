@@ -25,6 +25,14 @@ public static class JobWorktree
 
     public static string? Branch(string cwd) => Git(cwd, QueryTimeout, "symbolic-ref", "--quiet", "--short", "HEAD");
 
+    public static async Task<string[]?> TrackedPathsAsync(string cwd, CancellationToken ct)
+    {
+        var output = await GitCaptureAsync(cwd, QueryTimeout, false, ct, "ls-files", "-z", "--full-name", "--", ":/");
+        // Never certify a truncated tree. The query helper bounds captured output.
+        return output is null || Encoding.UTF8.GetByteCount(output) >= MaxGitOutputBytes
+            ? null : output.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+    }
+
     public static bool Prepare(JobRecord job)
     {
         if (job.WorktreePath is null)
@@ -74,7 +82,10 @@ public static class JobWorktree
     static string? Git(string cwd, TimeSpan timeout, params string[] args) =>
         GitAsync(cwd, timeout, CancellationToken.None, args).GetAwaiter().GetResult();
 
-    internal static async Task<string?> GitAsync(string cwd, TimeSpan timeout, CancellationToken cancellationToken, params string[] args)
+    internal static Task<string?> GitAsync(string cwd, TimeSpan timeout, CancellationToken cancellationToken, params string[] args) =>
+        GitCaptureAsync(cwd, timeout, true, cancellationToken, args);
+
+    static async Task<string?> GitCaptureAsync(string cwd, TimeSpan timeout, bool trim, CancellationToken cancellationToken, params string[] args)
     {
         try
         {
@@ -129,7 +140,7 @@ public static class JobWorktree
             drain.CancelAfter(DrainGrace);
             var text = await output;
             cancellationToken.ThrowIfCancellationRequested();
-            return process.ExitCode == 0 ? text.Trim() : null;
+            return process.ExitCode == 0 ? trim ? text.Trim() : text : null;
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
         {

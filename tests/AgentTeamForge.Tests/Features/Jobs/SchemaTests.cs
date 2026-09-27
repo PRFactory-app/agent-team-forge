@@ -125,6 +125,8 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE prfactory_artefact_delivery;
+                DELETE FROM schema_migrations WHERE version=17;
                 DROP TABLE prfactory_pending_commands;
                 DROP TABLE prfactory_stream_positions;
                 DROP TABLE prfactory_killed_members;
@@ -191,6 +193,8 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP TABLE prfactory_artefact_delivery;
+                DELETE FROM schema_migrations WHERE version=17;
                 DROP TABLE prfactory_pending_commands;
                 DROP TABLE prfactory_stream_positions;
                 DROP TABLE prfactory_killed_members;

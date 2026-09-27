@@ -157,7 +157,7 @@ public sealed class WorkItemTests
     }
 
     [Fact]
-    public async Task Multi_repository_claim_is_refused_before_any_job_and_upload_precedes_failure()
+    public async Task Multi_repository_claim_is_refused_without_upload()
     {
         using var dir = new TempStateDir();
         var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
@@ -176,7 +176,7 @@ public sealed class WorkItemTests
             _ => { spawns++; throw new InvalidOperationException("should not submit"); }, _ => null, () => { });
         await adapter.TickAsync(null, CancellationToken.None);
         Assert.Equal(0, spawns);
-        Assert.Equal(["poll", "claim", "artefacts", "fail"], server.Calls);
+        Assert.Equal(["poll", "claim", "fail"], server.Calls);
         Assert.Equal("refused", teams.Get("https://example.test", server.Item.Id)!.State);
     }
 
@@ -203,7 +203,7 @@ public sealed class WorkItemTests
             _ => JobResult.Ok(new JobView("job_1", JobStatus.Completed, null, null, 0), "accepted"),
             id => NewJob(id, "codex") with { Status = JobStatus.Completed }, () => { });
         await adapter.TickAsync(null, CancellationToken.None);
-        Assert.Equal(["poll", "claim", "artefacts", "fail"], server.Calls);
+        Assert.Equal(["poll", "claim", "fail"], server.Calls);
         Assert.Null(server.UploadContent);
         Assert.Equal("failed", teams.Get("https://example.test", server.Item.Id)!.State);
     }

@@ -100,3 +100,27 @@ The connector advertises worker contract version `1.0.0` consistently during
 registration, polling and claiming. This is PRFactory's single-repository
 compatibility level, independent of the ATF product version; it does not claim
 the newer multi-repository capability.
+
+## Phase artefacts
+
+Built-in phases collect top-level Markdown and HTML documents from the latest
+lead job's ticket folder. Decomposition additionally collects JSON. Filename
+stems determine kinds, including `qa`/`questions` → `qa-po` for TicketRefinement
+and `qa-dev` otherwise, and numbered plan/code review reports. Custom steps
+upload only their named `ExpectedOutput` as `custom-step`, matching the worker's
+custom-step result contract. Child deliverables must be present in the lead
+workspace; the connector does not merge independent child worktrees.
+
+Planning adds `plan-basis.json` with the repository ID, actual branch/HEAD and
+tracked paths when Git can report them. As with the worker, an unreadable basis
+does not discard the plan; PRFactory retains its approval checks. Built-in
+document completions omit CLI result chatter so it cannot overwrite uploaded
+reviews or proposals. Custom completions carry the expected file's frozen text.
+
+Before the first upload, SQLite stores the exact request body, including file
+contents and lease token. Restarts and lost HTTP responses resend those bytes.
+Missing required phase outputs, unsafe paths (including intermediate/file
+symlinks), failed jobs and terminal upload rejections go directly to Fail with
+a persisted diagnostic. Network errors, HTTP 408/429 and server errors retry;
+token rejection and lease fencing retain their existing handling. An execution
+failure never depends on a successful artefact upload.
