@@ -1,3 +1,4 @@
+using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
@@ -44,6 +45,33 @@ public sealed class JobTimeoutTests
         Assert.False(dispatcher.Halted);
         var next = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept()).Execute(new FollowUpRequest(job.JobId, "continue", "next"));
         Assert.Equal("accepted", next.Outcome);
+    }
+
+    [Fact]
+    public async Task Follow_up_timeout_overrides_daemon_runtime_and_cancels_with_timeout()
+    {
+        using var f = new JobFixture(new SpikeLimits { MaxFakeRuntime = TimeSpan.FromMilliseconds(200) });
+        var backend = new ScriptedBackend(r => r.ResumeSessionId is null
+            ? [new BackendEvidence.Session(r.Correlation, "session-1"), new BackendEvidence.Result(r.Correlation, "done")]
+            : [new BackendEvidence.Session(r.Correlation, "session-1")])
+        { Hangs = true };
+        var parent = f.Submit("parent");
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(parent.JobId)!.Status);
+
+        var followUp = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
+            .Execute(new FollowUpRequest(parent.JobId, "continue", "follow") { TimeoutSeconds = 1 });
+        Assert.Equal("accepted", followUp.Outcome);
+        Assert.Equal(1, f.Store.GetJob(followUp.Job!.JobId)!.TimeoutSeconds);
+
+        await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None)
+            .WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+
+        var stored = f.Store.GetJob(followUp.Job.JobId)!;
+        Assert.Equal((JobStatus.Cancelled, "timeout"), (stored.Status, stored.ReasonCode));
+        Assert.Equal(1, backend.Terminations);
     }
 
     [Fact]

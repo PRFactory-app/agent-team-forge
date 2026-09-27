@@ -13,8 +13,8 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// <see cref="SpikeLimits.MaxConcurrentJobs"/> attempts at once (the store keeps
 /// turns on one native session serial). Each attempt commits its start before any
 /// backend effect and turns backend evidence into exactly one fenced terminal
-/// write. Driven by the daemon lifetime token only. One deadline bounds the
-/// whole effect of an attempt: start, delivery and evidence reading.
+/// write. One deadline bounds the whole effect of an attempt: start, delivery
+/// and evidence reading. A job timeout takes precedence over the daemon runtime.
 /// </summary>
 public sealed class DispatchJob : IDisposable
 {
@@ -550,18 +550,20 @@ public sealed class DispatchJob : IDisposable
             }
             headless = TrackHeadless(claim);
             // The deadline starts before any backend effect, so start and delivery are bounded too.
-            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, stopRequested.Token);
+            using var jobTimeout = claim.Job.TimeoutSeconds is int seconds ? new CancellationTokenSource(TimeSpan.FromSeconds(seconds)) : null;
+            using var deadline = jobTimeout is null
+                ? CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, stopRequested.Token)
+                : CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, stopRequested.Token, jobTimeout.Token);
             // Interactive launch and native transcript confirmation can exceed the fake
             // backend's short default runtime on a loaded desktop.
             var runtime = backends.Resolve(claim.Job.Backend) is HerdrInteractiveBackend or WtInteractiveBackend
                 ? TimeSpan.FromTicks(Math.Max(limits.MaxFakeRuntime.Ticks,
                     (InteractiveStartup.Timeout * 2 + TimeSpan.FromSeconds(90)).Ticks))
                 : limits.MaxFakeRuntime;
-            deadline.CancelAfter(runtime);
+            if (jobTimeout is null) { deadline.CancelAfter(runtime); }
             checkpoints.Hit(DurabilityCheckpoints.AttemptAfterCommit);
 
             // A job timeout ends the attempt through the same cancel path as a stop.
-            using var jobTimeout = claim.Job.TimeoutSeconds is int seconds ? new CancellationTokenSource(TimeSpan.FromSeconds(seconds)) : null;
             using var onTimeout = jobTimeout?.Token.Register(() => CancelOwned(run.JobId, "timeout"));
 
             // A stop may have committed after claim but before this task was scheduled.
@@ -667,7 +669,10 @@ public sealed class DispatchJob : IDisposable
                                 // resets wait at most MaxAllowedRuntime).
                                 var wait = AccountLimitDetector.ResetIn(limit.Details) is { } reset
                                     ? reset - DateTimeOffset.UtcNow : MaxAllowedRuntime;
-                                deadline.CancelAfter(TimeSpan.FromTicks(Math.Clamp(wait.Ticks, 0, MaxAllowedRuntime.Ticks)) + runtime);
+                                if (jobTimeout is null)
+                                {
+                                    deadline.CancelAfter(TimeSpan.FromTicks(Math.Clamp(wait.Ticks, 0, MaxAllowedRuntime.Ticks)) + runtime);
+                                }
                             }
                             break;
                         case BackendEvidence.NotStarted rejected:
