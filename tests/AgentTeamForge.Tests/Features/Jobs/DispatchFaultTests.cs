@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
@@ -31,7 +32,7 @@ public sealed class DispatchFaultTests
             {
                 if (r.JobId == first.JobId)
                 {
-                    if (noEffects) { throw new BackendNotStartedException("agent_not_ready"); }
+                    if (noEffects) { throw new BackendNotStartedException("agent_not_ready", new HerdrLaunchException("agent_not_ready")); }
                     throw new InvalidOperationException("partial launch");
                 }
             }
@@ -47,6 +48,7 @@ public sealed class DispatchFaultTests
             Assert.Equal(noEffects ? JobStatus.Failed : JobStatus.NeedsReconciliation, job.Status);
             Assert.Equal(noEffects ? "backend_not_started" : "launch_failed", job.ReasonCode);
             Assert.Contains(noEffects ? "agent_not_ready" : "partial launch", job.ResultText);
+            if (noEffects) { Assert.Equal("agent_not_ready", job.ResultText); }
             Assert.Contains(logs, line => line.Contains(noEffects ? "agent_not_ready" : "partial launch"));
             Assert.Equal(!noEffects, f.Store.IsSessionFenced(first.JobId));
             Assert.Null(dispatcher.HaltReason);

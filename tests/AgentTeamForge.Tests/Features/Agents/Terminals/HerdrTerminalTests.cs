@@ -176,6 +176,19 @@ public class HerdrTerminalTests
         Assert.Contains("agent_not_ready", error!.Message);
         Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
         Assert.Equal(cleanupFails, File.Exists(HerdrOwnedSessions.PathFor(launch)));
+        Assert.Equal(cleanupFails, File.Exists(launch.BootstrapPath));
+    }
+
+    [Fact]
+    public async Task Unavailable_terminal_removes_its_bootstrap()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var env = new Dictionary<string, string?>(Desktop) { ["WAYLAND_DISPLAY"] = null };
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", state.Path, null, null, state.File("herdr/bootstrap"));
+
+        await Assert.ThrowsAsync<BackendNotStartedException>(() => new HerdrAgentControl(Terminal(new FakeHerdr(), env)).StartAsync(launch, CancellationToken.None));
+
+        Assert.False(File.Exists(launch.BootstrapPath));
     }
 
     [Fact]

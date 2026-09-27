@@ -63,7 +63,19 @@ public sealed class AcceptanceOutcomeTests
         Assert.Equal(1, f.Store.CountUnattemptedIntents());
     }
 
-    static JobsEndpoint Endpoint(JobFixture f, Action signal)
+    [Fact]
+    public void Get_reports_daemon_herdr_mode()
+    {
+        using var f = new JobFixture();
+        using var state = new TempStateDir();
+        var job = f.Submit("mode");
+        var request = new IpcRequest { Op = IpcProtocol.JobGet, JobId = job.JobId };
+
+        Assert.False(Endpoint(f, () => { }).Handle(request).HerdrMode);
+        Assert.True(Endpoint(f, () => { }, new HerdrPlacement(state.Path)).Handle(request).HerdrMode);
+    }
+
+    static JobsEndpoint Endpoint(JobFixture f, Action signal, HerdrPlacement? herdrPlacement = null)
     {
         var accept = f.Accept();
         return new(accept, f.Get(), new FollowUpJob(f.Store, JobFixture.Operator, accept), f.List(), new StopJob(f.Store, JobFixture.Operator, _ => { }), new DurabilityCheckpoints(point =>
@@ -72,7 +84,7 @@ public sealed class AcceptanceOutcomeTests
             {
                 throw new InjectedFailureException(point);
             }
-        }), signal);
+        }), signal, herdrPlacement: herdrPlacement);
     }
 
     static IpcRequest Submit(string key, string instruction) =>
