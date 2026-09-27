@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 14;
+    public const int CurrentVersion = 15;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -243,7 +243,9 @@ static class Schema
         ALTER TABLE runs ADD COLUMN acknowledged_at TEXT;
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14];
+    internal const string V15 = "ALTER TABLE wake_targets ADD COLUMN active INTEGER NOT NULL DEFAULT 1;";
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

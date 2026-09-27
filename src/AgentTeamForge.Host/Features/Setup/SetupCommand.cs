@@ -55,6 +55,9 @@ public static class SetupCommand
             {
                 return 64;
             }
+            // The old state must be moved before registrations can be checked against
+            // the new default. Reporting missing registrations here is misleading.
+            return 1;
         }
         var mode = options.GetValueOrDefault("mode");
         var configuredMode = Directory.Exists(dir) ? ConfiguredMode(StateDirectory.Open(dir)) : null;
@@ -514,7 +517,8 @@ public static class SetupCommand
     {
         if (LockIsFree(state))
         {
-            Console.Out.WriteLine("Daemon is not running.");
+            var recovered = WtInteractiveBackend.RecoverOwned(state.Path);
+            Console.Out.WriteLine($"Daemon is not running. Settled {recovered} owned Windows tab(s).");
             return 0;
         }
         var pid = DaemonLock.ReadOwnerPid(state.LockFile);
@@ -527,10 +531,10 @@ public static class SetupCommand
         {
             using var process = Process.GetProcessById(pid.Value);
             // Settle owned agents first so their PowerShell wrappers close their tabs.
-            _ = WtInteractiveBackend.RecoverOwned(state.Path);
+            var recovered = WtInteractiveBackend.RecoverOwned(state.Path);
             process.Kill();
             process.WaitForExit(5000);
-            Console.Out.WriteLine($"Stopped daemon {pid.Value}.");
+            Console.Out.WriteLine($"Stopped daemon {pid.Value}. Settled {recovered} owned Windows tab(s).");
             return 0;
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
