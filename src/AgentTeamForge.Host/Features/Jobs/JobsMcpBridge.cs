@@ -350,6 +350,10 @@ public static class JobsMcpBridge
                     }
                     else
                     {
+                        if (call.Name == "read_messages")
+                        {
+                            args = WithoutNulls(args);
+                        }
                         var invalidReadField = call.Name == "read_messages" ? InvalidReadMessagesField(args) : null;
                         var (ipc, rejection) = Map(call.Name, args, testProfile);
                         ipc = RouteParent(ipc, parentMemberToken);
@@ -425,10 +429,14 @@ public static class JobsMcpBridge
         return 0;
     }
 
+    /// <summary>Optional read_messages arguments sent as JSON null mean "not given", as before validation named fields.</summary>
+    internal static Dictionary<string, JsonElement> WithoutNulls(IDictionary<string, JsonElement> args) =>
+        args.Where(arg => arg.Value.ValueKind != JsonValueKind.Null).ToDictionary();
+
     internal static string? InvalidReadMessagesField(IDictionary<string, JsonElement> args)
     {
         if (args.TryGetValue("from_agent", out var sender)
-            && (sender.ValueKind != JsonValueKind.String || sender.GetString() is not { Length: >= 1 and <= 64 }))
+            && (sender.ValueKind != JsonValueKind.String || sender.GetString() is not { Length: <= 64 }))
         { return "from_agent"; }
         if (args.TryGetValue("since_seq", out var since)
             && (since.ValueKind != JsonValueKind.Number || !since.TryGetInt64(out var n) || n < 0))

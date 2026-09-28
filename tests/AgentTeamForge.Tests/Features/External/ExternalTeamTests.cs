@@ -378,7 +378,11 @@ public sealed class ExternalTeamTests
         Assert.Contains("since_seq", team.ReadLead(lead.SessionId, lead.Workspace, -1, 1).ErrorDetail);
         Assert.Contains("limit", team.ReadLead(lead.SessionId, lead.Workspace, null, -1).ErrorDetail);
         Assert.Contains("max_chars", team.ReadLead(lead.SessionId, lead.Workspace, null, 1, maxChars: -1).ErrorDetail);
-        Assert.Contains("from_agent", team.ReadLead(lead.SessionId, lead.Workspace, null, 1, fromAgent: "").ErrorDetail);
+        Assert.Contains("from_agent", team.ReadLead(lead.SessionId, lead.Workspace, null, 1, fromAgent: new string('x', 65)).ErrorDetail);
+        Assert.True(team.Send(b, "fourth").Ok);
+        var unfiltered = team.ReadLead(lead.SessionId, lead.Workspace, second.NextSeq, 10, fromAgent: "").Inbox!;
+        Assert.Equal("fourth", Assert.Single(unfiltered.Messages).Text);
+        Assert.NotNull(unfiltered.Cursors);
     }
 
     [Fact]

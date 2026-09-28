@@ -47,16 +47,27 @@ public sealed class JobsMcpBridgeTests
     }
 
     [Theory]
-    [InlineData("{\"from_agent\":null}", "from_agent")]
+    [InlineData("{\"from_agent\":7}", "from_agent")]
     [InlineData("{\"since_seq\":-1}", "since_seq")]
     [InlineData("{\"limit\":\"1\"}", "limit")]
     [InlineData("{\"max_chars\":65537}", "max_chars")]
-    [InlineData("{\"full\":null}", "full")]
+    [InlineData("{\"full\":\"true\"}", "full")]
     public void Read_messages_validation_names_the_bad_field(string jsonText, string field)
     {
         using var json = JsonDocument.Parse(jsonText);
         var args = json.RootElement.EnumerateObject().ToDictionary(property => property.Name, property => property.Value);
 
         Assert.Equal(field, JobsMcpBridge.InvalidReadMessagesField(args));
+    }
+
+    [Fact]
+    public void Read_messages_treats_null_and_empty_optional_arguments_as_absent()
+    {
+        using var json = JsonDocument.Parse("""{"from_agent":"","since_seq":null,"limit":null,"max_chars":null,"full":null}""");
+        var args = JobsMcpBridge.WithoutNulls(json.RootElement.EnumerateObject().ToDictionary(property => property.Name, property => property.Value));
+
+        Assert.Null(JobsMcpBridge.InvalidReadMessagesField(args));
+        var (request, _) = JobsMcpBridge.Map("read_messages", args, false);
+        Assert.Equal(((long?)null, (int?)null, (int?)null, false), (request!.SinceSeq, request.Limit, request.MaxChars, request.Full));
     }
 }
