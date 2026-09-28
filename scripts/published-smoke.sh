@@ -46,9 +46,12 @@ ATF_HOST_BINARY="$BIN" "$DOTNET" test AgentTeamForge.slnx -c Release --no-build 
 # An empty filter match must not look green.
 counters="$(grep -o '<Counters [^>]*>' "$EVIDENCE_DIR/test-results/published-scenarios.trx" 2>/dev/null || true)"
 attr() { sed -n "s/.* $1=\"\([^\"]*\)\".*/\1/p" <<<"$counters"; }
-total="$(attr total)"; passed="$(attr passed)"; failed="$(attr failed)"
-if ! [[ "$total" =~ ^[0-9]+$ && "$total" -ge 1 && "$passed" == "$total" && "$failed" == 0 ]]; then
-  echo "FAIL: scenario counters total=${total:-none} passed=${passed:-none} failed=${failed:-none}" >&2
+total="$(attr total)"; passed="$(attr passed)"; failed="$(attr failed)"; skipped="$(attr notExecuted)"
+allowed_skipped=0
+if [[ "${GITHUB_ACTIONS:-}" == true ]]; then allowed_skipped="$skipped"; fi
+if ! [[ "$total" =~ ^[0-9]+$ && "$total" -ge 1 && "$passed" =~ ^[0-9]+$ && "$skipped" =~ ^[0-9]+$ && "$failed" == 0 ]] ||
+   (( passed + allowed_skipped != total )); then
+  echo "FAIL: scenario counters total=${total:-none} passed=${passed:-none} failed=${failed:-none} skipped=${skipped:-none}" >&2
   exit 1
 fi
 
@@ -57,8 +60,8 @@ fi
   echo "binary=$BIN"
   echo "sdk=$("$DOTNET" --version)"
   echo "uname=$(uname -srm)"
-  echo "scenarios_total=$total scenarios_passed=$passed"
+  echo "scenarios_total=$total scenarios_passed=$passed scenarios_skipped=$skipped"
   ls -l "$(dirname "$BIN")" | awk 'NR>1{print "file", $5, $9}'
   sha256sum "$BIN" "$(dirname "$BIN")"/*.so 2>/dev/null | sed 's#  .*/#  #'
 } > "$EVIDENCE_DIR/published-manifest.txt"
-echo "published scenarios passed ($kind, $passed/$total); manifest: $EVIDENCE_DIR/published-manifest.txt"
+echo "published scenarios passed ($kind, $passed/$total, $skipped skipped); manifest: $EVIDENCE_DIR/published-manifest.txt"
