@@ -13,9 +13,11 @@ destroyed live work.
 
 - Daemon shutdown or restart leaves owned interactive sessions and their
   ownership records untouched.
-- On startup, every started attempt without a committed outcome becomes
-  `needs_reconciliation` with reason `daemon_restart_uncertain`, and its
-  session is fenced. Nothing is re-queued or resumed automatically.
+- On startup, every started attempt without a committed outcome first becomes
+  `needs_reconciliation` with reason `daemon_restart_uncertain`. A Herdr
+  attempt with matching saved server, pane, terminal and shell identity returns
+  to `running` for observation of its original prompt. An unattached attempt
+  fails with `daemon_restart_agent_gone`; its prompt is never replayed.
 - Unattempted queued jobs are dispatched normally.
 - Explicit **Stop agent** (web console or API) uses the saved ownership proof
   (for Herdr: server PID and start time, session name and owner label) to
@@ -28,8 +30,8 @@ destroyed live work.
 
 ## Consequences
 
-- After a restart the operator sees quarantined jobs and decides: read the
-  agent's session, stop it, or leave it.
+- A surviving pane with verified identity resumes observation of its original
+  turn. An unattached job fails cleanly without replaying its prompt.
 - Verified on Linux with a real Herdr session and a killed daemon (2026-09-26):
   the session survived, the job was fenced, follow-up returned
   `parent_not_ready`, an unrelated job completed, and Stop agent closed the

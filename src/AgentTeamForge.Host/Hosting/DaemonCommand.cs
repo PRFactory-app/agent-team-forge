@@ -36,15 +36,15 @@ public static class DaemonCommand
             // daemon-created files even when the invoking client has a loose umask.
             _ = Native.umask(0x3F); // 077
         }
-        if (OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("ATF_DAEMON_LOG") is { } logPath)
+        var logPath = Environment.GetEnvironmentVariable("ATF_DAEMON_LOG") ?? Path.Combine(state.Path, "daemon.log");
+        var log = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
         {
-            var log = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
-            {
-                AutoFlush = true,
-            };
-            Console.SetOut(log);
-            Console.SetError(log);
-        }
+            AutoFlush = true,
+        };
+        Console.SetError(new DaemonLogWriter(Console.Error, log));
+        AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) => Log($"fatal: unhandled exception: {eventArgs.ExceptionObject}");
+        TaskScheduler.UnobservedTaskException += (_, eventArgs) => Log($"error: unobserved task exception: {eventArgs.Exception}");
+        Log($"starting pid={Environment.ProcessId}");
         var profile = ProfileFile.Load(state);
         var launchMode = SetupCommand.ConfiguredMode(state);
         if (launchMode is "herdr" or "terminal" or "wt" && !profile.RealAgents)
@@ -190,6 +190,7 @@ public static class DaemonCommand
         var externalTeam = new ExternalTeam(externalMembers, wakeStore);
         var childContext = new ManagedChildContext(store, externalTeam, state.Path, Environment.ProcessPath!);
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs, childContext);
+        dispatcher.RestoreAfterRestart(store.RestartCandidates());
         var modelDiscovery = new BackendModelDiscovery();
         var tierMap = new TierMap(state.Path, modelDiscovery.CachedModels, Log);
         var herdrPlacement = herdrTerminal is null ? null : new HerdrPlacement(state.Path, Log);
@@ -207,7 +208,7 @@ public static class DaemonCommand
         var claudeMailbox = new ClaudeWakeMailbox();
         dispatcher.ClaudeBridgeReady = claudeMailbox.HasRecentRelay;
         var interactiveLaunch = launchMode is "herdr" or "terminal" or "wt";
-        var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound, interactiveLaunch), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning),
+        var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound, interactiveLaunch), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning, reconcileIdleInteractive: dispatcher.ReconcileIdleInteractive),
             new ListJobs(store, profile.Bound, jobLogs, interactiveLaunch),
             new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning, dispatcher.ReleaseNative), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
             new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
@@ -219,8 +220,8 @@ public static class DaemonCommand
             request => request.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp or IpcProtocol.JobStop ? dispatcher.PauseClaims() : null);
 
         using var lifetime = new CancellationTokenSource();
-        using var sigterm = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; lifetime.Cancel(); });
-        using var sigint = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGINT, context => { context.Cancel = true; lifetime.Cancel(); });
+        using var sigterm = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; Log("stopping: SIGTERM"); lifetime.Cancel(); });
+        using var sigint = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGINT, context => { context.Cancel = true; Log("stopping: SIGINT"); lifetime.Cancel(); });
 
         using var listener = OperatingSystem.IsWindows() ? null : server.Bind();
         var serving = OperatingSystem.IsWindows() ? server.ServeWindowsAsync(lifetime.Token) : server.ServeAsync(listener!, lifetime.Token);
@@ -287,7 +288,8 @@ public static class DaemonCommand
                 Log($"job {job.JobId} parked: {job.Backend} account usage limit");
             }
         };
-        var connectorFollowUp = new FollowUpJob(store, connectorPrincipal, connectorAccept, dispatcher.InterruptRunning);
+        var connectorFollowUp = new FollowUpJob(store, connectorPrincipal, connectorAccept, dispatcher.InterruptRunning,
+            reconcileIdleInteractive: dispatcher.ReconcileIdleInteractive);
         var connectorInteraction = new PRFactoryInteraction(humanWaits, connectorTeams, store, connectorFollowUp.Execute, externalTeam);
         var prfactory = PRFactoryHeartbeat.RunAsync(state, lifetime.Token, log: Log,
             onConnected: async (client, settings, machineId, ct) =>
@@ -381,10 +383,33 @@ public static class DaemonCommand
             Log("warning: admitted submissions still in flight at exit");
         }
 
+        Log($"stopped reason={(halted ? dispatcher.HaltReason ?? "service_fault" : "requested_shutdown")}");
         return halted ? 70 : 0;
     }
 
     static void Log(string message) => Console.Error.WriteLine($"[atf-daemon] {message}");
+
+    sealed class DaemonLogWriter(TextWriter stderr, TextWriter file) : TextWriter
+    {
+        readonly Lock _gate = new();
+        public override Encoding Encoding => stderr.Encoding;
+        public override void WriteLine(string? value)
+        {
+            lock (_gate)
+            {
+                stderr.WriteLine(value);
+                file.WriteLine(value);
+            }
+        }
+        public override void Write(char value)
+        {
+            lock (_gate)
+            {
+                stderr.Write(value);
+                file.Write(value);
+            }
+        }
+    }
 
     static async Task RunPruneAsync(PruneJob prune, int days, CancellationToken cancellationToken)
     {

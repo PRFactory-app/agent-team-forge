@@ -2,6 +2,7 @@ namespace AgentTeamForge.Business.Features.Agents.Backends;
 
 public sealed record BackendRequest(string JobId, string Correlation, string Instruction, string Options)
 {
+    public string? DisplayName { get; init; }
     public Action<string>? StartupProgress { get; init; }
     public string? ManagedMcpConfig { get; init; }
     /// <summary>Native session to resume for a follow-up; null starts a new session.</summary>
@@ -29,7 +30,7 @@ public abstract record BackendEvidence
     /// <summary>A live interactive agent is waiting for its account limit to reset; its turn is still running.</summary>
     public sealed record AccountLimit(string Details) : BackendEvidence;
 
-    public sealed record ProtocolError(string Code) : BackendEvidence;
+    public sealed record ProtocolError(string Code, string? Details = null) : BackendEvidence;
 
     /// <summary>CLI rejected its arguments before a turn began; no job effect occurred.</summary>
     public sealed record NotStarted(string Details) : BackendEvidence;

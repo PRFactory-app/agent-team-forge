@@ -83,6 +83,23 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task Recovery_rebinds_only_the_saved_server_pane_and_shell()
+    {
+        using var state = new TempStateDir();
+        var fake = new FakeHerdr();
+        var terminal = Terminal(fake, new Dictionary<string, string?>(Desktop) { ["HOME"] = state.Path });
+        var session = await terminal.StartSessionAsync(CancellationToken.None);
+        var binding = await terminal.OpenAgentTabAsync(session, "codex: review", "/work", Bootstrap,
+            CancellationToken.None, onCreated: created => session = created);
+        var saved = session with { ShellPid = binding.ShellPid, ShellStartTicks = binding.ShellStartTicks };
+
+        Assert.NotNull(await terminal.RebindAsync(saved, Bootstrap, CancellationToken.None));
+        Assert.Null(await terminal.RebindAsync(saved, "/wrong-bootstrap", CancellationToken.None));
+        fake.Replace(Replacement.ShellReplaced);
+        Assert.Null(await terminal.RebindAsync(saved, Bootstrap, CancellationToken.None));
+    }
+
+    [Fact]
     public async Task ExistingDefaultCodexHomeIsPinnedForSharedTab()
     {
         using var state = new TempStateDir();

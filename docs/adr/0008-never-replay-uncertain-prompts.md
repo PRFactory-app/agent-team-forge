@@ -21,11 +21,11 @@ resent after five seconds without transcript evidence.
   correlated turn. Later human input in the same session does not change the
   machine job's result.
 - A `needs_reconciliation` job fences its whole native session
-  (`jobs.session_fenced`): no follow-up is dispatched into that session until
-  the operator stops the agent or verified exit releases the fence. Unrelated
+  (`jobs.session_fenced`). An idle, verified interactive pane can settle an
+  unobserved interrupted turn before a follow-up is dispatched. Unrelated
   sessions keep running.
-- `stop_job` on such a job stops the agent only when ATF can verify it owns
-  the process; otherwise it returns `owned_agent_not_verified`.
+- `stop_job` signals only a verified owned process. If no marked process
+  remains, it cancels the fenced job and clears its fence.
 
 ## Consequences
 

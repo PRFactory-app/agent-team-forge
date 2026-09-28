@@ -10,6 +10,23 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 public sealed class StopAgentTests
 {
     [Fact]
+    public void Fenced_job_with_no_live_marked_process_can_be_stopped()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("fenced");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        f.Store.RecordSession(run, "native-1");
+        Assert.True(f.Store.EndUnsuccessfully(run, JobStatus.NeedsReconciliation, "interactive_completion_unobserved"));
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => new OwnedBackend());
+
+        var stopped = new StopAgent(f.Store, JobFixture.Operator, catalog).Execute(job.JobId);
+
+        Assert.Equal("agent_stopped", stopped.Outcome);
+        Assert.Equal(JobStatus.Cancelled, f.Store.GetJob(job.JobId)!.Status);
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+    }
+    [Fact]
     public void Stopping_idle_parent_cancels_its_queued_deferred_child()
     {
         using var f = new JobFixture();

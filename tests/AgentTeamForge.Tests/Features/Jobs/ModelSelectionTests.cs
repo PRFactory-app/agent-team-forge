@@ -30,12 +30,12 @@ public sealed class ModelSelectionTests
     }
 
     [Theory]
-    [InlineData("cheapest", "gpt-6-luna", "high")]
-    [InlineData("low", "gpt-6-luna", "xhigh")]
-    [InlineData("medium", "gpt-6-luna", "max")]
+    [InlineData("cheapest", "gpt-6-luna", "low")]
+    [InlineData("low", "gpt-6-luna", "medium")]
+    [InlineData("medium", "gpt-6-luna", "high")]
     [InlineData("high", "gpt-6-sol", "high")]
-    [InlineData("xhigh", "gpt-6-astra", "low")]
-    [InlineData("max", "gpt-6-astra", "medium")]
+    [InlineData("xhigh", "gpt-6-astra", "xhigh")]
+    [InlineData("max", "gpt-6-astra", "max")]
     public void Shared_tiers_resolve_to_exact_backend_arguments(string tier, string model, string effort)
     {
         foreach (var backend in new[] { "codex", "pi" })
@@ -111,7 +111,7 @@ public sealed class ModelSelectionTests
         });
 
         Assert.Equal("accepted", accepted.Outcome);
-        Assert.Equal(("gpt-6-astra", "medium"), (accepted.Job!.Model, accepted.Job.Effort));
+        Assert.Equal(("gpt-6-astra", "max"), (accepted.Job!.Model, accepted.Job.Effort));
     }
 
     [Fact]
@@ -211,10 +211,10 @@ public sealed class ModelSelectionTests
         var unavailable = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f4") { Model = "gpt-7" });
         var changedTier = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f5") { Model = "cheapest" }).Job!;
 
-        Assert.Equal(("gpt-6-luna", "high"), (inherited.Model, inherited.Effort));
+        Assert.Equal(("gpt-6-luna", "low"), (inherited.Model, inherited.Effort));
         Assert.Equal("codex-named", fixture.Store.GetJob(inherited.JobId)!.TargetAgent);
         Assert.Equal(("gpt-6-luna", "low"), (effortOnly.Model, effortOnly.Effort));
-        Assert.Equal(("gpt-6-astra", "medium"), (tier.Model, tier.Effort));
+        Assert.Equal(("gpt-6-astra", "max"), (tier.Model, tier.Effort));
         Assert.Equal(("gpt-6-sol", "xhigh"), (changedTier.Model, changedTier.Effort));
         Assert.Contains("not available", unavailable.Error);
     }

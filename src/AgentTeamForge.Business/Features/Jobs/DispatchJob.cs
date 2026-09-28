@@ -26,6 +26,7 @@ public sealed class DispatchJob : IDisposable
     readonly CancellationTokenSource _halted = new();
     readonly ConcurrentDictionary<string, ActiveRun> _running = new();
     readonly ConcurrentDictionary<string, IBackendRun> _reconciledWindows = new();
+    IReadOnlyList<string> _restartJobs = [];
     readonly Lock _reapGate = new();
     readonly List<HeadlessRun> _headless = [];
     readonly SemaphoreSlim _claimGate = new(1, 1);
@@ -85,6 +86,8 @@ public sealed class DispatchJob : IDisposable
 
     public void Signal() => _signal.Release();
 
+    public void RestoreAfterRestart(IReadOnlyList<string> jobIds) => _restartJobs = jobIds;
+
     /// <summary>Optional owner admission (PRFactory authority, account windows); false leaves the job queued.</summary>
     public Func<string, bool>? LaunchGate { get; set; }
 
@@ -120,6 +123,15 @@ public sealed class DispatchJob : IDisposable
     public bool ExecutionStopped(string jobId) =>
         !_running.ContainsKey(jobId) && !_reconciledWindows.ContainsKey(jobId)
         && store.GetJob(jobId)?.Status is { } status && status is not (JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation);
+
+    public bool ReconcileIdleInteractive(JobRecord job)
+    {
+        if (job.Status != JobStatus.NeedsReconciliation
+            || backends.Resolve(job.Backend) is not HerdrInteractiveBackend herdr || !herdr.HasIdleJob(job)) { return false; }
+        var settled = store.SettleInterrupted(job.JobId);
+        if (settled) { Signal(); }
+        return settled;
+    }
 
     /// <summary>Interrupts an active attempt after its cancelled state has committed.</summary>
     public void CancelRunning(string jobId)
@@ -164,7 +176,8 @@ public sealed class DispatchJob : IDisposable
         if (runs.Count == 0) { return false; }
         string[] correlation = [runs[^1].Correlation];
         int[] knownPids = runs[^1].BackendPid is int pid ? [pid] : [];
-        if (!OrphanedBackendProcess.HasMarkedProcess(correlation, knownPids)) { return false; }
+        // No marked process remains: a stop can safely cancel the fenced row.
+        if (!OrphanedBackendProcess.HasMarkedProcess(correlation, knownPids)) { return true; }
         // SIGKILL can be delivered after the signal call returns, and a marked
         // descendant may fork during the scan. Keep the fence until every marked
         // process actually disappears; poll so a stuck process does not burn a core.
@@ -308,6 +321,33 @@ public sealed class DispatchJob : IDisposable
         using var stopping = CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, _halted.Token);
         using var slots = new SemaphoreSlim(limits.MaxConcurrentJobs);
         var inFlight = new List<Task>();
+        foreach (var jobId in _restartJobs)
+        {
+            var job = store.GetJob(jobId);
+            var runs = store.GetRuns(jobId);
+            var run = runs.Count == 0 ? null : runs[^1];
+            if (job is null || run is null || job.Status != JobStatus.NeedsReconciliation) { continue; }
+            var backendRun = backends.Resolve(job.Backend) is HerdrInteractiveBackend herdr
+                ? herdr.Reattach(job, run) : null;
+            if (backendRun is null)
+            {
+                if (backends.Resolve(job.Backend) is not HerdrInteractiveBackend
+                    && OrphanedBackendProcess.HasMarkedProcess([run.Correlation],
+                        run.BackendPid is int pid ? [pid] : []))
+                {
+                    log($"recovery: {jobId} remains fenced; marked process exit is unverified");
+                    continue;
+                }
+                store.FailUnattached(jobId);
+                log($"recovery: {jobId} failed; no verified live run");
+                continue;
+            }
+            var reference = new RunRef(jobId, run.RunId, run.Generation, run.Correlation);
+            if (!store.ReattachQuarantined(reference)) { await backendRun.DisposeAsync(); continue; }
+            log($"recovery: reattached {jobId} to its live Herdr pane");
+            inFlight.Add(Task.Run(() => RunAttemptAsync(new AttemptClaim(job, run.RunId, run.Generation, run.Correlation),
+                stopping.Token, backendRun), CancellationToken.None));
+        }
         var sweeping = SweepQueueAsync(stopping.Token);
         try
         {
@@ -543,7 +583,7 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
-    internal async Task RunAttemptAsync(AttemptClaim claim, CancellationToken daemonLifetime)
+    internal async Task RunAttemptAsync(AttemptClaim claim, CancellationToken daemonLifetime, IBackendRun? recovered = null)
     {
         var run = new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
         using var stopRequested = new CancellationTokenSource();
@@ -559,7 +599,7 @@ public sealed class DispatchJob : IDisposable
                 await RunNativeCodexAsync(run, native, daemonLifetime, stopRequested.Token);
                 return;
             }
-            headless = TrackHeadless(claim);
+            if (recovered is null) { headless = TrackHeadless(claim); }
             // The deadline starts before any backend effect, so start and delivery are bounded too.
             using var jobTimeout = claim.Job.TimeoutSeconds is int seconds ? new CancellationTokenSource(TimeSpan.FromSeconds(seconds)) : null;
             using var deadline = jobTimeout is null
@@ -572,7 +612,7 @@ public sealed class DispatchJob : IDisposable
                     (InteractiveStartup.Timeout * 2 + TimeSpan.FromSeconds(90)).Ticks))
                 : limits.MaxFakeRuntime;
             if (jobTimeout is null) { deadline.CancelAfter(runtime); }
-            checkpoints.Hit(DurabilityCheckpoints.AttemptAfterCommit);
+            if (recovered is null) { checkpoints.Hit(DurabilityCheckpoints.AttemptAfterCommit); }
 
             // A job timeout ends the attempt through the same cancel path as a stop.
             using var onTimeout = jobTimeout?.Token.Register(() => CancelOwned(run.JobId, "timeout"));
@@ -586,63 +626,61 @@ public sealed class DispatchJob : IDisposable
 
             deadline.Token.ThrowIfCancellationRequested();
 
-            if (!TryPrepare(claim.Job, out var backend, out var resumeSessionId, out var notStarted))
+            backendRun = recovered;
+            if (backendRun is null)
             {
-                // Nothing was started: no effect is possible.
-                End(run, JobStatus.Failed, notStarted);
-                return;
-            }
-
-            if (!JobWorktree.Prepare(claim.Job))
-            {
-                End(run, JobStatus.Failed, "worktree_unavailable");
-                return;
-            }
-
-            var request = new BackendRequest(claim.Job.JobId, claim.Correlation, claim.Job.Instruction, claim.Job.Options)
-            {
-                StartupProgress = phase =>
+                if (!TryPrepare(claim.Job, out var backend, out var resumeSessionId, out var notStarted))
                 {
-                    try { store.RecordStartup(run, phase); }
-                    catch (StorageException) { /* Diagnostic only. */ }
-                },
-                ResumeSessionId = resumeSessionId,
-                WorkingDirectory = JobWorktree.WorkingDirectory(claim.Job),
-                Output = jobLogs?.BeginRun(claim.Job.JobId, claim.RunId, claim.Job.Backend),
-            };
-            request = childContext?.Prepare(request) ?? request;
-            if (claim.Job.Backend == BackendCatalog.Pi && request.ManagedMcpConfig is not null && !PiMcpAdapter.IsInstalled(piHome))
-            {
-                End(run, JobStatus.Failed, "pi_mcp_adapter_missing", PiMcpAdapter.InstallHint);
-                return;
-            }
-            var starting = Task.Run(() => backend.Start(request), CancellationToken.None);
-            try
-            {
-                backendRun = await BackendCall(() => starting.WaitAsync(deadline.Token), "launch_failed");
-            }
-            catch (OperationCanceledException)
-            {
-                // Process start cannot be cancelled. A late interactive terminal
-                // session still belongs to the quarantined attempt after shutdown.
-                TerminateLateStart(starting, run, daemonLifetime.IsCancellationRequested
-                    && backend is HerdrInteractiveBackend or WtInteractiveBackend);
-                if (!daemonLifetime.IsCancellationRequested && !stopRequested.IsCancellationRequested)
-                {
-                    End(run, JobStatus.NeedsReconciliation, "backend_start_timeout");
+                    End(run, JobStatus.Failed, notStarted);
+                    return;
                 }
-
-                return;
+                if (!JobWorktree.Prepare(claim.Job))
+                {
+                    End(run, JobStatus.Failed, "worktree_unavailable");
+                    return;
+                }
+                var request = new BackendRequest(claim.Job.JobId, claim.Correlation, claim.Job.Instruction, claim.Job.Options)
+                {
+                    DisplayName = claim.Job.TargetAgent,
+                    StartupProgress = phase =>
+                    {
+                        try { store.RecordStartup(run, phase); }
+                        catch (StorageException) { }
+                    },
+                    ResumeSessionId = resumeSessionId,
+                    WorkingDirectory = JobWorktree.WorkingDirectory(claim.Job),
+                    Output = jobLogs?.BeginRun(claim.Job.JobId, claim.RunId, claim.Job.Backend),
+                };
+                request = childContext?.Prepare(request) ?? request;
+                if (claim.Job.Backend == BackendCatalog.Pi && request.ManagedMcpConfig is not null && !PiMcpAdapter.IsInstalled(piHome))
+                {
+                    End(run, JobStatus.Failed, "pi_mcp_adapter_missing", PiMcpAdapter.InstallHint);
+                    return;
+                }
+                var starting = Task.Run(() => backend.Start(request), CancellationToken.None);
+                try { backendRun = await BackendCall(() => starting.WaitAsync(deadline.Token), "launch_failed"); }
+                catch (OperationCanceledException)
+                {
+                    TerminateLateStart(starting, run, daemonLifetime.IsCancellationRequested
+                        && backend is HerdrInteractiveBackend or WtInteractiveBackend);
+                    if (!daemonLifetime.IsCancellationRequested && !stopRequested.IsCancellationRequested)
+                    {
+                        End(run, JobStatus.NeedsReconciliation, "backend_start_timeout");
+                    }
+                    return;
+                }
             }
-
             Volatile.Write(ref active.BackendRun, backendRun);
             deadline.Token.ThrowIfCancellationRequested();
-            TryRecord(run, backendRun.ProcessId, acked: false);
-            await BackendCall(async () =>
+            if (recovered is null)
             {
-                await backendRun.DeliverAsync(deadline.Token).WaitAsync(deadline.Token);
-                return true;
-            }, "backend_failed");
+                TryRecord(run, backendRun.ProcessId, acked: false);
+                await BackendCall(async () =>
+                {
+                    await backendRun.DeliverAsync(deadline.Token).WaitAsync(deadline.Token);
+                    return true;
+                }, "backend_failed");
+            }
             var evidenceReader = await BackendCall(
                 () => Task.FromResult(backendRun.ReadEvidenceAsync(deadline.Token).GetAsyncEnumerator(deadline.Token)), "backend_failed");
             try
@@ -665,7 +703,7 @@ public sealed class DispatchJob : IDisposable
                             log($"ignored stale/mismatched backend evidence for {run.RunId}");
                             break;
                         case BackendEvidence.ProtocolError error:
-                            End(run, error.Code == JobErrors.SessionExpired ? JobStatus.Failed : JobStatus.NeedsReconciliation, error.Code);
+                            End(run, error.Code == JobErrors.SessionExpired ? JobStatus.Failed : JobStatus.NeedsReconciliation, error.Code, error.Details);
                             return;
                         case BackendEvidence.AgentError error:
                             End(run, JobStatus.Failed, error.Code, error.Details);

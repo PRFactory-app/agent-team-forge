@@ -88,7 +88,7 @@ public sealed class StopJobTests
     }
 
     [Fact]
-    public void Fenced_job_without_owned_agent_returns_clear_error()
+    public void Fenced_job_without_owned_agent_is_cancelled_and_unfenced()
     {
         using var f = new JobFixture();
         var job = f.Submit("unverified");
@@ -99,9 +99,9 @@ public sealed class StopJobTests
             DurabilityCheckpoints.None, f.Admission, _ => { });
         var result = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
             stopReconciled: dispatcher.StopReconciled).Execute(job.JobId);
-        Assert.Equal(JobErrors.OwnershipNotProven, result.Error);
-        Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(job.JobId)!.Status);
-        Assert.True(f.Store.IsSessionFenced(job.JobId));
+        Assert.Equal("stopped", result.Outcome);
+        Assert.Equal(JobStatus.Cancelled, f.Store.GetJob(job.JobId)!.Status);
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
     }
 
     [Fact]
@@ -121,9 +121,9 @@ public sealed class StopJobTests
                 DurabilityCheckpoints.None, f.Admission, _ => { });
             var stopped = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
                 stopReconciled: dispatcher.StopReconciled).Execute(job.JobId);
-            Assert.Equal(JobErrors.OwnershipNotProven, stopped.Error);
+            Assert.Equal("stopped", stopped.Outcome);
             Assert.False(foreign.HasExited);
-            Assert.True(f.Store.IsSessionFenced(job.JobId));
+            Assert.False(f.Store.IsSessionFenced(job.JobId));
         }
         finally { if (!foreign.HasExited) { foreign.Kill(); } }
     }

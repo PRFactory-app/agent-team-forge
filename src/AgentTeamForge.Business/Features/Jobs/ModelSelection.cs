@@ -8,12 +8,12 @@ public static class ModelSelection
     static readonly Dictionary<string, (string Model, string Effort)> Tiers =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            ["cheapest"] = ("gpt-6-luna", "high"),
-            ["low"] = ("gpt-6-luna", "xhigh"),
-            ["medium"] = ("gpt-6-luna", "max"),
+            ["cheapest"] = ("gpt-6-luna", "low"),
+            ["low"] = ("gpt-6-luna", "medium"),
+            ["medium"] = ("gpt-6-luna", "high"),
             ["high"] = ("gpt-6-sol", "high"),
-            ["xhigh"] = ("gpt-6-astra", "low"),
-            ["max"] = ("gpt-6-astra", "medium"),
+            ["xhigh"] = ("gpt-6-astra", "xhigh"),
+            ["max"] = ("gpt-6-astra", "max"),
         };
 
     static readonly string[] SharedTierOrder = [.. Tiers.Keys];
