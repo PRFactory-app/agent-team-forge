@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
@@ -160,13 +161,21 @@ public sealed class DispatchJob : IDisposable
             return true;
         }
         var runs = store.GetRuns(job.JobId);
-        if (runs.Count == 0 || !OrphanedBackendProcess.HasMarkedProcess([runs[^1].Correlation],
-            runs[^1].BackendPid is int pid ? [pid] : [])) { return false; }
-        OrphanedBackendProcess.TerminateMarked([runs[^1].Correlation]);
-        // SIGKILL can be delivered after the signal call returns. Keep the
-        // fence until the marked process actually disappears.
-        return SpinWait.SpinUntil(() => !OrphanedBackendProcess.HasMarkedProcess([runs[^1].Correlation],
-            runs[^1].BackendPid is int knownPid ? [knownPid] : []), TimeSpan.FromSeconds(5));
+        if (runs.Count == 0) { return false; }
+        string[] correlation = [runs[^1].Correlation];
+        int[] knownPids = runs[^1].BackendPid is int pid ? [pid] : [];
+        if (!OrphanedBackendProcess.HasMarkedProcess(correlation, knownPids)) { return false; }
+        // SIGKILL can be delivered after the signal call returns, and a marked
+        // descendant may fork during the scan. Keep the fence until every marked
+        // process actually disappears; poll so a stuck process does not burn a core.
+        var deadline = Stopwatch.GetTimestamp() + Stopwatch.Frequency * 5;
+        while (true)
+        {
+            OrphanedBackendProcess.TerminateMarked(correlation);
+            if (!OrphanedBackendProcess.HasMarkedProcess(correlation, knownPids)) { return true; }
+            if (Stopwatch.GetTimestamp() >= deadline) { return false; }
+            Thread.Sleep(50);
+        }
     }
 
     public void ForgetReconciledOwnership(JobRecord job)
