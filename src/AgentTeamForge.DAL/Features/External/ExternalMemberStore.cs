@@ -465,13 +465,13 @@ public sealed class ExternalMemberStore(JobDatabase database)
             return null;
         }
 
-        var inbox = ReadCompat(db, tx, teamId, "lead", sinceSeq, limit, now, fromAgent, maxChars);
+        var inbox = ReadCompat(db, tx, teamId, "lead", sinceSeq, limit, now, fromAgent, maxChars, leadGlobalCursor: true);
         tx.Commit();
         return inbox;
     }
 
     static ExternalInbox ReadCompat(SqliteConnection db, SqliteTransaction tx, string teamId, string recipient,
-        long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent, int? maxChars)
+        long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent, int? maxChars, bool leadGlobalCursor = false)
     {
         var positions = new Dictionary<string, long>(StringComparer.Ordinal);
         var cursors = new Dictionary<string, long>(StringComparer.Ordinal);
@@ -496,26 +496,30 @@ public sealed class ExternalMemberStore(JobDatabase database)
             LEFT JOIN external_sender_cursors c ON c.team_id=m.team_id AND c.recipient=m.recipient AND c.sender=m.sender
             WHERE m.team_id=$team AND m.recipient=$recipient AND ($sender IS NULL OR m.sender=$sender)
             AND m.sender_seq > CASE WHEN $sender IS NULL THEN COALESCE(c.cursor,0) ELSE $floor END
+            AND ($global_since IS NULL OR m.seq > $global_since)
             """;
         var filter = select.CommandText;
         select.Parameters.AddWithValue("$team", teamId);
         select.Parameters.AddWithValue("$recipient", recipient);
         select.Parameters.AddWithValue("$sender", (object?)fromAgent ?? DBNull.Value);
         select.Parameters.AddWithValue("$floor", floor);
+        select.Parameters.AddWithValue("$global_since", leadGlobalCursor && fromAgent is null
+            ? (object?)sinceSeq ?? DBNull.Value : DBNull.Value);
         select.CommandText = "SELECT count(*) " + filter;
         var unread = Convert.ToInt32(select.ExecuteScalar());
         var selected = new List<ExternalMessage>();
+        long lastGlobalSeq = 0;
         if (limit > 0 && unread > 0)
         {
-            select.CommandText = "SELECT m.sender_seq,m.sender,m.text,m.created_at " + filter + " ORDER BY m.seq LIMIT $limit";
+            select.CommandText = "SELECT m.seq,m.sender_seq,m.sender,m.text,m.created_at " + filter + " ORDER BY m.seq LIMIT $limit";
             select.Parameters.AddWithValue("$limit", limit);
             var bytes = 0;
             using var reader = select.ExecuteReader();
             while (reader.Read())
             {
-                var text = reader.GetString(2);
-                var message = new ExternalMessage(reader.GetInt64(0), reader.GetString(1),
-                    maxChars is { } max ? text[..Math.Min(text.Length, max)] : text, reader.GetString(3),
+                var text = reader.GetString(3);
+                var message = new ExternalMessage(reader.GetInt64(1), reader.GetString(2),
+                    maxChars is { } max ? text[..Math.Min(text.Length, max)] : text, reader.GetString(4),
                     maxChars is null ? null : text.Length > maxChars, maxChars is null ? null : text.Length);
                 var size = JsonSerializer.SerializeToUtf8Bytes(message, ExternalMessageJson.Default.ExternalMessage).Length + 1;
                 if (selected.Count > 0 && bytes + size > ReadPageBytes)
@@ -523,6 +527,7 @@ public sealed class ExternalMemberStore(JobDatabase database)
                     break;
                 }
                 selected.Add(message);
+                lastGlobalSeq = reader.GetInt64(0);
                 bytes += size;
             }
         }
@@ -575,7 +580,8 @@ public sealed class ExternalMemberStore(JobDatabase database)
             }
             cursors = updated;
         }
-        return new ExternalInbox(selected, selected.Count == 0 ? 0 : selected[^1].Seq,
+        return new ExternalInbox(selected, selected.Count == 0 ? (leadGlobalCursor && fromAgent is null ? sinceSeq ?? 0 : 0)
+            : leadGlobalCursor && fromAgent is null ? lastGlobalSeq : selected[^1].Seq,
             unread > selected.Count, fromAgent is null ? cursors : null,
             fromAgent is null ? null : cursors.GetValueOrDefault(fromAgent), unread);
     }

@@ -241,7 +241,7 @@ public static class JobsMcpBridge
             new() { Name = "external_set_wake", Description = "Register native member notices (mcp__agentteamforge__external_set_wake): kind=claude uses this host’s own channel; kind=codex uses codex_thread_id. Pass an empty codex_thread_id without kind to clear. No hooks are installed.", InputSchema = Parse(MemberWakeSchema) },
             new() { Name = "leave_team", Description = "Revoke this external membership without stopping its process.", InputSchema = Parse(LeaveSchema) },
             new() { Name = "send_message", Description = "Send to your ATF parent or a joined external member with to=..., or send managed downstream work with job_id=... and idempotency_key=.... A live Codex child receives managed work through codex queue. This tool does not reach win-agent-teams members.", InputSchema = Parse(LeadSendSchema) },
-            new() { Name = "read_messages", Description = "Read durable messages from external members of this lead session.", InputSchema = Parse(LeadReadSchema) },
+            new() { Name = "read_messages", Description = "Read durable messages from external members of this lead session. Without from_agent, since_seq and next_seq use the lead inbox's durable message position across all senders; each message's seq and the cursors map are per sender. With from_agent, since_seq uses that sender's seq.", InputSchema = Parse(LeadReadSchema) },
             new() { Name = "job_submit", Description = "Durably submit a job to the AgentTeamForge daemon (spike).", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "job_get", Description = "Read a job's committed state and result (spike).", InputSchema = Parse(GetSchema) },
             new() { Name = "job_list", Description = "List your jobs' committed state, newest first, one bounded page at a time (read-only, spike).", InputSchema = Parse(ListSchema) },
@@ -350,6 +350,7 @@ public static class JobsMcpBridge
                     }
                     else
                     {
+                        var invalidReadField = call.Name == "read_messages" ? InvalidReadMessagesField(args) : null;
                         var (ipc, rejection) = Map(call.Name, args, testProfile);
                         ipc = RouteParent(ipc, parentMemberToken);
                         if (ipc?.Op == IpcProtocol.ExternalSetWake && String(args, "kind") == "claude")
@@ -361,7 +362,9 @@ public static class JobsMcpBridge
                         {
                             ipc = ipc with { WakeKey = wakeTarget.WakeKey, WakeGeneration = wakeGeneration };
                         }
-                        response = ipc is null
+                        response = invalidReadField is not null
+                            ? new IpcResponse(false, JobErrors.InvalidRequest, ErrorDetail: $"Invalid {invalidReadField}.")
+                            : ipc is null
                             ? new IpcResponse(false, rejection)
                             : await SendAsync(ipc.Op is IpcProtocol.ExternalJoin or IpcProtocol.ExternalSend or IpcProtocol.ExternalRead
                                 or IpcProtocol.ExternalSetWake or IpcProtocol.ExternalLeave ? ipc
@@ -420,6 +423,25 @@ public static class JobsMcpBridge
         try { await server.RunAsync(); }
         finally { await relayLifetime.CancelAsync(); await relay; }
         return 0;
+    }
+
+    internal static string? InvalidReadMessagesField(IDictionary<string, JsonElement> args)
+    {
+        if (args.TryGetValue("from_agent", out var sender)
+            && (sender.ValueKind != JsonValueKind.String || sender.GetString() is not { Length: >= 1 and <= 64 }))
+        { return "from_agent"; }
+        if (args.TryGetValue("since_seq", out var since)
+            && (since.ValueKind != JsonValueKind.Number || !since.TryGetInt64(out var n) || n < 0))
+        { return "since_seq"; }
+        if (args.TryGetValue("limit", out var limit)
+            && (limit.ValueKind != JsonValueKind.Number || !limit.TryGetInt32(out var count) || count is < 0 or > 10000))
+        { return "limit"; }
+        if (args.TryGetValue("max_chars", out var max)
+            && (max.ValueKind != JsonValueKind.Number || !max.TryGetInt32(out var chars) || chars is < 0 or > 65536))
+        { return "max_chars"; }
+        if (args.TryGetValue("full", out var full) && full.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        { return "full"; }
+        return null;
     }
 
     internal static bool ShouldOfferHumanInput(string? parentMemberToken, bool available) => parentMemberToken is not null && available;

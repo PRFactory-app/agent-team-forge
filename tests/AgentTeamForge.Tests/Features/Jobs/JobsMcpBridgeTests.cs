@@ -45,4 +45,18 @@ public sealed class JobsMcpBridgeTests
         Assert.Equal(IpcProtocol.ExternalLeadSend, request!.Op);
         Assert.Equal("member", request.MemberName);
     }
+
+    [Theory]
+    [InlineData("{\"from_agent\":null}", "from_agent")]
+    [InlineData("{\"since_seq\":-1}", "since_seq")]
+    [InlineData("{\"limit\":\"1\"}", "limit")]
+    [InlineData("{\"max_chars\":65537}", "max_chars")]
+    [InlineData("{\"full\":null}", "full")]
+    public void Read_messages_validation_names_the_bad_field(string jsonText, string field)
+    {
+        using var json = JsonDocument.Parse(jsonText);
+        var args = json.RootElement.EnumerateObject().ToDictionary(property => property.Name, property => property.Value);
+
+        Assert.Equal(field, JobsMcpBridge.InvalidReadMessagesField(args));
+    }
 }
