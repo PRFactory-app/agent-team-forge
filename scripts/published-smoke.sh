@@ -46,7 +46,7 @@ ATF_HOST_BINARY="$BIN" "$DOTNET" test AgentTeamForge.slnx -c Release --no-build 
 # An empty filter match must not look green.
 counters="$(grep -o '<Counters [^>]*>' "$EVIDENCE_DIR/test-results/published-scenarios.trx" 2>/dev/null || true)"
 attr() { sed -n "s/.* $1=\"\([^\"]*\)\".*/\1/p" <<<"$counters"; }
-total="$(attr total)"; passed="$(attr passed)"; failed="$(attr failed)"; skipped="$(attr notExecuted)"
+total="$(attr total)"; passed="$(attr passed)"; failed="$(attr failed)"; skipped=$(( ${total:-0} - ${passed:-0} - ${failed:-0} ))
 allowed_skipped=0
 if [[ "${GITHUB_ACTIONS:-}" == true ]]; then allowed_skipped="$skipped"; fi
 if ! [[ "$total" =~ ^[0-9]+$ && "$total" -ge 1 && "$passed" =~ ^[0-9]+$ && "$skipped" =~ ^[0-9]+$ && "$failed" == 0 ]] ||
