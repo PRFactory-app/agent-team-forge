@@ -163,8 +163,10 @@ public sealed class DispatchJob : IDisposable
         if (runs.Count == 0 || !OrphanedBackendProcess.HasMarkedProcess([runs[^1].Correlation],
             runs[^1].BackendPid is int pid ? [pid] : [])) { return false; }
         OrphanedBackendProcess.TerminateMarked([runs[^1].Correlation]);
-        return !OrphanedBackendProcess.HasMarkedProcess([runs[^1].Correlation],
-            runs[^1].BackendPid is int knownPid ? [knownPid] : []);
+        // SIGKILL can be delivered after the signal call returns. Keep the
+        // fence until the marked process actually disappears.
+        return SpinWait.SpinUntil(() => !OrphanedBackendProcess.HasMarkedProcess([runs[^1].Correlation],
+            runs[^1].BackendPid is int knownPid ? [knownPid] : []), TimeSpan.FromSeconds(5));
     }
 
     public void ForgetReconciledOwnership(JobRecord job)
