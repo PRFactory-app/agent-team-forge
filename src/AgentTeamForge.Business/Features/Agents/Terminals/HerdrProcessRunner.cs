@@ -88,7 +88,7 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
             foreach (var pid in DarwinProcess.Pids())
             {
                 if (DarwinProcess.Arguments(pid) is { Args: var args }
-                    && ServerArgv(args, sessionName) && Identity(pid) is { } identity)
+                    && ServerArgv(args, sessionName, EnvironmentValue(pid, "HERDR_SESSION")) && Identity(pid) is { } identity)
                 {
                     result.Add(identity);
                 }
@@ -98,7 +98,7 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
         foreach (var dir in Directory.EnumerateDirectories("/proc"))
         {
             if (int.TryParse(Path.GetFileName(dir), NumberStyles.None, CultureInfo.InvariantCulture, out var pid) &&
-                Argv(pid) is { } args && ServerArgv(args, sessionName) && Identity(pid) is { } id)
+                Argv(pid) is { } args && ServerArgv(args, sessionName, EnvironmentValue(pid, "HERDR_SESSION")) && Identity(pid) is { } id)
             {
                 result.Add(id);
             }
@@ -106,9 +106,9 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
         return result;
     }
 
-    static bool ServerArgv(string[] args, string name) => args switch
+    internal static bool ServerArgv(string[] args, string name, string? environmentSession) => args switch
     {
-        [var executable, "server"] when name == "default" && Path.GetFileName(executable) == "herdr" => true,
+        [var executable, "server"] when (environmentSession ?? "default") == name && Path.GetFileName(executable) == "herdr" => true,
         [var executable, "--session", var session, "server"] when session == name && Path.GetFileName(executable) == "herdr" => true,
         _ => false,
     };
