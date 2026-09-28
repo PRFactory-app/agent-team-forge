@@ -18,10 +18,17 @@ public sealed class WebConsoleScenarios
     [Fact]
     public async Task Two_lead_sessions_render_as_live_teams_in_an_isolated_browser()
     {
+        Assert.SkipUnless(
+            Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true",
+            "Chromium on GitHub runners is the snap wrapper and cannot render headless here");
         if (!OperatingSystem.IsLinux() || !File.Exists("/usr/bin/chromium"))
         {
             return;
         }
+        var chromiumTarget = new FileInfo("/usr/bin/chromium").ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+        Assert.SkipUnless(
+            chromiumTarget is null || !chromiumTarget.StartsWith("/snap/", StringComparison.Ordinal),
+            "Chromium resolves under /snap and cannot render headless here");
         using var rig = new SpikeRig();
         await rig.InitAsync();
         var port = FreePort();
