@@ -49,7 +49,7 @@ cleanup_tmp() {
   exit "$status"
 }
 trap 'cleanup_tmp $?' EXIT
-step test;     "$DOTNET" test AgentTeamForge.slnx -c Release --no-build
+step test;     "$DOTNET" test AgentTeamForge.slnx -c Release --no-build --blame-hang --blame-hang-timeout 10m
 step publish-aot
 mkdir -p artifacts
 PUBLISH_DIR="$(mktemp -d "$ROOT/artifacts/$RID-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"

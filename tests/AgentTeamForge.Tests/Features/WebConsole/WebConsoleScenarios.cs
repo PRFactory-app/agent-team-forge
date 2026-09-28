@@ -71,15 +71,40 @@ public sealed class WebConsoleScenarios
             chromium.ArgumentList.Add(arg);
         }
         using var browser = Process.Start(chromium)!;
-        var dom = browser.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
-        var stderr = browser.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
-        await browser.WaitForExitAsync(TestContext.Current.CancellationToken);
-        Assert.Equal(0, browser.ExitCode);
-        Assert.Contains("Lead " + firstSession.SessionId[..8], await dom, StringComparison.Ordinal);
-        Assert.Contains("Lead " + secondSession.SessionId[..8], await dom, StringComparison.Ordinal);
-        Assert.Contains("class=\"team-toggle\"", await dom, StringComparison.Ordinal);
-        Assert.Contains("class=\"team-content\"", await dom, StringComparison.Ordinal);
-        _ = await stderr;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        try
+        {
+            var dom = browser.StandardOutput.ReadToEndAsync(deadline.Token);
+            var stderr = browser.StandardError.ReadToEndAsync(deadline.Token);
+            await browser.WaitForExitAsync(deadline.Token);
+            Assert.Equal(0, browser.ExitCode);
+            Assert.Contains("Lead " + firstSession.SessionId[..8], await dom, StringComparison.Ordinal);
+            Assert.Contains("Lead " + secondSession.SessionId[..8], await dom, StringComparison.Ordinal);
+            Assert.Contains("class=\"team-toggle\"", await dom, StringComparison.Ordinal);
+            Assert.Contains("class=\"team-content\"", await dom, StringComparison.Ordinal);
+            _ = await stderr;
+        }
+        catch (OperationCanceledException) when (!TestContext.Current.CancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException("Chromium did not finish rendering the web console within 30 seconds");
+        }
+        finally
+        {
+            if (!browser.HasExited)
+            {
+                try
+                {
+                    browser.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Exited between the check and kill.
+                }
+                using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await browser.WaitForExitAsync(stop.Token);
+            }
+        }
     }
 
     [Fact]
