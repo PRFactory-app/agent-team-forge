@@ -4,8 +4,8 @@ Status: accepted
 
 ## Context
 
-The owner has deep .NET experience and no Python background. The reference
-tool (win-agent-teams) is Python. The daemon, MCP bridge and CLI should ship as
+The project is maintained by a .NET team, while the reference tool
+(win-agent-teams) is Python. The daemon, MCP bridge and CLI should ship as
 one self-contained binary without a runtime install, and .NET 11 adds process
 APIs (detached start, handle inheritance control, `SafeProcessHandle`
 lifecycle) that fit a process supervisor.
