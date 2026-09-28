@@ -1,7 +1,8 @@
 # Agent/harness state and local credentials
 .pi-glla/
 .pi/
-.claude/
+.claude/*
+!.claude/skills/
 .codex/
 .env
 .env.*
