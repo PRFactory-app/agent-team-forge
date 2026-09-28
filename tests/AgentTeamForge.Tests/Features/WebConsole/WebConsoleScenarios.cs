@@ -64,7 +64,8 @@ public sealed class WebConsoleScenarios
         };
         foreach (var arg in new[]
         {
-            "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+            "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+            "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
             "--virtual-time-budget=7000", "--dump-dom", "--user-data-dir=" + Path.Combine(rig.StateDir, "browser"), url,
         })
         {
@@ -73,21 +74,16 @@ public sealed class WebConsoleScenarios
         using var browser = Process.Start(chromium)!;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        var domTask = browser.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+        var stderrTask = browser.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+        var timedOut = false;
         try
         {
-            var dom = browser.StandardOutput.ReadToEndAsync(deadline.Token);
-            var stderr = browser.StandardError.ReadToEndAsync(deadline.Token);
             await browser.WaitForExitAsync(deadline.Token);
-            Assert.Equal(0, browser.ExitCode);
-            Assert.Contains("Lead " + firstSession.SessionId[..8], await dom, StringComparison.Ordinal);
-            Assert.Contains("Lead " + secondSession.SessionId[..8], await dom, StringComparison.Ordinal);
-            Assert.Contains("class=\"team-toggle\"", await dom, StringComparison.Ordinal);
-            Assert.Contains("class=\"team-content\"", await dom, StringComparison.Ordinal);
-            _ = await stderr;
         }
         catch (OperationCanceledException) when (!TestContext.Current.CancellationToken.IsCancellationRequested)
         {
-            throw new TimeoutException("Chromium did not finish rendering the web console within 30 seconds");
+            timedOut = true;
         }
         finally
         {
@@ -105,6 +101,17 @@ public sealed class WebConsoleScenarios
                 await browser.WaitForExitAsync(stop.Token);
             }
         }
+        var dom = await domTask;
+        var stderr = await stderrTask;
+        if (timedOut)
+        {
+            throw new TimeoutException($"Chromium did not finish rendering the web console within 30 seconds. Exit code: {browser.ExitCode}. Stderr: {stderr}. Partial DOM: {dom}");
+        }
+        Assert.True(browser.ExitCode == 0, $"Chromium exited with code {browser.ExitCode}. Stderr: {stderr}");
+        Assert.Contains("Lead " + firstSession.SessionId[..8], dom, StringComparison.Ordinal);
+        Assert.Contains("Lead " + secondSession.SessionId[..8], dom, StringComparison.Ordinal);
+        Assert.Contains("class=\"team-toggle\"", dom, StringComparison.Ordinal);
+        Assert.Contains("class=\"team-content\"", dom, StringComparison.Ordinal);
     }
 
     [Fact]
