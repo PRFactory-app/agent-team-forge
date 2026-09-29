@@ -62,6 +62,7 @@ public static class ClientCommand
             },
             "get" => new IpcRequest { Op = IpcProtocol.JobGet, JobId = options.GetValueOrDefault("job") },
             "stop" => new IpcRequest { Op = IpcProtocol.JobStop, JobId = options.GetValueOrDefault("job") },
+            "stop-agent" => new IpcRequest { Op = IpcProtocol.JobStopAgent, JobId = options.GetValueOrDefault("job") },
             "list" => new IpcRequest
             {
                 Op = IpcProtocol.JobList,
@@ -76,7 +77,7 @@ public static class ClientCommand
         };
         if (request is null)
         {
-            Console.Error.WriteLine("usage: atf client <submit|follow-up|get|stop|list|logs> --state-dir DIR "
+            Console.Error.WriteLine("usage: atf client <submit|follow-up|get|stop|stop-agent|list|logs> --state-dir DIR "
                 + "[--key K --instruction TEXT [--backend fake|claude|codex|pi|cursor|droid] [--name NAME] [--model M] [--effort E] [--herdr-placement own-session|herdr-session:NAME] [--cwd DIR] [--worktree] [--timeout S] [--queue-ttl S] [--behavior B] [--hold] | --job ID [--key K --instruction TEXT [--interrupt] [--model M] [--effort E] [--timeout S] [--queue-ttl S]] | stop ID | [--status S] [--backend B] [--since ISO-TIME] [--limit N] [--cursor C]]");
             return 64;
         }

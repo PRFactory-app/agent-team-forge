@@ -570,6 +570,16 @@ public sealed class WakeTests
         Assert.True(stopped.Ok, stopped.Error);
         Assert.Equal(1, Assert.Single(wake.Pending()).Unread);
 
+        var refused = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobStopAgent,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            JobId = "job_missing"
+        });
+        Assert.False(refused.Ok);
+        Assert.False(string.IsNullOrEmpty(refused.ErrorDetail));
+
         var listed = endpoint.Handle(new IpcRequest
         {
             Op = IpcProtocol.JobList,

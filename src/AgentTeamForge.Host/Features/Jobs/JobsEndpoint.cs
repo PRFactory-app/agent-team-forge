@@ -153,7 +153,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         }
         if (request.LeadSessionId is not null && (sessions is null || request.Workspace is null || !sessions.Exists(request.LeadSessionId, request.Workspace)))
         {
-            return new IpcResponse(false, JobErrors.InvalidRequest);
+            return new IpcResponse(false, JobErrors.InvalidRequest,
+                ErrorDetail: "Unknown lead session for this workspace; restart the MCP bridge (session_info) and retry.");
         }
         // Reads reach any job in the lead's workspace; stop and follow-up only its own,
         // plus a fenced job whose original lead session was lost during a restart.
@@ -163,7 +164,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 || !jobStore.LeadCanAccess(request.JobId, request.LeadSessionId,
                     reads || jobStore.GetJob(request.JobId)?.Status == JobStatus.NeedsReconciliation ? request.Workspace : null)))
         {
-            return new IpcResponse(false, JobErrors.NotFound);
+            return new IpcResponse(false, JobErrors.NotFound,
+                ErrorDetail: $"Job {request.JobId} is not visible to this lead session (another lead's job, or pruned).");
         }
         switch (request.Op)
         {
@@ -263,7 +265,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             case IpcProtocol.JobStop:
                 return Map(stop.Execute(request.JobId ?? string.Empty, request.Interrupt));
             case IpcProtocol.JobStopAgent:
-                if (stopAgent is null) { return new IpcResponse(false, JobErrors.BackendUnavailable); }
+                if (stopAgent is null) { return new IpcResponse(false, JobErrors.BackendUnavailable, ErrorDetail: "stop_agent is not available in this daemon."); }
                 var stoppedAgent = stopAgent.Execute(request.JobId ?? string.Empty);
                 if (stoppedAgent.Error is null && stoppedAgent.Job is not null) { MarkWakeRead(request, stoppedAgent.Job.JobId, stoppedAgent.Job.Status); }
                 return Map(stoppedAgent);
@@ -473,7 +475,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     }
 
     static IpcResponse Map(JobResult result) =>
-        result.Error is null ? new IpcResponse(true, Outcome: result.Outcome, Job: result.Job) : new IpcResponse(false, result.Error);
+        result.Error is null ? new IpcResponse(true, Outcome: result.Outcome, Job: result.Job) : new IpcResponse(false, result.Error, ErrorDetail: result.Detail);
 
     static IpcResponse MapExternal(ExternalResult result) => new(result.Ok, result.Error,
         result.Ok ? "ok" : null, WakeGeneration: result.WakeGeneration, Ticket: result.Ticket,

@@ -13,7 +13,7 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
     {
         if (string.IsNullOrWhiteSpace(jobId) || jobId.Length > 64)
         {
-            return JobResult.Fail(JobErrors.InvalidRequest);
+            return JobResult.Fail(JobErrors.InvalidRequest, "job_id is required (at most 64 characters).");
         }
 
         try
@@ -21,7 +21,7 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
             var current = store.GetJob(jobId);
             if (current is null || current.Principal != principal.Principal || current.Team != principal.Team)
             {
-                return JobResult.Fail(JobErrors.NotFound);
+                return JobResult.Fail(JobErrors.NotFound, $"No job {jobId} for this principal/team.");
             }
             // A native Codex or Claude mailbox turn owns no process here; stopping releases its N5 fence.
             if (!interrupt && releaseNative?.Invoke(current) == true)
@@ -32,17 +32,18 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
             {
                 if (stopReconciled is null || !stopReconciled(current))
                 {
-                    return JobResult.Fail(JobErrors.OwnershipNotProven);
+                    return JobResult.Fail(JobErrors.OwnershipNotProven,
+                        "Job needs reconciliation and ATF could not prove it still owns the agent (no owned Herdr pane / marked process); nothing was stopped. Inspect get_job and the pane.");
                 }
                 var stopped = store.CancelReconciled(jobId, principal.Principal, principal.Team);
                 if (stopped.Changed) { forgetReconciledOwnership?.Invoke(current); }
                 return JobResult.Ok(GetJob.ToView(stopped.Job!), stopped.Changed ? "stopped" : "unchanged");
             }
-            if (interrupt && interruptRunning is null) { return JobResult.Fail(JobErrors.BackendUnavailable); }
+            if (interrupt && interruptRunning is null) { return JobResult.Fail(JobErrors.BackendUnavailable, "interrupt_job is not supported for this job; use stop_job."); }
             var outcome = store.Cancel(jobId, principal.Principal, principal.Team, interrupt);
             if (outcome.Job is null)
             {
-                return JobResult.Fail(JobErrors.NotFound);
+                return JobResult.Fail(JobErrors.NotFound, $"No job {jobId} for this principal/team.");
             }
 
             if (outcome.WasRunning)
@@ -58,11 +59,11 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
         }
         catch (Exception ex) when (ex is HerdrLaunchException or IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or InvalidOperationException)
         {
-            return JobResult.Fail(JobErrors.OwnershipNotProven);
+            return JobResult.Fail(JobErrors.OwnershipNotProven, $"Could not stop the agent: {ex.Message}");
         }
         catch (StorageException ex)
         {
-            return JobResult.Fail(JobErrors.FromStorage(ex));
+            return JobResult.Fail(JobErrors.FromStorage(ex), JobErrors.StorageDetail(ex));
         }
     }
 }

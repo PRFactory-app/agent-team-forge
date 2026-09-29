@@ -216,7 +216,7 @@ public static class DaemonCommand
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound, interactiveLaunch), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning, reconcileIdleInteractive: dispatcher.ReconcileIdleInteractive, hasIdleInteractive: dispatcher.HasIdleInteractive, settleCompletedInteractive: dispatcher.SettleCompletedInteractive),
             new ListJobs(store, profile.Bound, jobLogs, interactiveLaunch),
             new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning, dispatcher.ReleaseNative), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
-            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
+            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends, dispatcher.SettleCompletedInteractive), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
             (token, _, _) => PRFactoryInteraction.RequestFromManagedChild(externalTeam.ManagedChildName(token)),
             externalMembers, new GetJob(store, connectorPrincipal), dispatcher.TakeNativeClaude,
             new RemoveWorktree(store, profile.Bound, worktreeCleanup), worktreeCleanup);
@@ -256,7 +256,7 @@ public static class DaemonCommand
         var connectorStop = new StopJob(store, connectorPrincipal,
             dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership,
             releaseNative: dispatcher.ReleaseNative);
-        var connectorStopAgent = new StopAgent(store, connectorPrincipal, backends);
+        var connectorStopAgent = new StopAgent(store, connectorPrincipal, backends, dispatcher.SettleCompletedInteractive);
         // The daemon is the sole writer of team workspaces; the singleton serializes Git mutations.
         var connectorWorkspaceStore = new PRFactoryWorkspaceStore(database);
         using var teamWorkspaces = new TeamWorkspace(connectorWorkspaceStore);
