@@ -108,6 +108,35 @@ public sealed class WorktreeCleanupTests
     }
 
     [Fact]
+    public async Task Tools_symlink_does_not_block_removal_but_tools_directory_does()
+    {
+        using var e = new Env();
+        var sdk = Path.Combine(Path.GetDirectoryName(e.Clone)!, "sdk");
+        Directory.CreateDirectory(sdk);
+        File.WriteAllText(Path.Combine(sdk, "dotnet"), "x");
+
+        var a = e.Make("job_tools_link");
+        Commit(a, ".gitignore", ".tools\n");
+        Git(a, "push", "origin", "HEAD:refs/heads/feat-link");
+        Git(e.Clone, "fetch", "origin");
+        Directory.CreateSymbolicLink(Path.Combine(a, ".tools"), sdk);
+        var linked = await e.Cleanup.RemoveAsync(a, false, false, false, TestContext.Current.CancellationToken);
+        Assert.Equal("removed", linked.Outcome);
+        Assert.False(Directory.Exists(a));
+        Assert.True(File.Exists(Path.Combine(sdk, "dotnet")));
+
+        var b = e.Make("job_tools_dir");
+        Commit(b, ".gitignore", ".tools\n");
+        Git(b, "push", "origin", "HEAD:refs/heads/feat-dir");
+        Git(e.Clone, "fetch", "origin");
+        Directory.CreateDirectory(Path.Combine(b, ".tools", "dotnet11"));
+        File.WriteAllText(Path.Combine(b, ".tools", "dotnet11", "dotnet"), "x");
+        var blocked = await e.Cleanup.RemoveAsync(b, false, false, false, TestContext.Current.CancellationToken);
+        Assert.Equal("ignored_files", blocked.Reason);
+        Assert.Contains(".tools/", blocked.Details!);
+    }
+
+    [Fact]
     public async Task Active_or_live_job_worktree_is_kept()
     {
         using var e = new Env();

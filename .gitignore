@@ -24,7 +24,7 @@
 **/captures/
 **/worktrees/
 .worktrees/
-.tools/
+.tools
 *.db
 *.db-*
 *.sqlite
