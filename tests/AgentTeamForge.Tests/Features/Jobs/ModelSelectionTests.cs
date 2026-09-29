@@ -33,8 +33,8 @@ public sealed class ModelSelectionTests
     [InlineData("cheapest", "gpt-6-luna", "low")]
     [InlineData("low", "gpt-6-luna", "medium")]
     [InlineData("medium", "gpt-6-luna", "high")]
-    [InlineData("high", "gpt-6.1-sol", "high")]
-    [InlineData("xhigh", "gpt-6-astra", "xhigh")]
+    [InlineData("high", "gpt-6.1-sol", "medium")]
+    [InlineData("xhigh", "gpt-6.1-sol", "high")]
     [InlineData("max", "gpt-6-astra", "max")]
     public void Shared_tiers_resolve_to_exact_backend_arguments(string tier, string model, string effort)
     {
@@ -165,10 +165,12 @@ public sealed class ModelSelectionTests
     public void Default_sol_tiers_fall_back_to_listed_candidate_but_overrides_stay_strict()
     {
         static IReadOnlyCollection<string> OldOnly(string _) => ["gpt-6-sol"];
-        Assert.Equal(("gpt-6-sol", "high"), ModelSelection.Resolve("codex", "high", null, OldOnly));
+        Assert.Equal(("gpt-6-sol", "medium"), ModelSelection.Resolve("codex", "high", null, OldOnly));
+        Assert.Equal(("gpt-6-sol", "high"), ModelSelection.Resolve("codex", "xhigh", null, OldOnly));
+        Assert.Equal(("gpt-6-sol", "high"), ModelSelection.Resolve("pi", "xhigh", null, OldOnly));
         Assert.Equal(("gpt-6-sol", "medium"), ModelSelection.Resolve("pi", "medium-fast", null, OldOnly));
-        Assert.Equal(("gpt-6.1-sol", "high"), ModelSelection.Resolve("codex", "high", null, AllModels));
-        Assert.Equal(("gpt-6-sol", "high"), ModelSelection.Resolve("codex", "high", null, _ => []));
+        Assert.Equal(("gpt-6.1-sol", "medium"), ModelSelection.Resolve("codex", "high", null, AllModels));
+        Assert.Equal(("gpt-6-sol", "medium"), ModelSelection.Resolve("codex", "high", null, _ => []));
 
         using var state = new TempStateDir();
         File.WriteAllText(Path.Combine(state.Path, "tier-map.json"),
@@ -186,18 +188,18 @@ public sealed class ModelSelectionTests
         TierSetting row() => map.Settings().Single(item => item.Backend == "codex" && item.Tier == "high");
         Assert.Equal("gpt-6-sol", row().Model);
 
-        map.Change("codex", "high", "gpt-6-sol", "high");
+        map.Change("codex", "high", "gpt-6-sol", "medium");
         Assert.False(row().Custom);
 
-        map.Change("codex", "high", "gpt-6.1-sol", "high");
+        map.Change("codex", "high", "gpt-6.1-sol", "medium");
         Assert.True(row().Custom);
         Assert.Equal("gpt-6.1-sol", row().Model);
 
-        map.Change("codex", "high", "gpt-6.1-sol", "high");
+        map.Change("codex", "high", "gpt-6.1-sol", "medium");
         Assert.True(row().Custom);
         Assert.Equal("gpt-6.1-sol", row().Model);
 
-        map.Change("codex", "high", "gpt-6-sol", "high");
+        map.Change("codex", "high", "gpt-6-sol", "medium");
         Assert.False(row().Custom);
         Assert.Equal("gpt-6-sol", row().Model);
     }
@@ -216,10 +218,10 @@ public sealed class ModelSelectionTests
         });
 
         Assert.Equal("accepted", result.Outcome);
-        Assert.Equal(("gpt-6.1-sol", "high"), (result.Job!.Model, result.Job.Effort));
-        Assert.Equal(("gpt-6.1-sol", "high"), (fixture.Get().Execute(result.Job.JobId).Job!.Model,
+        Assert.Equal(("gpt-6.1-sol", "medium"), (result.Job!.Model, result.Job.Effort));
+        Assert.Equal(("gpt-6.1-sol", "medium"), (fixture.Get().Execute(result.Job.JobId).Job!.Model,
             fixture.Get().Execute(result.Job.JobId).Job!.Effort));
-        Assert.Equal(("gpt-6.1-sol", "high"), (fixture.List().Execute(new ListJobsRequest()).Page!.Jobs.Single().Model,
+        Assert.Equal(("gpt-6.1-sol", "medium"), (fixture.List().Execute(new ListJobsRequest()).Page!.Jobs.Single().Model,
             fixture.List().Execute(new ListJobsRequest()).Page!.Jobs.Single().Effort));
     }
 
