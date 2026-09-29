@@ -114,7 +114,11 @@ public sealed class TierMap
             var next = resetAll ? [] : _overrides.Where(row => row.Backend != backend || row.Tier != tier).ToList();
             if (!resetAll && model is not null)
             {
-                var (defaultModel, defaultEffort) = ModelSelection.DefaultTier(backend!, tier!);
+                // An uncustomized row is compared with what it currently shows (the active default) so saving
+                // the shown value keeps it automatic; a customized row is compared with the built-in default.
+                var customized = _overrides.Exists(item => item.Backend == backend && item.Tier == tier);
+                var (defaultModel, defaultEffort) = customized ? ModelSelection.DefaultTier(backend!, tier!)
+                    : ModelSelection.DefaultTier(backend!, tier!, _catalog(backend!));
                 if (model != defaultModel || effort != defaultEffort)
                 {
                     next.Add(new TierOverride(backend!, tier!, model, effort!));

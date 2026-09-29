@@ -179,6 +179,22 @@ public sealed class ModelSelectionTests
     }
 
     [Fact]
+    public void Saving_a_tier_compares_with_the_shown_default()
+    {
+        using var state = new TempStateDir();
+        var map = new TierMap(state.Path, _ => []); // unknown catalog: the row shows gpt-6-sol
+        TierSetting row() => map.Settings().Single(item => item.Backend == "codex" && item.Tier == "high");
+        Assert.Equal("gpt-6-sol", row().Model);
+
+        map.Change("codex", "high", "gpt-6-sol", "high");
+        Assert.False(row().Custom);
+
+        map.Change("codex", "high", "gpt-6.1-sol", "high");
+        Assert.True(row().Custom);
+        Assert.Equal("gpt-6.1-sol", row().Model);
+    }
+
+    [Fact]
     public void Acceptance_persists_concrete_model_and_effort_for_job_views()
     {
         using var fixture = new JobFixture();
