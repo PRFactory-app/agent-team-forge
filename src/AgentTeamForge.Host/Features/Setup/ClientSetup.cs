@@ -33,9 +33,11 @@ internal static class ClientSetup
     }
 
     internal static bool Reconcile(string binary, string stateDir, string home, string claudeSettings,
-        string? extensionOverride, Func<string, IReadOnlyList<string>, (int ExitCode, string Output)> run, bool apply)
+        string? extensionOverride, Func<string, IReadOnlyList<string>, (int ExitCode, string Output)> run, bool apply,
+        bool registrationFailureNonFatal = false)
     {
         var healthy = true;
+        var hardFailure = false;
         var installed = 0;
         Console.Out.WriteLine($"MCP binary: {binary}");
         Console.Out.WriteLine($"State directory: {stateDir}");
@@ -68,24 +70,29 @@ internal static class ClientSetup
                 continue;
             }
 
+            var args = client == "claude"
+                ? (IReadOnlyList<string>)["mcp", "add", "--scope", "user", Name, "--", binary, "mcp", "--state-dir", stateDir]
+                : ["mcp", "add", Name, "--", binary, "mcp", "--state-dir", stateDir];
+            var removeArgs = (IReadOnlyList<string>)["mcp", "remove", Name, "--scope", "user"];
+            var removeFirst = false;
             // Claude refuses to overwrite a named entry. Remove only its user-scoped entry.
             if (client == "claude" && found && output.Contains("Scope: User config", StringComparison.Ordinal))
             {
-                var (removalExit, removalOutput) = run(client, ["mcp", "remove", Name, "--scope", "user"]);
+                removeFirst = true;
+                var (removalExit, removalOutput) = run(client, removeArgs);
                 if (removalExit != 0)
                 {
                     Console.Error.WriteLine($"claude: failed (MCP removal: {BoundedError(removalOutput)})");
+                    Console.Error.WriteLine(RegisterLater(client, removeArgs, args));
                     healthy = false;
                     continue;
                 }
             }
-            var args = client == "claude"
-                ? (IReadOnlyList<string>)["mcp", "add", "--scope", "user", Name, "--", binary, "mcp", "--state-dir", stateDir]
-                : ["mcp", "add", Name, "--", binary, "mcp", "--state-dir", stateDir];
             var (registrationExit, registrationOutput) = run(client, args);
             if (registrationExit != 0)
             {
                 Console.Error.WriteLine($"{client}: failed (MCP registration: {BoundedError(registrationOutput)})");
+                Console.Error.WriteLine(RegisterLater(client, removeFirst ? removeArgs : null, args));
                 healthy = false;
                 continue;
             }
@@ -107,6 +114,7 @@ internal static class ClientSetup
                     {
                         Console.Out.WriteLine("claude: crossSessionInbound missing");
                         healthy = false;
+                        hardFailure = true;
                     }
                 }
             }
@@ -114,6 +122,7 @@ internal static class ClientSetup
             {
                 Console.Error.WriteLine($"claude: failed (settings: {BoundedError(ex.Message)})");
                 healthy = false;
+                hardFailure = true;
             }
         }
 
@@ -122,12 +131,17 @@ internal static class ClientSetup
             installed++;
             try
             {
-                healthy &= ReconcilePi(binary, stateDir, home, extensionOverride, run, apply);
+                if (!ReconcilePi(binary, stateDir, home, extensionOverride, run, apply))
+                {
+                    healthy = false;
+                    hardFailure = true;
+                }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
             {
                 Console.Error.WriteLine($"pi: failed (setup: {BoundedError(ex.Message)})");
                 healthy = false;
+                hardFailure = true;
             }
         }
         else
@@ -149,15 +163,27 @@ internal static class ClientSetup
         }
         if (!healthy)
         {
-            Console.Error.WriteLine("Rerun atf setup after fixing the failed client; successful registrations are kept.");
+            Console.Error.WriteLine("warning: some client registrations failed (see above); launch config is written. Fix the cause, then rerun atf setup or run the commands above; atf setup --check verifies.");
             Console.Out.WriteLine("Reload clients whose MCP registration succeeded.");
         }
         else if (installed > 0)
         {
             Console.Out.WriteLine("Reload installed clients to use AgentTeamForge.");
         }
-        return healthy;
+        return registrationFailureNonFatal ? !hardFailure : healthy;
     }
+
+    static string RegisterLater(string client, IReadOnlyList<string>? removeArgs, IReadOnlyList<string> addArgs)
+    {
+        static string Line(string client, IReadOnlyList<string> args) =>
+            client + " " + string.Join(' ', args.Select(ShellQuote));
+        return "  register later: " + (removeArgs is null ? "" : Line(client, removeArgs) + "; ") + Line(client, addArgs);
+    }
+
+    static string ShellQuote(string value) =>
+        OperatingSystem.IsWindows() ? AgentTeamForge.Business.Features.Agents.Terminals.PowerShellText.Quote(value)
+        : value.Length > 0 && value.All(c => char.IsAsciiLetterOrDigit(c) || "_-./:=@%+".Contains(c)) ? value
+        : "'" + value.Replace("'", "'\\''") + "'";
 
     internal static string BoundedError(string output)
     {

@@ -206,13 +206,67 @@ public sealed class SetupCommandTests
         }
         var options = new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = state, ["force"] = "true" };
         var home = temp.File("home");
-        Assert.Equal(1, SetupCommand.Run(options, Runner, "/tmp/atf", homePath: home));
+        var originalError = Console.Error;
+        using var error = new StringWriter();
+        Console.SetError(error);
+        int firstResult;
+        try
+        {
+            firstResult = SetupCommand.Run(options, Runner, "/tmp/atf", homePath: home);
+        }
+        finally
+        {
+            Console.SetError(originalError);
+        }
+        Assert.Equal(0, firstResult);
         Assert.Contains("claude", registered);
+        Assert.Contains("codex mcp add agentteamforge -- /tmp/atf mcp --state-dir", error.ToString());
         failCodex = false;
         Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["state-dir"] = state, ["force"] = "true" },
             Runner, "/tmp/atf", homePath: home, interactive: false));
         Assert.Equal(2, registered.Count);
         Assert.Equal("headless", SetupCommand.ConfiguredMode(StateDirectory.Open(state)));
+    }
+
+    [Fact]
+    public void ManualRegistrationCommandIsShellQuoted()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        using var temp = new TempStateDir();
+        var state = temp.File("state;id $(x) 'q'");
+        static (int, string) Runner(string tool, IReadOnlyList<string> args) =>
+            args[0] == "--version" ? (tool == "codex" ? 0 : 127, "test") : args[1] == "get" ? (1, "missing") : (1, "boom");
+        var originalError = Console.Error;
+        using var error = new StringWriter();
+        Console.SetError(error);
+        try
+        {
+            Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = state, ["force"] = "true" },
+                Runner, "/tmp/atf", homePath: temp.File("home")));
+        }
+        finally
+        {
+            Console.SetError(originalError);
+        }
+        Assert.Contains($"--state-dir '{state.Replace("'", "'\\''")}'", error.ToString());
+    }
+
+    [Fact]
+    public void MalformedClaudeSettingsStillFailSetup()
+    {
+        using var temp = new TempStateDir();
+        var state = temp.File("state");
+        var home = temp.File("home");
+        var settings = Path.Combine(home, ".claude", "settings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(settings)!);
+        File.WriteAllText(settings, "{ not json");
+        static (int, string) Runner(string tool, IReadOnlyList<string> args) =>
+            args[0] == "--version" ? (tool == "claude" ? 0 : 127, "test") : args[1] == "get" ? (1, "missing") : (0, "");
+        Assert.Equal(1, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = state, ["force"] = "true" },
+            Runner, "/tmp/atf", homePath: home));
     }
 
     [Fact]
