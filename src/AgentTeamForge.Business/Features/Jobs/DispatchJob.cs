@@ -781,6 +781,10 @@ public sealed class DispatchJob : IDisposable
                                 }
                             }
                             break;
+                        case BackendEvidence.AgentBlocked blocked:
+                            // Informational only: a prompt wait counts against the turn's runtime/timeout_s.
+                            TryRecordBlocked(run, blocked.Blocked);
+                            break;
                         case BackendEvidence.NotStarted rejected:
                             End(run, JobStatus.Failed, "backend_not_started", rejected.Details);
                             return;
@@ -1206,6 +1210,19 @@ public sealed class DispatchJob : IDisposable
         {
             // Without it a follow-up is refused (parent_not_ready); the turn itself is unaffected.
             log($"session record failed for {run.RunId}: {ex.Failure}");
+        }
+    }
+
+    void TryRecordBlocked(RunRef run, bool blocked)
+    {
+        try
+        {
+            store.RecordBlocked(run, blocked);
+        }
+        catch (StorageException ex)
+        {
+            // The marker is informational; the turn itself is unaffected.
+            log($"blocked marker failed for {run.RunId}: {ex.Failure}");
         }
     }
 
