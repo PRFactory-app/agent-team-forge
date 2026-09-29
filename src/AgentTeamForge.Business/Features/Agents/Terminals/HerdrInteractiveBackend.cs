@@ -197,6 +197,18 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
     }
 
+    internal bool HasCompletedTurn(JobRecord job, string correlation)
+    {
+        if (job.SessionId is not { } sessionId || !_nativeSessions.TryGetValue(sessionId, out var launch)
+            || launch.JobId != job.JobId || launch.NativeTranscript?.SessionId != sessionId) { return false; }
+        try
+        {
+            return _transcripts.Read(launch, "atf-corr:" + correlation, DateTimeOffset.MinValue)
+                is { Completed: true, ApiError: null, Message.Length: > 0 };
+        }
+        catch (IOException) { return false; }
+    }
+
     // Only a verified Gone tab is dropped; a slow or failed probe keeps the prior
     // reuse path so it cannot surface as a start timeout that fences the session.
     bool RetainedTabMayBeLive(string sessionId)

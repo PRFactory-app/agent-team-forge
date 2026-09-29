@@ -103,6 +103,28 @@ public sealed class NativeCodexDeliveryTests
         Assert.Equal("first result", fixture.Store.GetJob(first.JobId)!.ResultText);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Late_native_completion_cannot_resettle_an_interrupted_job(bool receiptRecorded)
+    {
+        var (fixture, catalog, parent, _) = await CompletedParent("thread-cancelled");
+        using var _fixture = fixture;
+        var child = new FollowUpJob(fixture.Store, JobFixture.Operator, Accept(fixture, catalog))
+            .Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+        var claim = fixture.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home")!;
+        if (receiptRecorded) { fixture.Store.RecordNativeReceipt(child.JobId, claim.Correlation); }
+
+        fixture.Store.Cancel(child.JobId, JobFixture.Operator.Principal, JobFixture.Operator.Team, interrupt: true);
+        Assert.False(fixture.Store.SettleNativeAttempt(child.JobId, claim.Correlation, "late result"));
+
+        var job = fixture.Store.GetJob(child.JobId)!;
+        Assert.Equal((JobStatus.Cancelled, "interrupted", (string?)null), (job.Status, job.ReasonCode, job.ResultText));
+        Assert.Equal("cancelled", fixture.Store.GetRuns(child.JobId).Single().State);
+        Assert.Equal(receiptRecorded ? "received" : "sent", fixture.Store.NativeAttempt(child.JobId)!.State);
+        Assert.DoesNotContain(fixture.Store.GetEvents(child.JobId), e => e.Kind == JobStatus.Completed);
+    }
+
     [Fact]
     public async Task Large_codex_follow_up_uses_resume()
     {
