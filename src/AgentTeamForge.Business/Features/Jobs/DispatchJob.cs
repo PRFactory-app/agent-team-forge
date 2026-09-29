@@ -782,12 +782,8 @@ public sealed class DispatchJob : IDisposable
                             }
                             break;
                         case BackendEvidence.AgentBlocked blocked:
+                            // Informational only: a prompt wait counts against the turn's runtime/timeout_s.
                             TryRecordBlocked(run, blocked.Blocked);
-                            // Waiting on a human must not eat the turn deadline; still bounded by runtime.
-                            if (blocked.Blocked && jobTimeout is null)
-                            {
-                                deadline.CancelAfter(runtime);
-                            }
                             break;
                         case BackendEvidence.NotStarted rejected:
                             End(run, JobStatus.Failed, "backend_not_started", rejected.Details);
