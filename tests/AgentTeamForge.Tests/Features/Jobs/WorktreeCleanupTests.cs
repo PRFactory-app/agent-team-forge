@@ -205,6 +205,25 @@ public sealed class WorktreeCleanupTests
     }
 
     [Fact]
+    public async Task Reconciled_job_keeps_worktree_until_cancelled_then_removes_normally()
+    {
+        using var e = new Env();
+        var job = e.Fixture.Accept().Execute(new SubmitJobRequest("recon", "work", null, false)
+        { Cwd = e.Clone, Worktree = true }).Job!;
+        Assert.True(JobWorktree.Prepare(e.Fixture.Store.GetJob(job.JobId)!));
+        var claim = e.Fixture.Store.BeginNextAttempt()!;
+        Assert.True(e.Fixture.Store.EndUnsuccessfully(new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation),
+            JobStatus.NeedsReconciliation, "interactive_agent_exited"));
+
+        Assert.Equal("job_active", (await e.Cleanup.RemoveAsync(job.WorktreePath!, false, false, false,
+            TestContext.Current.CancellationToken)).Reason);
+        e.Fixture.Store.CancelReconciled(job.JobId, JobFixture.Operator.Principal, JobFixture.Operator.Team);
+
+        Assert.Equal("removed", (await e.Cleanup.RemoveAsync(job.WorktreePath!, false, false, false,
+            TestContext.Current.CancellationToken)).Outcome);
+    }
+
+    [Fact]
     public async Task Moved_job_branch_is_not_deleted_after_worktree_removal()
     {
         using var e = new Env();

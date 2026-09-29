@@ -744,7 +744,11 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     }
 
     /// <summary>Records a verified stop of an uncertain run and releases its session fence.</summary>
-    public CancelOutcome CancelReconciled(string jobId, string principal, string team) => Write(connection =>
+    /// <summary>
+    /// With <paramref name="requireIdlePeers"/> the cancel is refused, in the same transaction, while a
+    /// session peer is queued or running, so a concurrently admitted follow-up is never left behind it. Its own deferred children do not count: they are cancelled with it.
+    /// </summary>
+    public CancelOutcome CancelReconciled(string jobId, string principal, string team, bool requireIdlePeers = false) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         var job = GetJob(connection, tx, jobId);
@@ -755,6 +759,14 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         if (job.Status != JobStatus.NeedsReconciliation)
         {
             return new CancelOutcome(job, false, false);
+        }
+        if (requireIdlePeers && Scalar(connection, tx,
+            $"""
+            SELECT count(*) FROM jobs WHERE status IN ('queued','running') AND job_id IN ({SessionPeers})
+              AND NOT (parent_job_id=$id AND instr(options, ';defer=1')>0)
+            """, ("$id", jobId)) > 0)
+        {
+            return new CancelOutcome(job, false, false, PeerActive: true);
         }
         var now = Now();
         Execute(connection, tx, "UPDATE runs SET state='cancelled', reason_code='stopped', finished_at=$now WHERE job_id=$id AND generation=(SELECT max(generation) FROM runs WHERE job_id=$id)",

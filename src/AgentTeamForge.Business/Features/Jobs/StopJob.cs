@@ -4,8 +4,11 @@ using AgentTeamForge.DAL.Sqlite;
 
 namespace AgentTeamForge.Business.Features.Jobs;
 
+/// <summary>What a reconciled stop observed: nothing stopped, an owned agent closed, or no ownership record left.</summary>
+public enum ReconcileStop { Refused, Stopped, NoRecord }
+
 /// <summary>Commits cancellation before asking the dispatcher to stop its owned backend run.</summary>
-public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<string> cancelRunning, Action<string>? closeUnclaimedFollowUp = null, Func<JobRecord, bool>? stopReconciled = null, Action<JobRecord>? forgetReconciledOwnership = null, Action<string>? interruptRunning = null, Func<JobRecord, bool>? releaseNative = null)
+public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<string> cancelRunning, Action<string>? closeUnclaimedFollowUp = null, Func<JobRecord, ReconcileStop>? stopReconciled = null, Action<JobRecord>? forgetReconciledOwnership = null, Action<string>? interruptRunning = null, Func<JobRecord, bool>? releaseNative = null)
 {
     public JobResult Execute(string jobId) => Execute(jobId, false);
 
@@ -30,12 +33,15 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
             }
             if (current.Status == JobStatus.NeedsReconciliation)
             {
-                if (stopReconciled is null || !stopReconciled(current))
+                var observed = stopReconciled?.Invoke(current) ?? ReconcileStop.Refused;
+                if (observed == ReconcileStop.Refused)
                 {
                     return JobResult.Fail(JobErrors.OwnershipNotProven,
                         "Job needs reconciliation and ATF could not prove it still owns the agent (no owned Herdr pane / marked process); nothing was stopped. Inspect get_job and the pane.");
                 }
-                var stopped = store.CancelReconciled(jobId, principal.Principal, principal.Team);
+                // With no ownership record left, peers must be checked atomically with the cancel.
+                var stopped = store.CancelReconciled(jobId, principal.Principal, principal.Team, requireIdlePeers: observed == ReconcileStop.NoRecord);
+                if (stopped.PeerActive) { return JobResult.Fail(JobErrors.OwnershipNotProven); }
                 if (stopped.Changed) { forgetReconciledOwnership?.Invoke(current); }
                 return JobResult.Ok(GetJob.ToView(stopped.Job!), stopped.Changed ? "stopped" : "unchanged");
             }

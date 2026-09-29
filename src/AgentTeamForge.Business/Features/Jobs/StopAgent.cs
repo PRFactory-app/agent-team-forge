@@ -58,6 +58,13 @@ public sealed class StopAgent(JobStore store, BoundPrincipal principal, BackendC
                     var peers = store.GetSessionJobs(job.JobId);
                     if (!herdr.HasOwnedJobs(peers))
                     {
+                        if (job.Status == JobStatus.NeedsReconciliation)
+                        {
+                            var resolved = store.CancelReconciled(job.JobId, principal.Principal, principal.Team, requireIdlePeers: true);
+                            return resolved.PeerActive
+                                ? JobResult.Fail(JobErrors.ParentNotReady)
+                                : JobResult.Ok(GetJob.ToView(resolved.Job!), "agent_not_running");
+                        }
                         return store.IsSessionFenced(job.JobId)
                             ? JobResult.Fail(JobErrors.BackendUnavailable, "The session is fenced after a daemon restart and ATF no longer owns a Herdr pane for it; there is no agent to close.")
                             : JobResult.Ok(GetJob.ToView(job), "agent_not_running");
