@@ -199,6 +199,10 @@ until the session is verified idle or stopped. For a live idle Herdr agent,
 ATF settles an acknowledged but unobserved (interrupted) turn as `failed` and resumes the next
 turn in the same session. `stop_job` cancels the fenced job, terminates only a
 verified owned process, and releases the fence once no marked process remains.
+For Herdr, if no ATF-owned agent remains it just cancels the job; if an owned agent
+exists but cannot be verified, it returns `owned_agent_not_verified` and leaves the
+fence. A cancelled job's worktree is then eligible for `remove_worktree` /
+`atf worktrees prune` under the usual merged/clean checks.
 After daemon restart, ATF reattaches a Herdr turn only when its saved server,
 pane, terminal and shell identity still match. A run whose Herdr server or
 pane shell is proven gone fails with `daemon_restart_agent_gone`; one ATF

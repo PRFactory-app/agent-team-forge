@@ -1087,7 +1087,7 @@
   }
 
   async function stopJob(jobId, status, cardKey) {
-    const active = status === 'queued' || status === 'running';
+    const active = status === 'queued' || status === 'running' || status === 'needs_reconciliation';
     const action = active ? 'Stop job ' : 'Stop agent for job ';
     if (!window.confirm(action + jobId + '?')) return;
     const r = await api('POST', '/api/jobs/' + encodeURIComponent(jobId) + (active ? '/stop' : '/stop-agent'));

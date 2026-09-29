@@ -37,6 +37,12 @@ public sealed class StopAgent(JobStore store, BoundPrincipal principal, BackendC
                     var peers = store.GetSessionJobs(job.JobId);
                     if (!herdr.HasOwnedJobs(peers))
                     {
+                        if (job.Status == JobStatus.NeedsReconciliation
+                            && !peers.Any(p => store.GetJob(p)?.Status is JobStatus.Queued or JobStatus.Running))
+                        {
+                            var resolved = store.CancelReconciled(job.JobId, principal.Principal, principal.Team);
+                            return JobResult.Ok(GetJob.ToView(resolved.Job!), "agent_not_running");
+                        }
                         return store.IsSessionFenced(job.JobId)
                             ? JobResult.Fail(JobErrors.BackendUnavailable)
                             : JobResult.Ok(GetJob.ToView(job), "agent_not_running");

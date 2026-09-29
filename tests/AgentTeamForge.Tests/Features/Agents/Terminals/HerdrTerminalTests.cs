@@ -686,6 +686,82 @@ public class HerdrTerminalTests
         finally { Directory.Delete(state, recursive: true); }
     }
 
+    static (HerdrInteractiveBackend Backend, BackendCatalog Catalog, FakeHerdr Fake) RecordlessHerdr(string state)
+    {
+        var fake = new FakeHerdr();
+        var backend = new HerdrInteractiveBackend(Terminal(fake), InteractiveAgentKind.Codex, state);
+        return (backend, new BackendCatalog().Register("fake", () => backend), fake);
+    }
+
+    [Fact]
+    public void Reconciled_job_without_ownership_record_is_cancelled_by_stop_job()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var (_, catalog, fake) = RecordlessHerdr(state.Path);
+        var job = f.Submit("stuck");
+        var claim = f.Store.BeginNextAttempt()!;
+        Assert.True(f.Store.EndUnsuccessfully(new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation),
+            JobStatus.NeedsReconciliation, "interactive_agent_exited"));
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        var result = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
+            stopReconciled: dispatcher.StopReconciled, forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership).Execute(job.JobId);
+
+        Assert.Equal("stopped", result.Outcome);
+        var stopped = f.Store.GetJob(job.JobId)!;
+        Assert.Equal((JobStatus.Cancelled, "stopped"), (stopped.Status, stopped.ReasonCode));
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["session", "stop", ..]);
+    }
+
+    [Fact]
+    public void Reconciled_job_without_record_is_not_cancelled_while_a_session_peer_is_queued()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var (_, catalog, _) = RecordlessHerdr(state.Path);
+        var parent = f.Submit("stuck");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        f.Store.RecordSession(run, "native-peer");
+        f.Store.Complete(run, "done");
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        var followUp = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
+            .Execute(new FollowUpRequest(parent.JobId, "next", "peer-key"));
+        Assert.Null(followUp.Error);
+        Assert.Contains(f.Store.GetSessionJobs(parent.JobId), id => id != parent.JobId);
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={f.DatabasePath};Pooling=False"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE jobs SET status='needs_reconciliation' WHERE job_id=$id";
+            command.Parameters.AddWithValue("$id", parent.JobId);
+            command.ExecuteNonQuery();
+        }
+
+        var result = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
+            stopReconciled: dispatcher.StopReconciled, forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership).Execute(parent.JobId);
+
+        Assert.Equal(JobErrors.OwnershipNotProven, result.Error);
+        Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(parent.JobId)!.Status);
+    }
+
+    [Fact]
+    public void Stop_agent_cancels_reconciled_job_without_ownership_record()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var (_, catalog, _) = RecordlessHerdr(state.Path);
+        var job = f.Submit("stuck");
+        var claim = f.Store.BeginNextAttempt()!;
+        Assert.True(f.Store.EndUnsuccessfully(new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation),
+            JobStatus.NeedsReconciliation, "interactive_agent_exited"));
+
+        Assert.Equal("agent_not_running", new StopAgent(f.Store, JobFixture.Operator, catalog).Execute(job.JobId).Outcome);
+        Assert.Equal(JobStatus.Cancelled, f.Store.GetJob(job.JobId)!.Status);
+    }
+
     [Fact]
     public async Task Command_OutputAndTimeAreBounded()
     {
