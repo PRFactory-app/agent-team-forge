@@ -42,6 +42,7 @@ public sealed record HerdrTerminalOptions
 public sealed record OwnedHerdrSession(string SessionName, string SocketPath, int ServerPid, ulong ServerStartTicks, string OwnerLabel, string WorkspaceId)
 {
     public string? JobId { get; init; }
+    public string? AgentName { get; init; }
     public bool Shared { get; init; }
     public string? TabId { get; init; }
     public string? PaneId { get; init; }
@@ -425,6 +426,33 @@ public sealed class HerdrTerminal
         await StopOwnedSessionAsync(session, cancellationToken);
     }
 
+    /// <summary>
+    /// Herdr resumes agents in restored panes as bare CLIs. Closes a recorded root pane only when its server is gone
+    /// and the live session lists an agent with the recorded name on the recorded pane and tab.
+    /// </summary>
+    public async Task<int> CloseRestoredPanesAsync(string sessionName, IReadOnlyList<OwnedHerdrSession> records, CancellationToken cancellationToken, Action<string>? log = null)
+    {
+        var candidates = records.Where(r => r.Shared && r.AgentName is not null && r.PaneId is not null && r.TabId is not null
+            && _runner.Identity(r.ServerPid)?.StartTicks != r.ServerStartTicks).ToList();
+        if (candidates.Count == 0) { return 0; }
+        OwnedHerdrSession live;
+        try { live = await ExistingSessionAsync(sessionName, cancellationToken); }
+        catch (Exception e) when (e is HerdrLaunchException or InteractiveTerminalUnavailableException) { return 0; }
+        var listed = await RunOwnedAsync(live, cancellationToken, "agent", "list");
+        if (listed["result"]?["agents"] is not JsonArray agents) { return 0; }
+        var closed = 0;
+        foreach (var record in candidates)
+        {
+            var proven = agents.Any(a => a is JsonObject && Text(a["name"]) is { } name && name == record.AgentName
+                && Text(a["pane_id"]) == record.PaneId && Text(a["tab_id"]) == record.TabId);
+            if (!proven) { continue; }
+            await RunOwnedAsync(live, cancellationToken, "pane", "close", record.PaneId!);
+            closed++;
+            log?.Invoke($"recovery: closed restored Herdr pane {record.PaneId} ({record.AgentName}, job {record.JobId}) in {sessionName}");
+        }
+        return closed;
+    }
+
     async Task StopSharedTabAsync(OwnedHerdrSession session, CancellationToken cancellationToken)
     {
         if (session.TabId is null || session.PaneId is null || session.TerminalId is null)
@@ -433,9 +461,14 @@ public sealed class HerdrTerminal
         }
         if (ServerProblem(session) is { } problem)
         {
-            // Panes die with their server. Once the recorded server is gone (restart or reboot) nothing of ours
-            // can remain in the session, and its reused tab ids belong to someone else: close nothing.
-            if (_runner.Identity(session.ServerPid)?.StartTicks != session.ServerStartTicks) { return; }
+            // Recorded server gone (restart/reboot): its tab ids are stale, so only a restored pane proven by
+            // its recorded agent name may be closed. A live server with a changed identity is refused.
+            if (_runner.Identity(session.ServerPid)?.StartTicks != session.ServerStartTicks)
+            {
+                try { await CloseRestoredPanesAsync(session.SessionName, [session], cancellationToken); }
+                catch (Exception e) when (e is HerdrLaunchException or InteractiveTerminalUnavailableException or OperationCanceledException) { }
+                return;
+            }
             throw new HerdrLaunchException("teardown refused: " + problem);
         }
         JsonNode tab;

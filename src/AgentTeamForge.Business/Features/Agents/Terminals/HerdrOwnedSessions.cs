@@ -25,7 +25,7 @@ public static class HerdrOwnedSessions
     {
         var path = PathFor(launch);
         var temporary = path + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(session with { JobId = launch.JobId }, HerdrSessionJson.Default.OwnedHerdrSession));
+        File.WriteAllText(temporary, JsonSerializer.Serialize(session with { JobId = launch.JobId, AgentName = launch.AgentName }, HerdrSessionJson.Default.OwnedHerdrSession));
         File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         File.Move(temporary, path, overwrite: true);
     }
@@ -58,8 +58,31 @@ public static class HerdrOwnedSessions
             {
                 log($"warning: Herdr ownership record unreadable at {path}: {e.Message}");
             }
-            if (session is not null) { yield return (path, session); }
+            if (session is not null)
+            {
+                if (session.AgentName is null && LegacyAgentName(path) is { } derived) { session = session with { AgentName = derived }; }
+                yield return (path, session);
+            }
         }
+    }
+
+    static string? LegacyAgentName(string path)
+    {
+        var file = System.IO.Path.GetFileName(path);
+        var name = file[..^".owned.json".Length];
+        return System.Text.RegularExpressions.Regex.IsMatch(name, "^atf[0-9a-f]{20}$") ? name : null;
+    }
+
+    /// <summary>Close restored bare-resume panes per session. Records are never edited: they fence their jobs.</summary>
+    public static int SweepRestored(string stateRoot, Func<string, IReadOnlyList<OwnedHerdrSession>, int> closeInSession, Action<string> log)
+    {
+        var closed = 0;
+        var groups = Read(stateRoot, log)
+            .Select(r => r.Session)
+            .Where(s => s.Shared && s.PaneId is not null && s.TabId is not null && s.AgentName is not null)
+            .GroupBy(s => s.SessionName);
+        foreach (var group in groups) { closed += closeInSession(group.Key, [.. group]); }
+        return closed;
     }
 
     internal static void Forget(string stateRoot, IReadOnlyList<string> jobIds)
