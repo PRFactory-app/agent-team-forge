@@ -239,6 +239,147 @@ public class HerdrTerminalTests
         Assert.Equal(calls, fake.Calls.Count);
     }
 
+    const string RestoredAgent = "atf0123456789abcdef0123";
+
+    static async Task<(OwnedHerdrSession Session, InteractiveLaunch Launch)> SavedSharedRecord(HerdrTerminal terminal, string state, string agentName = RestoredAgent)
+    {
+        var session = await terminal.ExistingSessionAsync("default", CancellationToken.None);
+        session = (await terminal.OpenAgentTabAsync(session, "agent-a", "/work", Bootstrap, CancellationToken.None, onCreated: created => session = created)) is var b
+            ? session with { TabId = b.TabId, PaneId = b.PaneId, TerminalId = b.TerminalId } : session;
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, agentName, state, null, null, Path.Combine(state, "herdr", agentName + ".bootstrap")) { JobId = "job-r" };
+        Directory.CreateDirectory(Path.GetDirectoryName(launch.BootstrapPath)!);
+        HerdrOwnedSessions.Save(launch, session);
+        return (session, launch);
+    }
+
+    static int Sweep(HerdrTerminal terminal, string state) =>
+        HerdrOwnedSessions.SweepRestored(state, (name, records) => terminal.CloseRestoredPanesAsync(name, records, CancellationToken.None).GetAwaiter().GetResult(), _ => { });
+
+    [Fact]
+    public async Task Restored_pane_with_recorded_agent_name_is_closed()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true };
+        var terminal = Terminal(fake);
+        var (_, launch) = await SavedSharedRecord(terminal, state.Path);
+        fake.Replace(Replacement.ServerRestarted);
+        fake.ListedAgentName = RestoredAgent;
+        Assert.Equal(1, Sweep(terminal, state.Path));
+        Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["tab", "close", ..] or ["session", "stop", ..]);
+        Assert.True(File.Exists(HerdrOwnedSessions.PathFor(launch)));
+    }
+
+    [Theory]
+    [InlineData("otherName", "w1:p2", "w1:t2", true, true)]
+    [InlineData(RestoredAgent, "w1:p7", "w1:t2", true, true)]
+    [InlineData(RestoredAgent, "w1:p2", "w1:t7", true, true)]
+    [InlineData(RestoredAgent, "w1:p2", "w1:t2", false, true)]
+    [InlineData(RestoredAgent, "w1:p2", "w1:t2", true, false)]
+    public async Task Restored_sweep_never_closes_unproven_panes(string name, string pane, string tab, bool restarted, bool sessionRunning)
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var setup = new FakeHerdr { SharedRunning = true };
+        var (session, launch) = await SavedSharedRecord(Terminal(setup), state.Path);
+        var fake = new FakeHerdr { SharedRunning = true, DefaultRunning = sessionRunning, ListedAgentName = name, ListedAgentPane = pane, ListedAgentTab = tab };
+        if (restarted) { fake.Replace(Replacement.ServerRestarted); }
+        // Recorded server identity as seen by this fake: alive unless restarted.
+        HerdrOwnedSessions.Save(launch, session with { ServerPid = fake.ServerPid, ServerStartTicks = 77 });
+        Assert.Equal(0, Sweep(Terminal(fake), state.Path));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane", "close", ..]);
+        if (!restarted) { Assert.Empty(fake.Calls); }
+    }
+
+    [Fact]
+    public async Task Legacy_record_derives_agent_name_from_file_name()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true };
+        var terminal = Terminal(fake);
+        var (session, _) = await SavedSharedRecord(terminal, state.Path);
+        var legacy = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Path.Combine(state.Path, "herdr", RestoredAgent + ".owned.json")))!.AsObject();
+        legacy.Remove("AgentName");
+        var dir = Path.Combine(state.Path, "herdr");
+        File.Delete(Path.Combine(dir, RestoredAgent + ".owned.json"));
+        File.WriteAllText(Path.Combine(dir, RestoredAgent + ".owned.json"), legacy.ToJsonString());
+        File.WriteAllText(Path.Combine(dir, "bootstrap.owned.json"), legacy.ToJsonString());
+        fake.Replace(Replacement.ServerRestarted);
+        fake.ListedAgentName = RestoredAgent;
+        Assert.Equal(1, Sweep(terminal, state.Path));
+        Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
+        fake.ListedAgentName = "bootstrap";
+        Assert.Equal(0, Sweep(terminal, state.Path));
+        Assert.Single(fake.Calls, c => c.Args is ["pane", "close", ..]);
+    }
+
+    [Theory]
+    [InlineData("claude", "claude")]
+    [InlineData("bootstrap", RestoredAgent)]
+    [InlineData("atfaaaaaaaaaaaaaaaaaaaa", RestoredAgent)]
+    public async Task Sweep_refuses_record_whose_name_is_not_its_atf_file_name(string fileName, string savedName)
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true };
+        var terminal = Terminal(fake);
+        var (session, launch) = await SavedSharedRecord(terminal, state.Path);
+        File.Delete(HerdrOwnedSessions.PathFor(launch));
+        var other = launch with
+        {
+            AgentName = savedName,
+            BootstrapPath = Path.Combine(state.Path, "herdr", fileName + ".bootstrap")
+        };
+        HerdrOwnedSessions.Save(other, session);
+        fake.Replace(Replacement.ServerRestarted);
+        fake.ListedAgentName = savedName;
+
+        Assert.Equal(0, Sweep(terminal, state.Path));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane", "close", ..]);
+    }
+
+    [Fact]
+    public async Task Close_restored_refuses_record_from_another_session()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true };
+        var terminal = Terminal(fake);
+        var (session, _) = await SavedSharedRecord(terminal, state.Path);
+        fake.Replace(Replacement.ServerRestarted);
+        fake.ListedAgentName = RestoredAgent;
+
+        Assert.Equal(0, await terminal.CloseRestoredPanesAsync("default",
+            [session with { SessionName = "other", AgentName = RestoredAgent }], CancellationToken.None));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane", "close", ..]);
+    }
+
+    [Fact]
+    public async Task Close_restored_refuses_non_atf_recorded_agent_name()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true };
+        var terminal = Terminal(fake);
+        var (session, _) = await SavedSharedRecord(terminal, state.Path);
+        fake.Replace(Replacement.ServerRestarted);
+        fake.ListedAgentName = "claude";
+
+        Assert.Equal(0, await terminal.CloseRestoredPanesAsync("default",
+            [session with { AgentName = "claude" }], CancellationToken.None));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane", "close", ..]);
+    }
+
+    [Fact]
+    public async Task Stop_after_restart_closes_proven_resumed_pane_and_keeps_record()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true };
+        var terminal = Terminal(fake);
+        var (_, launch) = await SavedSharedRecord(terminal, state.Path);
+        fake.Replace(Replacement.ServerRestarted);
+        fake.ListedAgentName = RestoredAgent;
+        Assert.True(HerdrOwnedSessions.Stop(state.Path, ["job-r"], saved => terminal.StopOwnedSessionAsync(saved, CancellationToken.None).GetAwaiter().GetResult()));
+        Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
+        Assert.True(File.Exists(HerdrOwnedSessions.PathFor(launch)));
+    }
+
     [Fact]
     public async Task SharedPlacement_CreatesRepoWorkspaceOnceAndReusesItUnderConcurrentSpawns()
     {
@@ -873,6 +1014,10 @@ public class HerdrTerminalTests
         public TimeSpan WorkspaceListDelay { get; init; }
         public string SharedWorkspaceLabel { get; init; } = "work";
         public bool TabReplaced { get; set; }
+        public bool DefaultRunning { get; init; } = true;
+        public string? ListedAgentName { get; set; }
+        public string ListedAgentPane { get; set; } = "w1:p2";
+        public string ListedAgentTab { get; set; } = "w1:t2";
 
         public bool Installed { get; init; } = true;
 
@@ -940,6 +1085,15 @@ public class HerdrTerminalTests
                 ["tab", "rename", ..] => Ok("{}"),
                 ["tab", "create", ..] => Ok("""{"result":{"root_pane":{"pane_id":"w1:p2","tab_id":"w1:t2","terminal_id":"term_a"},"tab":{"tab_id":"w1:t2"}}}"""),
                 ["tab", "get", "w1:t2"] => Ok(new JsonObject { ["result"] = new JsonObject { ["tab"] = new JsonObject { ["tab_id"] = "w1:t2", ["workspace_id"] = TabReplaced ? "other" : "w1" } } }.ToJsonString()),
+                ["agent", "list"] => Ok(new JsonObject
+                {
+                    ["result"] = new JsonObject
+                    {
+                        ["agents"] = new JsonArray(
+                    new JsonObject { ["pane_id"] = "w1:p9", ["tab_id"] = "w1:t9" },
+                    new JsonObject { ["name"] = ListedAgentName, ["pane_id"] = ListedAgentPane, ["tab_id"] = ListedAgentTab })
+                    }
+                }.ToJsonString()),
                 ["pane", "close", "w1:p2"] => PaneCloseFails ? Err("close_failed") : Ok("{}"),
                 ["pane", "get", "w1:p2"] => _paneGone ? Err("pane_not_found") : Ok(new JsonObject { ["result"] = new JsonObject { ["pane"] = new JsonObject { ["pane_id"] = "w1:p2", ["tab_id"] = "w1:t2", ["terminal_id"] = _terminal } } }.ToJsonString()),
                 ["pane", "process-info", "--pane", "w1:p2"] => Ok("""{"result":{"process_info":{"pane_id":"w1:p2","shell_pid":""" + ShellPid + "}}}"),
@@ -976,7 +1130,7 @@ public class HerdrTerminalTests
 
         string SessionList()
         {
-            var sessions = new JsonArray(new JsonObject { ["name"] = "default", ["running"] = true, ["socket_path"] = "/home/u/.config/herdr/herdr.sock" });
+            var sessions = new JsonArray(new JsonObject { ["name"] = "default", ["running"] = DefaultRunning, ["socket_path"] = "/home/u/.config/herdr/herdr.sock" });
             if (Preexisting)
             {
                 sessions.Add((JsonNode)new JsonObject { ["name"] = TakenName, ["running"] = false });

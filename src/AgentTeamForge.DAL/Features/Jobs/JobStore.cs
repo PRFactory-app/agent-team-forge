@@ -555,13 +555,15 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     public bool SettleNativeAttempt(string jobId, string correlation, string result) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
+        var now = Now();
+        // An interrupt may have cancelled the job while the completion record was
+        // being read. A quarantined native turn can still complete after restart.
+        if (Execute(connection, tx, "UPDATE jobs SET status='completed',session_fenced=0,reason_code=NULL,result_text=$result,updated_at=$now WHERE job_id=$id AND status IN ('running','needs_reconciliation')",
+            ("$id", jobId), ("$result", result), ("$now", now)) != 1) { return false; }
         if (Execute(connection, tx, "UPDATE native_codex_attempts SET state='settled' WHERE job_id=$id AND correlation=$corr AND state IN ('sent','received')",
             ("$id", jobId), ("$corr", correlation)) != 1) { return false; }
-        var now = Now();
         Execute(connection, tx, "UPDATE runs SET state='completed',acked=1,acknowledged_at=coalesce(acknowledged_at,$now),finished_at=$now WHERE job_id=$id AND correlation=$corr",
             ("$id", jobId), ("$corr", correlation), ("$now", now));
-        Execute(connection, tx, "UPDATE jobs SET status='completed',session_fenced=0,reason_code=NULL,result_text=$result,updated_at=$now WHERE job_id=$id",
-            ("$id", jobId), ("$result", result), ("$now", now));
         Execute(connection, tx, "INSERT INTO events(job_id,kind,created_at) VALUES ($id,'completed',$now)", ("$id", jobId), ("$now", now));
         tx.Commit();
         return true;
