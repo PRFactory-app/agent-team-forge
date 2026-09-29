@@ -989,6 +989,15 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return (IReadOnlyList<JobRecord>)jobs;
     });
 
+    public IReadOnlyList<JobRecord> GetJobsByWorktreePath(string path) => Read(connection =>
+    {
+        using var command = Command(connection, null, $"SELECT {JobColumns} FROM jobs j WHERE j.worktree_path=$p", ("$p", path));
+        using var reader = command.ExecuteReader();
+        var jobs = new List<JobRecord>();
+        while (reader.Read()) { jobs.Add(ReadJob(reader)); }
+        return (IReadOnlyList<JobRecord>)jobs;
+    });
+
     public IReadOnlyList<EventRecord> GetEvents(string jobId) => Read(connection =>
     {
         using var command = Command(connection, null, "SELECT seq, job_id, run_id, kind FROM events WHERE job_id=$id ORDER BY seq", ("$id", jobId));

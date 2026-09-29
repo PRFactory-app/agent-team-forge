@@ -17,7 +17,9 @@ public sealed class PruneJob(PruneJobs jobs, string stateDirectory, ExternalMemb
             throw new IOException("Job log directory is a symlink");
         }
 
-        var ids = jobs.Execute(DateTimeOffset.UtcNow.AddDays(-olderThanDays), dryRun);
+        // A live interactive agent can outlast its terminal job row. Keep the row while
+        // its worktree exists so cleanup can still inspect session ownership tomorrow.
+        var ids = jobs.Execute(DateTimeOffset.UtcNow.AddDays(-olderThanDays), dryRun, Directory.Exists);
         external?.Prune(DateTimeOffset.UtcNow.AddDays(-olderThanDays), dryRun);
         if (!dryRun && Directory.Exists(logs))
         {

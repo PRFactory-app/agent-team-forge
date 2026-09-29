@@ -44,13 +44,23 @@ public sealed partial class PRFactoryWorkItems(
                 if (workspaces.Get(key) is not { } released || !Directory.Exists(released.LeadPath)) { continue; }
                 var idText = key[(server.Length + 1)..];
                 if (!Guid.TryParse(idText, out var id) || teams.Get(server, id) is not { State: not "claimed" }) { continue; }
+                if (CleanupRetryAfter.TryGetValue(key, out var next) && next > DateTimeOffset.UtcNow) { continue; }
                 await IsolateAsync(id, async () =>
                 {
                     var coordinator = new PRFactoryHandover(client, handovers, (_, _, _) => Task.FromResult(false));
-                    await coordinator.CleanupReleasedAsync(released,
-                        () => teams.MemberJobs(server, id).All(job => getJob(job)?.Status is not
-                            (JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation))
-                            && teams.ExternalMembers(server, id).All(member => member.Closed), TimeSpan.Zero);
+                    try
+                    {
+                        await coordinator.CleanupReleasedAsync(released,
+                            () => teams.MemberJobs(server, id).All(job => getJob(job)?.Status is not
+                                (JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation))
+                                && teams.ExternalMembers(server, id).All(member => member.Closed), TimeSpan.Zero);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        // A deliberate refusal is stable; retry hourly instead of every tick.
+                        CleanupRetryAfter[key] = DateTimeOffset.UtcNow.AddHours(1);
+                        log?.Invoke($"PRFactory work item {id:D} cleanup refused: {ex.Message}");
+                    }
                 }, ct);
             }
         }
@@ -127,6 +137,8 @@ public sealed partial class PRFactoryWorkItems(
     }
 
     // One failing team must not block every other team and new claims; it retries next tick.
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset> CleanupRetryAfter = new();
+
     async Task IsolateAsync(Guid id, Func<Task> advance, CancellationToken ct)
     {
         try

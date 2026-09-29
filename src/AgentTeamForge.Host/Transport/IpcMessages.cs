@@ -45,6 +45,7 @@ public sealed record IpcRequest
     public bool IncludeConnector { get; init; }
     public int? OlderThanDays { get; init; }
     public bool DryRun { get; init; }
+    public bool Force { get; init; }
     public string? WakeKey { get; init; }
     public long? WakeGeneration { get; init; }
     public string? WakeKind { get; init; }
@@ -68,7 +69,7 @@ public sealed record IpcRequest
     public string? CodexThreadId { get; init; }
 }
 
-public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, AgentTeamForge.DAL.Features.External.JoinTicket? Ticket = null, AgentTeamForge.DAL.Features.External.JoinedMember? Member = null, AgentTeamForge.DAL.Features.External.ExternalInbox? Inbox = null, JobActivityPage? Activity = null, bool? AlreadyLeft = null, string? LeftName = null, IReadOnlyCollection<string>? Backends = null, IReadOnlyDictionary<string, AgentModelOptions>? ModelOptions = null, string? ErrorDetail = null, IReadOnlyList<TierSetting>? Tiers = null, IReadOnlyDictionary<string, IReadOnlyCollection<string>>? ModelCatalog = null, string? HerdrPlacement = null, bool HerdrMode = false, AgentTeamForge.DAL.Features.Wake.WakeRegistrationStatus? WakeStatus = null, IReadOnlyDictionary<string, bool>? BackendAvailability = null, IReadOnlyDictionary<string, bool>? BackendInstalled = null, IReadOnlyDictionary<string, string>? BackendSignIn = null, string? LaunchMode = null, AgentTeamForge.Business.Features.Wake.ClaudeWakeNotice? ClaudeNotice = null, string? Instruction = null, IReadOnlyList<AgentTeamForge.DAL.Features.External.ExternalMemberSummary>? ExternalMembers = null, NativeClaudeOffer? ClaudeDelivery = null)
+public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, AgentTeamForge.DAL.Features.External.JoinTicket? Ticket = null, AgentTeamForge.DAL.Features.External.JoinedMember? Member = null, AgentTeamForge.DAL.Features.External.ExternalInbox? Inbox = null, JobActivityPage? Activity = null, bool? AlreadyLeft = null, string? LeftName = null, IReadOnlyCollection<string>? Backends = null, IReadOnlyDictionary<string, AgentModelOptions>? ModelOptions = null, string? ErrorDetail = null, IReadOnlyList<TierSetting>? Tiers = null, IReadOnlyDictionary<string, IReadOnlyCollection<string>>? ModelCatalog = null, string? HerdrPlacement = null, bool HerdrMode = false, AgentTeamForge.DAL.Features.Wake.WakeRegistrationStatus? WakeStatus = null, IReadOnlyDictionary<string, bool>? BackendAvailability = null, IReadOnlyDictionary<string, bool>? BackendInstalled = null, IReadOnlyDictionary<string, string>? BackendSignIn = null, string? LaunchMode = null, AgentTeamForge.Business.Features.Wake.ClaudeWakeNotice? ClaudeNotice = null, string? Instruction = null, IReadOnlyList<AgentTeamForge.DAL.Features.External.ExternalMemberSummary>? ExternalMembers = null, NativeClaudeOffer? ClaudeDelivery = null, IReadOnlyList<WorktreeCleanupResult>? Worktrees = null)
 {
     // Flat aliases keep the external MCP replies usable by win-agent-teams skills.
     public bool Success => Ok;
@@ -106,6 +107,8 @@ public static class IpcProtocol
     public const string JobStopAgent = "job_stop_agent";
     public const string JobList = "job_list";
     public const string JobPrune = "job_prune";
+    public const string JobRemoveWorktree = "job_remove_worktree";
+    public const string JobPruneWorktrees = "job_prune_worktrees";
     public const string ClaudeWakeTake = "claude_wake_take";
     public const string ClaudeWakeComplete = "claude_wake_complete";
     public const string ClaudeDeliveryTake = "claude_delivery_take";
@@ -145,6 +148,7 @@ public static class IpcProtocol
 [JsonSerializable(typeof(IpcRequest))]
 [JsonSerializable(typeof(IpcResponse))]
 [JsonSerializable(typeof(JobView))]
+[JsonSerializable(typeof(WorktreeCleanupResult))]
 [JsonSerializable(typeof(JobListPage))]
 [JsonSerializable(typeof(JobOutput))]
 [JsonSerializable(typeof(JobActivityPage))]

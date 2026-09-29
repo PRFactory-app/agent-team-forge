@@ -6,7 +6,7 @@ namespace AgentTeamForge.DAL.Features.Jobs;
 /// <summary>Removes expired terminal jobs, children before parents, in one transaction.</summary>
 public sealed class PruneJobs(JobDatabase database)
 {
-    public IReadOnlyList<string> Execute(DateTimeOffset cutoff, bool dryRun)
+    public IReadOnlyList<string> Execute(DateTimeOffset cutoff, bool dryRun, Func<string, bool>? worktreeExists = null)
     {
         try
         {
@@ -24,14 +24,16 @@ public sealed class PruneJobs(JobDatabase database)
                            OR EXISTS (SELECT 1 FROM prfactory_members m JOIN prfactory_teams t
                                ON t.server=m.server AND t.work_item_id=m.work_item_id
                                WHERE m.job_id=j.job_id AND t.state='claimed')
-                           OR EXISTS (SELECT 1 FROM account_parks p WHERE p.job_id=j.job_id AND p.state<>'resumed')
+                           OR EXISTS (SELECT 1 FROM account_parks p WHERE p.job_id=j.job_id AND p.state<>'resumed'),
+                           j.worktree_path
                     FROM jobs j
                     """;
                 using var reader = select.ExecuteReader();
                 while (reader.Read())
                 {
                     var status = reader.GetString(2);
-                    var expired = reader.GetInt64(4) == 0 && status is "completed" or "failed" or "cancelled"
+                    var hasWorktree = !reader.IsDBNull(5) && worktreeExists?.Invoke(reader.GetString(5)) == true;
+                    var expired = !hasWorktree && reader.GetInt64(4) == 0 && status is "completed" or "failed" or "cancelled"
                         && DateTimeOffset.TryParse(reader.GetString(3), System.Globalization.CultureInfo.InvariantCulture,
                             System.Globalization.DateTimeStyles.None, out var updated) && updated < cutoff;
                     rows.Add((reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1), expired));

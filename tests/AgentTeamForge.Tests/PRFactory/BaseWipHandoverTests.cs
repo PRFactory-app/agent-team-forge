@@ -180,4 +180,43 @@ public sealed class BaseWipHandoverTests
             handover.CleanupReleasedAsync(workspace, () => true, TimeSpan.Zero));
         Assert.Equal(later, ChainHarness.Git(workspace.LeadPath, "rev-parse", "HEAD"));
     }
+
+    [Fact]
+    public async Task Released_workspace_with_ignored_env_is_retained()
+    {
+        var item = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            TicketKey = "PRF-42",
+            Type = "Implementation",
+            RepositoryId = Guid.NewGuid(),
+            LeaseToken = Guid.NewGuid(),
+            AgentType = PRFactoryAgentType.Codex,
+            Prompt = "Work"
+        };
+        using var h = new ChainHarness(item);
+        h.Server.BaseWipSupported = true;
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        var key = $"{ChainServer.Url}|{item.Id:D}";
+        var workspace = h.Workspaces.Get(key)!;
+        ChainHarness.Commit(workspace.LeadPath, ".gitignore", ".env\n");
+        var released = ChainHarness.Commit(workspace.LeadPath, "work.txt", "released");
+        File.WriteAllText(Path.Combine(workspace.LeadPath, ".env"), "SECRET=1");
+        const string branch = "wip/source/PRF-42";
+        ChainHarness.Git(workspace.LeadPath, "push", "origin", released + ":refs/heads/" + branch);
+        var store = new PRFactoryHandoverStore(h.Database);
+        store.SaveWip(new WipRecord(key, branch, released, null, "reported", "receipt-1"));
+        store.RecordRelease(key, new WipReleaseRecord("release-1", released, DateTimeOffset.UtcNow));
+
+        var handover = new PRFactoryHandover(h.Server.Client(), store, (_, _, _) => Task.FromResult(false));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            handover.CleanupReleasedAsync(workspace, () => true, TimeSpan.Zero));
+        Assert.Equal("SECRET=1", File.ReadAllText(Path.Combine(workspace.LeadPath, ".env")));
+
+        h.Teams.Finish(ChainServer.Url, item.Id, "completed");
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        Assert.Single(h.Logs, line => line.Contains("cleanup refused:", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.Logs, line => line.Contains("deferred (InvalidOperationException)", StringComparison.Ordinal));
+    }
 }
