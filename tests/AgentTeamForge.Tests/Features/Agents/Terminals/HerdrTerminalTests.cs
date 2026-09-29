@@ -100,6 +100,49 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task Restart_keeps_unrebindable_live_pane_fenced_and_fails_only_a_proven_gone_one()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr();
+        var terminal = Terminal(fake);
+        var owned = await terminal.StartSessionAsync(CancellationToken.None);
+        var job = f.Submit("live");
+        var claim = f.Store.BeginNextAttempt()!;
+        f.Store.RecordStartup(new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation), "submitted");
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null,
+            Path.Combine(state.Path, "herdr", "atftest.bootstrap"))
+        { JobId = job.JobId };
+        Directory.CreateDirectory(Path.GetDirectoryName(launch.BootstrapPath)!);
+        File.WriteAllText(launch.BootstrapPath, "");
+        // A record from a daemon that predates saved shell identity: live, but not rebindable.
+        HerdrOwnedSessions.Save(launch, owned);
+        new AgentTeamForge.Business.Features.Recovery.RecoverOnStartup(f.Store).Execute();
+        var backend = new HerdrInteractiveBackend(terminal, InteractiveAgentKind.Codex, state.Path);
+
+        async Task RestartAsync()
+        {
+            using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+            dispatcher.RestoreAfterRestart(f.Store.RestartCandidates());
+            using var lifetime = new CancellationTokenSource();
+            var loop = dispatcher.RunAsync(lifetime.Token);
+            lifetime.Cancel();
+            await loop;
+        }
+
+        await RestartAsync();
+        Assert.Equal((JobStatus.NeedsReconciliation, "daemon_restart_uncertain"),
+            (f.Store.GetJob(job.JobId)!.Status, f.Store.GetJob(job.JobId)!.ReasonCode));
+        Assert.True(f.Store.IsSessionFenced(job.JobId));
+
+        fake.Replace(Replacement.ServerRestarted);
+        await RestartAsync();
+        Assert.Equal((JobStatus.Failed, "daemon_restart_agent_gone"),
+            (f.Store.GetJob(job.JobId)!.Status, f.Store.GetJob(job.JobId)!.ReasonCode));
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+    }
+
+    [Fact]
     public async Task ExistingDefaultCodexHomeIsPinnedForSharedTab()
     {
         using var state = new TempStateDir();

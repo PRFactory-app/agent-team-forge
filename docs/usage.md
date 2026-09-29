@@ -196,12 +196,13 @@ accepts `--worktree`; follow-ups reuse the parent's worktree.
 
 `needs_reconciliation` is never replayed automatically. A follow-up waits
 until the session is verified idle or stopped. For a live idle Herdr agent,
-ATF settles an unobserved interrupted turn as `failed` and resumes the next
+ATF settles an acknowledged but unobserved (interrupted) turn as `failed` and resumes the next
 turn in the same session. `stop_job` cancels the fenced job, terminates only a
 verified owned process, and releases the fence once no marked process remains.
 After daemon restart, ATF reattaches a Herdr turn only when its saved server,
-pane, terminal and shell identity still match; an unattached run fails with
-`daemon_restart_agent_gone` rather than staying fenced.
+pane, terminal and shell identity still match. A run whose Herdr server or
+pane shell is proven gone fails with `daemon_restart_agent_gone`; one ATF
+cannot verify either way stays `needs_reconciliation` until stopped.
 
 ## State, logs and pruning
 

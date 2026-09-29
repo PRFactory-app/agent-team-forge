@@ -78,13 +78,16 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return 0;
     });
 
-    /// <summary>An idle, verified interactive pane proves its prior turn was interrupted.</summary>
+    /// <summary>
+    /// An idle, verified interactive pane proves its acknowledged turn was interrupted.
+    /// Only an acknowledged turn qualifies: an unconfirmed delivery may still sit in the editor.
+    /// </summary>
     public bool SettleInterrupted(string jobId) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         var changed = Execute(connection, tx, """
             UPDATE jobs SET status='failed', reason_code='interactive_turn_interrupted', session_fenced=0, updated_at=$now
-            WHERE job_id=$id AND status='needs_reconciliation'
+            WHERE job_id=$id AND status='needs_reconciliation' AND reason_code='interactive_completion_unobserved'
             """, ("$id", jobId), ("$now", Now()));
         if (changed != 1) { return false; }
         Execute(connection, tx, """

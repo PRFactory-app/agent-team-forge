@@ -16,8 +16,11 @@ destroyed live work.
 - On startup, every started attempt without a committed outcome first becomes
   `needs_reconciliation` with reason `daemon_restart_uncertain`. A Herdr
   attempt with matching saved server, pane, terminal and shell identity returns
-  to `running` for observation of its original prompt. An unattached attempt
-  fails with `daemon_restart_agent_gone`; its prompt is never replayed.
+  to `running` for observation of its original prompt. An attempt fails with
+  `daemon_restart_agent_gone` only when no turn can still run (prompt never
+  submitted, no ownership record, or its Herdr server or pane shell process is
+  proven gone); any other rebind failure, such as a record from an older
+  daemon, stays fenced. Its prompt is never replayed.
 - Unattempted queued jobs are dispatched normally.
 - Explicit **Stop agent** (web console or API) uses the saved ownership proof
   (for Herdr: server PID and start time, session name and owner label) to
@@ -31,7 +34,8 @@ destroyed live work.
 ## Consequences
 
 - A surviving pane with verified identity resumes observation of its original
-  turn. An unattached job fails cleanly without replaying its prompt.
+  turn. A proven-gone job fails cleanly without replaying its prompt; an
+  unverifiable one stays fenced for the operator to read or stop.
 - Verified on Linux with a real Herdr session and a killed daemon (2026-09-26):
   the session survived, the job was fenced, follow-up returned
   `parent_not_ready`, an unrelated job completed, and Stop agent closed the

@@ -82,14 +82,21 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout, RememberSession, BindNativeSession);
     }
 
-    /// <summary>Observe a prompt already submitted before daemon death; never send it again.</summary>
-    public IBackendRun? Reattach(JobRecord job, RunRecord run)
+    /// <summary>
+    /// Observe a prompt already submitted before daemon death; never send it again.
+    /// <paramref name="gone"/> is true only when no turn can still be running there
+    /// (prompt never submitted, no owned pane, or its server/shell process is proven gone);
+    /// any other failure to rebind leaves the job fenced.
+    /// </summary>
+    public IBackendRun? Reattach(JobRecord job, RunRecord run, out bool gone)
     {
-        if (_control is not HerdrAgentControl control || run.SubmittedAt is null
-            || !DateTimeOffset.TryParse(run.StartedAt, out var started)) { return null; }
+        gone = false;
+        if (_control is not HerdrAgentControl control || !DateTimeOffset.TryParse(run.StartedAt, out var started)) { return null; }
         var owned = HerdrOwnedSessions.Read(_stateRoot, _ => { })
             .FirstOrDefault(entry => entry.Session.JobId == job.JobId);
-        if (owned.Session is null) { return null; }
+        if (run.SubmittedAt is null || owned.Session is null) { gone = true; return null; }
+        gone = control.PaneIsGone(owned.Session);
+        if (gone) { return null; }
         var bootstrap = Path.ChangeExtension(owned.Path, ".bootstrap");
         if (!File.Exists(bootstrap)) { return null; }
         var agentName = Path.GetFileNameWithoutExtension(bootstrap);
@@ -108,11 +115,15 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            if (!control.RebindAsync(launch, owned.Session, timeout.Token).GetAwaiter().GetResult()) { return null; }
-            return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout,
-                RememberSession, BindNativeSession, recovered: true);
+            if (control.RebindAsync(launch, owned.Session, timeout.Token).GetAwaiter().GetResult())
+            {
+                return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout,
+                    RememberSession, BindNativeSession, recovered: true);
+            }
         }
-        catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { return null; }
+        catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { }
+        gone = control.PaneIsGone(owned.Session);
+        return null;
     }
 
     void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
@@ -277,6 +288,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             var confirmationDeadline = DateTimeOffset.UtcNow.Add(startupTimeout);
             var seenMessages = 0;
             var controlFailures = 0;
+            var goneSamples = 0;
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -292,6 +304,14 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                     continue;
                 }
                 controlFailures = 0;
+                // Gone is derived from Herdr CLI and /proc probes (pane get, server scan), which a
+                // loaded host can fail once; require consecutive samples before ending a live turn.
+                if (status == InteractiveAgentStatus.Gone && ++goneSamples < 3)
+                {
+                    await Task.Delay(250, cancellationToken);
+                    continue;
+                }
+                if (status != InteractiveAgentStatus.Gone) { goneSamples = 0; }
                 var output = transcripts.Read(launch, "atf-corr:" + request.Correlation, started);
                 if (output?.BindingError is { } bindingError)
                 {

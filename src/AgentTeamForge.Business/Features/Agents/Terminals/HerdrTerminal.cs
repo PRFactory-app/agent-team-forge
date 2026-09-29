@@ -362,6 +362,15 @@ public sealed class HerdrTerminal
         return binding;
     }
 
+    /// <summary>True only with process proof that the recorded server or pane shell no longer exists.</summary>
+    internal bool OwnedPaneIsGone(OwnedHerdrSession session)
+    {
+        bool Replaced(int pid, ulong startTicks) =>
+            _runner.Identity(pid) is { } identity ? identity.StartTicks != startTicks : !PidMayBeAlive(pid);
+        return Replaced(session.ServerPid, session.ServerStartTicks)
+            || session.ShellPid is int shell && session.ShellStartTicks is ulong ticks && Replaced(shell, ticks);
+    }
+
     internal bool HasUnverifiedLiveIdentity(HerdrTabBinding binding)
     {
         var server = _runner.Identity(binding.Session.ServerPid);

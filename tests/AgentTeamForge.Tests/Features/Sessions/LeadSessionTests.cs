@@ -29,7 +29,7 @@ public sealed class LeadSessionTests
             Workspace = first.Workspace,
             AllWorkspace = true
         }).Page!.Jobs.Count);
-        // A sibling can operate on a job it can inspect in the same workspace.
+        // A sibling's job listed with all_workspace can be read, but not stopped unless it is fenced.
         Assert.True(endpoint.Handle(new IpcRequest
         {
             Op = IpcProtocol.JobGet,
@@ -37,13 +37,13 @@ public sealed class LeadSessionTests
             Workspace = second.Workspace,
             JobId = a
         }).Ok);
-        Assert.True(endpoint.Handle(new IpcRequest
+        Assert.Equal("not_found", endpoint.Handle(new IpcRequest
         {
             Op = IpcProtocol.JobStop,
             LeadSessionId = second.SessionId,
             Workspace = second.Workspace,
             JobId = a
-        }).Ok);
+        }).Error);
         var other = sessions.Start("/workspace/other", "parent=3");
         Assert.Equal("not_found", endpoint.Handle(new IpcRequest
         {

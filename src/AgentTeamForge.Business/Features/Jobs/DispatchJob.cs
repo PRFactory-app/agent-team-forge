@@ -327,12 +327,17 @@ public sealed class DispatchJob : IDisposable
             var runs = store.GetRuns(jobId);
             var run = runs.Count == 0 ? null : runs[^1];
             if (job is null || run is null || job.Status != JobStatus.NeedsReconciliation) { continue; }
-            var backendRun = backends.Resolve(job.Backend) is HerdrInteractiveBackend herdr
-                ? herdr.Reattach(job, run) : null;
+            var herdr = backends.Resolve(job.Backend) as HerdrInteractiveBackend;
+            var gone = false;
+            var backendRun = herdr?.Reattach(job, run, out gone);
             if (backendRun is null)
             {
-                if (backends.Resolve(job.Backend) is not HerdrInteractiveBackend
-                    && OrphanedBackendProcess.HasMarkedProcess([run.Correlation],
+                if (herdr is not null && !gone)
+                {
+                    log($"recovery: {jobId} remains fenced; its Herdr pane could not be rebound or proven gone");
+                    continue;
+                }
+                if (herdr is null && OrphanedBackendProcess.HasMarkedProcess([run.Correlation],
                         run.BackendPid is int pid ? [pid] : []))
                 {
                     log($"recovery: {jobId} remains fenced; marked process exit is unverified");

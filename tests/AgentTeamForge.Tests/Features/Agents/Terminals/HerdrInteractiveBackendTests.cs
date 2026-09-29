@@ -609,6 +609,24 @@ public sealed class HerdrInteractiveBackendTests
     }
 
     [Fact]
+    public async Task One_transient_gone_sample_does_not_end_a_live_turn()
+    {
+        var control = new FakeControl
+        {
+            Status = InteractiveAgentStatus.Working,
+            Statuses = new([InteractiveAgentStatus.Working, InteractiveAgentStatus.Gone, InteractiveAgentStatus.Working]),
+        };
+        var partial = new InteractiveTranscript("native", "running verify", ["running verify"]);
+        var reader = new SequenceReader(partial, partial, new InteractiveTranscript("native", "finished", ["finished"], Completed: true));
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Codex, Path.GetTempPath());
+        await using var run = backend.Start(new BackendRequest("job", "corr", "work", "") { WorkingDirectory = Path.GetTempPath() });
+        await run.DeliverAsync(CancellationToken.None);
+        var evidence = await Collect(run);
+        Assert.Contains(new BackendEvidence.Result("corr", "finished"), evidence);
+        Assert.DoesNotContain(evidence, item => item is BackendEvidence.ProtocolError);
+    }
+
+    [Fact]
     public async Task ExitedAgentClosesItsOwnedSession()
     {
         var control = new FakeControl { Status = InteractiveAgentStatus.Gone };

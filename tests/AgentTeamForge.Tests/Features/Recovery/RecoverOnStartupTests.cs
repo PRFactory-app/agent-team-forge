@@ -27,6 +27,19 @@ public sealed class RecoverOnStartupTests
         Assert.Null(f.Store.BeginNextAttempt());
     }
 
+    [Theory]
+    [InlineData("interactive_completion_unobserved", true)]
+    [InlineData("interactive_delivery_not_confirmed", false)]
+    public void Only_an_acknowledged_idle_turn_settles_as_interrupted(string reason, bool settles)
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("turn");
+        var claim = f.Store.BeginNextAttempt()!;
+        f.Store.EndUnsuccessfully(new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation), JobStatus.NeedsReconciliation, reason);
+        Assert.Equal(settles, f.Store.SettleInterrupted(job.JobId));
+        Assert.Equal(settles ? JobStatus.Failed : JobStatus.NeedsReconciliation, f.Store.GetJob(job.JobId)!.Status);
+    }
+
     [Fact]
     public void Verified_reattachment_restores_same_run_and_unattached_failure_releases_fence()
     {

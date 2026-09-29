@@ -91,6 +91,8 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         return false;
     }
 
+    internal bool PaneIsGone(OwnedHerdrSession session) => terminal.OwnedPaneIsGone(session);
+
     internal void TransferOwnership(InteractiveLaunch launch)
     {
         if (!_runs.TryGetValue(launch.AgentName, out var run))
