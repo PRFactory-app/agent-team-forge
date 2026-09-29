@@ -189,6 +189,70 @@ public sealed class StopAgentTests
         Assert.Equal(JobStatus.Queued, f.Store.GetJob(child.JobId)!.Status);
     }
 
+    [Fact]
+    public void Refusal_after_the_settle_wait_leaves_queued_deferred_children_untouched()
+    {
+        var (f, _, jobId) = RunningJob("resumes");
+        using var _ = f;
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
+            .Execute(new FollowUpRequest(jobId, "next", "child") { Defer = true }).Job!;
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => new OwnedBackend());
+        var idleChecks = 0;
+        // Idle before the wait, working again by the final re-check.
+        var resumed = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => ++idleChecks == 1, _ => false, StopJobMustNotRun, TimeSpan.Zero);
+        Assert.Equal(JobErrors.InvalidRequest, resumed.Execute(jobId).Error);
+        Assert.Equal((JobStatus.Running, JobStatus.Queued), (f.Store.GetJob(jobId)!.Status, f.Store.GetJob(child.JobId)!.Status));
+
+        // Completion reported but not yet committed by the run loop.
+        var unrecorded = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => true, _ => true, StopJobMustNotRun, TimeSpan.Zero);
+        Assert.Equal(JobErrors.ParentNotReady, unrecorded.Execute(jobId).Error);
+        Assert.Equal((JobStatus.Running, JobStatus.Queued), (f.Store.GetJob(jobId)!.Status, f.Store.GetJob(child.JobId)!.Status));
+    }
+
+    [Fact]
+    public void Running_turn_of_a_peer_the_lead_cannot_access_is_not_cancelled()
+    {
+        var (f, run, jobId) = RunningJob("other-lead");
+        using var _ = f;
+        Assert.True(f.Store.Complete(run, "done"));
+        var turn = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
+            .Execute(new FollowUpRequest(jobId, "second", "turn-2")).Job!;
+        Assert.Equal(turn.JobId, f.Store.BeginNextAttempt()!.Job.JobId);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => new OwnedBackend());
+        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => true, _ => false, StopJobMustNotRun, TimeSpan.Zero);
+
+        var refused = stop.Execute(jobId, peer => peer != turn.JobId);
+
+        Assert.Equal(JobErrors.InvalidRequest, refused.Error);
+        Assert.False(string.IsNullOrEmpty(refused.Detail));
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(turn.JobId)!.Status);
+    }
+
+    [Fact]
+    public void Claim_gate_is_held_only_for_the_final_recheck_and_cancel()
+    {
+        var (f, _, jobId) = RunningJob("gate");
+        using var _ = f;
+        var held = false;
+        var heldDuringWait = false;
+        var heldDuringCancel = false;
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => new OwnedBackend());
+        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => true,
+            _ => { heldDuringWait |= held; return false; },
+            id => { heldDuringCancel = held; return new StopJob(f.Store, JobFixture.Operator, _ => { }).Execute(id); },
+            TimeSpan.FromMilliseconds(600), () => { held = true; return new Release(() => held = false); });
+
+        Assert.Equal("agent_stopped", stop.Execute(jobId).Outcome);
+        Assert.False(heldDuringWait);
+        Assert.True(heldDuringCancel);
+        Assert.False(held);
+    }
+
+    sealed class Release(Action release) : IDisposable
+    {
+        public void Dispose() => release();
+    }
+
     sealed class OwnedBackend : IJobBackend, IInteractiveSessionStop
     {
         public string? StoppedSession { get; private set; }
