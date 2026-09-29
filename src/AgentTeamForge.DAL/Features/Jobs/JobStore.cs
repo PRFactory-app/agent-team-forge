@@ -670,6 +670,22 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return updated == 1;
     });
 
+    /// <summary>Marks (or clears) a live turn waiting on an interactive prompt without ending its run.</summary>
+    public bool RecordBlocked(RunRef run, bool blocked) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        var updated = Execute(connection, tx, """
+            UPDATE jobs SET reason_code=CASE WHEN $blocked THEN 'interactive_agent_blocked' ELSE NULL END, updated_at=$now
+            WHERE job_id=$id AND status='running'
+              AND (reason_code IS NULL OR reason_code='interactive_agent_blocked')
+              AND EXISTS (SELECT 1 FROM runs WHERE run_id=$run AND job_id=$id AND generation=$gen AND correlation=$corr AND state='started')
+            """,
+            ("$blocked", blocked), ("$now", Now()), ("$id", run.JobId), ("$run", run.RunId),
+            ("$gen", run.Generation), ("$corr", run.Correlation));
+        tx.Commit();
+        return updated == 1;
+    });
+
     /// <summary>
     /// Fenced completion: only the current started run with matching
     /// generation/correlation can store result + terminal status + event, together.

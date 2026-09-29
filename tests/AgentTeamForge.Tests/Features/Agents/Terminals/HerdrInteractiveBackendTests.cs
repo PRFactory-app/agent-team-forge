@@ -266,6 +266,70 @@ public sealed class HerdrInteractiveBackendTests
     }
 
     [Fact]
+    public async Task Blocked_turn_stays_running_and_completes_after_prompt_is_answered()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("herdr-blocked");
+        var claim = f.Store.BeginNextAttempt()!;
+        var reader = new MutableReader(new InteractiveTranscript("claude-native", "working", ["working"]));
+        var control = new FakeControl { Status = InteractiveAgentStatus.Blocked };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(),
+            settleTimeout: TimeSpan.FromMilliseconds(20));
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var attempt = dispatcher.RunAttemptAsync(claim, deadline.Token);
+        while (f.Store.GetJob(job.JobId)?.ReasonCode != "interactive_agent_blocked")
+        {
+            await Task.Delay(10, deadline.Token);
+        }
+        await Task.Delay(100, deadline.Token); // Longer than the ordinary idle settle timeout.
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(job.JobId)!.Status);
+        Assert.Equal("started", Assert.Single(f.Store.GetRuns(job.JobId)).State);
+        Assert.False(control.Stopped);
+
+        control.Status = InteractiveAgentStatus.Working;
+        while (f.Store.GetJob(job.JobId)?.ReasonCode is not null)
+        {
+            await Task.Delay(10, deadline.Token);
+        }
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(job.JobId)!.Status);
+
+        reader.Output = new InteractiveTranscript("claude-native", "DONE", ["working", "DONE"], Completed: true);
+        control.Status = InteractiveAgentStatus.Idle;
+        await attempt.WaitAsync(deadline.Token);
+        var record = f.Store.GetJob(job.JobId)!;
+        Assert.Equal(JobStatus.Completed, record.Status);
+        Assert.Equal("DONE", record.ResultText);
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+    }
+
+    [Fact]
+    public async Task Blocked_turn_that_completes_while_still_blocked_completes()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("herdr-blocked-done");
+        var claim = f.Store.BeginNextAttempt()!;
+        var reader = new MutableReader(new InteractiveTranscript("claude-native", "working", ["working"]));
+        var control = new FakeControl { Status = InteractiveAgentStatus.Blocked };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(),
+            settleTimeout: TimeSpan.FromMilliseconds(20));
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var attempt = dispatcher.RunAttemptAsync(claim, deadline.Token);
+        while (f.Store.GetJob(job.JobId)?.ReasonCode != "interactive_agent_blocked")
+        {
+            await Task.Delay(10, deadline.Token);
+        }
+
+        reader.Output = new InteractiveTranscript("claude-native", "DONE", ["working", "DONE"], Completed: true);
+        await attempt.WaitAsync(deadline.Token);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(job.JobId)!.Status);
+        Assert.Equal("DONE", f.Store.GetJob(job.JobId)!.ResultText);
+    }
+
+    [Fact]
     public async Task Verified_exited_session_releases_fence_after_cleanup()
     {
         using var f = new JobFixture();

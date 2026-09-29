@@ -308,6 +308,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             var seenMessages = 0;
             var controlFailures = 0;
             var goneSamples = 0;
+            var blocked = false;
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -410,10 +411,11 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                     await Task.Delay(250, cancellationToken);
                     continue;
                 }
-                if (status == InteractiveAgentStatus.Blocked && output?.ApiError?.Code != "agent_rate_limited")
+                var nowBlocked = status == InteractiveAgentStatus.Blocked && output?.ApiError?.Code != "agent_rate_limited";
+                if (nowBlocked != blocked)
                 {
-                    yield return new BackendEvidence.ProtocolError("interactive_agent_blocked");
-                    yield break;
+                    blocked = nowBlocked;
+                    yield return new BackendEvidence.AgentBlocked(blocked);
                 }
                 if (status == InteractiveAgentStatus.Gone)
                 {
