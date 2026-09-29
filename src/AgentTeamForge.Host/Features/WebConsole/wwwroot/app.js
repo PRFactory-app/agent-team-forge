@@ -1097,7 +1097,7 @@
       : r.ok
       ? 'Outcome: ' + (r.outcome || 'unknown') + '; status: ' + (r.job?.status || 'unknown')
         + '; reason_code: ' + (r.job?.reason_code || 'none')
-      : 'Stop failed: ' + r.error;
+      : 'Stop failed: ' + r.error + (r.error_detail ? ' — ' + r.error_detail : '');
     const state = cardKey && composerState(cardKey);
     if (state) {
       state.result = message;

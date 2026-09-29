@@ -209,17 +209,18 @@ public static class DaemonCommand
         dispatcher.ClaudeBridgeReady = claudeMailbox.HasRecentRelay;
         var worktreeCleanup = new WorktreeCleanup(store, backends);
         var interactiveLaunch = launchMode is "herdr" or "terminal" or "wt";
+        var stopJob = new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning, dispatcher.ReleaseNative);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound, interactiveLaunch), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning, reconcileIdleInteractive: dispatcher.ReconcileIdleInteractive, hasIdleInteractive: dispatcher.HasIdleInteractive, settleCompletedInteractive: dispatcher.SettleCompletedInteractive),
             new ListJobs(store, profile.Bound, jobLogs, interactiveLaunch),
-            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning, dispatcher.ReleaseNative), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
-            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
+            stopJob, checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
+            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends, dispatcher.HasIdleInteractive, dispatcher.SettleCompletedInteractive, id => stopJob.Execute(id)), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
             (token, _, _) => PRFactoryInteraction.RequestFromManagedChild(externalTeam.ManagedChildName(token)),
             externalMembers, new GetJob(store, connectorPrincipal), dispatcher.TakeNativeClaude,
             new RemoveWorktree(store, profile.Bound, worktreeCleanup), worktreeCleanup);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
-            request => request.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp or IpcProtocol.JobStop ? dispatcher.PauseClaims() : null);
+            request => request.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp or IpcProtocol.JobStop or IpcProtocol.JobStopAgent ? dispatcher.PauseClaims() : null);
 
         using var lifetime = new CancellationTokenSource();
         using var sigterm = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; Log("stopping: SIGTERM"); lifetime.Cancel(); });
@@ -251,7 +252,7 @@ public static class DaemonCommand
         var connectorStop = new StopJob(store, connectorPrincipal,
             dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership,
             releaseNative: dispatcher.ReleaseNative);
-        var connectorStopAgent = new StopAgent(store, connectorPrincipal, backends);
+        var connectorStopAgent = new StopAgent(store, connectorPrincipal, backends, dispatcher.HasIdleInteractive, dispatcher.SettleCompletedInteractive, id => connectorStop.Execute(id));
         // The daemon is the sole writer of team workspaces; the singleton serializes Git mutations.
         var connectorWorkspaceStore = new PRFactoryWorkspaceStore(database);
         using var teamWorkspaces = new TeamWorkspace(connectorWorkspaceStore);

@@ -79,6 +79,8 @@ public static class JobErrors
     public const string CwdNotGitRepo = "cwd_not_git_repo";
 
     public static string FromStorage(StorageException ex) => ex.Failure == StorageFailure.Busy ? StorageBusy : StorageUnavailable;
+
+    public static string StorageDetail(StorageException ex) => ex.Failure == StorageFailure.Busy ? "Database busy; retry." : "Job database unavailable.";
 }
 
 /// <summary>The public view of a job. Never a raw storage record.</summary>
@@ -114,7 +116,9 @@ public sealed record JobResult(JobView? Job, string? Outcome, string? Error)
 {
     public IReadOnlyList<JobView>? Jobs { get; init; }
 
+    public string? Detail { get; init; }
+
     public static JobResult Ok(JobView job, string outcome) => new(job, outcome, null);
 
-    public static JobResult Fail(string error) => new(null, null, error);
+    public static JobResult Fail(string error, string? detail = null) => new(null, null, error) { Detail = detail };
 }

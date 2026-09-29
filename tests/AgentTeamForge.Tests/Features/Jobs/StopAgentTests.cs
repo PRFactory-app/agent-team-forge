@@ -107,7 +107,86 @@ public sealed class StopAgentTests
         Assert.Equal(JobStatus.Completed, f.Store.GetJob(job.JobId)!.Status);
 
         var queued = f.Submit("still-queued");
-        Assert.Equal(JobErrors.InvalidRequest, stop.Execute(queued.JobId).Error);
+        var refused = stop.Execute(queued.JobId);
+        Assert.Equal(JobErrors.InvalidRequest, refused.Error);
+        Assert.False(string.IsNullOrEmpty(refused.Detail));
+    }
+
+    static (JobFixture Fixture, RunRef Run, string JobId) RunningJob(string key)
+    {
+        var f = new JobFixture();
+        var job = f.Submit(key);
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        f.Store.RecordSession(run, "native-1");
+        return (f, run, job.JobId);
+    }
+
+    static JobResult StopJobMustNotRun(string _) => throw new InvalidOperationException("stop_job must not be called");
+
+    [Fact]
+    public void Running_idle_agent_whose_turn_finished_keeps_its_result_and_closes()
+    {
+        var (f, run, jobId) = RunningJob("finished");
+        using var _ = f;
+        var backend = new OwnedBackend();
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => true,
+            _ => { f.Store.Complete(run, "done"); return true; }, StopJobMustNotRun, TimeSpan.Zero);
+
+        var stopped = stop.Execute(jobId);
+
+        Assert.Equal("agent_stopped", stopped.Outcome);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(jobId)!.Status);
+        Assert.Equal("native-1", backend.StoppedSession);
+    }
+
+    [Fact]
+    public void Running_idle_agent_that_completes_during_the_settle_wait_is_not_cancelled()
+    {
+        var (f, run, jobId) = RunningJob("settling");
+        using var _ = f;
+        var calls = 0;
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => new OwnedBackend());
+        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => true,
+            _ => ++calls > 2 && f.Store.Complete(run, "done"), StopJobMustNotRun, TimeSpan.FromSeconds(3));
+
+        Assert.Equal("agent_stopped", stop.Execute(jobId).Outcome);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(jobId)!.Status);
+    }
+
+    [Fact]
+    public void Running_idle_agent_without_completion_is_cancelled_and_closed()
+    {
+        var (f, _, jobId) = RunningJob("background-task");
+        using var _ = f;
+        var backend = new OwnedBackend();
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => true, _ => false,
+            new StopJob(f.Store, JobFixture.Operator, _ => { }).Execute, TimeSpan.Zero);
+
+        Assert.Equal("agent_stopped", stop.Execute(jobId).Outcome);
+        Assert.Equal(JobStatus.Cancelled, f.Store.GetJob(jobId)!.Status);
+        Assert.Equal("native-1", backend.StoppedSession);
+    }
+
+    [Fact]
+    public void Running_working_agent_is_refused_with_detail_and_left_running()
+    {
+        var (f, _, jobId) = RunningJob("working");
+        using var _ = f;
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
+            .Execute(new FollowUpRequest(jobId, "next", "child") { Defer = true }).Job!;
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => new OwnedBackend());
+        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => false, _ => false,
+            StopJobMustNotRun, TimeSpan.Zero);
+
+        var refused = stop.Execute(jobId);
+
+        Assert.Equal(JobErrors.InvalidRequest, refused.Error);
+        Assert.False(string.IsNullOrEmpty(refused.Detail));
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(jobId)!.Status);
+        Assert.Equal(JobStatus.Queued, f.Store.GetJob(child.JobId)!.Status);
     }
 
     sealed class OwnedBackend : IJobBackend, IInteractiveSessionStop
