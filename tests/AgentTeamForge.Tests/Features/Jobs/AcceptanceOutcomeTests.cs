@@ -64,15 +64,20 @@ public sealed class AcceptanceOutcomeTests
     }
 
     [Fact]
-    public void Get_reports_daemon_herdr_mode()
+    public void Job_replies_report_daemon_herdr_mode()
     {
         using var f = new JobFixture();
         using var state = new TempStateDir();
         var job = f.Submit("mode");
-        var request = new IpcRequest { Op = IpcProtocol.JobGet, JobId = job.JobId };
+        var get = new IpcRequest { Op = IpcProtocol.JobGet, JobId = job.JobId };
 
-        Assert.False(Endpoint(f, () => { }).Handle(request).HerdrMode);
-        Assert.True(Endpoint(f, () => { }, new HerdrPlacement(state.Path)).Handle(request).HerdrMode);
+        Assert.Equal(false, Endpoint(f, () => { }).Handle(get).HerdrMode);
+        Assert.Equal(true, Endpoint(f, () => { }, new HerdrPlacement(state.Path)).Handle(get).HerdrMode);
+        Assert.Equal(false, Endpoint(f, () => { }).Handle(Submit("s1", "x")).HerdrMode);
+        Assert.Equal(true, Endpoint(f, () => { }, new HerdrPlacement(state.Path)).Handle(Submit("s2", "x")).HerdrMode);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(new IpcResponse(true), IpcJson.Default.IpcResponse);
+        Assert.DoesNotContain("herdr_mode", json);
     }
 
     static JobsEndpoint Endpoint(JobFixture f, Action signal, HerdrPlacement? herdrPlacement = null)
