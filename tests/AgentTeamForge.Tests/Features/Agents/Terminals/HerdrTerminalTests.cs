@@ -748,6 +748,36 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public void Follow_up_admitted_between_ownership_check_and_cancel_is_refused_by_the_session_fence()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var (_, catalog, _) = RecordlessHerdr(state.Path);
+        var parent = f.Submit("stuck");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        f.Store.RecordSession(run, "native-race");
+        Assert.True(f.Store.EndUnsuccessfully(run, JobStatus.NeedsReconciliation, "interactive_agent_exited"));
+        f.Store.ReconcileStoppedJob(parent.JobId); // legacy row: reconciled but unfenced
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        JobResult? raced = null;
+
+        var result = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
+            stopReconciled: job =>
+            {
+                var ok = dispatcher.StopReconciled(job);
+                raced = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
+                    .Execute(new FollowUpRequest(parent.JobId, "late", "late-key"));
+                return ok;
+            },
+            forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership).Execute(parent.JobId);
+
+        Assert.Equal("stopped", result.Outcome);
+        Assert.Equal(JobErrors.ParentNotReady, raced!.Error);
+        Assert.DoesNotContain(f.Store.GetSessionJobs(parent.JobId), id => id != parent.JobId);
+    }
+
+    [Fact]
     public void Stop_agent_cancels_reconciled_job_without_ownership_record()
     {
         using var state = new TempStateDir();

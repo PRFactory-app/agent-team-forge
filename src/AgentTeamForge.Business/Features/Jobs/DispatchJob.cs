@@ -197,7 +197,7 @@ public sealed class DispatchJob : IDisposable
                 var peers = store.GetSessionJobs(job.JobId);
                 // Records are deleted only after ATF closed the pane or saw the agent exit, so with
                 // none left nothing owned remains to stop, unless a peer attempt is still launching.
-                if (!herdr.HasOwnedJobs(peers)) { return !peers.Any(IsInFlight); }
+                if (!herdr.HasOwnedJobs(peers)) { return ReconciledSession.TryClaimIdle(store, job.JobId, _running.ContainsKey); }
                 return herdr.StopOwnedJobs(peers);
             }
         }
@@ -233,9 +233,6 @@ public sealed class DispatchJob : IDisposable
             Thread.Sleep(50);
         }
     }
-
-    bool IsInFlight(string jobId) => _running.ContainsKey(jobId)
-        || store.GetJob(jobId)?.Status is JobStatus.Queued or JobStatus.Running;
 
     public void ForgetReconciledOwnership(JobRecord job)
     {
