@@ -95,6 +95,31 @@ public sealed class PruneJobTests
         Assert.Null(f.Store.GetJob(job.JobId));
     }
 
+    [Fact]
+    public void Existing_worktree_keeps_job_row_for_later_live_agent_checks()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("worktree-row");
+        Set(f, job.JobId, "completed", 40);
+        var path = Path.Combine(f.Store.WorktreeRoot, job.JobId);
+        Directory.CreateDirectory(path);
+        using (var connection = new SqliteConnection($"Data Source={f.DatabasePath};Pooling=False"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE jobs SET worktree_path=$path WHERE job_id=$id";
+            command.Parameters.AddWithValue("$path", path);
+            command.Parameters.AddWithValue("$id", job.JobId);
+            command.ExecuteNonQuery();
+        }
+        var prune = new PruneJob(new PruneJobs(f.Database), Path.GetDirectoryName(f.DatabasePath)!);
+
+        Assert.Equal(0, prune.Execute(30, false));
+        Assert.NotNull(f.Store.GetJob(job.JobId));
+        Directory.Delete(path);
+        Assert.Equal(1, prune.Execute(30, false));
+    }
+
     static void Set(JobFixture f, string id, string status, int daysOld, string? session = null)
     {
         using var connection = new SqliteConnection($"Data Source={f.DatabasePath};Pooling=False");

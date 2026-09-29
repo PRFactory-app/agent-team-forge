@@ -212,5 +212,11 @@ public sealed class BaseWipHandoverTests
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             handover.CleanupReleasedAsync(workspace, () => true, TimeSpan.Zero));
         Assert.Equal("SECRET=1", File.ReadAllText(Path.Combine(workspace.LeadPath, ".env")));
+
+        h.Teams.Finish(ChainServer.Url, item.Id, "completed");
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        Assert.Single(h.Logs, line => line.Contains("cleanup refused:", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.Logs, line => line.Contains("deferred (InvalidOperationException)", StringComparison.Ordinal));
     }
 }

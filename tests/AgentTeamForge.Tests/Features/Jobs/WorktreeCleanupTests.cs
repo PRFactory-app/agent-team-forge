@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
@@ -144,6 +145,85 @@ public sealed class WorktreeCleanupTests
         Assert.Equal(("kept", "not_merged"), (auto.Outcome, auto.Reason));
 
         Assert.Equal("removed", (await e.Cleanup.RemoveAsync(path, false, false, false, TestContext.Current.CancellationToken)).Outcome);
+    }
+
+    [Fact]
+    public async Task Traversal_and_symlink_paths_are_rejected()
+    {
+        using var e = new Env();
+        var path = e.Make("job_path");
+        var link = e.Path_("job_link");
+        Directory.CreateSymbolicLink(link, path);
+        var outside = Path.Combine(Path.GetDirectoryName(e.Origin)!, "job_outside");
+        Assert.True(JobWorktree.Prepare(e.Clone, outside, "atf/job-job_outside", Git(e.Clone, "rev-parse", "HEAD")));
+
+        Assert.Equal("not_owned_path", (await e.Cleanup.RemoveAsync(
+            outside, true, false, false, TestContext.Current.CancellationToken)).Reason);
+        Assert.Equal("not_owned_path", (await e.Cleanup.RemoveAsync(
+            link, true, false, false, TestContext.Current.CancellationToken)).Reason);
+        Assert.True(Directory.Exists(path));
+        Assert.True(Directory.Exists(outside));
+    }
+
+    [Fact]
+    public async Task Switched_branch_does_not_hide_unpushed_job_branch_tip()
+    {
+        using var e = new Env();
+        var path = e.Make("job_switched");
+        Commit(path, "local.txt", "unpublished");
+        var baseSha = Git(e.Clone, "rev-parse", "HEAD");
+        Git(path, "switch", "-c", "feature", baseSha);
+
+        var result = await e.Cleanup.RemoveAsync(path, true, false, false, TestContext.Current.CancellationToken);
+
+        Assert.Equal("unmerged_commits", result.Reason);
+        Assert.True(Directory.Exists(path));
+    }
+
+    [Fact]
+    public async Task Fenced_or_live_terminal_job_keeps_its_worktree()
+    {
+        using var e = new Env();
+        var backend = new IdleBackend();
+        e.Cleanup = new WorktreeCleanup(e.Fixture.Store,
+            new BackendCatalog().Register(BackendCatalog.Fake, () => backend));
+        var job = e.Fixture.Accept().Execute(new SubmitJobRequest("live", "work", null, false)
+        { Cwd = e.Clone, Worktree = true }).Job!;
+        Assert.True(JobWorktree.Prepare(e.Fixture.Store.GetJob(job.JobId)!));
+        var claim = e.Fixture.Store.BeginNextAttempt()!;
+        var run = new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        e.Fixture.Store.RecordSession(run, "native-1");
+        e.Fixture.Store.Complete(run, "done");
+
+        e.Fixture.Store.FenceSession(job.JobId);
+        Assert.Equal("job_active", (await e.Cleanup.RemoveAsync(job.WorktreePath!, false, false, false,
+            TestContext.Current.CancellationToken)).Reason);
+        e.Fixture.Store.ReconcileStoppedJob(job.JobId);
+        Assert.Equal("agent_live", (await e.Cleanup.RemoveAsync(job.WorktreePath!, false, false, false,
+            TestContext.Current.CancellationToken)).Reason);
+        Assert.True(Directory.Exists(job.WorktreePath));
+    }
+
+    [Fact]
+    public async Task Moved_job_branch_is_not_deleted_after_worktree_removal()
+    {
+        using var e = new Env();
+        var path = e.Make("job_cas");
+        var moved = Commit(e.Clone, "later.txt", "new tip");
+        e.Cleanup.BeforeBranchDelete = (repo, branch, _) => Git(repo, "update-ref", branch, moved);
+
+        var result = await e.Cleanup.RemoveAsync(path, false, false, false, TestContext.Current.CancellationToken);
+
+        Assert.Equal("removed", result.Outcome);
+        Assert.Equal(moved, Git(e.Clone, "rev-parse", "refs/heads/atf/job-job_cas"));
+    }
+
+    sealed class IdleBackend : IJobBackend, IInteractiveSessionStop
+    {
+        public IBackendRun Start(BackendRequest request) => throw new InvalidOperationException("not dispatched");
+        public bool HasIdleSession(string sessionId) => sessionId == "native-1";
+        public bool StopIdleSession(string sessionId) => throw new InvalidOperationException("not stopped");
+        public void StopAllIdleSessions() { }
     }
 
     static string Commit(string cwd, string file, string content)

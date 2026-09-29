@@ -10,6 +10,7 @@ public sealed record WorktreeCleanupResult(string Path, string? JobId, string Ou
 /// <summary>Removes a finished job worktree only when nothing of value would be lost. Never deletes directories itself.</summary>
 public sealed class WorktreeCleanup(JobStore store, BackendCatalog backends)
 {
+    internal Action<string, string, string>? BeforeBranchDelete { get; set; }
     static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
     static readonly string[] Disposable =
     [
@@ -76,6 +77,7 @@ public sealed class WorktreeCleanup(JobStore store, BackendCatalog backends)
 
         if (!string.IsNullOrEmpty(tip))
         {
+            BeforeBranchDelete?.Invoke(repo, branch, tip);
             var list = await JobWorktree.GitAsync(repo, Timeout, ct, "worktree", "list", "--porcelain");
             if (list is not null && !list.Split('\n').Any(l => l.Trim() == $"branch {branch}"))
             {
