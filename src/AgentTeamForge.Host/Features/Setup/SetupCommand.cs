@@ -350,6 +350,7 @@ public static class SetupCommand
             service.ArgumentList.Add("start");
             service.ArgumentList.Add("agentteamforge.service");
             DaemonEnvironment.Scrub(service.Environment);
+            SystemdUser.EnsureRuntimeDir(service.Environment);
             using var starter = NonInteractiveProcess.Start(service) ?? throw new InvalidOperationException("systemctl launch failed");
             var output = starter.StandardOutput.ReadToEndAsync();
             var error = starter.StandardError.ReadToEndAsync();
@@ -365,10 +366,7 @@ public static class SetupCommand
         using var input = File.OpenHandle("/dev/null", FileMode.Open, FileAccess.Read);
         using var log = new FileStream(Path.Combine(state.Path, "daemon.log"),
             PrivateFiles.Options(FileMode.Append, FileAccess.Write, FileShare.ReadWrite));
-        // A scope execs in place (same PID, fds, env) but leaves the caller's cgroup, so its
-        // teardown cannot SIGKILL the daemon. Test profiles never create scopes.
-        var scope = !testProfile && SystemdUser.ScopeAvailable(Environment.GetEnvironmentVariable, FindExecutable);
-        var info = new ProcessStartInfo(scope ? "systemd-run" : binary)
+        var info = new ProcessStartInfo(binary)
         {
             UseShellExecute = false,
             StartDetached = true,
@@ -377,15 +375,21 @@ public static class SetupCommand
             StandardErrorHandle = log.SafeFileHandle,
             InheritedHandles = [],
         };
+        DaemonEnvironment.Scrub(info.Environment);
+        SystemdUser.EnsureRuntimeDir(info.Environment);
+        // A scope execs in place (same PID, fds, env) but leaves the caller's cgroup, so its
+        // teardown cannot SIGKILL the daemon. Test profiles never create scopes.
+        var scope = !testProfile && SystemdUser.ScopeAvailable(
+            name => info.Environment.TryGetValue(name, out var value) ? value : null, FindExecutable);
         if (scope)
         {
+            info.FileName = "systemd-run";
             foreach (var arg in SystemdUser.ScopePrefix(state.Path)) { info.ArgumentList.Add(arg); }
             info.ArgumentList.Add(binary);
         }
         info.ArgumentList.Add("daemon");
         info.ArgumentList.Add("--state-dir");
         info.ArgumentList.Add(state.Path);
-        DaemonEnvironment.Scrub(info.Environment);
         using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
         return await WaitForReadyAsync(state, quiet, process);
     }
@@ -548,7 +552,7 @@ public static class SetupCommand
         try
         {
             return File.Exists(Path.Combine(state.Path, "daemon.log")) && LiveFiles.ReadLines(Path.Combine(state.Path, "daemon.log"))
-                .Any(line => line == $"[atf-daemon] ready pid={pid}");
+                .Any(line => line.StartsWith("[atf-daemon] ", StringComparison.Ordinal) && line.EndsWith($" ready pid={pid}", StringComparison.Ordinal));
         }
         catch (IOException) { return false; }
     }

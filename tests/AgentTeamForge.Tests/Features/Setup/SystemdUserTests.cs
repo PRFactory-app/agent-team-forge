@@ -34,6 +34,31 @@ public sealed class SystemdUserTests
     }
 
     [Fact]
+    public void EnsureRuntimeDir_FillsOnlyAMissingValueFromALiveUserManager()
+    {
+        if (!OperatingSystem.IsLinux()) { return; }
+        using var temp = new TempStateDir();
+        var runtime = temp.File("run");
+        var env = new Dictionary<string, string?>();
+
+        SystemdUser.EnsureRuntimeDir(env, runtime);
+        Assert.False(env.ContainsKey("XDG_RUNTIME_DIR"));
+
+        Directory.CreateDirectory(Path.Combine(runtime, "systemd"));
+        File.WriteAllText(Path.Combine(runtime, "bus"), "");
+        SystemdUser.EnsureRuntimeDir(env, runtime);
+        Assert.Equal(runtime, env["XDG_RUNTIME_DIR"]);
+
+        env["XDG_RUNTIME_DIR"] = "/elsewhere";
+        SystemdUser.EnsureRuntimeDir(env, runtime);
+        Assert.Equal("/elsewhere", env["XDG_RUNTIME_DIR"]);
+
+        env["XDG_RUNTIME_DIR"] = "";
+        SystemdUser.EnsureRuntimeDir(env, runtime);
+        Assert.Equal(runtime, env["XDG_RUNTIME_DIR"]);
+    }
+
+    [Fact]
     public void ParseSessionEnvironment_KeepsOnlySessionKeysWithPlainValues()
     {
         var parsed = SystemdUser.ParseSessionEnvironment(

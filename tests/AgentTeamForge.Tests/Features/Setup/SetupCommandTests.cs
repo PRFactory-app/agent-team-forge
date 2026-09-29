@@ -548,7 +548,7 @@ public sealed class SetupCommandTests
             var pid = DaemonLock.ReadOwnerPid(state.LockFile);
             Assert.True(pid > 0);
             Assert.Single(File.ReadLines(Path.Combine(rig.StateDir, "daemon.log")),
-                line => line.StartsWith("[atf-daemon] ready pid=", StringComparison.Ordinal));
+                line => line.StartsWith("[atf-daemon] ", StringComparison.Ordinal) && line.Contains(" ready pid=", StringComparison.Ordinal));
             Assert.All(bridges, bridge => Assert.False(bridge.Process.HasExited));
 
             foreach (var (process, client) in bridges)

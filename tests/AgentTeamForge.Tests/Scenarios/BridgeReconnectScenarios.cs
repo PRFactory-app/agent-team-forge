@@ -105,7 +105,7 @@ public sealed class BridgeReconnectScenarios
             var sessions = await Task.WhenAll(bridges.Select(bridge => SpikeRig.CallAsync(bridge.Client, "session_info", [])));
             Assert.NotEqual(sessions[0].Session!.SessionId, sessions[1].Session!.SessionId);
             var log = File.ReadAllLines(Path.Combine(rig.StateDir, "daemon.log"));
-            Assert.Single(log, line => line.StartsWith("[atf-daemon] ready pid=", StringComparison.Ordinal));
+            Assert.Single(log, line => line.StartsWith("[atf-daemon] ", StringComparison.Ordinal) && line.Contains(" ready pid=", StringComparison.Ordinal));
         }
         finally
         {
