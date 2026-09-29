@@ -192,6 +192,14 @@ public sealed class ModelSelectionTests
         map.Change("codex", "high", "gpt-6.1-sol", "high");
         Assert.True(row().Custom);
         Assert.Equal("gpt-6.1-sol", row().Model);
+
+        map.Change("codex", "high", "gpt-6.1-sol", "high");
+        Assert.True(row().Custom);
+        Assert.Equal("gpt-6.1-sol", row().Model);
+
+        map.Change("codex", "high", "gpt-6-sol", "high");
+        Assert.False(row().Custom);
+        Assert.Equal("gpt-6-sol", row().Model);
     }
 
     [Fact]
