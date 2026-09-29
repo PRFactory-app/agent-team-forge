@@ -211,7 +211,7 @@ public static class DaemonCommand
         var interactiveLaunch = launchMode is "herdr" or "terminal" or "wt";
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound, interactiveLaunch), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning, reconcileIdleInteractive: dispatcher.ReconcileIdleInteractive, hasIdleInteractive: dispatcher.HasIdleInteractive, settleCompletedInteractive: dispatcher.SettleCompletedInteractive),
             new ListJobs(store, profile.Bound, jobLogs, interactiveLaunch),
-            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning, dispatcher.ReleaseNative, dispatcher.HasNoOwnedAgent), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning, dispatcher.ReleaseNative), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
             new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
             (token, _, _) => PRFactoryInteraction.RequestFromManagedChild(externalTeam.ManagedChildName(token)),
             externalMembers, new GetJob(store, connectorPrincipal), dispatcher.TakeNativeClaude,
@@ -250,7 +250,7 @@ public static class DaemonCommand
         var pruning = profile.AutoPrune ? RunPruneAsync(prune, worktreeCleanup, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
         var connectorStop = new StopJob(store, connectorPrincipal,
             dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership,
-            releaseNative: dispatcher.ReleaseNative, hasNoOwnedAgent: dispatcher.HasNoOwnedAgent);
+            releaseNative: dispatcher.ReleaseNative);
         var connectorStopAgent = new StopAgent(store, connectorPrincipal, backends);
         // The daemon is the sole writer of team workspaces; the singleton serializes Git mutations.
         var connectorWorkspaceStore = new PRFactoryWorkspaceStore(database);

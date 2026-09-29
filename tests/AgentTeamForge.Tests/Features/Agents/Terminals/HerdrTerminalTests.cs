@@ -706,7 +706,7 @@ public class HerdrTerminalTests
         using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
 
         var result = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
-            stopReconciled: dispatcher.StopReconciled, forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership, hasNoOwnedAgent: dispatcher.HasNoOwnedAgent).Execute(job.JobId);
+            stopReconciled: dispatcher.StopReconciled, forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership).Execute(job.JobId);
 
         Assert.Equal("stopped", result.Outcome);
         var stopped = f.Store.GetJob(job.JobId)!;
@@ -741,14 +741,14 @@ public class HerdrTerminalTests
         }
 
         var result = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
-            stopReconciled: dispatcher.StopReconciled, forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership, hasNoOwnedAgent: dispatcher.HasNoOwnedAgent).Execute(parent.JobId);
+            stopReconciled: dispatcher.StopReconciled, forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership).Execute(parent.JobId);
 
         Assert.Equal(JobErrors.OwnershipNotProven, result.Error);
         Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(parent.JobId)!.Status);
     }
 
     [Fact]
-    public void Follow_up_admitted_between_ownership_check_and_cancel_keeps_the_job_uncancelled()
+    public async Task Follow_up_admitted_after_the_record_vanished_keeps_the_job_uncancelled()
     {
         using var state = new TempStateDir();
         using var f = new JobFixture();
@@ -759,18 +759,25 @@ public class HerdrTerminalTests
         f.Store.RecordSession(run, "native-race");
         Assert.True(f.Store.EndUnsuccessfully(run, JobStatus.NeedsReconciliation, "interactive_agent_exited"));
         f.Store.ReconcileStoppedJob(parent.JobId); // legacy row: reconciled but unfenced
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null,
+            Path.Combine(state.Path, "herdr", "atftest.bootstrap"))
+        { JobId = parent.JobId };
+        Directory.CreateDirectory(Path.GetDirectoryName(launch.BootstrapPath)!);
+        HerdrOwnedSessions.Save(launch, await Terminal(new FakeHerdr()).StartSessionAsync(CancellationToken.None));
         using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
         JobResult? raced = null;
 
         var result = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
             stopReconciled: job =>
             {
+                // Teardown deletes the record after the stop began but before StopReconciled looks.
+                File.Delete(HerdrOwnedSessions.PathFor(launch));
                 var ok = dispatcher.StopReconciled(job);
                 raced = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
                     .Execute(new FollowUpRequest(parent.JobId, "late", "late-key"));
                 return ok;
             },
-            forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership, hasNoOwnedAgent: dispatcher.HasNoOwnedAgent).Execute(parent.JobId);
+            forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership).Execute(parent.JobId);
 
         Assert.Null(raced!.Error);
         Assert.Equal(JobErrors.OwnershipNotProven, result.Error);
@@ -800,7 +807,7 @@ public class HerdrTerminalTests
         using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
 
         var result = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
-            stopReconciled: dispatcher.StopReconciled, forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership, hasNoOwnedAgent: dispatcher.HasNoOwnedAgent).Execute(a.JobId);
+            stopReconciled: dispatcher.StopReconciled, forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership).Execute(a.JobId);
 
         Assert.Equal(JobErrors.OwnershipNotProven, result.Error);
         f.Store.ReconcileStoppedJob(b.JobId);
@@ -831,7 +838,7 @@ public class HerdrTerminalTests
         using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
 
         var result = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning, stopReconciled: dispatcher.StopReconciled,
-            forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership, hasNoOwnedAgent: dispatcher.HasNoOwnedAgent).Execute(job.JobId);
+            forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership).Execute(job.JobId);
 
         Assert.NotNull(result.Error);
         Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(job.JobId)!.Status);
@@ -864,7 +871,7 @@ public class HerdrTerminalTests
         using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
 
         var result = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning, stopReconciled: dispatcher.StopReconciled,
-            forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership, hasNoOwnedAgent: dispatcher.HasNoOwnedAgent).Execute(parent.JobId);
+            forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership).Execute(parent.JobId);
 
         Assert.Equal("stopped", result.Outcome);
         Assert.Equal(JobStatus.Cancelled, f.Store.GetJob(parent.JobId)!.Status);

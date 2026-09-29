@@ -185,13 +185,16 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
-    /// <summary>True for a Herdr job whose ownership records are all gone, so a stop has nothing left to close.</summary>
-    public bool HasNoOwnedAgent(JobRecord job) =>
-        backends.Resolve(job.Backend) is HerdrInteractiveBackend herdr && !herdr.HasOwnedJobs(store.GetSessionJobs(job.JobId));
-
     /// <summary>Stops a quarantined agent only through verified backend ownership.</summary>
-    public bool StopReconciled(JobRecord job)
+    public ReconcileStop StopReconciled(JobRecord job)
     {
+        var stopped = StopReconciledCore(job, out var noRecord);
+        return !stopped ? ReconcileStop.Refused : noRecord ? ReconcileStop.NoRecord : ReconcileStop.Stopped;
+    }
+
+    bool StopReconciledCore(JobRecord job, out bool noRecord)
+    {
+        noRecord = false;
         if (job.Status != JobStatus.NeedsReconciliation) { return false; }
         var backend = backends.Resolve(job.Backend);
         if (backend is HerdrInteractiveBackend herdr)
@@ -201,7 +204,7 @@ public sealed class DispatchJob : IDisposable
                 var peers = store.GetSessionJobs(job.JobId);
                 // Records are deleted only after ATF closed the pane or saw the agent exit, so with
                 // none left nothing owned remains to stop. A launching peer is refused by the cancel itself.
-                if (!herdr.HasOwnedJobs(peers)) { return true; }
+                if (!herdr.HasOwnedJobs(peers)) { noRecord = true; return true; }
                 return herdr.StopOwnedJobs(peers);
             }
         }
