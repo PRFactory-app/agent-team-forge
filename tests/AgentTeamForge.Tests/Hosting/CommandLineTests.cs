@@ -43,6 +43,9 @@ public sealed class CommandLineTests
     [InlineData("setup --dry-run", "--dry-run")]
     [InlineData("uninstall --purge -f", "-f")]
     [InlineData("prfactory disconnect --yes", "--yes")]
+    [InlineData("uninstall --purge typo", "typo")]
+    [InlineData("worktrees prune --force typo --job ID", "typo")]
+    [InlineData("setup --apply typo --mode headless", "typo")]
     public void Unknown_arguments_fail_with_64_naming_the_token(string line, string token)
     {
         var (exit, stdout, stderr) = Run(line);

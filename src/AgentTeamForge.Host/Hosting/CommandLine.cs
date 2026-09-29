@@ -3,21 +3,22 @@ namespace AgentTeamForge.Host.Hosting;
 internal static class CommandLine
 {
     // Options null = internal command (spawned by ATF with fixed args): help only, no validation.
+    // A "+" prefix marks a presence-only flag: a bare word after it is a stray argument, not its value.
     static readonly (string Command, string Usage, string[]? Options)[] Commands =
     [
         ("setup", "setup [--mode headless|herdr|terminal|wt] [--web-port PORT] [--autostart[=off]] [--state-dir DIR] [--check|--apply] [--force]",
-            ["mode", "web-port", "autostart", "state-dir", "check", "apply", "force"]),
+            ["mode", "web-port", "autostart", "state-dir", "+check", "+apply", "+force"]),
         ("doctor", "doctor [--state-dir DIR]", ["state-dir"]),
         ("start", "start [--state-dir DIR]", ["state-dir"]),
         ("stop", "stop [--state-dir DIR]", ["state-dir"]),
-        ("web", "web [--open] [--rotate-token] [--state-dir DIR]", ["open", "rotate-token", "state-dir", "port"]),
-        ("uninstall", "uninstall [--purge] [--force] [--state-dir DIR]", ["purge", "force", "state-dir", "teardown-only"]),
+        ("web", "web [--open] [--rotate-token] [--state-dir DIR]", ["+open", "+rotate-token", "state-dir", "port"]),
+        ("uninstall", "uninstall [--purge] [--force] [--state-dir DIR]", ["+purge", "+force", "state-dir", "+teardown-only"]),
         ("prfactory connect", "prfactory connect --url HTTPS_URL [--repo ID=DIR]... [--external ID:MEMBER]... [--token-scope tenant-wide|repository] [--repo-less true|false] [--state-dir DIR] (token on stdin)",
             ["url", "repo", "external", "token", "token-scope", "repo-less", "state-dir"]),
         ("prfactory disconnect", "prfactory disconnect [--state-dir DIR]", ["state-dir"]),
         ("prfactory status", "prfactory status [--state-dir DIR]", ["state-dir"]),
-        ("worktrees prune", "worktrees prune [--job ID] [--dry-run] [--force (needs --job)] [--state-dir DIR]", ["job", "dry-run", "force", "state-dir"]),
-        ("prune", "prune [--older-than 30d] [--dry-run] [--state-dir DIR]", ["older-than", "dry-run", "state-dir"]),
+        ("worktrees prune", "worktrees prune [--job ID] [--dry-run] [--force (needs --job)] [--state-dir DIR]", ["job", "+dry-run", "+force", "state-dir"]),
+        ("prune", "prune [--older-than 30d] [--dry-run] [--state-dir DIR]", ["older-than", "+dry-run", "state-dir"]),
         ("init", "init --state-dir DIR [--test-profile] [--queue-limit N] [--max-runtime-seconds N] [--backends LIST]", null),
         ("daemon", "daemon --state-dir DIR", null),
         ("mcp", "mcp --state-dir DIR [--managed-context FILE]", null),
@@ -85,11 +86,12 @@ internal static class CommandLine
                     name = name[..equals];
                 }
 
-                if (!entry.Options.Contains(name))
+                var isFlag = entry.Options.Contains("+" + name);
+                if (!isFlag && !entry.Options.Contains(name))
                 {
                     error = $"unknown option --{name}";
                 }
-                else if (equals < 0 && i + 1 < rest.Length && !rest[i + 1].StartsWith('-'))
+                else if (equals < 0 && !isFlag && i + 1 < rest.Length && !rest[i + 1].StartsWith('-'))
                 {
                     i++;
                 }
