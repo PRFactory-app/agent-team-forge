@@ -227,6 +227,13 @@ public static class DaemonCommand
 
         using var lifetime = new CancellationTokenSource();
         using var sigterm = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; Log("stopping: SIGTERM"); lifetime.Cancel(); });
+        // Uncaught SIGHUP/SIGUSR1/SIGUSR2/SIGALRM kill a detached daemon silently; log and ignore them (raw numbers, Linux only).
+        PosixSignalRegistration? Ignore(PosixSignal signal, string name) => OperatingSystem.IsWindows() ? null
+            : PosixSignalRegistration.Create(signal, context => { context.Cancel = true; Log($"received {name}; ignored"); });
+        using var sighup = Ignore(PosixSignal.SIGHUP, "SIGHUP");
+        using var sigusr1 = !OperatingSystem.IsLinux() ? null : Ignore((PosixSignal)10, "SIGUSR1");
+        using var sigusr2 = !OperatingSystem.IsLinux() ? null : Ignore((PosixSignal)12, "SIGUSR2");
+        using var sigalrm = !OperatingSystem.IsLinux() ? null : Ignore((PosixSignal)14, "SIGALRM");
         using var sigint = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGINT, context => { context.Cancel = true; Log("stopping: SIGINT"); lifetime.Cancel(); });
 
         using var listener = OperatingSystem.IsWindows() ? null : server.Bind();

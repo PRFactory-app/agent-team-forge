@@ -321,6 +321,10 @@ public static class SetupCommand
 
         var binary = Path.GetFullPath(executablePath ?? Environment.ProcessPath
             ?? throw new InvalidOperationException("Executable path unavailable"));
+        if (!profile.TestProfile)
+        {
+            binary = ClientSetup.CurrentRelease(binary, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        }
         try
         {
             return OperatingSystem.IsWindows()
