@@ -168,7 +168,7 @@ public sealed class ModelSelectionTests
         Assert.Equal(("gpt-6-sol", "high"), ModelSelection.Resolve("codex", "high", null, OldOnly));
         Assert.Equal(("gpt-6-sol", "medium"), ModelSelection.Resolve("pi", "medium-fast", null, OldOnly));
         Assert.Equal(("gpt-6.1-sol", "high"), ModelSelection.Resolve("codex", "high", null, AllModels));
-        Assert.Equal(("gpt-6.1-sol", "high"), ModelSelection.Resolve("codex", "high", null, _ => []));
+        Assert.Equal(("gpt-6-sol", "high"), ModelSelection.Resolve("codex", "high", null, _ => []));
 
         using var state = new TempStateDir();
         File.WriteAllText(Path.Combine(state.Path, "tier-map.json"),

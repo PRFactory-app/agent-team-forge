@@ -36,13 +36,18 @@ public static class ModelSelection
         : backend is "codex" or "pi" && Tiers.TryGetValue(tier, out var value) ? value
         : throw new ArgumentException("Unknown backend or tier");
 
-    /// <summary>Built-in default for a tier: the first candidate the catalog lists (the first one if the catalog is unknown).</summary>
+    /// <summary>Built-in default for a tier: the first candidate the catalog lists (the known-good last one if the catalog is unknown).</summary>
     public static (string Model, string Effort) DefaultTier(string backend, string tier, IReadOnlyCollection<string> available)
     {
         var (model, effort) = DefaultTier(backend, tier);
-        if (available.Count == 0 || !IsSolTier(backend, tier))
+        if (!IsSolTier(backend, tier))
         {
             return (model, effort);
+        }
+
+        if (available.Count == 0)
+        {
+            return (SolCandidates[^1], effort);
         }
 
         var pick = SolCandidates.FirstOrDefault(candidate => backend == "pi"
