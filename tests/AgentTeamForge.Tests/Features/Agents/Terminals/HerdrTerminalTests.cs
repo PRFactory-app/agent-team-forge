@@ -748,7 +748,7 @@ public class HerdrTerminalTests
     }
 
     [Fact]
-    public void Follow_up_admitted_between_ownership_check_and_cancel_is_refused_by_the_session_fence()
+    public void Follow_up_admitted_between_ownership_check_and_cancel_keeps_the_job_uncancelled()
     {
         using var state = new TempStateDir();
         using var f = new JobFixture();
@@ -772,9 +772,9 @@ public class HerdrTerminalTests
             },
             forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership).Execute(parent.JobId);
 
-        Assert.Equal("stopped", result.Outcome);
-        Assert.Equal(JobErrors.ParentNotReady, raced!.Error);
-        Assert.DoesNotContain(f.Store.GetSessionJobs(parent.JobId), id => id != parent.JobId);
+        Assert.Null(raced!.Error);
+        Assert.Equal(JobErrors.OwnershipNotProven, result.Error);
+        Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(parent.JobId)!.Status);
     }
 
     [Fact]
@@ -811,7 +811,7 @@ public class HerdrTerminalTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void Failed_cancel_write_releases_only_a_fence_the_stop_acquired(bool fencedBefore)
+    public void Failed_cancel_transaction_leaves_the_fence_and_status_untouched(bool fencedBefore)
     {
         using var state = new TempStateDir();
         using var f = new JobFixture();
@@ -831,7 +831,7 @@ public class HerdrTerminalTests
         using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
 
         var result = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning, stopReconciled: dispatcher.StopReconciled,
-            forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership, releaseStopFence: dispatcher.ReleaseStopFence).Execute(job.JobId);
+            forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership).Execute(job.JobId);
 
         Assert.NotNull(result.Error);
         Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(job.JobId)!.Status);

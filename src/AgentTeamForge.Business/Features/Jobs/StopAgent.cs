@@ -39,15 +39,10 @@ public sealed class StopAgent(JobStore store, BoundPrincipal principal, BackendC
                     {
                         if (job.Status == JobStatus.NeedsReconciliation)
                         {
-                            if (!ReconciledSession.TryClaimIdle(store, job.JobId, out var acquired)) { return JobResult.Fail(JobErrors.ParentNotReady); }
-                            CancelOutcome resolved;
-                            try { resolved = store.CancelReconciled(job.JobId, principal.Principal, principal.Team); }
-                            catch when (acquired)
-                            {
-                                store.ReconcileStoppedJob(job.JobId);
-                                throw;
-                            }
-                            return JobResult.Ok(GetJob.ToView(resolved.Job!), "agent_not_running");
+                            var resolved = store.CancelReconciled(job.JobId, principal.Principal, principal.Team, requireIdlePeers: true);
+                            return resolved.PeerActive
+                                ? JobResult.Fail(JobErrors.ParentNotReady)
+                                : JobResult.Ok(GetJob.ToView(resolved.Job!), "agent_not_running");
                         }
                         return store.IsSessionFenced(job.JobId)
                             ? JobResult.Fail(JobErrors.BackendUnavailable)
