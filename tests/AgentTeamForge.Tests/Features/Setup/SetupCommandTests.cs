@@ -42,6 +42,28 @@ public sealed class SetupCommandTests
     }
 
     [Fact]
+    public void CurrentRelease_MapsOldReleaseImageToCurrent()
+    {
+        using var temp = new TempStateDir();
+        var home = temp.File("home");
+        var root = Path.Combine(home, ".local", "share", "agentteamforge");
+        foreach (var version in new[] { "0.0.6", "0.0.8" })
+        {
+            Directory.CreateDirectory(Path.Combine(root, "releases", version));
+            File.WriteAllText(Path.Combine(root, "releases", version, "atf"), "binary");
+        }
+        var old = Path.Combine(root, "releases", "0.0.6", "atf");
+        var outside = temp.File("elsewhere/atf");
+
+        Assert.Equal(old, ClientSetup.CurrentRelease(old, home));
+
+        Directory.CreateSymbolicLink(Path.Combine(root, "current"), "releases/0.0.8");
+
+        Assert.Equal(Path.Combine(root, "releases", "0.0.8", "atf"), ClientSetup.CurrentRelease(old, home));
+        Assert.Equal(outside, ClientSetup.CurrentRelease(outside, home));
+    }
+
+    [Fact]
     public void SetupRequiresExplicitMode()
     {
         using var temp = new TempStateDir();

@@ -227,6 +227,7 @@ public static class DaemonCommand
 
         using var lifetime = new CancellationTokenSource();
         using var sigterm = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; Log("stopping: SIGTERM"); lifetime.Cancel(); });
+        using var sighup = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGHUP, context => { context.Cancel = true; Log("received SIGHUP; ignored"); });
         using var sigint = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGINT, context => { context.Cancel = true; Log("stopping: SIGINT"); lifetime.Cancel(); });
 
         using var listener = OperatingSystem.IsWindows() ? null : server.Bind();
