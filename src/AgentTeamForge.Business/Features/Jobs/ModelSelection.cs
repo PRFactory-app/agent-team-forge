@@ -11,7 +11,7 @@ public static class ModelSelection
             ["cheapest"] = ("gpt-6-luna", "low"),
             ["low"] = ("gpt-6-luna", "medium"),
             ["medium"] = ("gpt-6-luna", "high"),
-            ["high"] = ("gpt-6-sol", "high"),
+            ["high"] = ("gpt-6.1-sol", "high"),
             ["xhigh"] = ("gpt-6-astra", "xhigh"),
             ["max"] = ("gpt-6-astra", "max"),
         };
@@ -22,13 +22,40 @@ public static class ModelSelection
         ? [.. SharedTierOrder.Take(3), "medium-fast", .. SharedTierOrder.Skip(3)]
         : backend is "codex" or "cursor" or "droid" ? SharedTierOrder : [];
 
+    // Built-in sol tiers fall back to the previous slug until the backend catalog lists the new one.
+    static readonly string[] SolCandidates = ["gpt-6.1-sol", "gpt-6-sol"];
+
+    static bool IsSolTier(string backend, string tier) =>
+        backend == "pi" && tier == "medium-fast" || backend is "codex" or "pi" && tier == "high";
+
     public static (string Model, string Effort) DefaultTier(string backend, string tier) =>
-        backend == "pi" && tier == "medium-fast" ? ("gpt-6-sol", "medium")
+        backend == "pi" && tier == "medium-fast" ? ("gpt-6.1-sol", "medium")
         : backend == "cursor" && SharedTierOrder.Contains(tier) ? ("auto", "none")
         : backend == "droid" && Array.IndexOf(SharedTierOrder, tier) is var index and >= 0
             ? ("claude-opus-5", DroidEfforts[index])
         : backend is "codex" or "pi" && Tiers.TryGetValue(tier, out var value) ? value
         : throw new ArgumentException("Unknown backend or tier");
+
+    /// <summary>Built-in default for a tier: the first candidate the catalog lists (the known-good last one if the catalog is unknown).</summary>
+    public static (string Model, string Effort) DefaultTier(string backend, string tier, IReadOnlyCollection<string> available)
+    {
+        var (model, effort) = DefaultTier(backend, tier);
+        if (!IsSolTier(backend, tier))
+        {
+            return (model, effort);
+        }
+
+        if (available.Count == 0)
+        {
+            return (SolCandidates[^1], effort);
+        }
+
+        var pick = SolCandidates.FirstOrDefault(candidate => backend == "pi"
+            ? available.Any(name => name.Split('/', 2)[^1] == candidate)
+            : available.Contains(candidate));
+        return (pick ?? model, effort);
+    }
+
     static readonly Dictionary<string, string> ClaudeModelMap = new(StringComparer.Ordinal)
     {
         ["opus"] = "opus",
@@ -90,11 +117,11 @@ public static class ModelSelection
             throw new ArgumentException("Tier 'high-fast' was removed from pi; use 'high' instead.");
         }
 
+        var available = backend == "droid" ? [] : (discover ?? DefaultDiscovery.GetModels)(backend);
         var tier = TierNames(backend).Contains(key, StringComparer.OrdinalIgnoreCase)
-            ? tierMap?.Effective(backend, key.ToLowerInvariant()) ?? DefaultTier(backend, key.ToLowerInvariant())
+            ? tierMap?.Override(backend, key.ToLowerInvariant()) ?? DefaultTier(backend, key.ToLowerInvariant(), available)
             : ((string Model, string Effort)?)null;
         var selected = tier?.Model ?? key;
-        var available = backend == "droid" ? [] : (discover ?? DefaultDiscovery.GetModels)(backend);
         var found = available.Count == 0 || backend == "cursor" && selected == "auto" || (backend == "pi"
             ? available.Any(candidate => candidate.Split('/', 2)[^1] == selected.Split('/', 2)[^1])
             : available.Contains(selected));

@@ -50,12 +50,13 @@ public sealed class TierMap
         return [];
     }
 
-    public (string Model, string Effort) Effective(string backend, string tier)
+    /// <summary>The explicit user override for a tier, or null when the built-in default applies.</summary>
+    public (string Model, string Effort)? Override(string backend, string tier)
     {
         lock (_gate)
         {
             var row = _overrides.Find(item => item.Backend == backend && item.Tier == tier);
-            return row is null ? ModelSelection.DefaultTier(backend, tier) : (row.Model, row.Effort);
+            return row is null ? null : (row.Model, row.Effort);
         }
     }
 
@@ -67,7 +68,8 @@ public sealed class TierMap
             {
                 var (defaultModel, defaultEffort) = ModelSelection.DefaultTier(backend, tier);
                 var row = _overrides.Find(item => item.Backend == backend && item.Tier == tier);
-                return new TierSetting(backend, tier, row?.Model ?? defaultModel, row?.Effort ?? defaultEffort,
+                var (activeModel, _) = ModelSelection.DefaultTier(backend, tier, _catalog(backend));
+                return new TierSetting(backend, tier, row?.Model ?? activeModel, row?.Effort ?? defaultEffort,
                     defaultModel, defaultEffort, row is not null);
             }))];
         }
@@ -112,7 +114,8 @@ public sealed class TierMap
             var next = resetAll ? [] : _overrides.Where(row => row.Backend != backend || row.Tier != tier).ToList();
             if (!resetAll && model is not null)
             {
-                var (defaultModel, defaultEffort) = ModelSelection.DefaultTier(backend!, tier!);
+                // Compare with the active built-in default (what the row shows without an override).
+                var (defaultModel, defaultEffort) = ModelSelection.DefaultTier(backend!, tier!, _catalog(backend!));
                 if (model != defaultModel || effort != defaultEffort)
                 {
                     next.Add(new TierOverride(backend!, tier!, model, effort!));
