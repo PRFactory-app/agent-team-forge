@@ -40,9 +40,10 @@ public sealed class StopAgent(JobStore store, BoundPrincipal principal, BackendC
                     Thread.Sleep(250);
                 }
                 job = store.GetJob(jobId)!;
-                if (job.Status == JobStatus.Running)
+                if (job.Status is JobStatus.Running or JobStatus.Queued)
                 {
-                    return JobResult.Fail(JobErrors.InvalidRequest, $"Job {jobId} is still running (its agent turn has not finished or the result is not recorded yet); "
+                    // Queued: a failed native follow-up delivery was reverted while waiting.
+                    return JobResult.Fail(JobErrors.InvalidRequest, $"Job {jobId} is still {(job.Status == JobStatus.Running ? "running (its agent turn has not finished or the result is not recorded yet)" : "in flight (queued again)")}; "
                         + "retry stop_agent in a few seconds, or use stop_job to cancel the turn and close the agent.");
                 }
             }

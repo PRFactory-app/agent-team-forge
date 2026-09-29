@@ -4,6 +4,7 @@ using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.Tests.Support;
+using Microsoft.Data.Sqlite;
 
 namespace AgentTeamForge.Tests.Features.Jobs;
 
@@ -173,6 +174,26 @@ public sealed class StopAgentTests
     }
 
     [Fact]
+    public void Job_reverted_to_queued_during_the_settle_wait_is_refused_without_any_mutation()
+    {
+        var (f, _, jobId) = RunningJob("reverted");
+        using var _ = f;
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
+            .Execute(new FollowUpRequest(jobId, "next", "child") { Defer = true }).Job!;
+        var backend = new OwnedBackend();
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => { RequeueRow(f, jobId); return false; }, TimeSpan.Zero);
+
+        var refused = stop.Execute(jobId);
+
+        Assert.Equal(JobErrors.InvalidRequest, refused.Error);
+        Assert.False(string.IsNullOrEmpty(refused.Detail));
+        Assert.Equal(JobStatus.Queued, f.Store.GetJob(jobId)!.Status);
+        Assert.Equal(JobStatus.Queued, f.Store.GetJob(child.JobId)!.Status);
+        Assert.Null(backend.StoppedSession);
+    }
+
+    [Fact]
     public void Unknown_job_is_not_found_with_detail()
     {
         using var f = new JobFixture();
@@ -180,6 +201,17 @@ public sealed class StopAgentTests
 
         Assert.Equal(JobErrors.NotFound, stopped.Error);
         Assert.False(string.IsNullOrEmpty(stopped.Detail));
+    }
+
+    // Stands in for JobStore.RevertNativeAttempt, which requeues a running row.
+    static void RequeueRow(JobFixture f, string id)
+    {
+        using var connection = new SqliteConnection($"Data Source={f.DatabasePath};Pooling=False");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE jobs SET status='queued' WHERE job_id=$id";
+        command.Parameters.AddWithValue("$id", id);
+        command.ExecuteNonQuery();
     }
 
     sealed class OwnedBackend : IJobBackend, IInteractiveSessionStop
