@@ -203,8 +203,7 @@ public static class DaemonCommand
                 CatalogBackends.Where(backends.Names.Contains)
                     .Select(name => $"{name}={modelDiscovery.CachedModels(name).Count}"))), TaskScheduler.Default);
         }
-        var tierMap = new TierMap(state.Path, modelDiscovery.CachedModels, Log,
-            profile.RealAgents ? modelDiscovery.GetModels : null);
+        var tierMap = new TierMap(state.Path, modelDiscovery.CachedModels, Log);
         var herdrPlacement = herdrTerminal is null ? null : new HerdrPlacement(state.Path, Log);
         Func<string, string?>? checkHerdrSession = herdrTerminal is null ? null : herdrTerminal.CheckExistingSession;
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap,
