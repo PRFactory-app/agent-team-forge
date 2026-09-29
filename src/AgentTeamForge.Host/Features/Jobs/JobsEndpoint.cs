@@ -234,7 +234,11 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     LeadSessionId = request.LeadSessionId,
                     WakeKey = submitWakeKey,
                     WakeGeneration = submitWakeGeneration,
-                }));
+                }))
+                with
+                {
+                    HerdrMode = herdrPlacement is not null,
+                };
             case IpcProtocol.JobFollowUp:
                 var (followUpWakeKey, followUpWakeGeneration) = LeadWake(request);
                 var followed = Accepted(followUp.Execute(new FollowUpRequest(request.JobId ?? string.Empty, request.Instruction ?? string.Empty, request.IdempotencyKey ?? string.Empty)
@@ -249,7 +253,11 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     Effort = request.Effort,
                     WakeKey = followUpWakeKey,
                     WakeGeneration = followUpWakeGeneration,
-                }));
+                }))
+                with
+                {
+                    HerdrMode = herdrPlacement is not null,
+                };
                 if (followed.Ok) { MarkParentWakeRead(request, request.JobId); }
                 return followed;
             case IpcProtocol.JobStop:
