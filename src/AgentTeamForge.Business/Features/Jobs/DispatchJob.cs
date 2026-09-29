@@ -147,13 +147,6 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
-    /// <summary>
-    /// An idle TUI only proves the turn is quiet once this run's prompt is known to have landed:
-    /// before the transcript ack, a resumed agent may still be about to work on it.
-    /// </summary>
-    public bool HasAckedIdleInteractive(JobRecord job)
-        => store.GetRuns(job.JobId) is [.., { Acked: true }] && HasIdleInteractive(job);
-
     /// <summary>An idle TUI can be a turn that finished before the sweep recorded it: record it from the same evidence.</summary>
     public bool SettleCompletedInteractive(JobRecord job)
     {

@@ -122,64 +122,45 @@ public sealed class StopAgentTests
         return (f, run, job.JobId);
     }
 
-    static JobResult StopJobMustNotRun(string _) => throw new InvalidOperationException("stop_job must not be called");
-
     [Fact]
-    public void Running_idle_agent_whose_turn_finished_keeps_its_result_and_closes()
+    public void Running_agent_whose_turn_finished_keeps_its_result_and_closes()
     {
         var (f, run, jobId) = RunningJob("finished");
         using var _ = f;
         var backend = new OwnedBackend();
         var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
-        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => true,
-            _ => { f.Store.Complete(run, "done"); return true; }, StopJobMustNotRun, TimeSpan.Zero);
+        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => { f.Store.Complete(run, "done"); return true; }, TimeSpan.Zero);
 
-        var stopped = stop.Execute(jobId);
-
-        Assert.Equal("agent_stopped", stopped.Outcome);
+        Assert.Equal("agent_stopped", stop.Execute(jobId).Outcome);
         Assert.Equal(JobStatus.Completed, f.Store.GetJob(jobId)!.Status);
         Assert.Equal("native-1", backend.StoppedSession);
     }
 
     [Fact]
-    public void Running_idle_agent_that_completes_during_the_settle_wait_is_not_cancelled()
+    public void Running_agent_that_completes_during_the_settle_wait_is_not_cancelled()
     {
         var (f, run, jobId) = RunningJob("settling");
         using var _ = f;
         var calls = 0;
         var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => new OwnedBackend());
-        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => true,
-            _ => ++calls > 2 && f.Store.Complete(run, "done"), StopJobMustNotRun, TimeSpan.FromSeconds(3));
+        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => ++calls > 2 && f.Store.Complete(run, "done"), TimeSpan.FromSeconds(3));
 
         Assert.Equal("agent_stopped", stop.Execute(jobId).Outcome);
         Assert.Equal(JobStatus.Completed, f.Store.GetJob(jobId)!.Status);
     }
 
-    [Fact]
-    public void Running_idle_agent_without_completion_is_cancelled_and_closed()
-    {
-        var (f, _, jobId) = RunningJob("background-task");
-        using var _ = f;
-        var backend = new OwnedBackend();
-        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
-        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => true, _ => false,
-            new StopJob(f.Store, JobFixture.Operator, _ => { }).Execute, TimeSpan.Zero);
-
-        Assert.Equal("agent_stopped", stop.Execute(jobId).Outcome);
-        Assert.Equal(JobStatus.Cancelled, f.Store.GetJob(jobId)!.Status);
-        Assert.Equal("native-1", backend.StoppedSession);
-    }
-
-    [Fact]
-    public void Running_working_agent_is_refused_with_detail_and_left_running()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Running_agent_that_does_not_settle_is_refused_without_any_mutation(bool completionReportedButUnrecorded)
     {
         var (f, _, jobId) = RunningJob("working");
         using var _ = f;
         var child = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
             .Execute(new FollowUpRequest(jobId, "next", "child") { Defer = true }).Job!;
-        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => new OwnedBackend());
-        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => false, _ => false,
-            StopJobMustNotRun, TimeSpan.Zero);
+        var backend = new OwnedBackend();
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => completionReportedButUnrecorded, TimeSpan.Zero);
 
         var refused = stop.Execute(jobId);
 
@@ -187,70 +168,18 @@ public sealed class StopAgentTests
         Assert.False(string.IsNullOrEmpty(refused.Detail));
         Assert.Equal(JobStatus.Running, f.Store.GetJob(jobId)!.Status);
         Assert.Equal(JobStatus.Queued, f.Store.GetJob(child.JobId)!.Status);
+        Assert.False(f.Store.IsSessionFenced(jobId));
+        Assert.Null(backend.StoppedSession);
     }
 
     [Fact]
-    public void Refusal_after_the_settle_wait_leaves_queued_deferred_children_untouched()
+    public void Unknown_job_is_not_found_with_detail()
     {
-        var (f, _, jobId) = RunningJob("resumes");
-        using var _ = f;
-        var child = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
-            .Execute(new FollowUpRequest(jobId, "next", "child") { Defer = true }).Job!;
-        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => new OwnedBackend());
-        var idleChecks = 0;
-        // Idle before the wait, working again by the final re-check.
-        var resumed = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => ++idleChecks == 1, _ => false, StopJobMustNotRun, TimeSpan.Zero);
-        Assert.Equal(JobErrors.InvalidRequest, resumed.Execute(jobId).Error);
-        Assert.Equal((JobStatus.Running, JobStatus.Queued), (f.Store.GetJob(jobId)!.Status, f.Store.GetJob(child.JobId)!.Status));
+        using var f = new JobFixture();
+        var stopped = new StopAgent(f.Store, JobFixture.Operator, new BackendCatalog()).Execute("job_missing");
 
-        // Completion reported but not yet committed by the run loop.
-        var unrecorded = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => true, _ => true, StopJobMustNotRun, TimeSpan.Zero);
-        Assert.Equal(JobErrors.ParentNotReady, unrecorded.Execute(jobId).Error);
-        Assert.Equal((JobStatus.Running, JobStatus.Queued), (f.Store.GetJob(jobId)!.Status, f.Store.GetJob(child.JobId)!.Status));
-    }
-
-    [Fact]
-    public void Running_turn_of_a_peer_the_lead_cannot_access_is_not_cancelled()
-    {
-        var (f, run, jobId) = RunningJob("other-lead");
-        using var _ = f;
-        Assert.True(f.Store.Complete(run, "done"));
-        var turn = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
-            .Execute(new FollowUpRequest(jobId, "second", "turn-2")).Job!;
-        Assert.Equal(turn.JobId, f.Store.BeginNextAttempt()!.Job.JobId);
-        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => new OwnedBackend());
-        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => true, _ => false, StopJobMustNotRun, TimeSpan.Zero);
-
-        var refused = stop.Execute(jobId, peer => peer != turn.JobId);
-
-        Assert.Equal(JobErrors.InvalidRequest, refused.Error);
-        Assert.False(string.IsNullOrEmpty(refused.Detail));
-        Assert.Equal(JobStatus.Running, f.Store.GetJob(turn.JobId)!.Status);
-    }
-
-    [Fact]
-    public void Claim_gate_is_held_only_for_the_final_recheck_and_cancel()
-    {
-        var (f, _, jobId) = RunningJob("gate");
-        using var _ = f;
-        var held = false;
-        var heldDuringWait = false;
-        var heldDuringCancel = false;
-        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => new OwnedBackend());
-        var stop = new StopAgent(f.Store, JobFixture.Operator, catalog, _ => true,
-            _ => { heldDuringWait |= held; return false; },
-            id => { heldDuringCancel = held; return new StopJob(f.Store, JobFixture.Operator, _ => { }).Execute(id); },
-            TimeSpan.FromMilliseconds(600), () => { held = true; return new Release(() => held = false); });
-
-        Assert.Equal("agent_stopped", stop.Execute(jobId).Outcome);
-        Assert.False(heldDuringWait);
-        Assert.True(heldDuringCancel);
-        Assert.False(held);
-    }
-
-    sealed class Release(Action release) : IDisposable
-    {
-        public void Dispose() => release();
+        Assert.Equal(JobErrors.NotFound, stopped.Error);
+        Assert.False(string.IsNullOrEmpty(stopped.Detail));
     }
 
     sealed class OwnedBackend : IJobBackend, IInteractiveSessionStop

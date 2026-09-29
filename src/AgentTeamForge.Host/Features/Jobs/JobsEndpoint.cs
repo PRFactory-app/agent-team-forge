@@ -258,8 +258,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 return Map(stop.Execute(request.JobId ?? string.Empty, request.Interrupt));
             case IpcProtocol.JobStopAgent:
                 if (stopAgent is null) { return new IpcResponse(false, JobErrors.BackendUnavailable, ErrorDetail: "stop_agent is not available in this daemon."); }
-                var stoppedAgent = stopAgent.Execute(request.JobId ?? string.Empty,
-                    request.LeadSessionId is null || jobStore is null ? null : peerId => jobStore.LeadCanAccess(peerId, request.LeadSessionId, null));
+                var stoppedAgent = stopAgent.Execute(request.JobId ?? string.Empty);
                 if (stoppedAgent.Error is null && stoppedAgent.Job is not null) { MarkWakeRead(request, stoppedAgent.Job.JobId, stoppedAgent.Job.Status); }
                 return Map(stoppedAgent);
             case IpcProtocol.JobRemoveWorktree:
