@@ -244,6 +244,7 @@ public static class DaemonCommand
         dispatcher.LaunchGate = id => store.GetJob(id)?.Principal != connectorPrincipal.Principal;
         var dispatching = dispatcher.RunAsync(lifetime.Token);
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path, claudeMailbox), Log).RunAsync(lifetime.Token);
+        var restoreSweep = herdrTerminal is null ? Task.CompletedTask : RunRestoreSweepAsync(herdrTerminal, state.Path, lifetime.Token);
         var pruning = profile.AutoPrune ? RunPruneAsync(prune, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
         var connectorStop = new StopJob(store, connectorPrincipal,
             dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership,
@@ -345,6 +346,7 @@ public static class DaemonCommand
         }
         await waking;
         await pruning;
+        await restoreSweep;
         await prfactory;
         authority?.Dispose(); // Only after connector ticks have stopped.
         if (webConsole is not null)
@@ -408,6 +410,24 @@ public static class DaemonCommand
                 stderr.Write(value);
                 file.Write(value);
             }
+        }
+    }
+
+    static async Task RunRestoreSweepAsync(HerdrTerminal terminal, string statePath, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                HerdrOwnedSessions.SweepRestored(statePath,
+                    (name, records) => terminal.CloseRestoredPanesAsync(name, records, cancellationToken, Log).GetAwaiter().GetResult(), Log);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                Log($"restore sweep failed: {ex.GetType().Name}");
+            }
+            try { await Task.Delay(TimeSpan.FromSeconds(60), cancellationToken); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
         }
     }
 
