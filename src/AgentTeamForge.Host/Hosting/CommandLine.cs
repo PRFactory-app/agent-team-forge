@@ -91,6 +91,10 @@ internal static class CommandLine
                 {
                     error = $"unknown option --{name}";
                 }
+                else if (isFlag && equals >= 0)
+                {
+                    error = $"option --{name} takes no value ({token})";
+                }
                 else if (equals < 0 && !isFlag && i + 1 < rest.Length && !rest[i + 1].StartsWith('-'))
                 {
                     i++;

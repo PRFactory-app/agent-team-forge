@@ -46,6 +46,9 @@ public sealed class CommandLineTests
     [InlineData("uninstall --purge typo", "typo")]
     [InlineData("worktrees prune --force typo --job ID", "typo")]
     [InlineData("setup --apply typo --mode headless", "typo")]
+    [InlineData("uninstall --purge=typo", "--purge=typo")]
+    [InlineData("worktrees prune --force=typo", "--force=typo")]
+    [InlineData("setup --apply=typo", "--apply=typo")]
     public void Unknown_arguments_fail_with_64_naming_the_token(string line, string token)
     {
         var (exit, stdout, stderr) = Run(line);
