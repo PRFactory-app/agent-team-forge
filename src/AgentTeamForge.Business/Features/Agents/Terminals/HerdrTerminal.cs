@@ -35,6 +35,9 @@ public sealed record HerdrTerminalOptions
 
     public int MaxStderrBytes { get; init; } = 64 * 1024;
 
+    /// <summary>Fallback source for a missing graphical session (the user manager's environment).</summary>
+    public Func<IReadOnlyDictionary<string, string>>? SessionEnvironment { get; init; }
+
     internal Func<string>? NewSessionName { get; init; }
 }
 
@@ -66,7 +69,7 @@ public sealed class HerdrTerminal
     /// <summary>Carries only the path of the private bootstrap file into the pane, never its content.</summary>
     public const string BootstrapVariable = "ATF_BOOTSTRAP_FILE";
 
-    readonly HerdrTerminalOptions _options;
+    HerdrTerminalOptions _options;
     readonly IHerdrProcessRunner _runner;
 
     public HerdrTerminal(HerdrTerminalOptions options)
@@ -503,9 +506,20 @@ public sealed class HerdrTerminal
             ? throw new HerdrLaunchException(problem)
             : (await RunAsync(session.SocketPath, ["agent", "read", pane, "--source", "detection", "--lines", "100"], cancellationToken, rawText: true)).GetValue<string>();
 
+    bool NoDisplay() => !OperatingSystem.IsMacOS() && string.IsNullOrEmpty(Env("WAYLAND_DISPLAY")) && string.IsNullOrEmpty(Env("DISPLAY"));
+
     async Task RequireVisibleProviderAsync(CancellationToken cancellationToken)
     {
-        if (!OperatingSystem.IsMacOS() && string.IsNullOrEmpty(Env("WAYLAND_DISPLAY")) && string.IsNullOrEmpty(Env("DISPLAY")))
+        if (NoDisplay() && _options.SessionEnvironment?.Invoke() is { } session)
+        {
+            var merged = new Dictionary<string, string?>(_options.Environment, StringComparer.Ordinal);
+            foreach (var (key, value) in session)
+            {
+                if (string.IsNullOrEmpty(Env(key))) { merged[key] = value; }
+            }
+            _options = _options with { Environment = merged };
+        }
+        if (NoDisplay())
         {
             throw new InteractiveTerminalUnavailableException("interactive Herdr launch needs a graphical desktop session (WAYLAND_DISPLAY or DISPLAY); " +
                 "headless execution is available only as an explicit launch-mode choice");

@@ -29,6 +29,15 @@ those machines).
 | Login autostart | systemd user unit | Run key + hidden launcher; untested | LaunchAgent; untested |
 | Native AOT release build | CI + local | CI (`windows-latest`) | Local build script |
 
+## Linux daemon lifetime
+
+A lazily started Linux daemon runs in its own transient
+`agentteamforge-daemon-*.scope` (`KillMode=process`), so closing the launching
+terminal or app does not kill it or its Herdr sessions. In Herdr mode a missing
+`WAYLAND_DISPLAY`/`DISPLAY` is filled in from `systemctl --user show-environment`
+when a session starts; without one there, the launch still fails clearly.
+Re-run `atf setup --autostart` to add `KillMode=process` to an existing login unit.
+
 ## Windows results (v0.0.3, 2026-09-27)
 
 On a Windows 11 VM, the v0.0.3 end-to-end pass confirmed that the daemon

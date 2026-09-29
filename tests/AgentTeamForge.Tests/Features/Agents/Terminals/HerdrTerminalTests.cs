@@ -29,9 +29,10 @@ public class HerdrTerminalTests
         ["HERDR_PANE_ID"] = Sentinel,
     };
 
-    private static HerdrTerminal Terminal(FakeHerdr fake, IReadOnlyDictionary<string, string?>? env = null) =>
+    private static HerdrTerminal Terminal(FakeHerdr fake, IReadOnlyDictionary<string, string?>? env = null, Func<IReadOnlyDictionary<string, string>>? sessionEnvironment = null) =>
         new(new HerdrTerminalOptions
         {
+            SessionEnvironment = sessionEnvironment,
             Environment = new Dictionary<string, string?>(env ?? Desktop)
             {
                 ["HERDR_CONFIG_PATH"] = Path.Combine(Path.GetTempPath(), "atf-herdr-unit", "config.toml"),
@@ -561,6 +562,23 @@ public class HerdrTerminalTests
         Assert.NotEmpty(error.Message);
         Assert.Empty(fake.Detached);
         Assert.All(fake.Calls, c => Assert.Equal(["--version"], c.Args));
+    }
+
+    [Fact]
+    public async Task MissingDisplay_IsFilledFromSessionEnvironment_OrStillRefused()
+    {
+        if (OperatingSystem.IsMacOS()) { return; }
+        var env = new Dictionary<string, string?>(Desktop);
+        env.Remove("WAYLAND_DISPLAY");
+
+        var refused = new FakeHerdr();
+        await Assert.ThrowsAsync<InteractiveTerminalUnavailableException>(() =>
+            Terminal(refused, env, () => new Dictionary<string, string>()).StartSessionAsync(CancellationToken.None));
+        Assert.Empty(refused.Detached);
+
+        var fake = new FakeHerdr();
+        await Terminal(fake, env, () => new Dictionary<string, string> { ["WAYLAND_DISPLAY"] = "wayland-9" }).StartSessionAsync(CancellationToken.None);
+        Assert.Equal("wayland-9", Assert.Single(fake.Detached).Environment["WAYLAND_DISPLAY"]);
     }
 
     [Fact]

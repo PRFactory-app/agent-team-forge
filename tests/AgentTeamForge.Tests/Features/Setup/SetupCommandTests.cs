@@ -551,6 +551,7 @@ public sealed class SetupCommandTests
         Assert.Equal(log, new FileInfo(Path.Combine(fdDir, "1")).LinkTarget);
         Assert.Equal(log, new FileInfo(Path.Combine(fdDir, "2")).LinkTarget);
         Assert.Equal(StateDirectory.PrivateFile, File.GetUnixFileMode(log));
+        Assert.DoesNotContain("agentteamforge-daemon-", File.ReadAllText($"/proc/{pid}/cgroup"));
         Assert.DoesNotContain(Directory.EnumerateFileSystemEntries(fdDir),
             fd => new FileInfo(fd).LinkTarget == sentinelPath);
     }
@@ -573,6 +574,7 @@ public sealed class SetupCommandTests
         var unit = File.ReadAllText(LoginAutostart.FilePath(home, "linux"));
         Assert.Contains("ExecStart=\"/tmp/atf binary\" daemon --state-dir \"/tmp/atf state\"", unit);
         Assert.Contains("WantedBy=default.target", unit);
+        Assert.Contains("KillMode=process", unit);
         Assert.Contains("Environment=\"PATH=" + Environment.GetEnvironmentVariable("PATH"), unit);
         Assert.Contains("systemctl --user enable agentteamforge.service", calls);
         Assert.Equal(0, LoginAutostart.Apply(home, binary, state, false, Runner, "linux"));

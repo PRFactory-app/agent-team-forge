@@ -153,7 +153,11 @@ public static class DaemonCommand
         {
             var seed = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
                 .ToDictionary(e => (string)e.Key, e => (string?)e.Value, StringComparer.Ordinal);
-            herdrTerminal = new HerdrTerminal(new HerdrTerminalOptions { Environment = seed });
+            herdrTerminal = new HerdrTerminal(new HerdrTerminalOptions
+            {
+                Environment = seed,
+                SessionEnvironment = OperatingSystem.IsLinux() ? SystemdUser.ReadSessionEnvironment : null,
+            });
             HerdrInteractiveBackend Interactive(InteractiveAgentKind kind) => new(herdrTerminal, kind, state.Path);
             var claude = Interactive(InteractiveAgentKind.Claude);
             var codex = Interactive(InteractiveAgentKind.Codex);
@@ -228,7 +232,8 @@ public static class DaemonCommand
         using var listener = OperatingSystem.IsWindows() ? null : server.Bind();
         var serving = OperatingSystem.IsWindows() ? server.ServeWindowsAsync(lifetime.Token) : server.ServeAsync(listener!, lifetime.Token);
         WebConsoleServer? webConsole = null;
-        var webPort = SetupCommand.ConfiguredWebPort(state);
+        // Test daemons must never take the operator's console port.
+        var webPort = profile.TestProfile && SetupCommand.ConfiguredMode(state) is null ? 0 : SetupCommand.ConfiguredWebPort(state);
         try
         {
             WebConsoleToken.Ensure(state);

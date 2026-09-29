@@ -323,7 +323,7 @@ public static class SetupCommand
         {
             return OperatingSystem.IsWindows()
                 ? await StartWindowsAsync(state, binary, quiet)
-                : await StartPosixAsync(state, binary, quiet);
+                : await StartPosixAsync(state, binary, quiet, profile.TestProfile);
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException or ArgumentException)
         {
@@ -332,7 +332,7 @@ public static class SetupCommand
         }
     }
 
-    static async Task<int> StartPosixAsync(StateDirectory state, string binary, bool quiet)
+    static async Task<int> StartPosixAsync(StateDirectory state, string binary, bool quiet, bool testProfile)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         if (OperatingSystem.IsLinux()
@@ -363,7 +363,10 @@ public static class SetupCommand
         using var input = File.OpenHandle("/dev/null", FileMode.Open, FileAccess.Read);
         using var log = new FileStream(Path.Combine(state.Path, "daemon.log"),
             PrivateFiles.Options(FileMode.Append, FileAccess.Write, FileShare.ReadWrite));
-        var info = new ProcessStartInfo(binary)
+        // A scope execs in place (same PID, fds, env) but leaves the caller's cgroup, so its
+        // teardown cannot SIGKILL the daemon. Test profiles never create scopes.
+        var scope = !testProfile && SystemdUser.ScopeAvailable(Environment.GetEnvironmentVariable, FindExecutable);
+        var info = new ProcessStartInfo(scope ? "systemd-run" : binary)
         {
             UseShellExecute = false,
             StartDetached = true,
@@ -372,6 +375,11 @@ public static class SetupCommand
             StandardErrorHandle = log.SafeFileHandle,
             InheritedHandles = [],
         };
+        if (scope)
+        {
+            foreach (var arg in SystemdUser.ScopePrefix(state.Path)) { info.ArgumentList.Add(arg); }
+            info.ArgumentList.Add(binary);
+        }
         info.ArgumentList.Add("daemon");
         info.ArgumentList.Add("--state-dir");
         info.ArgumentList.Add(state.Path);
@@ -842,7 +850,7 @@ public static class SetupCommand
         return new("terminal", "terminal");
     }
 
-    static string? FindExecutable(string name)
+    internal static string? FindExecutable(string name)
     {
         foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
         {
