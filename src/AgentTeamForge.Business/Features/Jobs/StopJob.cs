@@ -39,9 +39,14 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
                     return JobResult.Fail(JobErrors.OwnershipNotProven,
                         "Job needs reconciliation and ATF could not prove it still owns the agent (no owned Herdr pane / marked process); nothing was stopped. Inspect get_job and the pane.");
                 }
-                // With no ownership record left, peers must be checked atomically with the cancel.
-                var stopped = store.CancelReconciled(jobId, principal.Principal, principal.Team, requireIdlePeers: observed == ReconcileStop.NoRecord);
-                if (stopped.PeerActive) { return JobResult.Fail(JobErrors.OwnershipNotProven); }
+                // With no ownership record left, or a fence cleared since the owned stop, peers must be checked atomically with the cancel.
+                var stopped = store.CancelReconciled(jobId, principal.Principal, principal.Team,
+                    requireIdlePeers: observed == ReconcileStop.NoRecord, requireIdlePeersIfUnfenced: true);
+                if (stopped.PeerActive)
+                {
+                    return JobResult.Fail(JobErrors.OwnershipNotProven,
+                        "Another turn on this agent session was admitted while it was being stopped; nothing was cancelled or forgotten. Stop that job (stop_job) or retry after it ends.");
+                }
                 if (stopped.Changed) { forgetReconciledOwnership?.Invoke(current); }
                 return JobResult.Ok(GetJob.ToView(stopped.Job!), stopped.Changed ? "stopped" : "unchanged");
             }
