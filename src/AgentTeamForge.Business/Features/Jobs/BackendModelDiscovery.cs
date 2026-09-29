@@ -14,6 +14,7 @@ public sealed class BackendModelDiscovery
     static readonly TimeSpan DefaultCatalogTtl = TimeSpan.FromMinutes(5);
     static readonly TimeSpan DefaultUnknownTtl = TimeSpan.FromMinutes(1);
     readonly Dictionary<string, (Lazy<IReadOnlyCollection<string>> Lookup, long Started)> _cache = [];
+    readonly Dictionary<string, IReadOnlyCollection<string>> _known = [];
     readonly TimeSpan _timeout;
     readonly TimeSpan _catalogTtl;
     readonly TimeSpan _unknownTtl;
@@ -36,7 +37,12 @@ public sealed class BackendModelDiscovery
         {
             if (!_cache.TryGetValue(backend, out var entry) || Expired(entry.Lookup, entry.Started))
             {
-                entry = (new Lazy<IReadOnlyCollection<string>>(() => Discover(backend)), Environment.TickCount64);
+                entry = (new Lazy<IReadOnlyCollection<string>>(() =>
+                {
+                    var models = Discover(backend);
+                    lock (_cache) { _known[backend] = models; }
+                    return models;
+                }), Environment.TickCount64);
                 _cache[backend] = entry;
             }
 
@@ -49,11 +55,14 @@ public sealed class BackendModelDiscovery
 
     public IReadOnlyCollection<string> CachedModels(string backend)
     {
-        lock (_cache)
-        {
-            return _cache.TryGetValue(backend, out var entry) && entry.Lookup.IsValueCreated ? entry.Lookup.Value : [];
-        }
+        // The last completed lookup, so an in-flight refresh does not blank the catalog.
+        lock (_cache) { return _known.GetValueOrDefault(backend) ?? []; }
     }
+
+    /// <summary>Start catalog lookups in the background; a failure leaves that catalog unknown.</summary>
+    public Task Warm(IEnumerable<string> backends) =>
+        Task.WhenAll(backends.Where(backend => backend is "codex" or "pi" or "cursor").Distinct()
+            .Select(backend => Task.Run(() => GetModels(backend))));
 
     bool Expired(Lazy<IReadOnlyCollection<string>> lookup, long started) =>
         lookup.IsValueCreated

@@ -170,6 +170,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         switch (request.Op)
         {
             case IpcProtocol.JobCapabilities:
+                _ = modelDiscovery?.Warm(configuredBackends ?? []);
                 var installed = BackendAvailability.ReadInstalled(configuredBackends ?? []);
                 return new IpcResponse(true, Outcome: "capabilities", Backends: configuredBackends ?? [],
                     BackendAvailability: BackendAvailability.Read(configuredBackends ?? [], launchMode), BackendInstalled: installed,
@@ -189,6 +190,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 try { herdrPlacement.Change(request.HerdrPlacement); return new IpcResponse(true, Outcome: "herdr_placement", HerdrPlacement: herdrPlacement.Default, HerdrMode: true); }
                 catch (ArgumentException e) { return new IpcResponse(false, e.Message); }
             case IpcProtocol.TierSettingsGet:
+                _ = modelDiscovery?.Warm(configuredBackends ?? []);
                 return tierMap is null ? new IpcResponse(false, JobErrors.InvalidRequest)
                     : new IpcResponse(true, Outcome: "tiers", Tiers: tierMap.Settings(), ModelCatalog:
                         new Dictionary<string, IReadOnlyCollection<string>>

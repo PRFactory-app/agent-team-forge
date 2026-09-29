@@ -14,13 +14,16 @@ public sealed class TierMap
     static readonly string[] Backends = ["codex", "pi", "cursor", "droid"];
     readonly string _path;
     readonly Func<string, IReadOnlyCollection<string>> _catalog;
+    readonly Func<string, IReadOnlyCollection<string>> _lookup;
     readonly Lock _gate = new();
     readonly List<TierOverride> _overrides;
 
-    public TierMap(string statePath, Func<string, IReadOnlyCollection<string>> catalog, Action<string>? log = null)
+    public TierMap(string statePath, Func<string, IReadOnlyCollection<string>> catalog, Action<string>? log = null,
+        Func<string, IReadOnlyCollection<string>>? lookup = null)
     {
         _path = Path.Combine(statePath, "tier-map.json");
         _catalog = catalog;
+        _lookup = lookup ?? catalog;
         _overrides = Load(_path, log);
     }
 
@@ -92,13 +95,19 @@ public sealed class TierMap
             throw new ArgumentException("Unknown backend or tier");
         }
 
+        var defaultModel = "";
+        var defaultEffort = "";
         if (!resetAll && model is not null)
         {
             if (effort is null || !ValidEffort(backend!, effort) || !AcceptJob.ValidOption(model))
             {
                 throw new ArgumentException("Invalid model or effort");
             }
-            var known = _catalog(backend!);
+            var known = _lookup(backend!);
+            var shown = ModelSelection.DefaultTier(backend!, tier!, _catalog(backend!)).Model;
+            (defaultModel, defaultEffort) = ModelSelection.DefaultTier(backend!, tier!, known);
+            // The operator kept the (stale) model the row showed: follow the effective default instead of pinning the fallback.
+            if (model == shown) { model = defaultModel; }
             if (known.Count > 0 && !(backend == "cursor" && model == "auto") && !(backend == "pi"
                 ? known.Any(candidate => candidate.Split('/', 2)[^1] == model.Split('/', 2)[^1])
                 : known.Contains(model)))
@@ -114,8 +123,6 @@ public sealed class TierMap
             var next = resetAll ? [] : _overrides.Where(row => row.Backend != backend || row.Tier != tier).ToList();
             if (!resetAll && model is not null)
             {
-                // Compare with the active built-in default (what the row shows without an override).
-                var (defaultModel, defaultEffort) = ModelSelection.DefaultTier(backend!, tier!, _catalog(backend!));
                 if (model != defaultModel || effort != defaultEffort)
                 {
                     next.Add(new TierOverride(backend!, tier!, model, effort!));

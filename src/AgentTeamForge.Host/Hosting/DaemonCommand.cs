@@ -196,7 +196,14 @@ public static class DaemonCommand
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs, childContext);
         dispatcher.RestoreAfterRestart(store.RestartCandidates());
         var modelDiscovery = new BackendModelDiscovery();
-        var tierMap = new TierMap(state.Path, modelDiscovery.CachedModels, Log);
+        // Settings and list_backends read the cached catalog; fill it now instead of on the first submit.
+        if (profile.RealAgents)
+        {
+            _ = modelDiscovery.Warm(backends.Names).ContinueWith(_ => Log("model catalog: " + string.Join(' ',
+                CatalogBackends.Where(backends.Names.Contains)
+                    .Select(name => $"{name}={modelDiscovery.CachedModels(name).Count}"))), TaskScheduler.Default);
+        }
+        var tierMap = new TierMap(state.Path, modelDiscovery.CachedModels, Log, modelDiscovery.GetModels);
         var herdrPlacement = herdrTerminal is null ? null : new HerdrPlacement(state.Path, Log);
         Func<string, string?>? checkHerdrSession = herdrTerminal is null ? null : herdrTerminal.CheckExistingSession;
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap,
@@ -395,6 +402,8 @@ public static class DaemonCommand
         Log($"stopped reason={(halted ? dispatcher.HaltReason ?? "service_fault" : "requested_shutdown")}");
         return halted ? 70 : 0;
     }
+
+    static readonly string[] CatalogBackends = ["codex", "pi", "cursor"];
 
     static void Log(string message) => Console.Error.WriteLine($"[atf-daemon] {message}");
 
