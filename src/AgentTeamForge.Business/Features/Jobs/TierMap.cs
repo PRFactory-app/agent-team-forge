@@ -103,8 +103,10 @@ public sealed class TierMap
             {
                 throw new ArgumentException("Invalid model or effort");
             }
-            var known = _lookup(backend!);
-            var shown = ModelSelection.DefaultTier(backend!, tier!, _catalog(backend!)).Model;
+            // Capture what the row showed before the fresh lookup fills the cache; only a cold cache needs the (blocking) lookup.
+            var cached = _catalog(backend!);
+            var shown = ModelSelection.DefaultTier(backend!, tier!, cached).Model;
+            var known = cached.Count > 0 ? cached : _lookup(backend!);
             (defaultModel, defaultEffort) = ModelSelection.DefaultTier(backend!, tier!, known);
             // The operator kept the (stale) model the row showed: follow the effective default instead of pinning the fallback.
             if (model == shown) { model = defaultModel; }

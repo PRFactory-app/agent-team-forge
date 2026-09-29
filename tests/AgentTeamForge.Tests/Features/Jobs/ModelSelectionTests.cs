@@ -190,6 +190,32 @@ public sealed class ModelSelectionTests
         Assert.Throws<ArgumentException>(() => map.Change("codex", "high", "gpt-6-astra-missing", "high"));
     }
 
+    [Fact]
+    public void Saving_a_stale_row_with_a_real_discovery_does_not_pin_the_fallback()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        using var dir = new TempStateDir();
+        var script = dir.File("models");
+        File.WriteAllText(script, "#!/bin/sh\necho '{\"models\":[{\"slug\":\"gpt-6.1-sol\",\"supported_in_api\":true,\"visibility\":\"list\"},{\"slug\":\"gpt-6-sol\",\"supported_in_api\":true,\"visibility\":\"list\"}]}'\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        var discovery = new BackendModelDiscovery(TimeSpan.FromSeconds(5), _ => script);
+        TierMap Daemon(BackendModelDiscovery d) => new(dir.Path, d.CachedModels, lookup: d.GetModels);
+
+        var map = Daemon(discovery);
+        map.Change("codex", "high", "gpt-6-sol", "high"); // stale shown row, cold cache
+        Assert.Null(map.Override("codex", "high"));
+
+        map = Daemon(new BackendModelDiscovery(TimeSpan.FromSeconds(5), _ => script));
+        map.Change("codex", "high", "gpt-6-sol", "xhigh"); // effort-only change on the stale row
+        Assert.Equal(("gpt-6.1-sol", "xhigh"), map.Override("codex", "high"));
+
+        map.Change("codex", "high", "gpt-6-sol", "xhigh"); // warm cache: gpt-6-sol is now an explicit pin
+        Assert.Equal(("gpt-6-sol", "xhigh"), map.Override("codex", "high"));
+    }
+
     [Theory]
     [InlineData(null, "opus")]
     [InlineData("fast", "haiku")]
