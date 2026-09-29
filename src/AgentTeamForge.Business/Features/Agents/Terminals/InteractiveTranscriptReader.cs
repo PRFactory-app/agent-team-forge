@@ -283,6 +283,14 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                         if (wasPending) { apiError = null; }
                         continue;
                     }
+                    // Claude folds a notification that arrives mid-turn into the running turn as a
+                    // queued_command attachment instead of a user record.
+                    if (kind == InteractiveAgentKind.Claude && QueuedCommand(root) is { } queued
+                        && TaskNotification(queued, backgroundTasks, knownTasks, out var drainedPending))
+                    {
+                        if (drainedPending) { completed = false; apiError = null; }
+                        continue;
+                    }
                     if (userText is not null)
                     {
                         // Codex records the same input as both response_item and event_msg.
@@ -573,6 +581,10 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
         return Str(root, "type") == "message" && root.TryGetProperty("message", out var piMessage)
             && Str(piMessage, "role") == "assistant" && Str(piMessage, "stopReason") is "stop" or "end_turn";
     }
+
+    static string? QueuedCommand(JsonElement root) =>
+        Str(root, "type") == "attachment" && root.TryGetProperty("attachment", out var attachment)
+            && Str(attachment, "type") == "queued_command" ? Str(attachment, "prompt") : null;
 
     static bool Flag(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
