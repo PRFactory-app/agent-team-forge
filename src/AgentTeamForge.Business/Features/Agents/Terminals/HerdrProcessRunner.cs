@@ -87,8 +87,8 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
         {
             foreach (var pid in DarwinProcess.Pids())
             {
-                if (DarwinProcess.Arguments(pid) is { Args: var args }
-                    && ServerArgv(args, sessionName, EnvironmentValue(pid, "HERDR_SESSION")) && Identity(pid) is { } identity)
+                if (DarwinProcess.Arguments(pid) is var (args, environment)
+                    && IsServer(args, environment, sessionName) && Identity(pid) is { } identity)
                 {
                     result.Add(identity);
                 }
@@ -98,13 +98,18 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
         foreach (var dir in Directory.EnumerateDirectories("/proc"))
         {
             if (int.TryParse(Path.GetFileName(dir), NumberStyles.None, CultureInfo.InvariantCulture, out var pid) &&
-                Argv(pid) is { } args && ServerArgv(args, sessionName, EnvironmentValue(pid, "HERDR_SESSION")) && Identity(pid) is { } id)
+                Argv(pid) is [var executable, .., "server"] args && Path.GetFileName(executable) == "herdr" &&
+                IsServer(args, Environ(pid), sessionName) && Identity(pid) is { } id)
             {
                 result.Add(id);
             }
         }
         return result;
     }
+
+    /// <summary>An unreadable environment is another user's process, never our server.</summary>
+    internal static bool IsServer(string[] args, string[]? environment, string name) =>
+        environment is not null && ServerArgv(args, name, Value(environment, "HERDR_SESSION"));
 
     internal static bool ServerArgv(string[] args, string name, string? environmentSession) => args switch
     {
@@ -120,17 +125,16 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
     public int? ParentOf(int pid) => OperatingSystem.IsMacOS() ? DarwinProcess.ParentPid(pid)
         : Stat(pid) is { } rest && int.TryParse(rest[4 - 3], NumberStyles.None, CultureInfo.InvariantCulture, out var ppid) ? ppid : null;
 
-    public string? EnvironmentValue(int pid, string name)
+    public string? EnvironmentValue(int pid, string name) =>
+        (OperatingSystem.IsMacOS() ? DarwinProcess.Arguments(pid)?.Environment : Environ(pid)) is { } environment ? Value(environment, name) : null;
+
+    static string? Value(string[] environment, string name)
     {
         var prefix = name + "=";
-        if (OperatingSystem.IsMacOS())
-        {
-            return DarwinProcess.Arguments(pid)?.Environment.FirstOrDefault(e => e.StartsWith(prefix, StringComparison.Ordinal))?[prefix.Length..];
-        }
-
-        var raw = Read($"/proc/{pid}/environ");
-        return raw?.Split('\0').FirstOrDefault(e => e.StartsWith(prefix, StringComparison.Ordinal))?[prefix.Length..];
+        return environment.FirstOrDefault(e => e.StartsWith(prefix, StringComparison.Ordinal))?[prefix.Length..];
     }
+
+    static string[]? Environ(int pid) => Read($"/proc/{pid}/environ")?.Split('\0');
 
     /// <summary>Fields 3.. of /proc/PID/stat; comm (field 2) may contain spaces and ')'.</summary>
     static string[]? Stat(int pid) =>
