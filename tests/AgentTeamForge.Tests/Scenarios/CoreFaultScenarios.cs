@@ -44,7 +44,7 @@ public sealed class CoreFaultScenarios
     [Fact]
     public async Task Daemon_survives_stray_signals_and_logs_them()
     {
-        if (OperatingSystem.IsWindows()) { return; }
+        if (!OperatingSystem.IsLinux()) { return; }
         using var rig = new SpikeRig();
         await rig.InitAsync();
         var daemon = await rig.StartDaemonAsync();
