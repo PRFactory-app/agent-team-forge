@@ -39,12 +39,13 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         try
         {
             if (!session.Shared) { HerdrOwnedSessions.Save(launch, session); }
-            var binding = await terminal.OpenAgentTabAsync(session, launch.AgentName, launch.WorkingDirectory, launch.BootstrapPath, cancellationToken,
+            var binding = await terminal.OpenAgentTabAsync(session, launch.TabLabel ?? launch.AgentName, launch.WorkingDirectory, launch.BootstrapPath, cancellationToken,
                 workspaceTrustEnvironment: InteractiveAgentCommand.WorkspaceTrustEnvironment(launch.Kind),
                 onCreated: created => { session = created; HerdrOwnedSessions.Save(launch, created); },
                 exclusivePiMcp: launch.Kind == InteractiveAgentKind.Pi && InteractiveAgentCommand.ManagedConfigPath(launch) is { } config
                     && File.Exists(config));
             _runs[launch.AgentName] = (session, binding);
+            HerdrOwnedSessions.Save(launch, session with { ShellPid = binding.ShellPid, ShellStartTicks = binding.ShellStartTicks });
             var args = new List<string> { "agent", "start", launch.AgentName, "--kind", Kind(launch.Kind), "--pane", binding.PaneId, "--timeout", "15000", "--" };
             args.AddRange(AgentArguments(launch));
             await terminal.RunOwnedAsync(session, cancellationToken, [.. args]);
@@ -70,6 +71,35 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
             }
             throw;
         }
+    }
+
+    internal async Task<bool> RebindAsync(InteractiveLaunch launch, OwnedHerdrSession session, CancellationToken cancellationToken)
+    {
+        var binding = await terminal.RebindAsync(session, launch.BootstrapPath, cancellationToken);
+        if (binding is null) { return false; }
+        _runs[launch.AgentName] = (session, binding);
+        try
+        {
+            var status = await StatusAsync(launch, cancellationToken);
+            if (status is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Working or InteractiveAgentStatus.Done or InteractiveAgentStatus.Blocked)
+            {
+                return true;
+            }
+        }
+        catch (HerdrLaunchException) { }
+        _runs.TryRemove(launch.AgentName, out _);
+        return false;
+    }
+
+    internal bool PaneIsGone(OwnedHerdrSession session) => terminal.OwnedPaneIsGone(session);
+
+    internal void TransferOwnership(InteractiveLaunch launch)
+    {
+        if (!_runs.TryGetValue(launch.AgentName, out var run))
+        {
+            throw new HerdrLaunchException("retained interactive pane has no owned binding");
+        }
+        HerdrOwnedSessions.Save(launch, run.Session);
     }
 
     public async Task PromptAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken)

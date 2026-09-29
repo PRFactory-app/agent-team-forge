@@ -83,6 +83,94 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task Recovery_rebinds_only_the_saved_server_pane_and_shell()
+    {
+        using var state = new TempStateDir();
+        var fake = new FakeHerdr();
+        var terminal = Terminal(fake, new Dictionary<string, string?>(Desktop) { ["HOME"] = state.Path });
+        var session = await terminal.StartSessionAsync(CancellationToken.None);
+        var binding = await terminal.OpenAgentTabAsync(session, "codex: review", "/work", Bootstrap,
+            CancellationToken.None, onCreated: created => session = created);
+        var saved = session with { ShellPid = binding.ShellPid, ShellStartTicks = binding.ShellStartTicks };
+
+        Assert.NotNull(await terminal.RebindAsync(saved, Bootstrap, CancellationToken.None));
+        Assert.Null(await terminal.RebindAsync(saved, "/wrong-bootstrap", CancellationToken.None));
+        fake.Replace(Replacement.ShellReplaced);
+        Assert.Null(await terminal.RebindAsync(saved, Bootstrap, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Restart_reattaches_a_submitted_job_to_its_saved_live_pane()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr { BootstrapFromTab = true };
+        var terminal = Terminal(fake);
+        var job = f.Submit("live");
+        var claim = f.Store.BeginNextAttempt()!;
+        f.Store.RecordStartup(new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation), "submitted");
+        var bootstrap = Path.Combine(state.Path, "herdr", "atftest.bootstrap");
+        Directory.CreateDirectory(Path.GetDirectoryName(bootstrap)!);
+        File.WriteAllText(bootstrap, "atftest");
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, bootstrap)
+        { JobId = job.JobId };
+        var session = await terminal.StartSessionAsync(CancellationToken.None);
+        var binding = await terminal.OpenAgentTabAsync(session, "codex: live", state.Path, bootstrap,
+            CancellationToken.None, onCreated: created => session = created);
+        HerdrOwnedSessions.Save(launch, session with { ShellPid = binding.ShellPid, ShellStartTicks = binding.ShellStartTicks });
+
+        var backend = new HerdrInteractiveBackend(terminal, InteractiveAgentKind.Codex, state.Path);
+        var reattached = backend.Reattach(f.Store.GetJob(job.JobId)!, f.Store.GetRuns(job.JobId).Single(), out var gone);
+
+        Assert.False(gone);
+        Assert.NotNull(reattached);
+        await reattached.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Restart_keeps_unrebindable_live_pane_fenced_and_fails_only_a_proven_gone_one()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr();
+        var terminal = Terminal(fake);
+        var owned = await terminal.StartSessionAsync(CancellationToken.None);
+        var job = f.Submit("live");
+        var claim = f.Store.BeginNextAttempt()!;
+        f.Store.RecordStartup(new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation), "submitted");
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null,
+            Path.Combine(state.Path, "herdr", "atftest.bootstrap"))
+        { JobId = job.JobId };
+        Directory.CreateDirectory(Path.GetDirectoryName(launch.BootstrapPath)!);
+        File.WriteAllText(launch.BootstrapPath, "");
+        // A record from a daemon that predates saved shell identity: live, but not rebindable.
+        HerdrOwnedSessions.Save(launch, owned);
+        new AgentTeamForge.Business.Features.Recovery.RecoverOnStartup(f.Store).Execute();
+        var backend = new HerdrInteractiveBackend(terminal, InteractiveAgentKind.Codex, state.Path);
+
+        async Task RestartAsync()
+        {
+            using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+            dispatcher.RestoreAfterRestart(f.Store.RestartCandidates());
+            using var lifetime = new CancellationTokenSource();
+            var loop = dispatcher.RunAsync(lifetime.Token);
+            lifetime.Cancel();
+            await loop;
+        }
+
+        await RestartAsync();
+        Assert.Equal((JobStatus.NeedsReconciliation, "daemon_restart_uncertain"),
+            (f.Store.GetJob(job.JobId)!.Status, f.Store.GetJob(job.JobId)!.ReasonCode));
+        Assert.True(f.Store.IsSessionFenced(job.JobId));
+
+        fake.Replace(Replacement.ServerRestarted);
+        await RestartAsync();
+        Assert.Equal((JobStatus.Failed, "daemon_restart_agent_gone"),
+            (f.Store.GetJob(job.JobId)!.Status, f.Store.GetJob(job.JobId)!.ReasonCode));
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+    }
+
+    [Fact]
     public async Task ExistingDefaultCodexHomeIsPinnedForSharedTab()
     {
         using var state = new TempStateDir();

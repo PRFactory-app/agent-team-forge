@@ -48,6 +48,13 @@ public sealed class StopAgent(JobStore store, BoundPrincipal principal, BackendC
                     stopped = herdr.StopOwnedJobs(peers);
                     if (stopped)
                     {
+                        foreach (var peerId in peers)
+                        {
+                            if (store.GetJob(peerId)?.Status == JobStatus.NeedsReconciliation)
+                            {
+                                store.CancelReconciled(peerId, principal.Principal, principal.Team);
+                            }
+                        }
                         store.ReconcileStoppedSession(job.JobId);
                         herdr.ForgetStoppedJobs(peers);
                     }
@@ -57,8 +64,21 @@ public sealed class StopAgent(JobStore store, BoundPrincipal principal, BackendC
             {
                 stopped = job.SessionId is { } sessionId
                     && backend is IInteractiveSessionStop interactive && interactive.StopIdleSession(sessionId);
+                if (job.Status == JobStatus.NeedsReconciliation)
+                {
+                    var runs = store.GetRuns(job.JobId);
+                    var markers = runs.Select(run => run.Correlation).ToArray();
+                    OrphanedBackendProcess.TerminateMarked(markers);
+                    if (OrphanedBackendProcess.HasMarkedProcess(markers,
+                        [.. runs.Where(run => run.BackendPid.HasValue).Select(run => run.BackendPid!.Value)]))
+                    {
+                        return JobResult.Fail(JobErrors.OwnershipNotProven);
+                    }
+                    store.CancelReconciled(job.JobId, principal.Principal, principal.Team);
+                    stopped = true;
+                }
             }
-            return JobResult.Ok(GetJob.ToView(job), stopped ? "agent_stopped" : "agent_not_running");
+            return JobResult.Ok(GetJob.ToView(store.GetJob(jobId)!), stopped ? "agent_stopped" : "agent_not_running");
         }
         catch (StorageException ex)
         {

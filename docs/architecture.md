@@ -114,7 +114,7 @@ parent is reported as `parent_needs_reconciliation`.
 | What dies | What happens |
 | --- | --- |
 | Lead or MCP bridge | Jobs keep running. A new bridge reads results; `resume_session` adopts the old session's jobs and unread notices. |
-| Daemon | Durable state survives. On restart, every started attempt becomes `needs_reconciliation` (`daemon_restart_uncertain`) and its session is fenced; queued jobs dispatch normally. Live interactive TUIs are left running ([ADR 0009](adr/0009-restart-quarantines-live-tuis.md)). A live bridge restarts the daemon on its next call. |
+| Daemon | Durable state survives. On restart, started attempts are quarantined first. A Herdr run with verified saved process and pane identity resumes observation as `running`; a run whose agent is proven gone fails cleanly, and an unverifiable one stays fenced. Queued jobs dispatch normally. A live bridge restarts the daemon on its next call ([ADR 0009](adr/0009-restart-quarantines-live-tuis.md)). |
 | Agent or machine | The session may be resumable, but external side effects are not guaranteed exactly once. |
 
 Rules that hold everywhere ([ADR 0008](adr/0008-never-replay-uncertain-prompts.md)):

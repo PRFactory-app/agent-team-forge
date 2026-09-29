@@ -71,6 +71,11 @@ catch (StateDirectoryException ex)
     Console.Error.WriteLine($"error: {ex.Message}");
     return 78;
 }
+catch (Exception ex) when (args[0] == "daemon")
+{
+    Console.Error.WriteLine($"[atf-daemon] fatal: {ex}");
+    return 70;
+}
 
 static int Usage()
 {

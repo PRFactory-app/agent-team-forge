@@ -47,6 +47,8 @@ public sealed record OwnedHerdrSession(string SessionName, string SocketPath, in
     public string? PaneId { get; init; }
     public string? TerminalId { get; init; }
     public string? TabLabel { get; init; }
+    public int? ShellPid { get; init; }
+    public ulong? ShellStartTicks { get; init; }
 }
 
 /// <summary>One agent tab; valid only while the same server, pane terminal and shell process still host it.</summary>
@@ -338,6 +340,35 @@ public sealed class HerdrTerminal
             return $"pane {binding.PaneId} no longer hosts the bound terminal";
         }
         return _runner.Identity(binding.ShellPid)?.StartTicks == binding.ShellStartTicks ? null : "the bound pane shell process was replaced or exited";
+    }
+
+    /// <summary>Rebuild a binding only from the same server, pane, terminal and shell identity.</summary>
+    internal async Task<HerdrTabBinding?> RebindAsync(OwnedHerdrSession session, string bootstrapFile, CancellationToken cancellationToken)
+    {
+        if (session.TabId is null || session.PaneId is null || session.TerminalId is null
+            || session.ShellPid is null || session.ShellStartTicks is null
+            || await OwnershipProblemAsync(session, cancellationToken) is not null)
+        {
+            return null;
+        }
+        var binding = new HerdrTabBinding(session, session.TabId, session.PaneId, session.TerminalId,
+            session.ShellPid.Value, session.ShellStartTicks.Value);
+        if (await VerifyBindingAsync(binding, cancellationToken) is not null
+            || _runner.ParentOf(binding.ShellPid) != session.ServerPid
+            || _runner.EnvironmentValue(binding.ShellPid, BootstrapVariable) != bootstrapFile)
+        {
+            return null;
+        }
+        return binding;
+    }
+
+    /// <summary>True only with process proof that the recorded server or pane shell no longer exists.</summary>
+    internal bool OwnedPaneIsGone(OwnedHerdrSession session)
+    {
+        bool Replaced(int pid, ulong startTicks) =>
+            _runner.Identity(pid) is { } identity ? identity.StartTicks != startTicks : !PidMayBeAlive(pid);
+        return Replaced(session.ServerPid, session.ServerStartTicks)
+            || session.ShellPid is int shell && session.ShellStartTicks is ulong ticks && Replaced(shell, ticks);
     }
 
     internal bool HasUnverifiedLiveIdentity(HerdrTabBinding binding)

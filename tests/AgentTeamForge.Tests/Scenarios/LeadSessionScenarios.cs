@@ -6,6 +6,29 @@ namespace AgentTeamForge.Tests.Scenarios;
 public sealed class LeadSessionScenarios
 {
     [Fact]
+    public async Task Lead_can_stop_a_fenced_job_visible_in_its_workspace()
+    {
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        await rig.StartDaemonAsync();
+        var (_, first) = await rig.StartBridgeAsync("lead-one");
+        var (_, second) = await rig.StartBridgeAsync("lead-two");
+        var submitted = await SpikeRig.CallAsync(first, "submit_job", new()
+        {
+            ["backend"] = "fake",
+            ["instruction"] = "exit",
+            ["idempotency_key"] = "fenced",
+            ["behavior"] = AgentTeamForge.Business.Features.Jobs.FakeBehavior.ExitAfterReceipt
+        });
+        var jobId = submitted.Job!.JobId;
+        await rig.WaitForStatusAsync(jobId, AgentTeamForge.DAL.Features.Jobs.JobStatus.NeedsReconciliation);
+        Assert.True((await SpikeRig.CallAsync(second, "get_job", new() { ["job_id"] = jobId })).Ok);
+        var stopped = await SpikeRig.CallAsync(second, "stop_job", new() { ["job_id"] = jobId });
+        Assert.True(stopped.Ok);
+        Assert.Equal("cancelled", stopped.Job!.Status);
+    }
+
+    [Fact]
     public async Task Two_published_bridges_keep_own_jobs_and_restart_adopts_one_session()
     {
         using var rig = new SpikeRig();

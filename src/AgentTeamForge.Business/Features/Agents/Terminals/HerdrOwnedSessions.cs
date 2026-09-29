@@ -16,6 +16,11 @@ public static class HerdrOwnedSessions
     }
     internal static string PathFor(InteractiveLaunch launch) => System.IO.Path.ChangeExtension(launch.BootstrapPath, ".owned.json");
 
+    internal static string BootstrapForRecord(string recordPath) =>
+        recordPath.EndsWith(".owned.json", StringComparison.Ordinal)
+            ? recordPath[..^".owned.json".Length] + ".bootstrap"
+            : throw new ArgumentException("invalid Herdr ownership record path", nameof(recordPath));
+
     internal static void Save(InteractiveLaunch launch, OwnedHerdrSession session)
     {
         var path = PathFor(launch);

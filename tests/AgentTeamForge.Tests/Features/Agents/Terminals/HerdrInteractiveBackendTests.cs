@@ -10,6 +10,138 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 
 public sealed class HerdrInteractiveBackendTests
 {
+    [Theory]
+    [InlineData(InteractiveAgentKind.Codex, "review", "job_01234567", "codex: review")]
+    [InlineData(InteractiveAgentKind.Claude, null, "job_01234567", "claude: job_0123")]
+    [InlineData(InteractiveAgentKind.Pi, "worker", "job_01234567", "pi: worker")]
+    public void Tab_label_uses_backend_and_job_name(InteractiveAgentKind kind, string? name, string jobId, string expected) =>
+        Assert.Equal(expected, HerdrInteractiveBackend.TabLabel(kind, name, jobId));
+
+    [Fact]
+    public async Task Idle_interrupted_turn_settles_and_follow_up_reuses_native_session()
+    {
+        using var f = new JobFixture();
+        var reader = new BoundMutableReader(new InteractiveTranscript("native-1", "partial", ["partial"]));
+        var control = new FakeControl { Status = InteractiveAgentStatus.Idle };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Codex, Path.GetTempPath(),
+            settleTimeout: TimeSpan.FromMilliseconds(20));
+        var parent = f.Submit("interrupted");
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+        Assert.Equal((JobStatus.NeedsReconciliation, "interactive_completion_unobserved"),
+            (f.Store.GetJob(parent.JobId)!.Status, f.Store.GetJob(parent.JobId)!.ReasonCode));
+        Assert.True(f.Store.IsSessionFenced(parent.JobId));
+
+        var follow = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept(),
+            reconcileIdleInteractive: dispatcher.ReconcileIdleInteractive);
+        var child = follow.Execute(new FollowUpRequest(parent.JobId, "continue", "next"));
+        Assert.Equal("accepted", child.Outcome);
+        Assert.Equal((JobStatus.Failed, "interactive_turn_interrupted"),
+            (f.Store.GetJob(parent.JobId)!.Status, f.Store.GetJob(parent.JobId)!.ReasonCode));
+        Assert.False(f.Store.IsSessionFenced(parent.JobId));
+
+        reader.Output = new InteractiveTranscript("native-1", "finished", ["finished"], Completed: true);
+        await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(child.Job!.JobId)!.Status);
+        Assert.Equal(2, control.Prompts);
+    }
+
+    [Fact]
+    public async Task Follow_up_replaces_a_running_turn_when_Codex_TUI_was_interrupted_to_idle()
+    {
+        using var f = new JobFixture();
+        using var state = new TempStateDir();
+        var reader = new BoundMutableReader(new InteractiveTranscript("native-1", "partial", ["partial"]));
+        var control = new FakeControl { Status = InteractiveAgentStatus.Idle };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Codex, state.Path,
+            settleTimeout: TimeSpan.FromMinutes(1));
+        var catalog = new BackendCatalog().Register(BackendCatalog.Codex, () => backend);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
+        var parent = accept.Execute(new SubmitJobRequest("parent", "first", null, false)
+        { Backend = BackendCatalog.Codex, Cwd = state.Path }).Job!;
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        var attempt = dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+        await Bounded.Until(() => f.Store.GetJob(parent.JobId) is { SessionId: "native-1" } job
+            && dispatcher.HasIdleInteractive(job), "interrupted Codex editor");
+
+        var follow = new FollowUpJob(f.Store, JobFixture.Operator, accept, dispatcher.InterruptRunning,
+            hasIdleInteractive: dispatcher.HasIdleInteractive);
+        var child = follow.Execute(new FollowUpRequest(parent.JobId, "continue", "next"));
+        Assert.Equal("accepted", child.Outcome);
+        Assert.Equal("existing", follow.Execute(new FollowUpRequest(parent.JobId, "continue", "next")).Outcome);
+        await attempt.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+        Assert.Equal((JobStatus.Cancelled, "interrupted"),
+            (f.Store.GetJob(parent.JobId)!.Status, f.Store.GetJob(parent.JobId)!.ReasonCode));
+
+        reader.Output = new InteractiveTranscript("native-1", "finished", ["finished"], Completed: true);
+        await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(child.Job!.JobId)!.Status);
+        Assert.Equal(1, control.Starts);
+        Assert.Equal(2, control.Prompts);
+        Assert.Equal(1, control.Interrupts);
+    }
+
+    [Fact]
+    public async Task Follow_up_replaces_an_acknowledged_native_Codex_turn_interrupted_to_idle()
+    {
+        using var f = new JobFixture();
+        using var state = new TempStateDir();
+        var reader = new BoundMutableReader(new InteractiveTranscript("native-1", "first done", Completed: true));
+        var control = new FakeControl { Status = InteractiveAgentStatus.Idle };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Codex, state.Path);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Codex, () => backend);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
+        var first = accept.Execute(new SubmitJobRequest("first", "first", null, false)
+        { Backend = BackendCatalog.Codex, Cwd = state.Path }).Job!;
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+
+        var follow = new FollowUpJob(f.Store, JobFixture.Operator, accept, dispatcher.InterruptRunning,
+            hasIdleInteractive: dispatcher.HasIdleInteractive);
+        var native = follow.Execute(new FollowUpRequest(first.JobId, "queued turn", "native")).Job!;
+        var claim = f.Store.BeginNativeCodexAttempt(_ => true, state.Path)!;
+        f.Store.RecordNativeReceipt(native.JobId, claim.Correlation);
+        Assert.True(dispatcher.HasIdleInteractive(f.Store.GetJob(native.JobId)!));
+
+        var next = follow.Execute(new FollowUpRequest(native.JobId, "after Ctrl+C", "next"));
+        Assert.Equal("accepted", next.Outcome);
+        Assert.Equal((JobStatus.Cancelled, "interrupted"),
+            (f.Store.GetJob(native.JobId)!.Status, f.Store.GetJob(native.JobId)!.ReasonCode));
+        Assert.Equal("existing", follow.Execute(new FollowUpRequest(native.JobId, "after Ctrl+C", "next")).Outcome);
+
+        reader.Output = new InteractiveTranscript("native-1", "resumed", Completed: true);
+        await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(next.Job!.JobId)!.Status);
+        Assert.Equal(1, control.Starts);
+        Assert.Equal(2, control.Prompts);
+    }
+
+    [Fact]
+    public async Task Follow_up_keeps_an_acknowledged_native_Codex_turn_that_reads_idle_only_momentarily()
+    {
+        using var f = new JobFixture();
+        using var state = new TempStateDir();
+        var reader = new BoundMutableReader(new InteractiveTranscript("native-1", "first done", Completed: true));
+        var control = new FakeControl { Status = InteractiveAgentStatus.Idle };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Codex, state.Path);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Codex, () => backend);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
+        var first = accept.Execute(new SubmitJobRequest("first", "first", null, false)
+        { Backend = BackendCatalog.Codex, Cwd = state.Path }).Job!;
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+
+        var follow = new FollowUpJob(f.Store, JobFixture.Operator, accept, dispatcher.InterruptRunning,
+            hasIdleInteractive: dispatcher.HasIdleInteractive);
+        var native = follow.Execute(new FollowUpRequest(first.JobId, "queued turn", "native")).Job!;
+        var claim = f.Store.BeginNativeCodexAttempt(_ => true, state.Path)!;
+        f.Store.RecordNativeReceipt(native.JobId, claim.Correlation);
+        control.Statuses = new([InteractiveAgentStatus.Idle, InteractiveAgentStatus.Working]);
+
+        var next = follow.Execute(new FollowUpRequest(native.JobId, "while working", "next"));
+        Assert.NotEqual("accepted", next.Outcome);
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(native.JobId)!.Status);
+    }
     [Fact]
     public async Task Claude_synthetic_api_error_fails_bound_herdr_job()
     {
@@ -553,7 +685,8 @@ public sealed class HerdrInteractiveBackendTests
         await using (var run = failedStatus.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() }))
         {
             await run.DeliverAsync(CancellationToken.None);
-            Assert.Contains(new BackendEvidence.ProtocolError("interactive_control_failed"), await Collect(run));
+            var failure = Assert.Single(await Collect(run), evidence => evidence is BackendEvidence.ProtocolError { Code: "interactive_control_failed" });
+            Assert.Contains("herdr agent get exited 1: io", ((BackendEvidence.ProtocolError)failure).Details);
         }
     }
 
@@ -568,6 +701,24 @@ public sealed class HerdrInteractiveBackendTests
         await run.DeliverAsync(CancellationToken.None);
         var evidence = await Collect(run);
         Assert.Contains(new BackendEvidence.Ack("corr"), evidence);
+        Assert.Contains(new BackendEvidence.Result("corr", "finished"), evidence);
+        Assert.DoesNotContain(evidence, item => item is BackendEvidence.ProtocolError);
+    }
+
+    [Fact]
+    public async Task One_transient_gone_sample_does_not_end_a_live_turn()
+    {
+        var control = new FakeControl
+        {
+            Status = InteractiveAgentStatus.Working,
+            Statuses = new([InteractiveAgentStatus.Working, InteractiveAgentStatus.Gone, InteractiveAgentStatus.Working]),
+        };
+        var partial = new InteractiveTranscript("native", "running verify", ["running verify"]);
+        var reader = new SequenceReader(partial, partial, new InteractiveTranscript("native", "finished", ["finished"], Completed: true));
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Codex, Path.GetTempPath());
+        await using var run = backend.Start(new BackendRequest("job", "corr", "work", "") { WorkingDirectory = Path.GetTempPath() });
+        await run.DeliverAsync(CancellationToken.None);
+        var evidence = await Collect(run);
         Assert.Contains(new BackendEvidence.Result("corr", "finished"), evidence);
         Assert.DoesNotContain(evidence, item => item is BackendEvidence.ProtocolError);
     }
@@ -767,7 +918,7 @@ public sealed class HerdrInteractiveBackendTests
         public bool FailPrompt { get; init; }
         public bool FailStatus { get; set; }
         public InteractiveAgentStatus Status { get; set; } = InteractiveAgentStatus.Done;
-        public Queue<InteractiveAgentStatus>? Statuses { get; init; }
+        public Queue<InteractiveAgentStatus>? Statuses { get; set; }
         public bool Stopped { get; private set; }
 
         public Task PromptAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken)
@@ -812,6 +963,17 @@ public sealed class HerdrInteractiveBackendTests
     {
         public InteractiveTranscript? Output { get; set; } = output;
         public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started) => Output;
+        public string? FindPiSessionDirectory(string root, string sessionId) => null;
+    }
+
+    sealed class BoundMutableReader(InteractiveTranscript? output) : IInteractiveTranscriptReader
+    {
+        public InteractiveTranscript? Output { get; set; } = output;
+        public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started)
+        {
+            if (Output?.SessionId is { } id) { launch.NativeTranscript = new NativeTranscriptBinding(id, "/tmp/test-transcript"); }
+            return Output;
+        }
         public string? FindPiSessionDirectory(string root, string sessionId) => null;
     }
 

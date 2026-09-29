@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.DAL.Features.Jobs;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
@@ -51,7 +52,9 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             var (model, effort) = InteractiveLaunch.Selection(request.Options);
             if (live.Model == model && live.Effort == effort)
             {
-                return new Run(_control, _transcripts, request, live with { StartupProgress = request.StartupProgress, LiveReuse = true }, started, _settleTimeout, _startupTimeout, RememberSession, BindNativeSession);
+                var reused = live with { StartupProgress = request.StartupProgress, LiveReuse = true, JobId = request.JobId };
+                if (_control is HerdrAgentControl control) { control.TransferOwnership(reused); }
+                return new Run(_control, _transcripts, request, reused, started, _settleTimeout, _startupTimeout, RememberSession, BindNativeSession);
             }
             _control.StopOwned(live);
         }
@@ -60,7 +63,12 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         var piDirectory = _kind == InteractiveAgentKind.Pi ? PiDirectory(request) : null;
         var launch = new InteractiveLaunch(_kind, agentName, cwd, request.ResumeSessionId, piDirectory,
             Path.Combine(_stateRoot, "herdr", agentName + ".bootstrap"))
-        { StartupProgress = request.StartupProgress, JobId = request.JobId, HerdrPlacement = AgentTeamForge.Business.Features.Jobs.JobOptions.Read(request.Options, "herdr_placement") }.WithSelection(request.Options);
+        {
+            StartupProgress = request.StartupProgress,
+            JobId = request.JobId,
+            TabLabel = TabLabel(_kind, request.DisplayName, request.JobId),
+            HerdrPlacement = AgentTeamForge.Business.Features.Jobs.JobOptions.Read(request.Options, "herdr_placement")
+        }.WithSelection(request.Options);
         try
         {
             // Dispatch calls Start on a worker. A failure after session creation is uncertain;
@@ -74,22 +82,76 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout, RememberSession, BindNativeSession);
     }
 
-    void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
-
-    void BindNativeSession(string sessionId, InteractiveLaunch launch) => _nativeSessions[sessionId] = launch;
-
-    public bool HasLiveCodexSession(string sessionId)
+    /// <summary>
+    /// Observe a prompt already submitted before daemon death; never send it again.
+    /// <paramref name="gone"/> is true only when no turn can still be running there
+    /// (prompt never submitted, no owned pane, or its server/shell process is proven gone);
+    /// any other failure to rebind leaves the job fenced.
+    /// </summary>
+    public IBackendRun? Reattach(JobRecord job, RunRecord run, out bool gone)
     {
-        if (_kind != InteractiveAgentKind.Codex || !_nativeSessions.TryGetValue(sessionId, out var launch)
-            || launch.NativeTranscript is not { SessionId: var bound } || bound != sessionId) { return false; }
+        gone = false;
+        if (_control is not HerdrAgentControl control || !DateTimeOffset.TryParse(run.StartedAt, out var started)) { return null; }
+        var owned = HerdrOwnedSessions.Read(_stateRoot, _ => { })
+            .FirstOrDefault(entry => entry.Session.JobId == job.JobId);
+        if (run.SubmittedAt is null || owned.Session is null) { gone = true; return null; }
+        gone = control.PaneIsGone(owned.Session);
+        if (gone) { return null; }
+        var bootstrap = HerdrOwnedSessions.BootstrapForRecord(owned.Path);
+        if (!File.Exists(bootstrap)) { return null; }
+        var agentName = Path.GetFileNameWithoutExtension(bootstrap);
+        var request = new BackendRequest(job.JobId, run.Correlation, job.Instruction, job.Options)
+        {
+            DisplayName = job.TargetAgent,
+            ResumeSessionId = job.SessionId,
+            WorkingDirectory = job.WorktreePath ?? job.Cwd,
+        };
+        var piDirectory = _kind == InteractiveAgentKind.Pi && job.SessionId is { } piSession
+            ? _transcripts.FindPiSessionDirectory(Path.Combine(_stateRoot, "pi-sessions"), piSession) : null;
+        if (_kind == InteractiveAgentKind.Pi && piDirectory is null) { return null; }
+        var launch = new InteractiveLaunch(_kind, agentName, request.WorkingDirectory ?? Environment.CurrentDirectory,
+            job.SessionId, piDirectory, bootstrap)
+        { JobId = job.JobId, TabLabel = owned.Session.TabLabel, LiveReuse = true }.WithSelection(job.Options);
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult()
-                is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Working or InteractiveAgentStatus.Done;
+            if (control.RebindAsync(launch, owned.Session, timeout.Token).GetAwaiter().GetResult())
+            {
+                return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout,
+                    RememberSession, BindNativeSession, recovered: true);
+            }
         }
-        catch (Exception ex) when (ex is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
+        catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { }
+        gone = control.PaneIsGone(owned.Session);
+        return null;
     }
+
+    void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
+
+    internal static string TabLabel(InteractiveAgentKind kind, string? name, string jobId) =>
+        $"{kind.ToString().ToLowerInvariant()}: {(string.IsNullOrWhiteSpace(name) ? jobId[..Math.Min(jobId.Length, 8)] : name)}";
+
+    void BindNativeSession(string sessionId, InteractiveLaunch launch) => _nativeSessions[sessionId] = launch;
+
+    InteractiveAgentStatus? CodexSessionStatus(string sessionId)
+    {
+        if (_kind != InteractiveAgentKind.Codex || !_nativeSessions.TryGetValue(sessionId, out var launch)
+            || launch.NativeTranscript is not { SessionId: var bound } || bound != sessionId) { return null; }
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult();
+        }
+        catch (Exception ex) when (ex is HerdrLaunchException or IOException or OperationCanceledException) { return null; }
+    }
+
+    public bool HasLiveCodexSession(string sessionId) =>
+        CodexSessionStatus(sessionId) is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Working or InteractiveAgentStatus.Done;
+
+    public bool HasWorkingCodexSession(string sessionId) => CodexSessionStatus(sessionId) == InteractiveAgentStatus.Working;
+
+    public bool HasIdleCodexSession(string sessionId) =>
+        CodexSessionStatus(sessionId) is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done;
 
     public bool HasIdleClaudeSession(string sessionId)
     {
@@ -122,6 +184,18 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult() != InteractiveAgentStatus.Gone;
     });
+
+    public bool HasIdleJob(JobRecord job)
+    {
+        if (job.SessionId is not { } sessionId || !_nativeSessions.TryGetValue(sessionId, out var launch)
+            || launch.JobId != job.JobId || launch.NativeTranscript?.SessionId != sessionId) { return false; }
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult() is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done;
+        }
+        catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
+    }
 
     // Only a verified Gone tab is dropped; a slow or failed probe keeps the prior
     // reuse path so it cannot surface as a start timeout that fences the session.
@@ -165,10 +239,10 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
 
     sealed class Run(IHerdrAgentControl control, IInteractiveTranscriptReader transcripts, BackendRequest request,
         InteractiveLaunch launch, DateTimeOffset started, TimeSpan settleTimeout, TimeSpan startupTimeout, Action<string, InteractiveLaunch> rememberSession,
-        Action<string, InteractiveLaunch> bindNativeSession) : IBackendRun
+        Action<string, InteractiveLaunch> bindNativeSession, bool recovered = false) : IBackendRun
     {
         bool _agentExited;
-        bool _promptReturned;
+        bool _promptReturned = recovered;
         readonly Lock _lifetime = new();
         bool _interrupted;
         bool _stopped;
@@ -178,6 +252,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         InteractiveApiError? _observedApiError;
         string? _reportedLimitDetails;
         int _apiErrorProgressCount;
+        string? _lastControlError;
         public bool OwnedSessionStopped { get; private set; }
         public int? ProcessId => null; // The Herdr server owns the TUI process, not this daemon.
 
@@ -219,15 +294,31 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             var quietSince = DateTimeOffset.UtcNow;
             var confirmationDeadline = DateTimeOffset.UtcNow.Add(startupTimeout);
             var seenMessages = 0;
+            var controlFailures = 0;
+            var goneSamples = 0;
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var status = await StatusAsync(cancellationToken);
                 if (status is null && (acknowledged || _promptReturned))
                 {
-                    yield return new BackendEvidence.ProtocolError("interactive_control_failed");
-                    yield break;
+                    if (++controlFailures >= 3)
+                    {
+                        yield return new BackendEvidence.ProtocolError("interactive_control_failed", _lastControlError);
+                        yield break;
+                    }
+                    await Task.Delay(250, cancellationToken);
+                    continue;
                 }
+                controlFailures = 0;
+                // Gone is derived from Herdr CLI and /proc probes (pane get, server scan), which a
+                // loaded host can fail once; require consecutive samples before ending a live turn.
+                if (status == InteractiveAgentStatus.Gone && ++goneSamples < 3)
+                {
+                    await Task.Delay(250, cancellationToken);
+                    continue;
+                }
+                if (status != InteractiveAgentStatus.Gone) { goneSamples = 0; }
                 var output = transcripts.Read(launch, "atf-corr:" + request.Correlation, started);
                 if (output?.BindingError is { } bindingError)
                 {
@@ -340,7 +431,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         async Task<InteractiveAgentStatus?> StatusAsync(CancellationToken cancellationToken)
         {
             try { return await control.StatusAsync(launch, cancellationToken); }
-            catch (HerdrLaunchException) { return null; }
+            catch (HerdrLaunchException error) { _lastControlError = error.Message; return null; }
         }
 
         public void TerminateOwnedChild()
@@ -412,6 +503,7 @@ internal sealed record InteractiveLaunch(InteractiveAgentKind Kind, string Agent
     public string? Model { get; init; }
     public string? Effort { get; init; }
     public string? HerdrPlacement { get; init; }
+    public string? TabLabel { get; init; }
 
     public InteractiveLaunch WithSelection(string options)
     {

@@ -29,7 +29,7 @@ public sealed class LeadSessionTests
             Workspace = first.Workspace,
             AllWorkspace = true
         }).Page!.Jobs.Count);
-        // A sibling's job listed with all_workspace can be read, but not stopped.
+        // A sibling's job listed with all_workspace can be read, but not stopped unless it is fenced.
         Assert.True(endpoint.Handle(new IpcRequest
         {
             Op = IpcProtocol.JobGet,

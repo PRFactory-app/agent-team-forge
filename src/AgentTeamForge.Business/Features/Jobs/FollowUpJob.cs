@@ -11,7 +11,8 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// transaction that accepts the new turn.
 /// </summary>
 public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, AcceptJob accept, Action<string>? cancelRunning = null,
-    Func<int, byte[]>? readProcessEnvironment = null)
+    Func<int, byte[]>? readProcessEnvironment = null, Func<JobRecord, bool>? reconcileIdleInteractive = null,
+    Func<JobRecord, bool>? hasIdleInteractive = null)
 {
     public const string Operation = "job_follow_up";
 
@@ -58,9 +59,15 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             && request.Model is null && request.Effort is null;
         var defer = request.Defer;
 
-        var interruptRunning = request.Interrupt && parent.Status == JobStatus.Running;
+        // Ctrl+C can leave the durable run active after Codex has returned to its
+        // input editor. `codex queue` acknowledges that stale turn but never
+        // presents its queued prompt. A follow-up replaces this verified idle turn.
+        bool interruptRunning;
         try
         {
+            var interruptedInTui = nativeCodex && parent.Status == JobStatus.Running
+                && hasIdleInteractive?.Invoke(parent) == true;
+            interruptRunning = parent.Status == JobStatus.Running && (request.Interrupt || interruptedInTui);
             // Retry lookup must precede mutable readiness checks: accepted work may
             // now be running, or fenced after a daemon crash. Admit still checks the fingerprint.
             if (!store.HasAcceptedKey(principal.Principal, principal.Team, Operation,
@@ -68,7 +75,7 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             {
                 // Resuming a session that is still in a turn would race the running agent;
                 // defer waits for its terminal state; interrupt cancels it atomically.
-                var deferred = defer && !request.Interrupt && parent.Status is JobStatus.Queued or JobStatus.Running;
+                var deferred = defer && !interruptRunning && parent.Status is JobStatus.Queued or JobStatus.Running;
                 if (!deferred && (parent.SessionId is null || parent.Status is not (JobStatus.Completed or JobStatus.Cancelled or JobStatus.Failed or JobStatus.NeedsReconciliation)
                     && !interruptRunning))
                 {
@@ -86,6 +93,8 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
                 foreach (var peerId in store.GetSessionJobs(parent.JobId))
                 {
                     if (store.GetJob(peerId) is not { } peer) { continue; } // Concurrent prune.
+                    if (peer.Status == JobStatus.NeedsReconciliation
+                        && reconcileIdleInteractive?.Invoke(peer) == true) { continue; }
                     var peerRuns = store.GetRuns(peerId);
                     if (peer.Status is JobStatus.NeedsReconciliation or JobStatus.Cancelled && peerRuns.Count > 0
                         && peerRuns[^1].BackendPid is not null && peerRuns.All(r => r.State != "started")
@@ -154,6 +163,6 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             worktreePath: parent.WorktreePath, worktreeBranch: parent.WorktreeBranch,
             timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds,
             interruptParent: interruptRunning, cancelRunning: cancelRunning, leadSessionId: request.LeadSessionId,
-            targetAgent: parent.TargetAgent, deferParent: defer && !request.Interrupt);
+            targetAgent: parent.TargetAgent, deferParent: defer && !interruptRunning);
     }
 }

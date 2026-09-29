@@ -78,6 +78,27 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return 0;
     });
 
+    /// <summary>
+    /// An idle, verified interactive pane proves its acknowledged turn was interrupted.
+    /// Only an acknowledged turn qualifies: an unconfirmed delivery may still sit in the editor.
+    /// </summary>
+    public bool SettleInterrupted(string jobId) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        var changed = Execute(connection, tx, """
+            UPDATE jobs SET status='failed', reason_code='interactive_turn_interrupted', session_fenced=0, updated_at=$now
+            WHERE job_id=$id AND status='needs_reconciliation' AND reason_code='interactive_completion_unobserved'
+            """, ("$id", jobId), ("$now", Now()));
+        if (changed != 1) { return false; }
+        Execute(connection, tx, """
+            UPDATE runs SET state='failed', reason_code='interactive_turn_interrupted'
+            WHERE job_id=$id AND state='needs_reconciliation';
+            INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'failed', $now);
+            """, ("$id", jobId), ("$now", Now()));
+        tx.Commit();
+        return true;
+    });
+
     public void ReconcileStoppedSession(string jobId) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
@@ -870,6 +891,58 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
         tx.Commit();
         return (IReadOnlyList<string>)jobs;
+    });
+
+    /// <summary>Includes attempts quarantined by an earlier startup that died before reattachment.</summary>
+    public IReadOnlyList<string> RestartCandidates() => Read(connection =>
+    {
+        using var command = Command(connection, null, """
+            SELECT job_id FROM jobs WHERE status='needs_reconciliation' AND reason_code='daemon_restart_uncertain'
+            ORDER BY accepted_at, job_id
+            """);
+        using var reader = command.ExecuteReader();
+        var ids = new List<string>();
+        while (reader.Read()) { ids.Add(reader.GetString(0)); }
+        return (IReadOnlyList<string>)ids;
+    });
+
+    /// <summary>Restore one verified live interactive attempt without replaying its prompt.</summary>
+    public bool ReattachQuarantined(RunRef run) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        var updated = Execute(connection, tx, """
+            UPDATE runs SET state='started', reason_code=NULL, finished_at=NULL
+            WHERE run_id=$run AND job_id=$id AND generation=$gen AND correlation=$corr
+              AND state='needs_reconciliation' AND reason_code='daemon_restart_uncertain'
+            """, ("$run", run.RunId), ("$id", run.JobId), ("$gen", run.Generation), ("$corr", run.Correlation));
+        if (updated != 1) { return false; }
+        updated = Execute(connection, tx, """
+            UPDATE jobs SET status='running', session_fenced=0, reason_code=NULL, updated_at=$now
+            WHERE job_id=$id AND status='needs_reconciliation' AND reason_code='daemon_restart_uncertain'
+            """, ("$id", run.JobId), ("$now", Now()));
+        if (updated != 1) { return false; }
+        Execute(connection, tx, "INSERT INTO events(job_id, run_id, kind, created_at) VALUES ($id, $run, 'running', $now)",
+            ("$id", run.JobId), ("$run", run.RunId), ("$now", Now()));
+        tx.Commit();
+        return true;
+    });
+
+    /// <summary>No owned agent could be rebound after restart; release this job's fence.</summary>
+    public bool FailUnattached(string jobId) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        var updated = Execute(connection, tx, """
+            UPDATE jobs SET status='failed', session_fenced=0, reason_code='daemon_restart_agent_gone', updated_at=$now
+            WHERE job_id=$id AND status='needs_reconciliation' AND reason_code='daemon_restart_uncertain'
+            """, ("$id", jobId), ("$now", Now()));
+        if (updated != 1) { return false; }
+        Execute(connection, tx, """
+            UPDATE runs SET state='failed', reason_code='daemon_restart_agent_gone'
+            WHERE job_id=$id AND state='needs_reconciliation' AND reason_code='daemon_restart_uncertain';
+            INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'failed', $now);
+            """, ("$id", jobId), ("$now", Now()));
+        tx.Commit();
+        return true;
     });
 
     /// <summary>

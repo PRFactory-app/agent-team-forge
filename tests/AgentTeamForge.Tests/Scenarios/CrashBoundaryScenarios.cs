@@ -52,7 +52,7 @@ public sealed class CrashBoundaryScenarios
     }
 
     [Fact]
-    public async Task Crash_after_attempt_start_is_quarantined_not_replayed()
+    public async Task Crash_after_attempt_start_fails_unattached_run_without_replay()
     {
         using var rig = new SpikeRig();
         await rig.InitAsync();
@@ -64,14 +64,14 @@ public sealed class CrashBoundaryScenarios
         await rig.StartDaemonAsync();
         var retry = await rig.SubmitAsync("k-attempt", "x");
         Assert.Equal("existing", retry.Outcome);
-        Assert.Equal(JobStatus.NeedsReconciliation, retry.Job!.Status);
-        Assert.Equal("daemon_restart_uncertain", retry.Job.ReasonCode);
+        Assert.Equal(JobStatus.Failed, retry.Job!.Status);
+        Assert.Equal("daemon_restart_agent_gone", retry.Job.ReasonCode);
         Assert.Equal(1, retry.Job.Attempts);
         Assert.Equal(0, rig.Invocations(retry.Job.JobId));
     }
 
     [Fact]
-    public async Task Daemon_killed_during_an_acked_run_quarantines_it_on_restart()
+    public async Task Daemon_killed_during_an_acked_run_stops_orphan_and_fails_it_on_restart()
     {
         using var rig = new SpikeRig();
         await rig.InitAsync();
@@ -89,7 +89,7 @@ public sealed class CrashBoundaryScenarios
         await rig.StartDaemonAsync();
 
         var after = await rig.GetAsync(accepted.Job.JobId);
-        Assert.Equal(JobStatus.NeedsReconciliation, after.Job!.Status);
+        Assert.Equal(JobStatus.Failed, after.Job!.Status);
         Assert.Equal(1, after.Job.Attempts);
         Assert.Equal(1, rig.Invocations(accepted.Job.JobId));
         await Bounded.Until(() =>

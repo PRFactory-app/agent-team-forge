@@ -6,6 +6,15 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 public sealed class TierMapTests
 {
     [Fact]
+    public void Built_in_codex_tier_effort_increases_with_tier()
+    {
+        string[] order = [.. TierMap.Efforts("codex")];
+        var tiers = ModelSelection.TierNames("codex");
+        var efforts = tiers.Select(tier => ModelSelection.DefaultTier("codex", tier).Effort).ToArray();
+        Assert.Equal(efforts.OrderBy(effort => Array.IndexOf(order, effort)), efforts);
+        Assert.NotEqual("max", ModelSelection.DefaultTier("codex", "medium").Effort);
+    }
+    [Fact]
     public void Save_is_private_durable_and_changes_admission_only_for_selected_backend()
     {
         using var state = new TempStateDir();
@@ -21,7 +30,7 @@ public sealed class TierMapTests
         var pi = accept.Execute(new SubmitJobRequest("pi-tier", "task", null, false) { Backend = "pi", Model = "xhigh" }).Job!;
         Assert.Equal(("gpt-6-sol", "xhigh"), (codex.Model, codex.Effort));
         Assert.Equal(("gpt-6-sol", "xhigh"), ModelSelection.Resolve("codex", "XHIGH", null, _ => [], map));
-        Assert.Equal(("gpt-6-astra", "low"), (pi.Model, pi.Effort));
+        Assert.Equal(("gpt-6-astra", "xhigh"), (pi.Model, pi.Effort));
         map.Change("codex", "xhigh", null, null);
         Assert.DoesNotContain(new TierMap(state.Path, _ => []).Settings(), row => row.Custom);
         Assert.Equal(("gpt-6-sol", "xhigh"), (fixture.Get().Execute(codex.JobId).Job!.Model,

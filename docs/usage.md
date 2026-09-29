@@ -194,15 +194,15 @@ accepts `--worktree`; follow-ups reuse the parent's worktree.
 | `cancelled` | Stopped, timed out, expired in the queue or interrupted (see `reason_code`) |
 | `needs_reconciliation` | ATF cannot prove whether the prompt ran or how it ended |
 
-`needs_reconciliation` is never retried automatically, and follow-ups into
-that agent session are blocked ([ADR 0008](adr/0008-never-replay-uncertain-prompts.md)).
-Read the agent's session to decide. `stop_job` then stops the agent only if
-ATF can verify it owns the process, records `cancelled` with reason `stopped`
-and releases the block; otherwise it returns `owned_agent_not_verified`
-without signaling any PID. After a daemon restart, in-flight jobs become
-`needs_reconciliation` with reason `daemon_restart_uncertain` while their
-interactive agents keep running
-([ADR 0009](adr/0009-restart-quarantines-live-tuis.md)).
+`needs_reconciliation` is never replayed automatically. A follow-up waits
+until the session is verified idle or stopped. For a live idle Herdr agent,
+ATF settles an acknowledged but unobserved (interrupted) turn as `failed` and resumes the next
+turn in the same session. `stop_job` cancels the fenced job, terminates only a
+verified owned process, and releases the fence once no marked process remains.
+After daemon restart, ATF reattaches a Herdr turn only when its saved server,
+pane, terminal and shell identity still match. A run whose Herdr server or
+pane shell is proven gone fails with `daemon_restart_agent_gone`; one ATF
+cannot verify either way stays `needs_reconciliation` until stopped.
 
 ## State, logs and pruning
 

@@ -154,10 +154,13 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         {
             return new IpcResponse(false, JobErrors.InvalidRequest);
         }
-        // Reads reach any job in the lead's workspace; stop and follow-up only its own.
-        if (request.LeadSessionId is not null && request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobActivity or IpcProtocol.JobStop or IpcProtocol.JobStopAgent or IpcProtocol.JobFollowUp
+        // Reads reach any job in the lead's workspace; stop and follow-up only its own,
+        // plus a fenced job whose original lead session was lost during a restart.
+        var reads = request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobActivity;
+        if (request.LeadSessionId is not null && (reads || request.Op is IpcProtocol.JobStop or IpcProtocol.JobStopAgent or IpcProtocol.JobFollowUp)
             && (jobStore is null || request.JobId is null
-                || !jobStore.LeadCanAccess(request.JobId, request.LeadSessionId, request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobActivity ? request.Workspace : null)))
+                || !jobStore.LeadCanAccess(request.JobId, request.LeadSessionId,
+                    reads || jobStore.GetJob(request.JobId)?.Status == JobStatus.NeedsReconciliation ? request.Workspace : null)))
         {
             return new IpcResponse(false, JobErrors.NotFound);
         }
