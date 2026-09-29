@@ -743,12 +743,15 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return ids.Count;
     }
 
-    /// <summary>Records a verified stop of an uncertain run and releases its session fence.</summary>
     /// <summary>
-    /// With <paramref name="requireIdlePeers"/> the cancel is refused, in the same transaction, while a
-    /// session peer is queued or running, so a concurrently admitted follow-up is never left behind it. Its own deferred children do not count: they are cancelled with it.
+    /// Records a verified stop of an uncertain run and releases its session fence. With <paramref name="requireIdlePeers"/>
+    /// the cancel is refused, in the same transaction, while a session peer is queued or running, so a concurrently
+    /// admitted follow-up is never left behind it. With <paramref name="requireIdlePeersIfUnfenced"/> the same check runs
+    /// only when the job's fence was already cleared (a follow-up could have been admitted since the owned stop).
+    /// Its own deferred children do not count: they are cancelled with it.
     /// </summary>
-    public CancelOutcome CancelReconciled(string jobId, string principal, string team, bool requireIdlePeers = false) => Write(connection =>
+    public CancelOutcome CancelReconciled(string jobId, string principal, string team, bool requireIdlePeers = false,
+        bool requireIdlePeersIfUnfenced = false) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         var job = GetJob(connection, tx, jobId);
@@ -760,7 +763,9 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         {
             return new CancelOutcome(job, false, false);
         }
-        if (requireIdlePeers && Scalar(connection, tx,
+        var checkPeers = requireIdlePeers || requireIdlePeersIfUnfenced
+            && Scalar(connection, tx, "SELECT session_fenced FROM jobs WHERE job_id=$id", ("$id", jobId)) == 0;
+        if (checkPeers && Scalar(connection, tx,
             $"""
             SELECT count(*) FROM jobs WHERE status IN ('queued','running') AND job_id IN ({SessionPeers})
               AND NOT (parent_job_id=$id AND instr(options, ';defer=1')>0)

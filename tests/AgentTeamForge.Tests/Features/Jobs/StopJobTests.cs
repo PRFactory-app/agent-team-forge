@@ -179,4 +179,36 @@ public sealed class StopJobTests
         // A crash before the kill completed must still find this run's processes on restart.
         Assert.Contains(claim.Correlation, f.Store.GetInterruptedRunCorrelations());
     }
+
+    [Fact]
+    public void Reconciled_stop_does_not_cancel_or_forget_when_a_follow_up_raced_in_after_the_fence_cleared()
+    {
+        using var f = new JobFixture();
+        var parent = f.Submit("p");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(f.Store.RecordSession(run, "sess-race"));
+        Assert.True(f.Store.EndUnsuccessfully(run, JobStatus.NeedsReconciliation, "interactive_completion_unobserved"));
+        Assert.True(f.Store.IsSessionFenced(parent.JobId));
+        string? followUpId = null;
+        var forgot = false;
+
+        var result = new StopJob(f.Store, JobFixture.Operator, _ => { },
+            stopReconciled: j =>
+            {
+                // The owned stop closed the pane; the dispatcher's teardown clears the fence, then a follow-up is admitted.
+                f.Store.ReconcileStoppedJob(j.JobId);
+                var accepted = f.Store.AcceptOrGet(new NewJob(JobFixture.Operator.Principal, JobFixture.Operator.Team,
+                    JobFixture.Operator.Agent, FollowUpJob.Operation, "k", "fp", "next", "")
+                { ParentJobId = j.JobId }, f.Limits.QueueLimit);
+                followUpId = accepted is Accepted a ? a.Job.JobId : throw new InvalidOperationException("expected acceptance");
+                return ReconcileStop.Stopped;
+            },
+            forgetReconciledOwnership: _ => forgot = true).Execute(parent.JobId);
+
+        Assert.Equal(JobErrors.OwnershipNotProven, result.Error);
+        Assert.False(forgot);
+        Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(parent.JobId)!.Status);
+        Assert.Equal(JobStatus.Queued, f.Store.GetJob(followUpId!)!.Status);
+    }
 }
