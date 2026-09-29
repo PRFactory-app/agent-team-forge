@@ -670,6 +670,22 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return updated == 1;
     });
 
+    /// <summary>Marks (or clears) a live turn waiting on an interactive prompt without ending its run.</summary>
+    public bool RecordBlocked(RunRef run, bool blocked) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        var updated = Execute(connection, tx, """
+            UPDATE jobs SET reason_code=CASE WHEN $blocked THEN 'interactive_agent_blocked' ELSE NULL END, updated_at=$now
+            WHERE job_id=$id AND status='running'
+              AND (reason_code IS NULL OR reason_code='interactive_agent_blocked')
+              AND EXISTS (SELECT 1 FROM runs WHERE run_id=$run AND job_id=$id AND generation=$gen AND correlation=$corr AND state='started')
+            """,
+            ("$blocked", blocked), ("$now", Now()), ("$id", run.JobId), ("$run", run.RunId),
+            ("$gen", run.Generation), ("$corr", run.Correlation));
+        tx.Commit();
+        return updated == 1;
+    });
+
     /// <summary>
     /// Fenced completion: only the current started run with matching
     /// generation/correlation can store result + terminal status + event, together.
@@ -743,12 +759,15 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return ids.Count;
     }
 
-    /// <summary>Records a verified stop of an uncertain run and releases its session fence.</summary>
     /// <summary>
-    /// With <paramref name="requireIdlePeers"/> the cancel is refused, in the same transaction, while a
-    /// session peer is queued or running, so a concurrently admitted follow-up is never left behind it. Its own deferred children do not count: they are cancelled with it.
+    /// Records a verified stop of an uncertain run and releases its session fence. With <paramref name="requireIdlePeers"/>
+    /// the cancel is refused, in the same transaction, while a session peer is queued or running, so a concurrently
+    /// admitted follow-up is never left behind it. With <paramref name="requireIdlePeersIfUnfenced"/> the same check runs
+    /// only when the job's fence was already cleared (a follow-up could have been admitted since the owned stop).
+    /// Its own deferred children do not count: they are cancelled with it.
     /// </summary>
-    public CancelOutcome CancelReconciled(string jobId, string principal, string team, bool requireIdlePeers = false) => Write(connection =>
+    public CancelOutcome CancelReconciled(string jobId, string principal, string team, bool requireIdlePeers = false,
+        bool requireIdlePeersIfUnfenced = false) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         var job = GetJob(connection, tx, jobId);
@@ -760,7 +779,9 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         {
             return new CancelOutcome(job, false, false);
         }
-        if (requireIdlePeers && Scalar(connection, tx,
+        var checkPeers = requireIdlePeers || requireIdlePeersIfUnfenced
+            && Scalar(connection, tx, "SELECT session_fenced FROM jobs WHERE job_id=$id", ("$id", jobId)) == 0;
+        if (checkPeers && Scalar(connection, tx,
             $"""
             SELECT count(*) FROM jobs WHERE status IN ('queued','running') AND job_id IN ({SessionPeers})
               AND NOT (parent_job_id=$id AND instr(options, ';defer=1')>0)

@@ -405,7 +405,7 @@ public static class DaemonCommand
 
     static readonly string[] CatalogBackends = ["codex", "pi", "cursor"];
 
-    static void Log(string message) => Console.Error.WriteLine($"[atf-daemon] {message}");
+    static void Log(string message) => Console.Error.WriteLine($"[atf-daemon] {DateTime.UtcNow:yyyy-MM-dd'T'HH:mm:ss.fff'Z'} {message}");
 
     sealed class DaemonLogWriter(TextWriter stderr, TextWriter file) : TextWriter
     {

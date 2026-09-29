@@ -41,6 +41,24 @@ public sealed class RecoverOnStartupTests
     }
 
     [Fact]
+    public void Blocked_running_turn_is_quarantined_on_daemon_restart()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("blocked");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(f.Store.RecordBlocked(run, true));
+        Assert.Equal("interactive_agent_blocked", f.Store.GetJob(job.JobId)!.ReasonCode);
+
+        Assert.Equal([job.JobId], f.Store.QuarantineUncertainAttempts());
+
+        var record = f.Store.GetJob(job.JobId)!;
+        Assert.Equal(JobStatus.NeedsReconciliation, record.Status);
+        Assert.Equal("daemon_restart_uncertain", record.ReasonCode);
+        Assert.True(f.Store.IsSessionFenced(job.JobId));
+    }
+
+    [Fact]
     public void Verified_reattachment_restores_same_run_and_unattached_failure_releases_fence()
     {
         using var f = new JobFixture();

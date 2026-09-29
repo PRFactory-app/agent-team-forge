@@ -82,7 +82,7 @@ public sealed class SpikeRig : IDisposable
         };
         process.BeginErrorReadLine();
         process.StandardOutput.Close();
-        await Bounded.Until(() => process.HasExited || DaemonLog.Any(l => l.StartsWith("[atf-daemon] ready pid=", StringComparison.Ordinal)), "daemon ready");
+        await Bounded.Until(() => process.HasExited || DaemonLog.Any(l => l.StartsWith("[atf-daemon] ", StringComparison.Ordinal) && l.Contains(" ready pid=", StringComparison.Ordinal)), "daemon ready");
         Assert.False(process.HasExited, "daemon exited during startup");
         return process;
     }

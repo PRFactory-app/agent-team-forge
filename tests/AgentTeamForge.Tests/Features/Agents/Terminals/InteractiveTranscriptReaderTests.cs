@@ -22,6 +22,8 @@ public sealed class InteractiveTranscriptReaderTests
     const string ClaudeToolResult = """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}""";
     const string ClaudeBackground = """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"Running in background"}]},"toolUseResult":{"backgroundTaskId":"task-1"}}""";
     const string ClaudeAsyncAgent = """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-2","content":[{"type":"text","text":"Async agent launched successfully."}]}]},"toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"agent-1"}}""";
+    static string ClaudeQueuedNotification(string id = "task-1") =>
+        $$$"""{"type":"attachment","isSidechain":false,"sessionId":"claude-native","attachment":{"type":"queued_command","commandMode":"task-notification","prompt":"<task-notification><task-id>{{{id}}}</task-id><status>completed</status></task-notification>"}}""";
     static string ClaudeNotification(string id = "task-1") => ClaudeUser($"<task-notification><task-id>{id}</task-id><status>completed</status></task-notification>");
 
     const string CodexMeta = """{"type":"session_meta","payload":{"id":"codex-native","source":"cli"}}""";
@@ -61,6 +63,11 @@ public sealed class InteractiveTranscriptReaderTests
             ClaudeNotification(), ClaudeAssistant("human reply", "end_turn")], "waiting", false },
         { InteractiveAgentKind.Claude, [ClaudeUser(Marker), ClaudeBackground, ClaudeAssistant("waiting", "end_turn"), ClaudeNotification("foreign-task"),
             ClaudeAssistant("human reply", "end_turn")], "waiting", false },
+        // Mid-turn delivery: the notification arrives as a queued_command attachment.
+        { InteractiveAgentKind.Claude, [ClaudeUser(Marker), ClaudeBackground, ClaudeAssistant("checking", "tool_use"), ClaudeQueuedNotification(),
+            ClaudeToolResult, ClaudeAssistant("DONE", "end_turn")], "DONE", true },
+        { InteractiveAgentKind.Claude, [ClaudeUser(Marker), ClaudeBackground, ClaudeQueuedNotification("foreign-task"),
+            ClaudeAssistant("waiting", "end_turn")], "waiting", false },
         // Claude 2.1.283 async Agent launch: pending until its agent-ID task notification and the final reply.
         { InteractiveAgentKind.Claude, [ClaudeUser(Marker), ClaudeAsyncAgent, ClaudeAssistant("still running", "end_turn")], "still running", false },
         { InteractiveAgentKind.Claude, [ClaudeUser(Marker), ClaudeAsyncAgent, ClaudeAssistant("still running", "end_turn"), ClaudeNotification("agent-1"),
