@@ -386,7 +386,9 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     // A follow-up chain consumes its parent: acknowledging the child also acknowledges a finished parent.
     void MarkParentWakeRead(IpcRequest request, string? parentJobId)
     {
-        if (parentJobId is not null && jobStore?.GetJob(parentJobId) is { } parent)
+        if (parentJobId is not null && jobStore is not null
+            && (request.LeadSessionId is null || jobStore.LeadCanAccess(parentJobId, request.LeadSessionId, null))
+            && jobStore.GetJob(parentJobId) is { } parent)
         {
             MarkWakeRead(request, parent.JobId, parent.Status);
         }
