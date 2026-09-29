@@ -11,7 +11,7 @@ public static class ModelSelection
             ["cheapest"] = ("gpt-6-luna", "low"),
             ["low"] = ("gpt-6-luna", "medium"),
             ["medium"] = ("gpt-6-luna", "high"),
-            ["high"] = ("gpt-6-sol", "high"),
+            ["high"] = ("gpt-6.1-sol", "high"),
             ["xhigh"] = ("gpt-6-astra", "xhigh"),
             ["max"] = ("gpt-6-astra", "max"),
         };
@@ -23,7 +23,7 @@ public static class ModelSelection
         : backend is "codex" or "cursor" or "droid" ? SharedTierOrder : [];
 
     public static (string Model, string Effort) DefaultTier(string backend, string tier) =>
-        backend == "pi" && tier == "medium-fast" ? ("gpt-6-sol", "medium")
+        backend == "pi" && tier == "medium-fast" ? ("gpt-6.1-sol", "medium")
         : backend == "cursor" && SharedTierOrder.Contains(tier) ? ("auto", "none")
         : backend == "droid" && Array.IndexOf(SharedTierOrder, tier) is var index and >= 0
             ? ("claude-opus-5", DroidEfforts[index])
