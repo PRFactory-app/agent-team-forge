@@ -70,6 +70,23 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return true;
     });
 
+    /// <summary>
+    /// Like <see cref="TryFenceSessionForStop"/>, but also reports whether this call newly set the
+    /// job's own fence, so a refused stop can release exactly what it acquired.
+    /// </summary>
+    public (bool Fenced, bool Acquired) TryFenceJobForStop(string jobId) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        if (Scalar(connection, tx, $"SELECT count(*) FROM jobs WHERE status='running' AND job_id IN ({SessionPeers})", ("$id", jobId)) > 0)
+        {
+            return (false, false);
+        }
+        var acquired = Scalar(connection, tx, "SELECT count(*) FROM jobs WHERE job_id=$id AND session_fenced=0", ("$id", jobId)) > 0;
+        Execute(connection, tx, "UPDATE jobs SET session_fenced=1 WHERE job_id=$id", ("$id", jobId));
+        tx.Commit();
+        return (true, acquired);
+    });
+
     public void ReconcileStoppedJob(string jobId) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);

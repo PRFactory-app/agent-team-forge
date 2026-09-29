@@ -778,6 +778,37 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public void Refused_stop_releases_only_its_own_fence_when_a_peer_is_already_fenced()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var (_, catalog, _) = RecordlessHerdr(state.Path);
+        var b = f.Submit("peer-b");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(b.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        f.Store.RecordSession(run, "native-shared");
+        f.Store.Complete(run, "done");
+        var followUps = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept());
+        var a = followUps.Execute(new FollowUpRequest(b.JobId, "a", "a-key")).Job!;
+        var aClaim = f.Store.BeginNextAttempt()!;
+        Assert.True(f.Store.EndUnsuccessfully(new RunRef(a.JobId, aClaim.RunId, aClaim.Generation, aClaim.Correlation),
+            JobStatus.NeedsReconciliation, "interactive_agent_exited"));
+        f.Store.ReconcileStoppedJob(a.JobId);
+        var c = followUps.Execute(new FollowUpRequest(b.JobId, "c", "c-key"));
+        Assert.Null(c.Error);
+        f.Store.FenceSession(b.JobId);
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        var result = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
+            stopReconciled: dispatcher.StopReconciled, forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership).Execute(a.JobId);
+
+        Assert.Equal(JobErrors.OwnershipNotProven, result.Error);
+        f.Store.ReconcileStoppedJob(b.JobId);
+        f.Store.Cancel(c.Job!.JobId, JobFixture.Operator.Principal, JobFixture.Operator.Team, false);
+        Assert.False(f.Store.IsSessionFenced(a.JobId));
+    }
+
+    [Fact]
     public void Stop_agent_cancels_reconciled_job_without_ownership_record()
     {
         using var state = new TempStateDir();
