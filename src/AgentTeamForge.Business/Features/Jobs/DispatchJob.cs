@@ -147,6 +147,21 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
+    /// <summary>An idle TUI can be a turn that finished before the sweep recorded it: record it from the same evidence.</summary>
+    public bool SettleCompletedInteractive(JobRecord job)
+    {
+        if (JobOptions.Read(job.Options, "native_codex") == "1")
+        {
+            return store.NativeAttempt(job.JobId) is { } attempt
+                && (attempt.State == "settled" || attempt.State is "sent" or "received" && TrySettleNativeCodex(attempt));
+        }
+        if (backends.Resolve(job.Backend) is not HerdrInteractiveBackend herdr || store.GetRuns(job.JobId) is not [.., var run]
+            || !herdr.HasCompletedTurn(job, run.Correlation)) { return false; }
+        // The owned run loop polls the same transcript and records it within ~250ms.
+        for (var i = 0; i < 8 && store.GetJob(job.JobId)?.Status == JobStatus.Running; i++) { Thread.Sleep(250); }
+        return true;
+    }
+
     bool IsIdleInteractiveNow(JobRecord job)
     {
         if (backends.Resolve(job.Backend) is not HerdrInteractiveBackend herdr) { return false; }
@@ -867,16 +882,17 @@ public sealed class DispatchJob : IDisposable
 
     void ReconcileNativeCodex()
     {
-        foreach (var attempt in store.UnresolvedNativeAttempts())
-        {
-            var receipt = InteractiveTranscriptReader.ReadCodexThread(attempt.CodexHome, attempt.ThreadId, attempt.Correlation);
-            if (receipt is not null) { store.RecordNativeReceipt(attempt.JobId, attempt.Correlation); }
-            if (receipt is { Completed: true, Message: { Length: > 0 } message })
-            {
-                store.SettleNativeAttempt(attempt.JobId, attempt.Correlation, message);
-                Signal();
-            }
-        }
+        foreach (var attempt in store.UnresolvedNativeAttempts()) { TrySettleNativeCodex(attempt); }
+    }
+
+    bool TrySettleNativeCodex(NativeCodexAttempt attempt)
+    {
+        var receipt = InteractiveTranscriptReader.ReadCodexThread(attempt.CodexHome, attempt.ThreadId, attempt.Correlation);
+        if (receipt is not null) { store.RecordNativeReceipt(attempt.JobId, attempt.Correlation); }
+        if (receipt is not { Completed: true, Message: { Length: > 0 } message }) { return false; }
+        var settled = store.SettleNativeAttempt(attempt.JobId, attempt.Correlation, message);
+        if (settled) { Signal(); }
+        return settled;
     }
 
     void ReconcileNativeClaude()

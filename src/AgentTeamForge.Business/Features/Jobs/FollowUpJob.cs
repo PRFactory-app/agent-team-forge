@@ -12,7 +12,7 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// </summary>
 public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, AcceptJob accept, Action<string>? cancelRunning = null,
     Func<int, byte[]>? readProcessEnvironment = null, Func<JobRecord, bool>? reconcileIdleInteractive = null,
-    Func<JobRecord, bool>? hasIdleInteractive = null)
+    Func<JobRecord, bool>? hasIdleInteractive = null, Func<JobRecord, bool>? settleCompletedInteractive = null)
 {
     public const string Operation = "job_follow_up";
 
@@ -67,6 +67,12 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
         {
             var interruptedInTui = nativeCodex && parent.Status == JobStatus.Running
                 && hasIdleInteractive?.Invoke(parent) == true;
+            if (interruptedInTui && settleCompletedInteractive?.Invoke(parent) == true)
+            {
+                // It finished normally before the sweep recorded it: keep its result, never cancel it.
+                interruptedInTui = false;
+                parent = store.GetJob(parent.JobId) ?? parent;
+            }
             interruptRunning = parent.Status == JobStatus.Running && (request.Interrupt || interruptedInTui);
             // Retry lookup must precede mutable readiness checks: accepted work may
             // now be running, or fenced after a daemon crash. Admit still checks the fingerprint.
