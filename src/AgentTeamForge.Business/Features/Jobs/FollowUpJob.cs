@@ -62,11 +62,12 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
         // Ctrl+C can leave the durable run active after Codex has returned to its
         // input editor. `codex queue` acknowledges that stale turn but never
         // presents its queued prompt. A follow-up replaces this verified idle turn.
-        var interruptedInTui = nativeCodex && parent.Status == JobStatus.Running
-            && hasIdleInteractive?.Invoke(parent) == true;
-        var interruptRunning = parent.Status == JobStatus.Running && (request.Interrupt || interruptedInTui);
+        bool interruptRunning;
         try
         {
+            var interruptedInTui = nativeCodex && parent.Status == JobStatus.Running
+                && hasIdleInteractive?.Invoke(parent) == true;
+            interruptRunning = parent.Status == JobStatus.Running && (request.Interrupt || interruptedInTui);
             // Retry lookup must precede mutable readiness checks: accepted work may
             // now be running, or fenced after a daemon crash. Admit still checks the fingerprint.
             if (!store.HasAcceptedKey(principal.Principal, principal.Team, Operation,

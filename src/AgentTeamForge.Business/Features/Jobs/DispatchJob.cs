@@ -133,8 +133,17 @@ public sealed class DispatchJob : IDisposable
         return settled;
     }
 
-    public bool HasIdleInteractive(JobRecord job) =>
-        backends.Resolve(job.Backend) is HerdrInteractiveBackend herdr && herdr.HasIdleJob(job);
+    public bool HasIdleInteractive(JobRecord job)
+    {
+        if (backends.Resolve(job.Backend) is not HerdrInteractiveBackend herdr) { return false; }
+        if (herdr.HasIdleJob(job)) { return true; }
+        // A native `codex queue` follow-up has no new Herdr launch. The bound
+        // launch still names its earlier job, so use this turn's receipt and
+        // the same verified idle thread instead of comparing launch job IDs.
+        return job.Backend == BackendCatalog.Codex && JobOptions.Read(job.Options, "native_codex") == "1"
+            && job.SessionId is { } session && store.GetRuns(job.JobId) is [.., { Acked: true }]
+            && herdr.HasIdleCodexSession(session);
+    }
 
     /// <summary>Interrupts an active attempt after its cancelled state has committed.</summary>
     public void CancelRunning(string jobId)

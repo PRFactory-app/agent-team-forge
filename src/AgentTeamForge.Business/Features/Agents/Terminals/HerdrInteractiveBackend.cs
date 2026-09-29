@@ -133,30 +133,25 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
 
     void BindNativeSession(string sessionId, InteractiveLaunch launch) => _nativeSessions[sessionId] = launch;
 
-    public bool HasLiveCodexSession(string sessionId)
+    InteractiveAgentStatus? CodexSessionStatus(string sessionId)
     {
         if (_kind != InteractiveAgentKind.Codex || !_nativeSessions.TryGetValue(sessionId, out var launch)
-            || launch.NativeTranscript is not { SessionId: var bound } || bound != sessionId) { return false; }
+            || launch.NativeTranscript is not { SessionId: var bound } || bound != sessionId) { return null; }
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult()
-                is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Working or InteractiveAgentStatus.Done;
+            return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult();
         }
-        catch (Exception ex) when (ex is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
+        catch (Exception ex) when (ex is HerdrLaunchException or IOException or OperationCanceledException) { return null; }
     }
 
-    public bool HasWorkingCodexSession(string sessionId)
-    {
-        if (_kind != InteractiveAgentKind.Codex || !_nativeSessions.TryGetValue(sessionId, out var launch)
-            || launch.NativeTranscript is not { SessionId: var bound } || bound != sessionId) { return false; }
-        try
-        {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult() == InteractiveAgentStatus.Working;
-        }
-        catch (Exception ex) when (ex is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
-    }
+    public bool HasLiveCodexSession(string sessionId) =>
+        CodexSessionStatus(sessionId) is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Working or InteractiveAgentStatus.Done;
+
+    public bool HasWorkingCodexSession(string sessionId) => CodexSessionStatus(sessionId) == InteractiveAgentStatus.Working;
+
+    public bool HasIdleCodexSession(string sessionId) =>
+        CodexSessionStatus(sessionId) is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done;
 
     public bool HasIdleClaudeSession(string sessionId)
     {
