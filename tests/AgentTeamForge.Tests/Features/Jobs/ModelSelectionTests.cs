@@ -162,6 +162,23 @@ public sealed class ModelSelectionTests
     }
 
     [Fact]
+    public void Default_sol_tiers_fall_back_to_listed_candidate_but_overrides_stay_strict()
+    {
+        static IReadOnlyCollection<string> OldOnly(string _) => ["gpt-6-sol"];
+        Assert.Equal(("gpt-6-sol", "high"), ModelSelection.Resolve("codex", "high", null, OldOnly));
+        Assert.Equal(("gpt-6-sol", "medium"), ModelSelection.Resolve("pi", "medium-fast", null, OldOnly));
+        Assert.Equal(("gpt-6.1-sol", "high"), ModelSelection.Resolve("codex", "high", null, AllModels));
+        Assert.Equal(("gpt-6.1-sol", "high"), ModelSelection.Resolve("codex", "high", null, _ => []));
+
+        using var state = new TempStateDir();
+        File.WriteAllText(Path.Combine(state.Path, "tier-map.json"),
+            "[{\"backend\":\"codex\",\"tier\":\"high\",\"model\":\"gpt-6.1-sol\",\"effort\":\"high\"}]");
+        var map = new TierMap(state.Path, OldOnly);
+        Assert.Throws<ArgumentException>(() => ModelSelection.Resolve("codex", "high", null, OldOnly, map));
+        Assert.Equal("gpt-6-sol", map.Settings().Single(row => row.Backend == "pi" && row.Tier == "medium-fast").Model);
+    }
+
+    [Fact]
     public void Acceptance_persists_concrete_model_and_effort_for_job_views()
     {
         using var fixture = new JobFixture();
