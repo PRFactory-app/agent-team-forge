@@ -236,7 +236,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 }));
             case IpcProtocol.JobFollowUp:
                 var (followUpWakeKey, followUpWakeGeneration) = LeadWake(request);
-                return Accepted(followUp.Execute(new FollowUpRequest(request.JobId ?? string.Empty, request.Instruction ?? string.Empty, request.IdempotencyKey ?? string.Empty)
+                var followed = Accepted(followUp.Execute(new FollowUpRequest(request.JobId ?? string.Empty, request.Instruction ?? string.Empty, request.IdempotencyKey ?? string.Empty)
                 {
                     TimeoutSeconds = request.TimeoutSeconds,
                     QueueTtlSeconds = request.QueueTtlSeconds,
@@ -249,6 +249,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     WakeKey = followUpWakeKey,
                     WakeGeneration = followUpWakeGeneration,
                 }));
+                if (followed.Ok) { MarkParentWakeRead(request, request.JobId); }
+                return followed;
             case IpcProtocol.JobStop:
                 return Map(stop.Execute(request.JobId ?? string.Empty, request.Interrupt));
             case IpcProtocol.JobStopAgent:
@@ -261,6 +263,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 if (found.Error is null && found.Job is not null)
                 {
                     MarkWakeRead(request, found.Job.JobId, found.Job.Status);
+                    MarkParentWakeRead(request, found.Job.ParentJobId);
                 }
                 return Map(WithLocation(found)) with { HerdrMode = herdrPlacement is not null };
             case IpcProtocol.JobOutput:
@@ -377,6 +380,17 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         if (wakeStore is not null && LeadWake(request) is { Key: { } key, Generation: long generation })
         {
             wakeStore.MarkRead(jobId, observedStatus, key, generation);
+        }
+    }
+
+    // A follow-up chain consumes its parent: acknowledging the child also acknowledges a finished parent.
+    void MarkParentWakeRead(IpcRequest request, string? parentJobId)
+    {
+        if (parentJobId is not null && jobStore is not null
+            && (request.LeadSessionId is null || jobStore.LeadCanAccess(parentJobId, request.LeadSessionId, null))
+            && jobStore.GetJob(parentJobId) is { } parent)
+        {
+            MarkWakeRead(request, parent.JobId, parent.Status);
         }
     }
 

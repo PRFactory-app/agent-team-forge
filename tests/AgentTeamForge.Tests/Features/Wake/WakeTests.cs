@@ -294,6 +294,180 @@ public sealed class WakeTests
     }
 
     [Fact]
+    public async Task Follow_up_acknowledges_the_completed_parent_so_it_does_not_renotify()
+    {
+        using var fixture = new JobFixture();
+        var (endpoint, wake, lead) = FollowUpSetup(fixture);
+        var parent = Submit(endpoint, lead, "p");
+        var claim = fixture.Store.BeginNextAttempt()!;
+        var run = new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(fixture.Store.RecordSession(run, "sess"));
+        Assert.True(fixture.Store.Complete(run, "done"));
+        Assert.Equal(1, Assert.Single(wake.Pending()).Unread);
+
+        var followed = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobFollowUp,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            JobId = parent,
+            Instruction = "next",
+            IdempotencyKey = "f1"
+        });
+        Assert.True(followed.Ok, followed.Error);
+        Assert.Empty(wake.Pending());
+        var poster = new FakePoster();
+        await new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero, renotify: TimeSpan.Zero)
+            .TickAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(poster.Attempts);
+    }
+
+    [Fact]
+    public void Reading_a_follow_up_acknowledges_a_parent_that_finished_after_it_was_queued()
+    {
+        using var fixture = new JobFixture();
+        var (endpoint, wake, lead) = FollowUpSetup(fixture);
+        var parent = Submit(endpoint, lead, "p");
+        var claim = fixture.Store.BeginNextAttempt()!;
+        var run = new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(fixture.Store.RecordSession(run, "sess"));
+        var followed = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobFollowUp,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            JobId = parent,
+            Instruction = "next",
+            IdempotencyKey = "f1",
+            Defer = true
+        });
+        Assert.True(followed.Ok, followed.Error);
+        Assert.Empty(wake.Pending());
+        Assert.True(endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobGet,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            JobId = followed.Job!.JobId
+        }).Ok);
+        Assert.True(fixture.Store.Complete(run, "done"));
+        Assert.Equal(1, Assert.Single(wake.Pending()).Unread);
+
+        Assert.True(endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobGet,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            JobId = followed.Job!.JobId
+        }).Ok);
+        Assert.Empty(wake.Pending());
+    }
+
+    [Fact]
+    public void Refused_follow_up_does_not_acknowledge_the_parent()
+    {
+        using var fixture = new JobFixture();
+        var (endpoint, wake, lead) = FollowUpSetup(fixture);
+        var parent = Submit(endpoint, lead, "p");
+        var claim = fixture.Store.BeginNextAttempt()!;
+        Assert.True(fixture.Store.Complete(new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "done"));
+        Assert.Equal(1, Assert.Single(wake.Pending()).Unread);
+
+        var refused = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobFollowUp,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            JobId = parent,
+            Instruction = "next",
+            IdempotencyKey = "f1"
+        });
+
+        Assert.False(refused.Ok);
+        Assert.Equal(JobErrors.ParentNotReady, refused.Error);
+        Assert.Equal(1, Assert.Single(wake.Pending()).Unread);
+    }
+
+    [Fact]
+    public void Another_lead_reading_the_child_does_not_acknowledge_its_parent()
+    {
+        using var fixture = new JobFixture();
+        var (endpoint, wake, lead) = FollowUpSetup(fixture);
+        var parent = Submit(endpoint, lead, "p");
+        var claim = fixture.Store.BeginNextAttempt()!;
+        var run = new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(fixture.Store.RecordSession(run, "sess"));
+        var followed = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobFollowUp,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            JobId = parent,
+            Instruction = "next",
+            IdempotencyKey = "f1",
+            Defer = true
+        });
+        Assert.True(followed.Ok, followed.Error);
+        Assert.True(fixture.Store.Complete(run, "done"));
+        Assert.Equal(1, Assert.Single(wake.Pending()).Unread);
+
+        var other = new LeadSessionStore(fixture.Database).Start(lead.Workspace, "other=1");
+        var target = wake.Status(lead.SessionId);
+        Assert.True(endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.SessionBindWake,
+            LeadSessionId = other.SessionId,
+            Workspace = other.Workspace,
+            WakeKey = target.Key,
+            WakeGeneration = target.Generation
+        }).Ok);
+        Assert.True(endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobGet,
+            LeadSessionId = other.SessionId,
+            Workspace = other.Workspace,
+            JobId = followed.Job!.JobId
+        }).Ok);
+        Assert.Equal(1, Assert.Single(wake.Pending()).Unread);
+    }
+
+    static (JobsEndpoint Endpoint, WakeStore Wake, LeadSessionInfo Lead) FollowUpSetup(JobFixture fixture)
+    {
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/wake-followup", "parent=1");
+        var accept = fixture.Accept();
+        var endpoint = new JobsEndpoint(accept, fixture.Get(), new FollowUpJob(fixture.Store, JobFixture.Operator, accept), fixture.List(),
+            new StopJob(fixture.Store, JobFixture.Operator, _ => { }), new AgentTeamForge.DAL.Sqlite.DurabilityCheckpoints(null),
+            () => { }, wake, jobStore: fixture.Store, sessions: sessions);
+        var registration = wake.Register("codex:followup", "codex", "addr", "", "/tmp");
+        Assert.True(endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.SessionBindWake,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            WakeKey = registration.Key,
+            WakeGeneration = registration.Generation
+        }).Ok);
+        return (endpoint, wake, lead);
+    }
+
+    static string Submit(JobsEndpoint endpoint, LeadSessionInfo lead, string key)
+    {
+        var submitted = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobSubmit,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            Backend = "fake",
+            IdempotencyKey = key,
+            Instruction = key
+        });
+        Assert.True(submitted.Ok, submitted.Error);
+        return submitted.Job!.JobId;
+    }
+
+    [Fact]
     public async Task Resume_preserves_read_jobs_and_get_stop_list_drain_unread_completions()
     {
         using var fixture = new JobFixture();
