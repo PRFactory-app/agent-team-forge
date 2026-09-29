@@ -808,6 +808,36 @@ public class HerdrTerminalTests
         Assert.False(f.Store.IsSessionFenced(a.JobId));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Failed_cancel_write_releases_only_a_fence_the_stop_acquired(bool fencedBefore)
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var (_, catalog, _) = RecordlessHerdr(state.Path);
+        var job = f.Submit("stuck");
+        var claim = f.Store.BeginNextAttempt()!;
+        Assert.True(f.Store.EndUnsuccessfully(new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation),
+            JobStatus.NeedsReconciliation, "interactive_agent_exited"));
+        if (!fencedBefore) { f.Store.ReconcileStoppedJob(job.JobId); }
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={f.DatabasePath};Pooling=False"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TRIGGER no_cancel BEFORE UPDATE OF status ON jobs WHEN NEW.status='cancelled' BEGIN SELECT RAISE(ABORT,'write failed'); END";
+            command.ExecuteNonQuery();
+        }
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        var result = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning, stopReconciled: dispatcher.StopReconciled,
+            forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership, releaseStopFence: dispatcher.ReleaseStopFence).Execute(job.JobId);
+
+        Assert.NotNull(result.Error);
+        Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(job.JobId)!.Status);
+        Assert.Equal(fencedBefore, f.Store.IsSessionFenced(job.JobId));
+    }
+
     [Fact]
     public void Stop_agent_cancels_reconciled_job_without_ownership_record()
     {

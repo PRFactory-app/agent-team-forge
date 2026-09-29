@@ -26,6 +26,7 @@ public sealed class DispatchJob : IDisposable
     readonly CancellationTokenSource _halted = new();
     readonly ConcurrentDictionary<string, ActiveRun> _running = new();
     readonly ConcurrentDictionary<string, IBackendRun> _reconciledWindows = new();
+    readonly ConcurrentDictionary<string, bool> _stopFences = new();
     IReadOnlyList<string> _restartJobs = [];
     readonly Lock _reapGate = new();
     readonly List<HeadlessRun> _headless = [];
@@ -197,7 +198,7 @@ public sealed class DispatchJob : IDisposable
                 var peers = store.GetSessionJobs(job.JobId);
                 // Records are deleted only after ATF closed the pane or saw the agent exit, so with
                 // none left nothing owned remains to stop, unless a peer attempt is still launching.
-                if (!herdr.HasOwnedJobs(peers)) { return ReconciledSession.TryClaimIdle(store, job.JobId, _running.ContainsKey); }
+                if (!herdr.HasOwnedJobs(peers)) { var idle = ReconciledSession.TryClaimIdle(store, job.JobId, out var acquired, _running.ContainsKey); _stopFences[job.JobId] = idle && acquired; return idle; }
                 return herdr.StopOwnedJobs(peers);
             }
         }
@@ -234,8 +235,15 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
+    /// <summary>Releases the fence StopReconciled newly set when the cancelling write then failed.</summary>
+    public void ReleaseStopFence(JobRecord job)
+    {
+        if (_stopFences.TryRemove(job.JobId, out var acquired) && acquired) { store.ReconcileStoppedJob(job.JobId); }
+    }
+
     public void ForgetReconciledOwnership(JobRecord job)
     {
+        _stopFences.TryRemove(job.JobId, out _);
         if (backends.Resolve(job.Backend) is HerdrInteractiveBackend herdr)
         {
             herdr.ForgetStoppedJobs(store.GetSessionJobs(job.JobId));

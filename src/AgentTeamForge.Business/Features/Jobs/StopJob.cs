@@ -5,7 +5,7 @@ using AgentTeamForge.DAL.Sqlite;
 namespace AgentTeamForge.Business.Features.Jobs;
 
 /// <summary>Commits cancellation before asking the dispatcher to stop its owned backend run.</summary>
-public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<string> cancelRunning, Action<string>? closeUnclaimedFollowUp = null, Func<JobRecord, bool>? stopReconciled = null, Action<JobRecord>? forgetReconciledOwnership = null, Action<string>? interruptRunning = null, Func<JobRecord, bool>? releaseNative = null)
+public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<string> cancelRunning, Action<string>? closeUnclaimedFollowUp = null, Func<JobRecord, bool>? stopReconciled = null, Action<JobRecord>? forgetReconciledOwnership = null, Action<string>? interruptRunning = null, Func<JobRecord, bool>? releaseNative = null, Action<JobRecord>? releaseStopFence = null)
 {
     public JobResult Execute(string jobId) => Execute(jobId, false);
 
@@ -34,7 +34,13 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
                 {
                     return JobResult.Fail(JobErrors.OwnershipNotProven);
                 }
-                var stopped = store.CancelReconciled(jobId, principal.Principal, principal.Team);
+                CancelOutcome stopped;
+                try { stopped = store.CancelReconciled(jobId, principal.Principal, principal.Team); }
+                catch
+                {
+                    releaseStopFence?.Invoke(current);
+                    throw;
+                }
                 if (stopped.Changed) { forgetReconciledOwnership?.Invoke(current); }
                 return JobResult.Ok(GetJob.ToView(stopped.Job!), stopped.Changed ? "stopped" : "unchanged");
             }
