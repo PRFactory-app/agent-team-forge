@@ -5,7 +5,7 @@ using AgentTeamForge.DAL.Sqlite;
 namespace AgentTeamForge.Business.Features.Jobs;
 
 /// <summary>Commits cancellation before asking the dispatcher to stop its owned backend run.</summary>
-public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<string> cancelRunning, Action<string>? closeUnclaimedFollowUp = null, Func<JobRecord, bool>? stopReconciled = null, Action<JobRecord>? forgetReconciledOwnership = null, Action<string>? interruptRunning = null, Func<JobRecord, bool>? releaseNative = null)
+public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<string> cancelRunning, Action<string>? closeUnclaimedFollowUp = null, Func<JobRecord, bool>? stopReconciled = null, Action<JobRecord>? forgetReconciledOwnership = null, Action<string>? interruptRunning = null, Func<JobRecord, bool>? releaseNative = null, Func<JobRecord, bool>? hasNoOwnedAgent = null)
 {
     public JobResult Execute(string jobId) => Execute(jobId, false);
 
@@ -30,11 +30,13 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
             }
             if (current.Status == JobStatus.NeedsReconciliation)
             {
+                // Judged before the stop: with no owned agent left, peers must be checked atomically with the cancel.
+                var recordless = hasNoOwnedAgent?.Invoke(current) == true;
                 if (stopReconciled is null || !stopReconciled(current))
                 {
                     return JobResult.Fail(JobErrors.OwnershipNotProven);
                 }
-                var stopped = store.CancelReconciled(jobId, principal.Principal, principal.Team, requireIdlePeers: true);
+                var stopped = store.CancelReconciled(jobId, principal.Principal, principal.Team, requireIdlePeers: recordless);
                 if (stopped.PeerActive) { return JobResult.Fail(JobErrors.OwnershipNotProven); }
                 if (stopped.Changed) { forgetReconciledOwnership?.Invoke(current); }
                 return JobResult.Ok(GetJob.ToView(stopped.Job!), stopped.Changed ? "stopped" : "unchanged");

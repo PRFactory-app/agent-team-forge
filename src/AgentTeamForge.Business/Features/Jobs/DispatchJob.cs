@@ -185,6 +185,10 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
+    /// <summary>True for a Herdr job whose ownership records are all gone, so a stop has nothing left to close.</summary>
+    public bool HasNoOwnedAgent(JobRecord job) =>
+        backends.Resolve(job.Backend) is HerdrInteractiveBackend herdr && !herdr.HasOwnedJobs(store.GetSessionJobs(job.JobId));
+
     /// <summary>Stops a quarantined agent only through verified backend ownership.</summary>
     public bool StopReconciled(JobRecord job)
     {
