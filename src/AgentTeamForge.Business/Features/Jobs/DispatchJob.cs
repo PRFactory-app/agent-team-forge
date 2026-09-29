@@ -133,6 +133,9 @@ public sealed class DispatchJob : IDisposable
         return settled;
     }
 
+    public bool HasIdleInteractive(JobRecord job) =>
+        backends.Resolve(job.Backend) is HerdrInteractiveBackend herdr && herdr.HasIdleJob(job);
+
     /// <summary>Interrupts an active attempt after its cancelled state has committed.</summary>
     public void CancelRunning(string jobId)
     {
@@ -439,7 +442,9 @@ public sealed class DispatchJob : IDisposable
 
     bool CanNativeCodex(JobRecord parent) =>
         backends.Resolve(parent.Backend) is HerdrInteractiveBackend herdr
-        && parent.SessionId is { } thread && herdr.HasLiveCodexSession(thread)
+        && parent.SessionId is { } thread
+        && (parent.Status == JobStatus.Completed && herdr.HasLiveCodexSession(thread)
+            || parent.Status == JobStatus.Running && herdr.HasWorkingCodexSession(thread))
         && CodexQueueWake.VerifyCodexThread(new DAL.Features.Wake.WakeRegistration("", 0, "codex", thread, "", codexHome));
 
     AttemptClaim? ClaimNativeCodex() => store.BeginNativeCodexAttempt(CanNativeCodex, codexHome, Eligible);

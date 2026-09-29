@@ -45,6 +45,41 @@ public sealed class HerdrInteractiveBackendTests
         Assert.Equal(JobStatus.Completed, f.Store.GetJob(child.Job!.JobId)!.Status);
         Assert.Equal(2, control.Prompts);
     }
+
+    [Fact]
+    public async Task Follow_up_replaces_a_running_turn_when_Codex_TUI_was_interrupted_to_idle()
+    {
+        using var f = new JobFixture();
+        using var state = new TempStateDir();
+        var reader = new BoundMutableReader(new InteractiveTranscript("native-1", "partial", ["partial"]));
+        var control = new FakeControl { Status = InteractiveAgentStatus.Idle };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Codex, state.Path,
+            settleTimeout: TimeSpan.FromMinutes(1));
+        var catalog = new BackendCatalog().Register(BackendCatalog.Codex, () => backend);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
+        var parent = accept.Execute(new SubmitJobRequest("parent", "first", null, false)
+        { Backend = BackendCatalog.Codex, Cwd = state.Path }).Job!;
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        var attempt = dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+        await Bounded.Until(() => f.Store.GetJob(parent.JobId) is { SessionId: "native-1" } job
+            && dispatcher.HasIdleInteractive(job), "interrupted Codex editor");
+
+        var follow = new FollowUpJob(f.Store, JobFixture.Operator, accept, dispatcher.InterruptRunning,
+            hasIdleInteractive: dispatcher.HasIdleInteractive);
+        var child = follow.Execute(new FollowUpRequest(parent.JobId, "continue", "next"));
+        Assert.Equal("accepted", child.Outcome);
+        Assert.Equal("existing", follow.Execute(new FollowUpRequest(parent.JobId, "continue", "next")).Outcome);
+        await attempt.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+        Assert.Equal((JobStatus.Cancelled, "interrupted"),
+            (f.Store.GetJob(parent.JobId)!.Status, f.Store.GetJob(parent.JobId)!.ReasonCode));
+
+        reader.Output = new InteractiveTranscript("native-1", "finished", ["finished"], Completed: true);
+        await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(child.Job!.JobId)!.Status);
+        Assert.Equal(1, control.Starts);
+        Assert.Equal(2, control.Prompts);
+        Assert.Equal(1, control.Interrupts);
+    }
     [Fact]
     public async Task Claude_synthetic_api_error_fails_bound_herdr_job()
     {

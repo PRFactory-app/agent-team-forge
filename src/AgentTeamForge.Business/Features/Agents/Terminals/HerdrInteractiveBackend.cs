@@ -97,7 +97,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         if (run.SubmittedAt is null || owned.Session is null) { gone = true; return null; }
         gone = control.PaneIsGone(owned.Session);
         if (gone) { return null; }
-        var bootstrap = Path.ChangeExtension(owned.Path, ".bootstrap");
+        var bootstrap = HerdrOwnedSessions.BootstrapForRecord(owned.Path);
         if (!File.Exists(bootstrap)) { return null; }
         var agentName = Path.GetFileNameWithoutExtension(bootstrap);
         var request = new BackendRequest(job.JobId, run.Correlation, job.Instruction, job.Options)
@@ -142,6 +142,18 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult()
                 is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Working or InteractiveAgentStatus.Done;
+        }
+        catch (Exception ex) when (ex is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
+    }
+
+    public bool HasWorkingCodexSession(string sessionId)
+    {
+        if (_kind != InteractiveAgentKind.Codex || !_nativeSessions.TryGetValue(sessionId, out var launch)
+            || launch.NativeTranscript is not { SessionId: var bound } || bound != sessionId) { return false; }
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult() == InteractiveAgentStatus.Working;
         }
         catch (Exception ex) when (ex is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
     }

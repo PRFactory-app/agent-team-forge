@@ -100,6 +100,34 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task Restart_reattaches_a_submitted_job_to_its_saved_live_pane()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr { BootstrapFromTab = true };
+        var terminal = Terminal(fake);
+        var job = f.Submit("live");
+        var claim = f.Store.BeginNextAttempt()!;
+        f.Store.RecordStartup(new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation), "submitted");
+        var bootstrap = Path.Combine(state.Path, "herdr", "atftest.bootstrap");
+        Directory.CreateDirectory(Path.GetDirectoryName(bootstrap)!);
+        File.WriteAllText(bootstrap, "atftest");
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, bootstrap)
+        { JobId = job.JobId };
+        var session = await terminal.StartSessionAsync(CancellationToken.None);
+        var binding = await terminal.OpenAgentTabAsync(session, "codex: live", state.Path, bootstrap,
+            CancellationToken.None, onCreated: created => session = created);
+        HerdrOwnedSessions.Save(launch, session with { ShellPid = binding.ShellPid, ShellStartTicks = binding.ShellStartTicks });
+
+        var backend = new HerdrInteractiveBackend(terminal, InteractiveAgentKind.Codex, state.Path);
+        var reattached = backend.Reattach(f.Store.GetJob(job.JobId)!, f.Store.GetRuns(job.JobId).Single(), out var gone);
+
+        Assert.False(gone);
+        Assert.NotNull(reattached);
+        await reattached.DisposeAsync();
+    }
+
+    [Fact]
     public async Task Restart_keeps_unrebindable_live_pane_fenced_and_fails_only_a_proven_gone_one()
     {
         using var state = new TempStateDir();
