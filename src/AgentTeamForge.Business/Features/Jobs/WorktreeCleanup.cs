@@ -136,6 +136,8 @@ public sealed class WorktreeCleanup(JobStore store, BackendCatalog backends)
         {
             if (!entry.StartsWith("!! ", StringComparison.Ordinal)) { continue; }
             var name = entry[3..];
+            // Root-level SDK link that workers create to the main checkout's .tools; unlinking it loses nothing.
+            if (name == ".tools" && new FileInfo(Path.Combine(path, name)).LinkTarget is not null) { continue; }
             var last = name.TrimEnd('/').Split('/')[^1];
             if (!Disposable.Contains(last, StringComparer.Ordinal)) { found.Add(name); }
         }
