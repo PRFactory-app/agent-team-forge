@@ -432,7 +432,8 @@ public sealed class HerdrTerminal
     /// </summary>
     public async Task<int> CloseRestoredPanesAsync(string sessionName, IReadOnlyList<OwnedHerdrSession> records, CancellationToken cancellationToken, Action<string>? log = null)
     {
-        var candidates = records.Where(r => r.Shared && r.AgentName is not null && r.PaneId is not null && r.TabId is not null
+        var candidates = records.Where(r => r.SessionName == sessionName && r.Shared && HerdrOwnedSessions.ValidAgentName(r.AgentName)
+            && r.PaneId is not null && r.TabId is not null
             && _runner.Identity(r.ServerPid)?.StartTicks != r.ServerStartTicks).ToList();
         if (candidates.Count == 0) { return 0; }
         OwnedHerdrSession live;

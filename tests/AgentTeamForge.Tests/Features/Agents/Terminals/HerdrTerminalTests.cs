@@ -312,6 +312,60 @@ public class HerdrTerminalTests
         Assert.Single(fake.Calls, c => c.Args is ["pane", "close", ..]);
     }
 
+    [Theory]
+    [InlineData("claude", "claude")]
+    [InlineData("bootstrap", RestoredAgent)]
+    [InlineData("atfaaaaaaaaaaaaaaaaaaaa", RestoredAgent)]
+    public async Task Sweep_refuses_record_whose_name_is_not_its_atf_file_name(string fileName, string savedName)
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true };
+        var terminal = Terminal(fake);
+        var (session, launch) = await SavedSharedRecord(terminal, state.Path);
+        File.Delete(HerdrOwnedSessions.PathFor(launch));
+        var other = launch with
+        {
+            AgentName = savedName,
+            BootstrapPath = Path.Combine(state.Path, "herdr", fileName + ".bootstrap")
+        };
+        HerdrOwnedSessions.Save(other, session);
+        fake.Replace(Replacement.ServerRestarted);
+        fake.ListedAgentName = savedName;
+
+        Assert.Equal(0, Sweep(terminal, state.Path));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane", "close", ..]);
+    }
+
+    [Fact]
+    public async Task Close_restored_refuses_record_from_another_session()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true };
+        var terminal = Terminal(fake);
+        var (session, _) = await SavedSharedRecord(terminal, state.Path);
+        fake.Replace(Replacement.ServerRestarted);
+        fake.ListedAgentName = RestoredAgent;
+
+        Assert.Equal(0, await terminal.CloseRestoredPanesAsync("default",
+            [session with { SessionName = "other", AgentName = RestoredAgent }], CancellationToken.None));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane", "close", ..]);
+    }
+
+    [Fact]
+    public async Task Close_restored_refuses_non_atf_recorded_agent_name()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true };
+        var terminal = Terminal(fake);
+        var (session, _) = await SavedSharedRecord(terminal, state.Path);
+        fake.Replace(Replacement.ServerRestarted);
+        fake.ListedAgentName = "claude";
+
+        Assert.Equal(0, await terminal.CloseRestoredPanesAsync("default",
+            [session with { AgentName = "claude" }], CancellationToken.None));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane", "close", ..]);
+    }
+
     [Fact]
     public async Task Stop_after_restart_closes_proven_resumed_pane_and_keeps_record()
     {

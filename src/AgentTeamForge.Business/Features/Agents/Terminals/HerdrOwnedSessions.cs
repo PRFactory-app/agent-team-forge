@@ -60,7 +60,8 @@ public static class HerdrOwnedSessions
             }
             if (session is not null)
             {
-                if (session.AgentName is null && LegacyAgentName(path) is { } derived) { session = session with { AgentName = derived }; }
+                var fileName = LegacyAgentName(path);
+                session = session with { AgentName = session.AgentName is null || session.AgentName == fileName ? fileName : null };
                 yield return (path, session);
             }
         }
@@ -70,8 +71,11 @@ public static class HerdrOwnedSessions
     {
         var file = System.IO.Path.GetFileName(path);
         var name = file[..^".owned.json".Length];
-        return System.Text.RegularExpressions.Regex.IsMatch(name, "^atf[0-9a-f]{20}$") ? name : null;
+        return ValidAgentName(name) ? name : null;
     }
+
+    internal static bool ValidAgentName(string? name) =>
+        name is not null && System.Text.RegularExpressions.Regex.IsMatch(name, @"\Aatf[0-9a-f]{20}\z");
 
     /// <summary>Close restored bare-resume panes per session. Records are never edited: they fence their jobs.</summary>
     public static int SweepRestored(string stateRoot, Func<string, IReadOnlyList<OwnedHerdrSession>, int> closeInSession, Action<string> log)
