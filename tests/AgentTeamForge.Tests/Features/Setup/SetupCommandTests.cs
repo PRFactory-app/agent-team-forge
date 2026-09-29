@@ -206,8 +206,21 @@ public sealed class SetupCommandTests
         }
         var options = new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = state, ["force"] = "true" };
         var home = temp.File("home");
-        Assert.Equal(1, SetupCommand.Run(options, Runner, "/tmp/atf", homePath: home));
+        var originalError = Console.Error;
+        using var error = new StringWriter();
+        Console.SetError(error);
+        int firstResult;
+        try
+        {
+            firstResult = SetupCommand.Run(options, Runner, "/tmp/atf", homePath: home);
+        }
+        finally
+        {
+            Console.SetError(originalError);
+        }
+        Assert.Equal(0, firstResult);
         Assert.Contains("claude", registered);
+        Assert.Contains("codex mcp add agentteamforge -- /tmp/atf mcp --state-dir", error.ToString());
         failCodex = false;
         Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["state-dir"] = state, ["force"] = "true" },
             Runner, "/tmp/atf", homePath: home, interactive: false));
@@ -254,7 +267,7 @@ public sealed class SetupCommandTests
             return (0, "");
         }
         var options = new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = state, ["force"] = "true" };
-        Assert.Equal(1, SetupCommand.Run(options, Runner, "/tmp/atf", homePath: home, extensionPath: extension));
+        Assert.Equal(0, SetupCommand.Run(options, Runner, "/tmp/atf", homePath: home, extensionPath: extension));
         Assert.False(File.Exists(mcpPath));
         fail = false;
         Assert.Equal(0, SetupCommand.Run(options, Runner, "/tmp/atf", homePath: home, extensionPath: extension));

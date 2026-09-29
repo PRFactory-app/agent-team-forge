@@ -43,7 +43,9 @@ why and recommends headless; it never switches modes silently. For unattended
 setup, pass `--mode headless` or `--mode herdr` explicitly. Setup registers each
 installed client, including Pi's MCP adapter and wake extension (Pi adapter
 installation needs network). It sets Claude's `crossSessionInbound` to `accept`
-while preserving other settings. Reload installed clients afterward. Run
+while preserving other settings. A failed client registration is reported with the
+manual command; setup still completes (`atf setup --check` verifies). Reload
+installed clients afterward. Run
 `"$HOME/.local/bin/atf" doctor` to check the result. The daemon starts on first
 use; `atf start` is optional.
 

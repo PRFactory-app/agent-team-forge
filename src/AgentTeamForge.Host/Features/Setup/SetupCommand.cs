@@ -167,10 +167,8 @@ public static class SetupCommand
             ? int.Parse(webPortText, CultureInfo.InvariantCulture) : ConfiguredWebPort(state);
         WriteMode(state, settings with { WebPort = webPort });
 
-        if (!ClientSetup.Reconcile(binary, state.Path, home, settingsPath, extensionPath, commandRunner, apply: true))
-        {
-            return 1;
-        }
+        // A failed client registration is non-fatal: launch config is written; --check is the health gate.
+        ClientSetup.Reconcile(binary, state.Path, home, settingsPath, extensionPath, commandRunner, apply: true);
         if (autostart is not null && LoginAutostart.Apply(home, binary, state.Path, autostart == "true", commandRunner) != 0)
         {
             return 1;
@@ -879,6 +877,12 @@ public static class SetupCommand
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
+        // Neutral cwd keeps mise from walking the caller's ancestors for project configs.
+        var neutralCwd = ClientHome();
+        if (Directory.Exists(neutralCwd))
+        {
+            info.WorkingDirectory = neutralCwd;
+        }
         if (OperatingSystem.IsWindows())
         {
             info.ArgumentList.Add("-NoProfile");
