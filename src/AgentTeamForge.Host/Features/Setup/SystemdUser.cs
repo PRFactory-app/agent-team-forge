@@ -16,6 +16,23 @@ internal static class SystemdUser
         && Directory.Exists(Path.Combine(runtime, "systemd"))
         && File.Exists(Path.Combine(runtime, "bus"));
 
+    // Hosts such as Codex scrub XDG_RUNTIME_DIR from MCP servers. logind's per-user
+    // directory is still there, and systemctl/systemd-run --user need only it to reach
+    // the user manager. /run/user is root-owned, so /run/user/<euid> is ours.
+    internal static void EnsureRuntimeDir(IDictionary<string, string?> environment, string? userRuntimeDir = null)
+    {
+        if (!OperatingSystem.IsLinux()
+            || (environment.TryGetValue("XDG_RUNTIME_DIR", out var current) && !string.IsNullOrEmpty(current)))
+        {
+            return;
+        }
+        var dir = userRuntimeDir ?? "/run/user/" + AgentTeamForge.Host.Hosting.Native.geteuid().ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (Directory.Exists(Path.Combine(dir, "systemd")) && File.Exists(Path.Combine(dir, "bus")))
+        {
+            environment["XDG_RUNTIME_DIR"] = dir;
+        }
+    }
+
     internal static IReadOnlyList<string> ScopePrefix(string stateDir) =>
     [
         "--user", "--scope", "--quiet", "--collect", "-p", "KillMode=process",
@@ -55,6 +72,7 @@ internal static class SystemdUser
             info.ArgumentList.Add("--user");
             info.ArgumentList.Add("show-environment");
             DaemonEnvironment.Scrub(info.Environment);
+            EnsureRuntimeDir(info.Environment);
             using var process = NonInteractiveProcess.Start(info);
             if (process is null) { return []; }
             var output = process.StandardOutput.ReadToEndAsync();
