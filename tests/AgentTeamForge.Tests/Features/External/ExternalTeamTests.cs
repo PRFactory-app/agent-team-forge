@@ -333,7 +333,7 @@ public sealed class ExternalTeamTests
         Assert.Null(onlyA.Cursors);
         Assert.Equal(2, onlyA.SenderSeq);
         Assert.Equal("ccc", Assert.Single(onlyA.Messages).Text);
-        Assert.Equal("invalid_request", team.ReadLead(lead.SessionId, lead.Workspace, 0, 1).Error);
+        Assert.Empty(team.ReadLead(lead.SessionId, lead.Workspace, 0, 0).Inbox!.Messages);
 
         var rest = team.ReadLead(lead.SessionId, lead.Workspace, null, 1, full: true).Inbox!;
         Assert.Single(rest.Messages);
@@ -350,6 +350,39 @@ public sealed class ExternalTeamTests
         Assert.Equal(("he", true, 5), (memberRead.Messages[0].Text,
             memberRead.Messages[0].Truncated, memberRead.Messages[0].FullLen));
         Assert.Empty(team.Read(a, null, null).Inbox!.Messages);
+    }
+
+    [Fact]
+    public void Lead_since_seq_follows_inbox_order_across_senders_and_names_invalid_fields()
+    {
+        using var f = new JobFixture();
+        var lead = new LeadSessionStore(f.Database).Start("/workspace/a", "lead-a");
+        var team = Team(f);
+        var a = team.Join(lead.SessionId, team.CreateTicket(lead.SessionId, lead.Workspace, "a", null).Ticket!.Token).Member!.MemberToken;
+        var b = team.Join(lead.SessionId, team.CreateTicket(lead.SessionId, lead.Workspace, "b", null).Ticket!.Token).Member!.MemberToken;
+
+        Assert.True(team.Send(a, "first").Ok);
+        var first = team.ReadLead(lead.SessionId, lead.Workspace, null, 1).Inbox!;
+        Assert.Equal("first", Assert.Single(first.Messages).Text);
+        Assert.True(team.Send(b, "second").Ok);
+        var second = team.ReadLead(lead.SessionId, lead.Workspace, first.NextSeq, 1).Inbox!;
+        Assert.Equal(("b", 1L, "second"),
+            (Assert.Single(second.Messages).From, second.Messages[0].Seq, second.Messages[0].Text));
+        Assert.True(second.NextSeq > first.NextSeq);
+        Assert.Empty(team.ReadLead(lead.SessionId, lead.Workspace, second.NextSeq, 1).Inbox!.Messages);
+
+        Assert.True(team.Send(a, "third").Ok);
+        var filtered = team.ReadLead(lead.SessionId, lead.Workspace, 1, 1, fromAgent: "a").Inbox!;
+        Assert.Equal(("third", 2L), (Assert.Single(filtered.Messages).Text, filtered.Messages[0].Seq));
+
+        Assert.Contains("since_seq", team.ReadLead(lead.SessionId, lead.Workspace, -1, 1).ErrorDetail);
+        Assert.Contains("limit", team.ReadLead(lead.SessionId, lead.Workspace, null, -1).ErrorDetail);
+        Assert.Contains("max_chars", team.ReadLead(lead.SessionId, lead.Workspace, null, 1, maxChars: -1).ErrorDetail);
+        Assert.Contains("from_agent", team.ReadLead(lead.SessionId, lead.Workspace, null, 1, fromAgent: new string('x', 65)).ErrorDetail);
+        Assert.True(team.Send(b, "fourth").Ok);
+        var unfiltered = team.ReadLead(lead.SessionId, lead.Workspace, second.NextSeq, 10, fromAgent: "").Inbox!;
+        Assert.Equal("fourth", Assert.Single(unfiltered.Messages).Text);
+        Assert.NotNull(unfiltered.Cursors);
     }
 
     [Fact]
