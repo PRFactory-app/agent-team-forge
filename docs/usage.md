@@ -216,4 +216,14 @@ credentials, launch mode, `jobs.db`, `daemon.log`, per-job logs in
 Finished jobs (`completed`, `failed`, `cancelled`) older than 30 days are
 pruned at startup and daily, with their logs; results the lead has not read
 are kept. `atf prune --dry-run` previews and `atf prune` runs it now.
+
+Job worktrees are removed only when nothing would be lost: no live job or
+interactive agent, no dirty files, no ignored files beyond build output
+(`bin`, `obj`, `artifacts`, ...), and every commit already on a remote or tag.
+The daily prune also requires the commits to be merged into the default
+branch. Use the `remove_worktree` MCP tool (`job_id`, `force`, `dry_run`) or
+`atf worktrees prune [--job ID] [--dry-run] [--force]` (force needs `--job` and
+overrides only dirty/ignored files, never unpushed commits). The branch
+`atf/job-<id>` is deleted with the worktree; the job row is kept, so a later
+follow-up fails `worktree_unavailable`.
 Worktrees are left for manual cleanup.

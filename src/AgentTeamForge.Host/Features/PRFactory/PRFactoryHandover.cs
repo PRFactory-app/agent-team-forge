@@ -268,6 +268,10 @@ public sealed class PRFactoryHandover(PRFactoryClient client, PRFactoryHandoverS
             {
                 throw new InvalidOperationException("Workspace became dirty; cleanup refused.");
             }
+            if (await WorktreeCleanup.NonDisposableIgnoredAsync(path, CancellationToken.None) is not { Count: 0 })
+            {
+                throw new InvalidOperationException("Workspace has ignored files; cleanup refused.");
+            }
         }
         if (Directory.Exists(workspace.StagingPath)
             && Directory.EnumerateFileSystemEntries(workspace.StagingPath).Any())

@@ -17,7 +17,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     StopAgent? stopAgent = null, IReadOnlyCollection<string>? configuredBackends = null, TierMap? tierMap = null,
     BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null, ClaudeWakeMailbox? claudeMailbox = null, string? launchMode = null,
     Func<string?, string?, string?, HumanInputRequestResult>? humanInput = null, ExternalMemberStore? externalMembers = null,
-    GetJob? connectorGet = null, Func<string, string, AttemptClaim?>? takeNativeClaude = null)
+    GetJob? connectorGet = null, Func<string, string, AttemptClaim?>? takeNativeClaude = null,
+    RemoveWorktree? removeWorktree = null, WorktreeCleanup? worktreeCleanup = null)
 {
     JobResult ReadJob(IpcRequest request)
     {
@@ -157,7 +158,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         // Reads reach any job in the lead's workspace; stop and follow-up only its own,
         // plus a fenced job whose original lead session was lost during a restart.
         var reads = request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobActivity;
-        if (request.LeadSessionId is not null && (reads || request.Op is IpcProtocol.JobStop or IpcProtocol.JobStopAgent or IpcProtocol.JobFollowUp)
+        if (request.LeadSessionId is not null && (reads || request.Op is IpcProtocol.JobStop or IpcProtocol.JobStopAgent or IpcProtocol.JobRemoveWorktree or IpcProtocol.JobFollowUp)
             && (jobStore is null || request.JobId is null
                 || !jobStore.LeadCanAccess(request.JobId, request.LeadSessionId,
                     reads || jobStore.GetJob(request.JobId)?.Status == JobStatus.NeedsReconciliation ? request.Workspace : null)))
@@ -256,6 +257,20 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 var stoppedAgent = stopAgent.Execute(request.JobId ?? string.Empty);
                 if (stoppedAgent.Error is null && stoppedAgent.Job is not null) { MarkWakeRead(request, stoppedAgent.Job.JobId, stoppedAgent.Job.Status); }
                 return Map(stoppedAgent);
+            case IpcProtocol.JobRemoveWorktree:
+                if (removeWorktree is null) { return new IpcResponse(false, JobErrors.BackendUnavailable); }
+                var removal = removeWorktree.ExecuteAsync(request.JobId ?? string.Empty, request.Force, request.DryRun, CancellationToken.None).GetAwaiter().GetResult();
+                return removal is null ? new IpcResponse(false, JobErrors.NotFound)
+                    : new IpcResponse(true, Outcome: removal.Outcome, Worktrees: [removal]);
+            case IpcProtocol.JobPruneWorktrees:
+                if (worktreeCleanup is null || request.Force && request.JobId is null) { return new IpcResponse(false, JobErrors.InvalidRequest); }
+                var targets = request.JobId is null ? worktreeCleanup.ListWorktrees() : [Path.Combine(worktreeCleanup.Root, request.JobId)];
+                var results = new List<WorktreeCleanupResult>();
+                foreach (var target in targets)
+                {
+                    results.Add(worktreeCleanup.RemoveAsync(target, request.Force, request.DryRun, auto: false, CancellationToken.None).GetAwaiter().GetResult());
+                }
+                return new IpcResponse(true, Outcome: request.DryRun ? "dry_run" : "pruned", Worktrees: results);
             case IpcProtocol.JobGet:
                 var found = ReadJob(request);
                 if (found.Error is null && found.Job is not null)

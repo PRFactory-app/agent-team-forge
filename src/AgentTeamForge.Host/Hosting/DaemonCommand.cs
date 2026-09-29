@@ -207,13 +207,15 @@ public static class DaemonCommand
         var humanWaits = new HumanWaitStore(database);
         var claudeMailbox = new ClaudeWakeMailbox();
         dispatcher.ClaudeBridgeReady = claudeMailbox.HasRecentRelay;
+        var worktreeCleanup = new WorktreeCleanup(store, backends);
         var interactiveLaunch = launchMode is "herdr" or "terminal" or "wt";
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound, interactiveLaunch), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning, reconcileIdleInteractive: dispatcher.ReconcileIdleInteractive, hasIdleInteractive: dispatcher.HasIdleInteractive),
             new ListJobs(store, profile.Bound, jobLogs, interactiveLaunch),
             new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning, dispatcher.ReleaseNative), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
             new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
             (token, _, _) => PRFactoryInteraction.RequestFromManagedChild(externalTeam.ManagedChildName(token)),
-            externalMembers, new GetJob(store, connectorPrincipal), dispatcher.TakeNativeClaude);
+            externalMembers, new GetJob(store, connectorPrincipal), dispatcher.TakeNativeClaude,
+            new RemoveWorktree(store, profile.Bound, worktreeCleanup), worktreeCleanup);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
@@ -244,7 +246,7 @@ public static class DaemonCommand
         dispatcher.LaunchGate = id => store.GetJob(id)?.Principal != connectorPrincipal.Principal;
         var dispatching = dispatcher.RunAsync(lifetime.Token);
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path, claudeMailbox), Log).RunAsync(lifetime.Token);
-        var pruning = profile.AutoPrune ? RunPruneAsync(prune, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
+        var pruning = profile.AutoPrune ? RunPruneAsync(prune, worktreeCleanup, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
         var connectorStop = new StopJob(store, connectorPrincipal,
             dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership,
             releaseNative: dispatcher.ReleaseNative);
@@ -411,10 +413,25 @@ public static class DaemonCommand
         }
     }
 
-    static async Task RunPruneAsync(PruneJob prune, int days, CancellationToken cancellationToken)
+    static async Task RunPruneAsync(PruneJob prune, WorktreeCleanup worktrees, int days, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
+            try
+            {
+                int removed = 0, kept = 0;
+                foreach (var path in worktrees.ListWorktrees())
+                {
+                    var result = await worktrees.RemoveAsync(path, force: false, dryRun: false, auto: true, cancellationToken);
+                    if (result.Outcome == "removed") { removed++; } else { kept++; }
+                }
+                if (removed + kept > 0) { Log($"worktrees: removed {removed}, kept {kept}"); }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not OperationCanceledException)
+            {
+                Log($"worktree cleanup failed: {ex.GetType().Name}");
+            }
+
             try
             {
                 var count = prune.Execute(days, dryRun: false);

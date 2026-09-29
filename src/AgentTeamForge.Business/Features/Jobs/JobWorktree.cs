@@ -112,6 +112,12 @@ public static class JobWorktree
     internal static Task<string?> GitAsync(string cwd, TimeSpan timeout, CancellationToken cancellationToken, params string[] args) =>
         GitCaptureAsync(cwd, timeout, true, false, cancellationToken, args);
 
+    /// <summary>Untrimmed stdout on exit code 0 (for -z output); null on failure.</summary>
+    internal static Task<string?> GitRawAsync(string cwd, TimeSpan timeout, CancellationToken cancellationToken, params string[] args) =>
+        GitCaptureAsync(cwd, timeout, false, false, cancellationToken, args);
+
+    internal const int OutputCap = MaxGitOutputBytes;
+
     /// <summary>Trimmed output; with includeFailure a nonzero exit still returns its output (e.g. merge-tree conflicts).</summary>
     internal static Task<string?> GitOutputAsync(string cwd, TimeSpan timeout, bool includeFailure, CancellationToken cancellationToken, params string[] args) =>
         GitCaptureAsync(cwd, timeout, true, includeFailure, cancellationToken, args);

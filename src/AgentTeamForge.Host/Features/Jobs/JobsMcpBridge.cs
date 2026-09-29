@@ -226,6 +226,7 @@ public static class JobsMcpBridge
             new() { Name = "interrupt_job", Description = "Interrupt a turn without sending another prompt. The native session remains resumable with follow_up or revive_agent.", InputSchema = Parse(GetSchema) },
             new() { Name = "revive_agent", Description = "Resume a dead or finished agent using its recorded native session, backend and worktree. Requires a new instruction and idempotency key; uncertain live sessions remain fenced.", InputSchema = Parse(FollowUpSchema) },
             new() { Name = "stop_agent", Description = "Close an owned idle interactive agent. Use stop_job for an active turn.", InputSchema = Parse(GetSchema) },
+            new() { Name = "remove_worktree", Description = "Remove an owned finished job's git worktree if nothing would be lost (no unpushed commits, no dirty or unknown ignored files, no live agent). force=true overrides dirty/ignored files only; dry_run=true reports without removing.", InputSchema = Parse("""{"type":"object","properties":{"job_id":{"type":"string"},"force":{"type":"boolean"},"dry_run":{"type":"boolean"}},"required":["job_id"]}""") },
             new() { Name = "get_job_activity", Description = "Read structured progress with a monotonic after_cursor and bounded limit.", InputSchema = Parse("""{"type":"object","properties":{"job_id":{"type":"string"},"after_cursor":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"required":["job_id"]}""") },
             new() { Name = "list_jobs", Description = "List jobs, newest first, one bounded page at a time.", InputSchema = Parse(ListSchema) },
             new() { Name = "session_info", Description = "Report this lead's session and recoverable sessions in its workspace.", InputSchema = Parse(EmptySchema) },
@@ -507,6 +508,7 @@ public static class JobsMcpBridge
             "stop_job" => (new IpcRequest { Op = IpcProtocol.JobStop, JobId = String(args, "job_id") }, null),
             "list_backends" => (new IpcRequest { Op = IpcProtocol.JobCapabilities }, null),
             "interrupt_job" => (new IpcRequest { Op = IpcProtocol.JobStop, JobId = String(args, "job_id"), Interrupt = true }, null),
+            "remove_worktree" => (new IpcRequest { Op = IpcProtocol.JobRemoveWorktree, JobId = String(args, "job_id"), Force = Bool(args, "force"), DryRun = Bool(args, "dry_run") }, null),
             "stop_agent" => (new IpcRequest { Op = IpcProtocol.JobStopAgent, JobId = String(args, "job_id") }, null),
             "get_job_activity" => (new IpcRequest { Op = IpcProtocol.JobActivity, JobId = String(args, "job_id"), AfterCursor = Long(args, "after_cursor"), Limit = Integer(args, "limit") }, null),
             "follow_up" or "revive_agent" => (new IpcRequest
@@ -595,6 +597,9 @@ public static class JobsMcpBridge
     static int? Integer(IDictionary<string, JsonElement> args, string name) =>
         !args.TryGetValue(name, out var value) ? null
         : value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var n) ? n : 0;
+
+    static bool Bool(IDictionary<string, JsonElement> args, string name) =>
+        args.TryGetValue(name, out var value) && value.ValueKind == JsonValueKind.True;
 
     static long? Long(IDictionary<string, JsonElement> args, string name) =>
         !args.TryGetValue(name, out var value) ? null
