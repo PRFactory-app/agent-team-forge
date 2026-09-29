@@ -30,6 +30,9 @@ public abstract record BackendEvidence
     /// <summary>A live interactive agent is waiting for its account limit to reset; its turn is still running.</summary>
     public sealed record AccountLimit(string Details) : BackendEvidence;
 
+    /// <summary>A live interactive agent waits on a prompt (e.g. a permission request); its turn is still running.</summary>
+    public sealed record AgentBlocked(bool Blocked) : BackendEvidence;
+
     public sealed record ProtocolError(string Code, string? Details = null) : BackendEvidence;
 
     /// <summary>CLI rejected its arguments before a turn began; no job effect occurred.</summary>
