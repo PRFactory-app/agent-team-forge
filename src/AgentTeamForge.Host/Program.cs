@@ -12,6 +12,11 @@ if (args.Length == 0)
     return Usage();
 }
 
+if (CommandLine.Check(args, Console.Out, Console.Error) is { } exit)
+{
+    return exit;
+}
+
 var options = ParseOptions([.. args.Skip(args.Length > 1 && !args[1].StartsWith("--", StringComparison.Ordinal) ? 2 : 1)]);
 if (args.Length > 2 && args[0] == "client" && args[1] == "stop" && !args[2].StartsWith("--", StringComparison.Ordinal))
 {
@@ -81,7 +86,7 @@ catch (Exception ex) when (args[0] == "daemon")
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: atf --version | setup [--mode headless|herdr|terminal|wt] [--web-port PORT] [--autostart[=off]] [--state-dir DIR] [--check|--apply] [--force] | doctor [--state-dir DIR] | start|stop [--state-dir DIR] | web [--open] [--rotate-token] [--state-dir DIR] | uninstall [--purge] [--state-dir DIR] | prfactory connect|disconnect|status [--state-dir DIR] [--url HTTPS_URL --repo ID=DIR --external ID:MEMBER, token on stdin] | worktrees prune [--job ID] [--dry-run] [--force (needs --job)] [--state-dir DIR] | prune [--older-than 30d] [--dry-run] [--state-dir DIR] | <init|daemon|mcp|client|fake-backend> --state-dir DIR [options]");
+    Console.Error.WriteLine(CommandLine.Usage);
     return 64;
 }
 
