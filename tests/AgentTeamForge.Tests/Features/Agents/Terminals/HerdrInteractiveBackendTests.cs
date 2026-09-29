@@ -115,6 +115,33 @@ public sealed class HerdrInteractiveBackendTests
         Assert.Equal(1, control.Starts);
         Assert.Equal(2, control.Prompts);
     }
+
+    [Fact]
+    public async Task Follow_up_keeps_an_acknowledged_native_Codex_turn_that_reads_idle_only_momentarily()
+    {
+        using var f = new JobFixture();
+        using var state = new TempStateDir();
+        var reader = new BoundMutableReader(new InteractiveTranscript("native-1", "first done", Completed: true));
+        var control = new FakeControl { Status = InteractiveAgentStatus.Idle };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Codex, state.Path);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Codex, () => backend);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
+        var first = accept.Execute(new SubmitJobRequest("first", "first", null, false)
+        { Backend = BackendCatalog.Codex, Cwd = state.Path }).Job!;
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+
+        var follow = new FollowUpJob(f.Store, JobFixture.Operator, accept, dispatcher.InterruptRunning,
+            hasIdleInteractive: dispatcher.HasIdleInteractive);
+        var native = follow.Execute(new FollowUpRequest(first.JobId, "queued turn", "native")).Job!;
+        var claim = f.Store.BeginNativeCodexAttempt(_ => true, state.Path)!;
+        f.Store.RecordNativeReceipt(native.JobId, claim.Correlation);
+        control.Statuses = new([InteractiveAgentStatus.Idle, InteractiveAgentStatus.Working]);
+
+        var next = follow.Execute(new FollowUpRequest(native.JobId, "while working", "next"));
+        Assert.NotEqual("accepted", next.Outcome);
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(native.JobId)!.Status);
+    }
     [Fact]
     public async Task Claude_synthetic_api_error_fails_bound_herdr_job()
     {
@@ -891,7 +918,7 @@ public sealed class HerdrInteractiveBackendTests
         public bool FailPrompt { get; init; }
         public bool FailStatus { get; set; }
         public InteractiveAgentStatus Status { get; set; } = InteractiveAgentStatus.Done;
-        public Queue<InteractiveAgentStatus>? Statuses { get; init; }
+        public Queue<InteractiveAgentStatus>? Statuses { get; set; }
         public bool Stopped { get; private set; }
 
         public Task PromptAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken)

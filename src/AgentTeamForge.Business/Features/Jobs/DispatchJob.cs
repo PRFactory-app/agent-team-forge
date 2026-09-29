@@ -133,7 +133,21 @@ public sealed class DispatchJob : IDisposable
         return settled;
     }
 
+    /// <summary>
+    /// Replacing a running turn needs a settled idle TUI, like prompt delivery:
+    /// one Herdr sample can read idle between steps of a turn that is still working.
+    /// </summary>
     public bool HasIdleInteractive(JobRecord job)
+    {
+        for (var sample = 0; ; sample++)
+        {
+            if (!IsIdleInteractiveNow(job)) { return false; }
+            if (sample == 4) { return true; }
+            Thread.Sleep(250);
+        }
+    }
+
+    bool IsIdleInteractiveNow(JobRecord job)
     {
         if (backends.Resolve(job.Backend) is not HerdrInteractiveBackend herdr) { return false; }
         if (herdr.HasIdleJob(job)) { return true; }
