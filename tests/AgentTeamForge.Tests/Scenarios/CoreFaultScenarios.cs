@@ -42,6 +42,26 @@ public sealed class CoreFaultScenarios
     }
 
     [Fact]
+    public async Task Daemon_survives_stray_signals_and_logs_them()
+    {
+        if (OperatingSystem.IsWindows()) { return; }
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        var daemon = await rig.StartDaemonAsync();
+
+        foreach (var name in new[] { "HUP", "USR1", "USR2", "ALRM" })
+        {
+            using var kill = System.Diagnostics.Process.Start("kill", ["-" + name, daemon.Id.ToString()])!;
+            await kill.WaitForExitAsync(TestContext.Current.CancellationToken);
+            await Bounded.Until(() => rig.DaemonLog.Any(l => l.Contains($"received SIG{name}; ignored", StringComparison.Ordinal)),
+                $"SIG{name} to be logged");
+        }
+
+        Assert.False(daemon.HasExited);
+        Assert.True((await rig.SubmitAsync("k-signals", "x")).Ok);
+    }
+
+    [Fact]
     public async Task Dispatcher_fault_stops_admission_instead_of_leaving_a_ready_daemon()
     {
         using var rig = new SpikeRig();
