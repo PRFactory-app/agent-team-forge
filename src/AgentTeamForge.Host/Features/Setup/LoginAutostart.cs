@@ -141,6 +141,7 @@ public static class LoginAutostart
         [Service]
         Type=simple
         UMask=0077
+        KillMode=process
         Environment={SystemdQuote("PATH=" + searchPath, command: false)}
         ExecStart={SystemdQuote(binary)} daemon --state-dir {SystemdQuote(stateDir)}
 

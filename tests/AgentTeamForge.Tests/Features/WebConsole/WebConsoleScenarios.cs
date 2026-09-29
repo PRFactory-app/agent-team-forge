@@ -274,6 +274,17 @@ public sealed class WebConsoleScenarios
         Assert.Contains(rig.DaemonLog, line => line.Contains($"web console unavailable on 127.0.0.1:{port}", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task Test_daemon_without_launch_mode_does_not_bind_the_default_console_port()
+    {
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        await rig.StartDaemonAsync();
+
+        var listening = Assert.Single(rig.DaemonLog, line => line.Contains("web console listening on http://127.0.0.1:", StringComparison.Ordinal));
+        Assert.DoesNotContain(":8765", listening, StringComparison.Ordinal);
+    }
+
     static int FreePort()
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);
