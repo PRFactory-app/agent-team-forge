@@ -149,6 +149,32 @@ public sealed class ModelSelectionTests
         Assert.False(File.Exists(completed));
     }
 
+    [Fact]
+    public async Task Warm_fills_the_cached_catalog_in_the_background()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+        using var dir = new TempStateDir();
+        var script = dir.File("models");
+        File.WriteAllText(script, "#!/bin/sh\nsleep 0.3\necho '{\"models\":[{\"slug\":\"gpt-6.1-sol\",\"supported_in_api\":true,\"visibility\":\"list\"}]}'\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        var discovery = new BackendModelDiscovery(TimeSpan.FromSeconds(5), _ => script);
+
+        var warming = discovery.Warm(["codex", "claude"]);
+        Assert.Empty(discovery.CachedModels("codex"));
+        await warming.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.Equal(["gpt-6.1-sol"], discovery.CachedModels("codex"));
+        var row = new TierMap(dir.Path, discovery.CachedModels).Settings().Single(item => item.Backend == "codex" && item.Tier == "high");
+        Assert.Equal("gpt-6.1-sol", row.Model);
+        Assert.False(row.Custom);
+
+        var missing = new BackendModelDiscovery(TimeSpan.FromSeconds(2), _ => dir.File("missing"));
+        await missing.Warm(["codex"]);
+        Assert.Empty(missing.CachedModels("codex"));
+    }
+
     [Theory]
     [InlineData(null, "opus")]
     [InlineData("fast", "haiku")]
