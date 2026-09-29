@@ -229,6 +229,47 @@ public sealed class SetupCommandTests
     }
 
     [Fact]
+    public void ManualRegistrationCommandIsShellQuoted()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        using var temp = new TempStateDir();
+        var state = temp.File("state;id $(x) 'q'");
+        static (int, string) Runner(string tool, IReadOnlyList<string> args) =>
+            args[0] == "--version" ? (tool == "codex" ? 0 : 127, "test") : args[1] == "get" ? (1, "missing") : (1, "boom");
+        var originalError = Console.Error;
+        using var error = new StringWriter();
+        Console.SetError(error);
+        try
+        {
+            Assert.Equal(0, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = state, ["force"] = "true" },
+                Runner, "/tmp/atf", homePath: temp.File("home")));
+        }
+        finally
+        {
+            Console.SetError(originalError);
+        }
+        Assert.Contains($"--state-dir '{state.Replace("'", "'\\''")}'", error.ToString());
+    }
+
+    [Fact]
+    public void MalformedClaudeSettingsStillFailSetup()
+    {
+        using var temp = new TempStateDir();
+        var state = temp.File("state");
+        var home = temp.File("home");
+        var settings = Path.Combine(home, ".claude", "settings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(settings)!);
+        File.WriteAllText(settings, "{ not json");
+        static (int, string) Runner(string tool, IReadOnlyList<string> args) =>
+            args[0] == "--version" ? (tool == "claude" ? 0 : 127, "test") : args[1] == "get" ? (1, "missing") : (0, "");
+        Assert.Equal(1, SetupCommand.Run(new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = state, ["force"] = "true" },
+            Runner, "/tmp/atf", homePath: home));
+    }
+
+    [Fact]
     public void PiAdapterFailureLeavesNoRegistrationAndRerunSucceeds()
     {
         using var temp = new TempStateDir();
@@ -267,7 +308,7 @@ public sealed class SetupCommandTests
             return (0, "");
         }
         var options = new Dictionary<string, string> { ["mode"] = "headless", ["state-dir"] = state, ["force"] = "true" };
-        Assert.Equal(0, SetupCommand.Run(options, Runner, "/tmp/atf", homePath: home, extensionPath: extension));
+        Assert.Equal(1, SetupCommand.Run(options, Runner, "/tmp/atf", homePath: home, extensionPath: extension));
         Assert.False(File.Exists(mcpPath));
         fail = false;
         Assert.Equal(0, SetupCommand.Run(options, Runner, "/tmp/atf", homePath: home, extensionPath: extension));

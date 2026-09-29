@@ -167,8 +167,12 @@ public static class SetupCommand
             ? int.Parse(webPortText, CultureInfo.InvariantCulture) : ConfiguredWebPort(state);
         WriteMode(state, settings with { WebPort = webPort });
 
-        // A failed client registration is non-fatal: launch config is written; --check is the health gate.
-        ClientSetup.Reconcile(binary, state.Path, home, settingsPath, extensionPath, commandRunner, apply: true);
+        // A failed client `mcp add` is non-fatal (launch config is written; --check is the health gate). Other failures keep exit 1.
+        if (!ClientSetup.Reconcile(binary, state.Path, home, settingsPath, extensionPath, commandRunner, apply: true,
+            registrationFailureNonFatal: true))
+        {
+            return 1;
+        }
         if (autostart is not null && LoginAutostart.Apply(home, binary, state.Path, autostart == "true", commandRunner) != 0)
         {
             return 1;
@@ -877,11 +881,10 @@ public static class SetupCommand
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
-        // Neutral cwd keeps mise from walking the caller's ancestors for project configs.
-        var neutralCwd = ClientHome();
-        if (Directory.Exists(neutralCwd))
+        // Run from "/" so mise never walks an ancestor chain containing the caller's (or an isolated HOME's parent) configs.
+        if (!OperatingSystem.IsWindows())
         {
-            info.WorkingDirectory = neutralCwd;
+            info.WorkingDirectory = "/";
         }
         if (OperatingSystem.IsWindows())
         {

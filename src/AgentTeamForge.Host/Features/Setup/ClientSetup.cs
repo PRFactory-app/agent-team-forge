@@ -33,9 +33,11 @@ internal static class ClientSetup
     }
 
     internal static bool Reconcile(string binary, string stateDir, string home, string claudeSettings,
-        string? extensionOverride, Func<string, IReadOnlyList<string>, (int ExitCode, string Output)> run, bool apply)
+        string? extensionOverride, Func<string, IReadOnlyList<string>, (int ExitCode, string Output)> run, bool apply,
+        bool registrationFailureNonFatal = false)
     {
         var healthy = true;
+        var hardFailure = false;
         var installed = 0;
         Console.Out.WriteLine($"MCP binary: {binary}");
         Console.Out.WriteLine($"State directory: {stateDir}");
@@ -112,6 +114,7 @@ internal static class ClientSetup
                     {
                         Console.Out.WriteLine("claude: crossSessionInbound missing");
                         healthy = false;
+                        hardFailure = true;
                     }
                 }
             }
@@ -119,6 +122,7 @@ internal static class ClientSetup
             {
                 Console.Error.WriteLine($"claude: failed (settings: {BoundedError(ex.Message)})");
                 healthy = false;
+                hardFailure = true;
             }
         }
 
@@ -127,12 +131,17 @@ internal static class ClientSetup
             installed++;
             try
             {
-                healthy &= ReconcilePi(binary, stateDir, home, extensionOverride, run, apply);
+                if (!ReconcilePi(binary, stateDir, home, extensionOverride, run, apply))
+                {
+                    healthy = false;
+                    hardFailure = true;
+                }
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
             {
                 Console.Error.WriteLine($"pi: failed (setup: {BoundedError(ex.Message)})");
                 healthy = false;
+                hardFailure = true;
             }
         }
         else
@@ -161,15 +170,20 @@ internal static class ClientSetup
         {
             Console.Out.WriteLine("Reload installed clients to use AgentTeamForge.");
         }
-        return healthy;
+        return registrationFailureNonFatal ? !hardFailure : healthy;
     }
 
     static string RegisterLater(string client, IReadOnlyList<string>? removeArgs, IReadOnlyList<string> addArgs)
     {
         static string Line(string client, IReadOnlyList<string> args) =>
-            client + " " + string.Join(' ', args.Select(a => a.Contains(' ') ? $"\"{a}\"" : a));
+            client + " " + string.Join(' ', args.Select(ShellQuote));
         return "  register later: " + (removeArgs is null ? "" : Line(client, removeArgs) + "; ") + Line(client, addArgs);
     }
+
+    static string ShellQuote(string value) =>
+        OperatingSystem.IsWindows() ? AgentTeamForge.Business.Features.Agents.Terminals.PowerShellText.Quote(value)
+        : value.Length > 0 && value.All(c => char.IsAsciiLetterOrDigit(c) || "_-./:=@%+".Contains(c)) ? value
+        : "'" + value.Replace("'", "'\\''") + "'";
 
     internal static string BoundedError(string output)
     {
