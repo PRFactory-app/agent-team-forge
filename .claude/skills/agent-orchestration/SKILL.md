@@ -74,6 +74,9 @@ from `next_offset`) or `get_job_activity(job_id, after_cursor, limit)`.
   success.
 - `read_messages`: delta-by-default, per-sender cursors; `limit=0` peeks without
   consuming; `full=true` returns everything.
+- Read your inbox only with `read_messages`. `seq`/`next_seq` are global across
+  all leads on the daemon (gaps are normal). Never query `external_messages`
+  directly: raw SQL without `team_id` shows other leads' traffic.
 - "Done" is not proof. Check the output file exists, is non-trivial and starts
   with expected content. For code changes, inspect `git diff` in the job's
   worktree for the intended change.
