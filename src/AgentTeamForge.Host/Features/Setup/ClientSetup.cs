@@ -32,6 +32,25 @@ internal static class ClientSetup
         return binary;
     }
 
+    // A stale bridge from an older release must not start an old daemon over current state.
+    internal static string CurrentRelease(string executable, string home)
+    {
+        var root = Path.Combine(home, ".local", "share", "agentteamforge");
+        var binary = Path.GetFullPath(executable);
+        if (!binary.StartsWith(Path.Combine(root, "releases") + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+        {
+            return executable;
+        }
+        try
+        {
+            var current = Path.Combine(root, "current");
+            var release = new DirectoryInfo(current).ResolveLinkTarget(true)?.FullName ?? current;
+            var target = Path.Combine(release, "atf");
+            return File.Exists(target) ? target : executable;
+        }
+        catch (IOException) { return executable; }
+    }
+
     internal static bool Reconcile(string binary, string stateDir, string home, string claudeSettings,
         string? extensionOverride, Func<string, IReadOnlyList<string>, (int ExitCode, string Output)> run, bool apply,
         bool registrationFailureNonFatal = false)
