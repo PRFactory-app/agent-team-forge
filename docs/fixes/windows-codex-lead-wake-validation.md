@@ -20,9 +20,13 @@ passed an isolated-state MCP smoke using the actual lead thread:
   development apphost). This exercises completion-to-lead queue delivery,
   rather than follow-up delivery into a worker.
 
-The lead has not yet consumed an automatic notice in this active turn.
-After updating the client registration and reloading, verify actual idle
-lead receipt with real Claude and Codex jobs. Custom-home client restart,
+After the active implementation turn ended, the lead received the automatic
+`[AgentTeamForge wake] 1 completed job(s) await reading` notice. This confirms
+actual lead receipt for the isolated fake-job smoke, beyond the queue receipt.
+The notice has no job ID: the MCP job list in the regular state directory
+contains the separate planning/review jobs, while the isolated smoke job's
+result was verified through its own bridge before shutdown.
+Fresh real Claude/Codex jobs after client reload, custom-home client restart,
 lead resume and macOS runtime checks also remain pending.
 
 All 59 focused wake and MCP bridge tests pass on Windows, with

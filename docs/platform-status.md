@@ -22,7 +22,7 @@ those machines).
 | Interactive agents | Herdr: tested | Windows Terminal (`wt`): Claude and Codex tested; see open items | Terminal.app / kitty: untested |
 | Daemon restart keeps live TUIs | Tested (Herdr) | Tested (v0.0.3) | Untested |
 | Native wake: Claude lead/member | Host-local relay live-tested with an external member | Named-pipe transport implemented; runtime untested | Unix-socket transport implemented; runtime untested |
-| Native wake: Codex lead | Tested | Registration and queue receipt verified locally with this fix; lead receipt after reload pending | Untested |
+| Native wake: Codex lead | Tested | Explicit registration, queue receipt and automatic lead receipt verified locally with this fix | Untested |
 | Native wake: Pi lead | Tested | Untested | Untested |
 | External members (Codex Desktop) | Tested | Untested | Untested |
 | Web console | Tested | Tested (v0.0.3) | Untested |

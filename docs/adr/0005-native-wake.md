@@ -37,8 +37,8 @@ extension.
 - Claude channel wake selects Unix sockets on Linux/macOS and local named
   pipes on Windows. Windows/macOS runtime remains untested. Codex and Pi wake
   are cross-platform in code. Codex registration and notice queue receipts
-  were verified on Windows with the explicit-registration fix; end-to-end
-  receipt by the lead after reload remains pending. Pi is verified on Linux.
+  were verified on Windows with the explicit-registration fix; the lead
+  also received the automatic notice after its active turn ended. Pi is verified on Linux.
   Off Linux, the Codex home comes from the bridge's inherited environment,
   so custom `CODEX_HOME` values must be forwarded to the MCP server.
 - External Claude members register the host-local channel at join. Sessions
