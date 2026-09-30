@@ -13,7 +13,7 @@ public static class ModelSelection
             ["medium"] = ("gpt-6-luna", "high"),
             ["high"] = ("gpt-6.1-sol", "medium"),
             ["xhigh"] = ("gpt-6.1-sol", "high"),
-            ["max"] = ("gpt-6-astra", "max"),
+            ["max"] = ("gpt-6-astra", "low"),
         };
 
     static readonly string[] SharedTierOrder = [.. Tiers.Keys];
@@ -22,7 +22,7 @@ public static class ModelSelection
         ? [.. SharedTierOrder.Take(3), "medium-fast", .. SharedTierOrder.Skip(3)]
         : backend is "codex" or "cursor" or "droid" ? SharedTierOrder : [];
 
-    // Built-in sol tiers fall back to the previous slug until the backend catalog lists the new one.
+    // Use the previous slug only when a known catalog lists it instead of the current model.
     static readonly string[] SolCandidates = ["gpt-6.1-sol", "gpt-6-sol"];
 
     static bool IsSolTier(string backend, string tier) =>
@@ -36,7 +36,7 @@ public static class ModelSelection
         : backend is "codex" or "pi" && Tiers.TryGetValue(tier, out var value) ? value
         : throw new ArgumentException("Unknown backend or tier");
 
-    /// <summary>Built-in default for a tier: the first candidate the catalog lists (the known-good last one if the catalog is unknown).</summary>
+    /// <summary>Built-in default for a tier: prefer the current model when the catalog is unknown.</summary>
     public static (string Model, string Effort) DefaultTier(string backend, string tier, IReadOnlyCollection<string> available)
     {
         var (model, effort) = DefaultTier(backend, tier);
@@ -47,7 +47,7 @@ public static class ModelSelection
 
         if (available.Count == 0)
         {
-            return (SolCandidates[^1], effort);
+            return (model, effort);
         }
 
         var pick = SolCandidates.FirstOrDefault(candidate => backend == "pi"

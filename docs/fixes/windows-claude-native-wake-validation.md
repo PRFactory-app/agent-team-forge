@@ -31,7 +31,16 @@ bridge ran under the Claude host and inherited its channel env.
   `get_job` or `read_messages`. It was repeated later while the job stayed
   unread. `get_job` afterwards returned `completed`, `SMOKE-OK`.
 
-The smoke notice arrived during a live Claude turn. Delivery after the lead
-has ended its turn goes through the same channel post; it is verified after
-deployment. Existing Claude sessions must restart their MCP bridge (reload
-the client) because the wake target is resolved once at bridge startup.
+The first smoke notice arrived during a live Claude turn. After deploying
+the combined Claude wake and tier-default fixes locally, a fresh Claude
+sublead reported `registered:true, usable:true`, submitted a real Codex
+child and ended its turn without polling or sleeping. An automatic native
+completion notice started a new Claude turn. The sublead read the exact
+`IDLE_CLAUDE_WAKE_OK` result, stopped its child and sent `FINAL PASS` to its
+parent at 09:15:45 UTC. No manual follow-up was sent during this test.
+
+The combined build also passed 49 focused Claude/Codex wake and model-selection
+tests on Windows with warnings treated as errors. The local installed build
+is `0.0.10-wakefix2`, self-contained .NET 11 RC1 (`PublishAot=false`).
+Existing Claude sessions must restart their MCP bridge (reload the client)
+because the wake target is resolved once at bridge startup.
