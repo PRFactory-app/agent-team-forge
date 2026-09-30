@@ -5,6 +5,10 @@ using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Business.Features.Recovery;
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Features.Sessions;
+using AgentTeamForge.DAL.Features.Wake;
+using AgentTeamForge.Host.Features.Jobs;
+using AgentTeamForge.Host.Transport;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Tests.Support;
 
@@ -666,6 +670,111 @@ public sealed class WtInteractiveBackendTests
         var backend = new WtInteractiveBackend(InteractiveAgentKind.Claude, Path.GetTempPath());
         Assert.Throws<BackendNotStartedException>(() => backend.Start(
             new BackendRequest("job", "corr", "work", "") { WorkingDirectory = Path.GetTempPath() }));
+    }
+
+    [Fact]
+    public async Task Native_claude_rollback_and_revert_resume_one_launch_and_settle_the_captured_tab()
+    {
+        using var fixture = new JobFixture();
+        var tabs = new TrackingTabs();
+        const string session = "native-session";
+        using var backend = new WtInteractiveBackend(tabs,
+            new FakeReader(new InteractiveTranscript(session, "done", Completed: true)), InteractiveAgentKind.Claude, Path.GetTempPath());
+        var catalog = new BackendCatalog().Register(BackendCatalog.Claude, () => backend);
+        var accept = new AcceptJob(fixture.Store, JobFixture.Operator, fixture.Limits, fixture.TestProfile, fixture.Admission, catalog.Names);
+        var parent = accept.Execute(new SubmitJobRequest("parent", "work", null, false) { Backend = BackendCatalog.Claude }).Job!;
+        using var dispatcher = new DispatchJob(fixture.Store, catalog, fixture.Limits, DurabilityCheckpoints.None, fixture.Admission, _ => { });
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
+        tabs.Last!.NativeTranscript = new(session, "/fake/native.jsonl");
+        var follow = new FollowUpJob(fixture.Store, JobFixture.Operator, accept);
+        Assert.Equal(JobStatus.Completed, fixture.Store.GetJob(parent.JobId)!.Status);
+        Assert.True(backend.HasIdleClaudeSession(session));
+        var child = follow.Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+        Assert.Contains(";native_claude=1", fixture.Store.GetJob(child.JobId)!.Options);
+        using (var connection = fixture.Database.OpenConnection())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "CREATE TRIGGER reject_native BEFORE INSERT ON native_claude_attempts BEGIN SELECT RAISE(ABORT, 'test rollback'); END";
+            command.ExecuteNonQuery();
+        }
+        Assert.Throws<StorageException>(() => dispatcher.TakeNativeClaude(parent.JobId, "/fake/home"));
+        Assert.True(backend.HasIdleSession(session));
+        using (var connection = fixture.Database.OpenConnection())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "DROP TRIGGER reject_native";
+            command.ExecuteNonQuery();
+        }
+        var claim = dispatcher.TakeNativeClaude(parent.JobId, "/fake/home")!;
+        Assert.Equal(child.JobId, claim.Job.JobId);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var workspace = Path.GetTempPath();
+        var lead = sessions.Start(workspace, "managed-child:" + parent.JobId);
+        var address = OperatingSystem.IsWindows() ? @"\\.\pipe\atf-test" : "/tmp/atf-test";
+        var wake = new WakeStore(fixture.Database).Register("test-channel", "claude", address, "secret", "123");
+        sessions.BindWake(lead.SessionId, wake.Key, wake.Generation);
+        var probes = 0;
+        var endpoint = new JobsEndpoint(accept, fixture.Get(), follow, fixture.List(),
+            new StopJob(fixture.Store, JobFixture.Operator, _ => { }), DurabilityCheckpoints.None, () => { },
+            jobStore: fixture.Store, sessions: sessions, releaseNativeTurn: dispatcher.ReleaseNativeTurn,
+            agentLive: (_, id, _) =>
+            {
+                probes++;
+                return id is null ? null : backend.HasLiveSession(id);
+            });
+        var reverted = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.ClaudeDeliveryComplete,
+            JobId = child.JobId,
+            LeadSessionId = lead.SessionId,
+            Workspace = workspace,
+            WakeKind = "claude",
+            WakeAddress = address,
+            WakeSecret = "secret",
+            WakeHome = "123",
+            NativeRunId = claim.RunId,
+            NativeCorrelation = claim.Correlation,
+            NativeWriteStarted = false
+        });
+        Assert.True(reverted.Ok);
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
+        Assert.Equal(2, tabs.Starts);
+        Assert.Single(tabs.Live);
+        tabs.Last!.NativeTranscript = new(session, "/fake/native.jsonl");
+        Assert.True(backend.TakeIdleForNativeTurn(session));
+        backend.RememberNativeTurn(session);
+        var physicalProbes = tabs.Probes;
+        var list = endpoint.Handle(new IpcRequest { Op = IpcProtocol.JobList });
+        Assert.True(list.Ok);
+        Assert.Equal(1, probes); // Both completed jobs share this session.
+        Assert.All(list.Page!.Jobs, job => Assert.True(job.AgentLive));
+        Assert.Equal(physicalProbes, tabs.Probes);
+        Assert.True(backend.StopIdleSession(session));
+        Assert.Empty(tabs.Live);
+        Assert.Equal(2, tabs.Stops);
+        Assert.False(backend.HasLiveSession(session));
+    }
+
+    sealed class TrackingTabs : IWtTabControl
+    {
+        public List<InteractiveLaunch> Live { get; } = [];
+        public InteractiveLaunch? Last { get; private set; }
+        public int Starts { get; private set; }
+        public int Stops { get; private set; }
+        public int Probes { get; private set; }
+        public void Preflight(InteractiveAgentKind kind) { }
+        public Task StartAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken)
+        {
+            Starts++;
+            Last = launch;
+            Live.Add(launch);
+            return Task.CompletedTask;
+        }
+        public bool IsAlive(InteractiveLaunch launch) { Probes++; return Live.Contains(launch); }
+        public bool WrapperExited(InteractiveLaunch launch) => false;
+        public string? StartFailure(InteractiveLaunch launch) => null;
+        public int? ProcessId(InteractiveLaunch launch) => null;
+        public void StopOwned(InteractiveLaunch launch) { if (Live.Remove(launch)) { Stops++; } }
     }
 
     sealed class FakeTabs : IWtTabControl

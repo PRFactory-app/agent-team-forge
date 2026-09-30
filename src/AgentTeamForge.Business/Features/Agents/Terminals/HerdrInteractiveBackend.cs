@@ -56,9 +56,9 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             {
                 var reused = live with { StartupProgress = request.StartupProgress, LiveReuse = true, JobId = request.JobId };
                 if (_control is HerdrAgentControl control) { control.TransferOwnership(reused); }
-                return new Run(_control, _transcripts, request, reused, started, _settleTimeout, _startupTimeout, RememberSession, BindNativeSession);
+                return new Run(_control, _transcripts, request, reused, started, _settleTimeout, _startupTimeout, RememberSession, BindNativeSession, StopLaunch);
             }
-            _control.StopOwned(live);
+            StopLaunch(live);
         }
 
         var agentName = "atf" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(10));
@@ -81,7 +81,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         {
             throw new InvalidOperationException("interactive agent launch is uncertain: " + e.Message, e);
         }
-        return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout, RememberSession, BindNativeSession);
+        return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout, RememberSession, BindNativeSession, StopLaunch);
     }
 
     /// <summary>
@@ -120,7 +120,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             if (control.RebindAsync(launch, owned.Session, timeout.Token).GetAwaiter().GetResult())
             {
                 return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout,
-                    RememberSession, BindNativeSession, recovered: true);
+                    RememberSession, BindNativeSession, StopLaunch, recovered: true);
             }
         }
         catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { }
@@ -130,17 +130,20 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
 
     internal bool TakeIdleForNativeTurn(string sessionId, bool running = false) => _liveSessions.TakeForNativeTurn(sessionId, running);
 
-    internal void RememberNativeTurn(string sessionId)
-    {
-        if (_nativeSessions.TryGetValue(sessionId, out var launch)) { _liveSessions.RememberNativeTurn(sessionId, launch); }
-    }
+    internal void RememberNativeTurn(string sessionId) => _liveSessions.RememberNativeTurn(sessionId);
+    public void ReleaseNativeTurn(string sessionId) => _liveSessions.ReleaseNativeTurn(sessionId);
+    void StopLaunch(InteractiveLaunch launch) { _control.StopOwned(launch); _liveSessions.Closed(launch); }
 
     void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
 
     internal static string TabLabel(InteractiveAgentKind kind, string? name, string jobId) =>
         $"{kind.ToString().ToLowerInvariant()}: {(string.IsNullOrWhiteSpace(name) ? jobId[..Math.Min(jobId.Length, 8)] : name)}";
 
-    void BindNativeSession(string sessionId, InteractiveLaunch launch) => _nativeSessions[sessionId] = launch;
+    void BindNativeSession(string sessionId, InteractiveLaunch launch)
+    {
+        _nativeSessions[sessionId] = launch;
+        _liveSessions.Track(sessionId, launch);
+    }
 
     InteractiveAgentStatus? CodexSessionStatus(string sessionId)
     {
@@ -188,11 +191,13 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         catch (Exception ex) when (ex is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
     }
 
-    public bool HasLiveSession(string sessionId)
+    public bool? HasLiveSession(string sessionId)
     {
-        if (!_nativeSessions.TryGetValue(sessionId, out var launch)) { return false; }
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult() != InteractiveAgentStatus.Gone;
+        if (_control is HerdrAgentControl control && _nativeSessions.TryGetValue(sessionId, out var launch) && !control.IsBound(launch))
+        {
+            _liveSessions.Closed(launch);
+        }
+        return _liveSessions.Liveness(sessionId);
     }
 
     public bool HasIdleSession(string sessionId) => _liveSessions.IsAlive(sessionId, launch =>
@@ -267,7 +272,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
 
     sealed class Run(IHerdrAgentControl control, IInteractiveTranscriptReader transcripts, BackendRequest request,
         InteractiveLaunch launch, DateTimeOffset started, TimeSpan settleTimeout, TimeSpan startupTimeout, Action<string, InteractiveLaunch> rememberSession,
-        Action<string, InteractiveLaunch> bindNativeSession, bool recovered = false) : IBackendRun
+        Action<string, InteractiveLaunch> bindNativeSession, Action<InteractiveLaunch> stopLaunch, bool recovered = false) : IBackendRun
     {
         bool _agentExited;
         bool _promptReturned = recovered;
@@ -468,7 +473,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         {
             lock (_lifetime)
             {
-                control.StopOwned(launch);
+                stopLaunch(launch);
                 OwnedSessionStopped = true;
                 _stopped = true;
             }
@@ -511,7 +516,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 }
                 else if (_agentExited)
                 {
-                    control.StopOwned(launch);
+                    stopLaunch(launch);
                     OwnedSessionStopped = true;
                 }
                 // Unknown native identity still has durable ownership for explicit stop.

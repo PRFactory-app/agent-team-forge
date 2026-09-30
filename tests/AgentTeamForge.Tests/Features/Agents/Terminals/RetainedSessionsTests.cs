@@ -111,7 +111,7 @@ public sealed class RetainedSessionsTests
         sessions.Remember("native", native); // The prior run may still unwind during native delivery.
         clock.Advance(TimeSpan.FromMinutes(6));
         Assert.Empty(stopped);
-        sessions.RememberNativeTurn("native", native);
+        sessions.RememberNativeTurn("native");
         clock.Advance(TimeSpan.FromMinutes(6));
         Assert.Equal([native], stopped);
     }
@@ -126,6 +126,35 @@ public sealed class RetainedSessionsTests
         Assert.Equal([launch], stopped);
         Assert.Equal(0, sessions.Count);
         Assert.False(sessions.TryTake("s", out _));
+    }
+
+    [Fact]
+    public void Releasing_a_running_parent_reservation_does_not_make_it_idle()
+    {
+        var stopped = new List<InteractiveLaunch>();
+        using var sessions = new RetainedSessions(stopped.Add, TimeSpan.Zero);
+        var launch = Launch(1);
+        sessions.Track("working", launch);
+        Assert.True(sessions.TakeForNativeTurn("working", running: true));
+        sessions.ReleaseNativeTurn("working");
+        sessions.ReleaseNativeTurn("working");
+        sessions.Sweep();
+        Assert.Equal(0, sessions.Count);
+        Assert.Empty(stopped);
+        Assert.True(sessions.Liveness("working"));
+        sessions.Remember("working", launch); // Only the parent's own settlement makes it idle.
+        Assert.Equal([launch], stopped);
+        Assert.False(sessions.Liveness("working"));
+
+        sessions.Track("settling", launch);
+        Assert.True(sessions.TakeForNativeTurn("settling", running: true));
+        sessions.Remember("settling", launch); // The parent settles before the native submit returns.
+        sessions.Sweep();
+        Assert.Single(stopped);
+        Assert.False(sessions.TryTake("settling", out _));
+        sessions.ReleaseNativeTurn("settling");
+        sessions.Sweep();
+        Assert.Equal(2, stopped.Count);
     }
 
     sealed class ManualClock : TimeProvider, IDisposable

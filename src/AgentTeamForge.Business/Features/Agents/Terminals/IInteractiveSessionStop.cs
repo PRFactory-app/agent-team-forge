@@ -4,7 +4,8 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 public interface IInteractiveSessionStop
 {
     bool HasIdleSession(string sessionId);
-    bool HasLiveSession(string sessionId) => HasIdleSession(sessionId);
+    bool? HasLiveSession(string sessionId) => null;
+    void ReleaseNativeTurn(string sessionId) { }
     bool StopIdleSession(string sessionId);
     void StopAllIdleSessions();
 }

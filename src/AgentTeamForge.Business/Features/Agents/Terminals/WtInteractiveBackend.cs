@@ -52,7 +52,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
         _configPreflight?.Invoke(_kind, cwd);
         if (request.ResumeSessionId is { } resumeId && _liveSessions.TryTake(resumeId, out var previous))
         {
-            try { _tabs.StopOwned(previous); }
+            try { StopLaunch(previous); }
             catch
             {
                 _liveSessions.Remember(resumeId, previous);
@@ -69,14 +69,14 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
             _ = WtTabControl.AgentArguments(launch, "");
         }
         _jobs[request.JobId] = launch;
-        return new Run(_tabs, _transcripts, request, launch, DateTimeOffset.UtcNow, _startupTimeout, RememberSession);
+        return new Run(_tabs, _transcripts, request, launch, DateTimeOffset.UtcNow, _startupTimeout, RememberSession, BindNativeSession, StopLaunch);
     }
 
     public bool StopOwnedJob(string jobId)
     {
         if (!_jobs.TryGetValue(jobId, out var launch) && !TryRecoverLaunch(jobId, out launch)) { return false; }
         if (!_tabs.IsAlive(launch)) { return false; }
-        _tabs.StopOwned(launch);
+        StopLaunch(launch);
         if (_tabs.IsAlive(launch)) { return false; }
         _jobs.TryRemove(jobId, out _);
         return true;
@@ -117,15 +117,14 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
 
     internal bool TakeIdleForNativeTurn(string sessionId, bool running = false) => _liveSessions.TakeForNativeTurn(sessionId, running);
 
-    internal void RememberNativeTurn(string sessionId)
-    {
-        var launch = _jobs.Values.FirstOrDefault(l => l.NativeTranscript?.SessionId == sessionId);
-        if (launch is not null) { _liveSessions.RememberNativeTurn(sessionId, launch); }
-    }
+    internal void RememberNativeTurn(string sessionId) => _liveSessions.RememberNativeTurn(sessionId);
+    public void ReleaseNativeTurn(string sessionId) => _liveSessions.ReleaseNativeTurn(sessionId);
+    void BindNativeSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Track(sessionId, launch);
+    void StopLaunch(InteractiveLaunch launch) { _tabs.StopOwned(launch); _liveSessions.Closed(launch); }
 
     void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
 
-    public bool HasLiveSession(string sessionId) => _jobs.Values.Any(launch => launch.NativeTranscript?.SessionId == sessionId && _tabs.IsAlive(launch));
+    public bool? HasLiveSession(string sessionId) => _liveSessions.Liveness(sessionId);
 
     public bool HasIdleSession(string sessionId) => _liveSessions.IsAlive(sessionId, _tabs.IsAlive);
 
@@ -151,7 +150,8 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
     }
 
     sealed class Run(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, BackendRequest request,
-        InteractiveLaunch launch, DateTimeOffset started, TimeSpan startupTimeout, Action<string, InteractiveLaunch> rememberSession) : IBackendRun
+        InteractiveLaunch launch, DateTimeOffset started, TimeSpan startupTimeout, Action<string, InteractiveLaunch> rememberSession,
+        Action<string, InteractiveLaunch> bindNativeSession, Action<InteractiveLaunch> stopLaunch) : IBackendRun
     {
         bool _stopped;
         readonly Lock _lifetime = new();
@@ -190,6 +190,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
             var session = request.ResumeSessionId;
             if (session is not null)
             {
+                bindNativeSession(session, launch);
                 yield return new BackendEvidence.Session(request.Correlation, session);
             }
             if (_notStartedError is { } notStarted)
@@ -219,6 +220,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
                 {
                     session = nativeId;
                     _sessionId = nativeId;
+                    bindNativeSession(nativeId, launch);
                     yield return new BackendEvidence.Session(request.Correlation, nativeId);
                 }
                 if (output?.ApiError is { } apiError && session is not null)
@@ -261,7 +263,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
                     var exited = tabs.WrapperExited(launch);
                     if (tabs.StartFailure(launch) is { } failure)
                     {
-                        tabs.StopOwned(launch);
+                        stopLaunch(launch);
                         yield return new BackendEvidence.LaunchFailed(failure);
                         yield break;
                     }
@@ -296,7 +298,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
             lock (_lifetime)
             {
                 _stopped = true;
-                tabs.StopOwned(launch);
+                stopLaunch(launch);
             }
         }
 
@@ -315,7 +317,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
                     // An uncertain turn may have no native session ID yet. Keep its
                     // verified tab for explicit stop; never abandon a live agent.
                 }
-                else { tabs.StopOwned(launch); }
+                else { stopLaunch(launch); }
             }
             return ValueTask.CompletedTask;
         }

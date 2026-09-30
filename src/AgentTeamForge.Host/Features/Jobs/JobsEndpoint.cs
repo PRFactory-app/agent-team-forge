@@ -19,7 +19,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null, ClaudeWakeMailbox? claudeMailbox = null, string? launchMode = null,
     Func<string?, string?, string?, HumanInputRequestResult>? humanInput = null, ExternalMemberStore? externalMembers = null,
     GetJob? connectorGet = null, Func<string, string, AttemptClaim?>? takeNativeClaude = null,
-    RemoveWorktree? removeWorktree = null, WorktreeCleanup? worktreeCleanup = null, Func<string?, string?, string, bool?>? agentLive = null, InteractiveRetentionConfiguration? retentionSettings = null)
+    RemoveWorktree? removeWorktree = null, WorktreeCleanup? worktreeCleanup = null, Func<string?, string?, string, bool?>? agentLive = null, InteractiveRetentionConfiguration? retentionSettings = null, Action<string, string>? releaseNativeTurn = null)
 {
     JobResult ReadJob(IpcRequest request)
     {
@@ -71,7 +71,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             }
             if (!request.NativeWriteStarted)
             {
-                return new IpcResponse(jobStore.RevertNativeClaudeAttempt(new RunRef(request.JobId, request.NativeRunId, 1, request.NativeCorrelation)));
+                try { return new IpcResponse(jobStore.RevertNativeClaudeAttempt(new RunRef(request.JobId, request.NativeRunId, 1, request.NativeCorrelation))); }
+                finally { releaseNativeTurn?.Invoke("claude", attempt.SessionId); }
             }
             if (request.NoticePosted) { jobStore.RecordNativeClaudePost(request.JobId, request.NativeCorrelation); }
             return new IpcResponse(true);
@@ -460,11 +461,18 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     JobListPage WithLocations(JobListPage page)
     {
 
+        var live = new Dictionary<(string? Backend, string? Session), bool?>();
         return page with
         {
             Jobs = [.. page.Jobs.Select(job =>
             {
-                job = job with { AgentLive = agentLive?.Invoke(job.Backend, job.SessionId, job.Status) };
+                var key = (job.Backend, job.SessionId);
+                if (!live.TryGetValue(key, out var observed))
+                {
+                    observed = agentLive?.Invoke(job.Backend, job.SessionId, job.Status);
+                    live[key] = observed;
+                }
+                job = job with { AgentLive = observed };
                 if (herdrPlacement is null || job.HerdrPlacement is null) { return job; }
                 var location = Location(job.JobId, job.ParentJobId);
                 return location is null ? job : job with { HerdrSession = location.Value.Session, HerdrTab = location.Value.TabId, HerdrTabLabel = location.Value.TabLabel };

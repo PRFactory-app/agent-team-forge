@@ -229,13 +229,12 @@ public static class DaemonCommand
             (token, _, _) => PRFactoryInteraction.RequestFromManagedChild(externalTeam.ManagedChildName(token)),
             externalMembers, new GetJob(store, connectorPrincipal), dispatcher.TakeNativeClaude,
             new RemoveWorktree(store, profile.Bound, worktreeCleanup), worktreeCleanup,
-            (backend, session, status) =>
+            (backend, session, _) =>
             {
-                if (status is JobStatus.Running or JobStatus.Queued || backend is null || session is null
+                if (backend is null || session is null
                     || backends.Resolve(backend) is not IInteractiveSessionStop interactive) { return null; }
-                try { return interactive.HasLiveSession(session); }
-                catch (Exception ex) when (ex is HerdrLaunchException or InteractiveTerminalUnavailableException or IOException or OperationCanceledException) { return null; }
-            }, retentionSettings);
+                return interactive.HasLiveSession(session);
+            }, retentionSettings, dispatcher.ReleaseNativeTurn);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
@@ -397,7 +396,7 @@ public static class DaemonCommand
         {
             (backend as IDisposable)?.Dispose();
             // Windows tabs retain their wrapper and PID sidecars for explicit stop after restart.
-            if (backend is WtInteractiveBackend) { continue; }
+            if (backend is WtInteractiveBackend or MacInteractiveBackend) { continue; }
             try { backend.StopAllIdleSessions(); }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {

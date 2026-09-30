@@ -197,6 +197,8 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         HerdrOwnedSessions.Stop(stateRoot, jobIds, session =>
             terminal.RecoverOwnedSessionAsync(session, CancellationToken.None).GetAwaiter().GetResult());
 
+    internal bool IsBound(InteractiveLaunch launch) => _runs.ContainsKey(launch.AgentName);
+
     public void StopOwned(InteractiveLaunch launch)
     {
         if (_runs.TryGetValue(launch.AgentName, out var run))

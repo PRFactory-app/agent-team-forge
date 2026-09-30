@@ -337,8 +337,9 @@ public sealed class MacInteractiveBackend(InteractiveAgentKind kind, string stat
     public void Dispose() => _backend.Dispose();
     public IBackendRun Start(BackendRequest request) => _backend.Start(request);
     public bool HasIdleSession(string sessionId) => _backend.HasIdleSession(sessionId);
-    public bool HasLiveSession(string sessionId) => _backend.HasLiveSession(sessionId);
+    public bool? HasLiveSession(string sessionId) => _backend.HasLiveSession(sessionId);
     public bool StopIdleSession(string sessionId) => _backend.StopIdleSession(sessionId);
+    public void ReleaseNativeTurn(string sessionId) => _backend.ReleaseNativeTurn(sessionId);
     public void StopAllIdleSessions() => _backend.StopAllIdleSessions();
 
     public static void Recover(string stateRoot, Action<string> log) => MacTabControl.Recover(stateRoot, log);

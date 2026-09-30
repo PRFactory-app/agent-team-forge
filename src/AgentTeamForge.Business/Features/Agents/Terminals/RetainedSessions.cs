@@ -9,7 +9,8 @@ internal sealed class RetainedSessions : IDisposable
     public const int MaxRetained = 16;
     readonly Lock _gate = new();
     readonly Dictionary<string, (InteractiveLaunch Launch, long Order, long IdleSince)> _sessions = [];
-    readonly HashSet<string> _nativeTurns = [];
+    readonly Dictionary<string, InteractiveLaunch?> _reserved = [];
+    readonly Dictionary<string, (InteractiveLaunch Launch, bool Live)> _known = [];
     long _next;
     readonly Action<InteractiveLaunch> _stop;
     readonly TimeProvider _clock;
@@ -38,15 +39,17 @@ internal sealed class RetainedSessions : IDisposable
         {
             foreach (var pair in _sessions.ToArray())
             {
-                if (timeout >= TimeSpan.Zero && _clock.GetElapsedTime(pair.Value.IdleSince) >= timeout)
+                if (!_reserved.ContainsKey(pair.Key) && timeout >= TimeSpan.Zero && _clock.GetElapsedTime(pair.Value.IdleSince) >= timeout)
                 {
                     _sessions.Remove(pair.Key);
                     expired.Add((pair.Key, pair.Value.Launch));
                 }
             }
-            while (_sessions.Count > maxRetained)
+            while (true)
             {
-                var oldest = _sessions.MinBy(pair => pair.Value.Order);
+                var idle = _sessions.Where(pair => !_reserved.ContainsKey(pair.Key)).ToArray();
+                if (idle.Length <= maxRetained) { break; }
+                var oldest = idle.MinBy(pair => pair.Value.Order);
                 _sessions.Remove(oldest.Key);
                 expired.Add((oldest.Key, oldest.Value.Launch));
             }
@@ -63,6 +66,7 @@ internal sealed class RetainedSessions : IDisposable
             if (!_sessions.TryGetValue(sessionId, out var entry)) { return false; }
             if (isAlive(entry.Launch)) { return true; }
             _sessions.Remove(sessionId);
+            Closed(entry.Launch);
             return false;
         }
     }
@@ -71,7 +75,7 @@ internal sealed class RetainedSessions : IDisposable
     {
         lock (_gate)
         {
-            _nativeTurns.Remove(sessionId);
+            if (_reserved.ContainsKey(sessionId)) { launch = null!; return false; }
             if (_sessions.Remove(sessionId, out var entry))
             {
                 launch = entry.Launch;
@@ -86,16 +90,57 @@ internal sealed class RetainedSessions : IDisposable
     {
         lock (_gate)
         {
-            if (!_sessions.Remove(sessionId) && !running) { return false; }
-            _nativeTurns.Add(sessionId);
+            if (_reserved.ContainsKey(sessionId)) { return false; }
+            var retained = _sessions.Remove(sessionId, out var entry);
+            if (!retained && !running) { return false; }
+            _reserved.Add(sessionId, retained ? entry.Launch : null);
             return true;
         }
     }
 
-    internal void RememberNativeTurn(string sessionId, InteractiveLaunch launch)
+    internal void RememberNativeTurn(string sessionId)
     {
-        lock (_gate) { _nativeTurns.Remove(sessionId); }
-        Remember(sessionId, launch);
+        InteractiveLaunch? launch;
+        lock (_gate)
+        {
+            if (!_reserved.Remove(sessionId, out launch)) { return; }
+            // Native completion is settlement evidence. A running-parent reservation
+            // can use the bound launch, but a revert must never do that.
+            launch ??= _known.TryGetValue(sessionId, out var known) && known.Live ? known.Launch : null;
+        }
+        if (launch is not null) { Remember(sessionId, launch); }
+    }
+
+    internal void ReleaseNativeTurn(string sessionId)
+    {
+        InteractiveLaunch? launch;
+        lock (_gate) { if (!_reserved.Remove(sessionId, out launch)) { return; } }
+        if (launch is not null) { Remember(sessionId, launch); }
+    }
+
+    internal void Track(string sessionId, InteractiveLaunch launch)
+    {
+        lock (_gate) { _known[sessionId] = (launch, true); }
+    }
+
+    internal bool? Liveness(string sessionId)
+    {
+        lock (_gate)
+        {
+            if (_known.TryGetValue(sessionId, out var known)) { return known.Live; }
+            return _reserved.ContainsKey(sessionId) ? true : null;
+        }
+    }
+
+    internal void Closed(InteractiveLaunch launch)
+    {
+        lock (_gate)
+        {
+            foreach (var id in _known.Where(p => ReferenceEquals(p.Value.Launch, launch)).Select(p => p.Key).ToArray())
+            {
+                _known[id] = (launch, false);
+            }
+        }
     }
 
     public void Remember(string sessionId, InteractiveLaunch launch)
@@ -106,15 +151,24 @@ internal sealed class RetainedSessions : IDisposable
         var evicted = new List<(string Id, InteractiveLaunch Launch)>();
         lock (_gate)
         {
-            if (_nativeTurns.Contains(sessionId)) { return; }
+            Track(sessionId, launch);
+            if (_reserved.TryGetValue(sessionId, out var reserved))
+            {
+                // A running parent's own settlement may race native submission.
+                // Record that settlement, but keep it protected until release.
+                if (reserved is null) { _sessions[sessionId] = (launch, _next++, _clock.GetTimestamp()); }
+                return;
+            }
             if (_sessions.TryGetValue(sessionId, out var replaced) && !ReferenceEquals(replaced.Launch, launch))
             {
                 evicted.Add((sessionId, replaced.Launch));
             }
             _sessions[sessionId] = (launch, _next++, _clock.GetTimestamp());
-            while (_sessions.Count > maxRetained || timeout == TimeSpan.Zero && _sessions.Count > 0)
+            while (true)
             {
-                var oldest = _sessions.MinBy(pair => pair.Value.Order);
+                var idle = _sessions.Where(pair => !_reserved.ContainsKey(pair.Key)).ToArray();
+                if (idle.Length <= maxRetained && (timeout != TimeSpan.Zero || idle.Length == 0)) { break; }
+                var oldest = idle.MinBy(pair => pair.Value.Order);
                 _sessions.Remove(oldest.Key);
                 evicted.Add((oldest.Key, oldest.Value.Launch));
             }
@@ -127,7 +181,7 @@ internal sealed class RetainedSessions : IDisposable
         foreach (var (id, old) in evicted)
         {
             // Best effort: this runs from a settling turn, which must not fail on cleanup.
-            try { _stop(old); }
+            try { _stop(old); Closed(old); }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 lock (_gate) { _sessions.TryAdd(id, (old, _next++, _clock.GetTimestamp())); }
@@ -141,7 +195,7 @@ internal sealed class RetainedSessions : IDisposable
         {
             return false;
         }
-        try { _stop(launch); }
+        try { _stop(launch); Closed(launch); }
         catch
         {
             lock (_gate) { _sessions.TryAdd(sessionId, (launch, _next++, _clock.GetTimestamp())); }
@@ -154,6 +208,11 @@ internal sealed class RetainedSessions : IDisposable
     {
         lock (_gate)
         {
+            foreach (var id in _known.Where(p => p.Value.Launch.JobId is { } jobId && jobIds.Contains(jobId)).Select(p => p.Key).ToArray())
+            {
+                _known[id] = (_known[id].Launch, false);
+                _reserved.Remove(id);
+            }
             foreach (var id in _sessions.Where(p => p.Value.Launch.JobId is { } jobId && jobIds.Contains(jobId)).Select(p => p.Key).ToArray())
             {
                 _sessions.Remove(id);

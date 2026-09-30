@@ -494,9 +494,26 @@ public sealed class DispatchJob : IDisposable
             || parent.Status == JobStatus.Running && herdr.HasWorkingCodexSession(thread))
         && CodexQueueWake.VerifyCodexThread(new DAL.Features.Wake.WakeRegistration("", 0, "codex", thread, "", codexHome));
 
-    AttemptClaim? ClaimNativeCodex() => store.BeginNativeCodexAttempt(parent => CanNativeCodex(parent)
-        && backends.Resolve(parent.Backend) is HerdrInteractiveBackend herdr
-        && herdr.TakeIdleForNativeTurn(parent.SessionId!, parent.Status == JobStatus.Running), codexHome, Eligible);
+    AttemptClaim? ClaimNativeCodex()
+    {
+        string? reserved = null;
+        AttemptClaim? claim = null;
+        try
+        {
+            claim = store.BeginNativeCodexAttempt(parent =>
+            {
+                if (!CanNativeCodex(parent) || backends.Resolve(parent.Backend) is not HerdrInteractiveBackend herdr
+                    || !herdr.TakeIdleForNativeTurn(parent.SessionId!, parent.Status == JobStatus.Running)) { return false; }
+                reserved = parent.SessionId;
+                return true;
+            }, codexHome, Eligible);
+            return claim;
+        }
+        finally
+        {
+            if (claim is null && reserved is not null) { ReleaseNativeTurn(BackendCatalog.Codex, reserved); }
+        }
+    }
 
     bool CanNativeClaude(JobRecord parent)
     {
@@ -515,13 +532,28 @@ public sealed class DispatchJob : IDisposable
     public AttemptClaim? TakeNativeClaude(string childJobId, string claudeHome)
     {
         if (!Eligible(childJobId)) { return null; }
-        Func<string, bool>? idle = backends.Resolve(BackendCatalog.Claude) switch
+        var backend = backends.Resolve(BackendCatalog.Claude);
+        string? reserved = null;
+        AttemptClaim? claim = null;
+        try
         {
-            HerdrInteractiveBackend herdr => session => herdr.HasIdleClaudeSession(session) && herdr.TakeIdleForNativeTurn(session),
-            WtInteractiveBackend wt => session => wt.HasIdleClaudeSession(session) && wt.TakeIdleForNativeTurn(session),
-            _ => null
-        };
-        return idle is null ? null : store.BeginNativeClaudeAttempt(childJobId, claudeHome, idle);
+            claim = store.BeginNativeClaudeAttempt(childJobId, claudeHome, session =>
+            {
+                var taken = backend switch
+                {
+                    HerdrInteractiveBackend herdr => herdr.HasIdleClaudeSession(session) && herdr.TakeIdleForNativeTurn(session),
+                    WtInteractiveBackend wt => wt.HasIdleClaudeSession(session) && wt.TakeIdleForNativeTurn(session),
+                    _ => false
+                };
+                if (taken) { reserved = session; }
+                return taken;
+            });
+            return claim;
+        }
+        finally
+        {
+            if (claim is null && reserved is not null) { ReleaseNativeTurn(BackendCatalog.Claude, reserved); }
+        }
     }
 
     bool EligibleOrdinary(string jobId)
@@ -650,11 +682,15 @@ public sealed class DispatchJob : IDisposable
         _running[run.JobId] = active;
         IBackendRun? backendRun = null;
         HeadlessRun? headless = null;
+        var nativeCarrier = claim.Job.Backend == BackendCatalog.Codex && claim.Job.SessionId is not null
+            && JobOptions.Read(claim.Job.Options, "native_codex") == "1";
+        var enteredNative = false;
         try
         {
             // Routed by correlation: a reverted native attempt resumes through a new run.
             if (store.NativeAttempt(run.JobId) is { } native && native.Correlation == run.Correlation)
             {
+                enteredNative = true;
                 await RunNativeCodexAsync(run, native, daemonLifetime, stopRequested.Token);
                 return;
             }
@@ -865,6 +901,7 @@ public sealed class DispatchJob : IDisposable
         }
         finally
         {
+            if (nativeCarrier && !enteredNative) { ReleaseNativeTurn(BackendCatalog.Codex, claim.Job.SessionId!); }
             // An interrupt kills before it cancels, so the turn can end first.
             if (headless is null && (stopRequested.IsCancellationRequested || active.Terminated))
             {
@@ -893,6 +930,11 @@ public sealed class DispatchJob : IDisposable
                 }
             }
         }
+    }
+
+    public void ReleaseNativeTurn(string backend, string sessionId)
+    {
+        if (backends.Resolve(backend) is IInteractiveSessionStop interactive) { interactive.ReleaseNativeTurn(sessionId); }
     }
 
     void RememberNativeTurn(string backend, string sessionId)
@@ -938,44 +980,49 @@ public sealed class DispatchJob : IDisposable
 
     async Task RunNativeCodexAsync(RunRef run, NativeCodexAttempt attempt, CancellationToken daemonLifetime, CancellationToken stopRequested)
     {
-        JobRecord job;
-        lock (_nativeSubmitGate)
-        {
-            // A stop or release may have committed after the claim; the queue call is the only effect.
-            job = store.GetJob(run.JobId)!;
-            if (job.Status != JobStatus.Running || stopRequested.IsCancellationRequested
-                || store.NativeAttempt(run.JobId) is not { State: "sent" }) { return; }
-        }
-        var prompt = job.Instruction + "\n\n[AgentTeamForge correlation id: atf-corr:"
-            + run.Correlation + " — internal marker, ignore this line]";
+        var awaitingSettlement = false;
         try
         {
-            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, stopRequested);
-            deadline.CancelAfter(TimeSpan.FromSeconds(job.TimeoutSeconds ?? 600));
-            var submission = await SubmitNativeCodex(attempt.ThreadId, attempt.CodexHome, prompt, deadline.Token);
-            if (!submission.Started)
+            JobRecord job;
+            lock (_nativeSubmitGate)
             {
-                // Nothing ran, so nothing can be presented: resume carries the turn instead.
-                if (store.RevertNativeAttempt(run)) { RememberNativeTurn(BackendCatalog.Codex, attempt.ThreadId); log($"codex queue did not start for {run.JobId}; resuming instead"); }
-                else { store.ReleaseNativeAttempt(job.JobId, job.Principal, job.Team); }
-                Signal();
+                job = store.GetJob(run.JobId)!;
+                if (job.Status != JobStatus.Running || stopRequested.IsCancellationRequested
+                    || store.NativeAttempt(run.JobId) is not { State: "sent" }) { return; }
+            }
+            var prompt = job.Instruction + "\n\n[AgentTeamForge correlation id: atf-corr:"
+                + run.Correlation + " — internal marker, ignore this line]";
+            try
+            {
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, stopRequested);
+                deadline.CancelAfter(TimeSpan.FromSeconds(job.TimeoutSeconds ?? 600));
+                var submission = await SubmitNativeCodex(attempt.ThreadId, attempt.CodexHome, prompt, deadline.Token);
+                if (!submission.Started)
+                {
+                    if (store.RevertNativeAttempt(run)) { log($"codex queue did not start for {run.JobId}; resuming instead"); }
+                    else { store.ReleaseNativeAttempt(job.JobId, job.Principal, job.Team); }
+                    Signal();
+                    return;
+                }
+                if (submission.SubmissionId is not { } id)
+                {
+                    End(run, JobStatus.NeedsReconciliation, "native_submission_unresolved");
+                    return;
+                }
+                store.RecordNativeSubmission(run.JobId, run.Correlation, id);
+                store.RecordStartup(run, "submitted");
+                ReconcileNativeCodex();
+                awaitingSettlement = true;
                 return;
             }
-            if (submission.SubmissionId is not { } id)
-            {
-                End(run, JobStatus.NeedsReconciliation, "native_submission_unresolved");
-                return;
-            }
-            store.RecordNativeSubmission(run.JobId, run.Correlation, id);
-            store.RecordStartup(run, "submitted");
-            ReconcileNativeCodex();
-            return; // The sweep settles the frozen carrier without holding a dispatch slot.
+            catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested || stopRequested.IsCancellationRequested) { return; }
+            catch (OperationCanceledException) { }
+            End(run, JobStatus.NeedsReconciliation, "native_delivery_unresolved");
         }
-        catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested || stopRequested.IsCancellationRequested) { return; }
-        catch (OperationCanceledException) { }
-        // The queue can outlive this daemon and timeout. N5 persists until a
-        // transcript receipt settles the frozen thread, including on restart.
-        End(run, JobStatus.NeedsReconciliation, "native_delivery_unresolved");
+        finally
+        {
+            if (!awaitingSettlement) { ReleaseNativeTurn(BackendCatalog.Codex, attempt.ThreadId); }
+        }
     }
 
     /// <summary>
@@ -988,7 +1035,9 @@ public sealed class DispatchJob : IDisposable
         {
             if (_running.ContainsKey(job.JobId) || (store.NativeAttempt(job.JobId) is not { Unresolved: true }
                 && store.NativeClaudeAttempt(job.JobId) is not { State: "posting" or "posted" or "received" })) { return false; }
-            return store.ReleaseNativeAttempt(job.JobId, job.Principal, job.Team).Changed;
+            var released = store.ReleaseNativeAttempt(job.JobId, job.Principal, job.Team).Changed;
+            if (released && job.SessionId is { } session) { ReleaseNativeTurn(job.Backend, session); }
+            return released;
         }
     }
 
