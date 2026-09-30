@@ -1025,6 +1025,32 @@ public sealed class HerdrInteractiveBackendTests
         return result;
     }
 
+    [Fact]
+    public async Task Idle_close_reports_false_without_probing_the_unbound_Herdr_launch()
+    {
+        var control = new FakeControl();
+        var settings = new InteractiveRetentionSettings();
+        using var backend = new HerdrInteractiveBackend(control,
+            new FakeReader(new InteractiveTranscript("native-1", "finished", Completed: true)), InteractiveAgentKind.Claude,
+            Path.GetTempPath(), retentionSettings: () => settings);
+        Assert.Null(backend.HasLiveSession("unknown"));
+        await using var first = backend.Start(new BackendRequest("parent", "first", "work", "") { WorkingDirectory = Path.GetTempPath() });
+        await first.DeliverAsync(CancellationToken.None);
+        await Collect(first);
+        await first.DisposeAsync();
+        Assert.True(backend.HasLiveSession("native-1"));
+        settings = settings with { MaxRetainedSessions = 0 };
+        // A second settled turn applies the new cap and closes the owned pane.
+        await using var second = backend.Start(new BackendRequest("child", "second", "next", "")
+        { WorkingDirectory = Path.GetTempPath(), ResumeSessionId = "native-1" });
+        await second.DeliverAsync(CancellationToken.None);
+        await Collect(second);
+        await second.DisposeAsync();
+        Assert.True(control.Stopped);
+        control.FailStatus = true; // The real control throws after removing its binding.
+        Assert.False(backend.HasLiveSession("native-1"));
+    }
+
     sealed class FakeControl : IHerdrAgentControl
     {
         public InteractiveLaunch? Launch { get; private set; }

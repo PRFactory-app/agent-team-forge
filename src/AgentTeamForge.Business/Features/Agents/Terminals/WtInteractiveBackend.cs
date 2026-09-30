@@ -7,7 +7,7 @@ using AgentTeamForge.Business.Features.Agents.Backends;
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
 /// <summary>Runs an interactive agent in an owned Windows Terminal tab.</summary>
-public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
+public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop, IDisposable
 {
     readonly IWtTabControl _tabs;
     readonly IInteractiveTranscriptReader _transcripts;
@@ -19,24 +19,26 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
     readonly TimeSpan _startupTimeout;
     readonly Action<InteractiveAgentKind, string>? _configPreflight;
 
-    public WtInteractiveBackend(InteractiveAgentKind kind, string stateRoot)
-        : this(new WtTabControl(), new InteractiveTranscriptReader(), kind, stateRoot, "wt", configPreflight: InteractiveAgentPreflight.CheckCurrent) { }
+    public WtInteractiveBackend(InteractiveAgentKind kind, string stateRoot, TimeSpan? idleTimeout = null, Func<InteractiveRetentionSettings>? retentionSettings = null)
+        : this(new WtTabControl(), new InteractiveTranscriptReader(), kind, stateRoot, "wt", configPreflight: InteractiveAgentPreflight.CheckCurrent, idleTimeout: idleTimeout, retentionSettings: retentionSettings) { }
 
-    internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot)
-        : this(tabs, transcripts, kind, stateRoot, "wt") { }
+    internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot, TimeSpan? idleTimeout = null, Func<InteractiveRetentionSettings>? retentionSettings = null)
+        : this(tabs, transcripts, kind, stateRoot, "wt", idleTimeout: idleTimeout, retentionSettings: retentionSettings) { }
 
     internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot, string tabDirectory, TimeSpan? startupTimeout = null,
-        Action<InteractiveAgentKind, string>? configPreflight = null)
+        Action<InteractiveAgentKind, string>? configPreflight = null, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null, Func<InteractiveRetentionSettings>? retentionSettings = null)
     {
         _tabs = tabs;
         _transcripts = transcripts;
         _kind = kind;
         _stateRoot = stateRoot;
         _tabDirectory = tabDirectory;
-        _liveSessions = new RetainedSessions(tabs.StopOwned);
+        _liveSessions = new RetainedSessions(tabs.StopOwned, idleTimeout, timeProvider, retentionSettings);
         _startupTimeout = startupTimeout ?? InteractiveStartup.Timeout;
         _configPreflight = configPreflight;
     }
+
+    public void Dispose() => _liveSessions.Dispose();
 
     public IBackendRun Start(BackendRequest request)
     {
@@ -50,7 +52,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
         _configPreflight?.Invoke(_kind, cwd);
         if (request.ResumeSessionId is { } resumeId && _liveSessions.TryTake(resumeId, out var previous))
         {
-            try { _tabs.StopOwned(previous); }
+            try { StopLaunch(previous); }
             catch
             {
                 _liveSessions.Remember(resumeId, previous);
@@ -67,14 +69,14 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
             _ = WtTabControl.AgentArguments(launch, "");
         }
         _jobs[request.JobId] = launch;
-        return new Run(_tabs, _transcripts, request, launch, DateTimeOffset.UtcNow, _startupTimeout, RememberSession);
+        return new Run(_tabs, _transcripts, request, launch, DateTimeOffset.UtcNow, _startupTimeout, RememberSession, BindNativeSession, StopLaunch);
     }
 
     public bool StopOwnedJob(string jobId)
     {
         if (!_jobs.TryGetValue(jobId, out var launch) && !TryRecoverLaunch(jobId, out launch)) { return false; }
         if (!_tabs.IsAlive(launch)) { return false; }
-        _tabs.StopOwned(launch);
+        StopLaunch(launch);
         if (_tabs.IsAlive(launch)) { return false; }
         _jobs.TryRemove(jobId, out _);
         return true;
@@ -113,7 +115,16 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
         return null;
     }
 
+    internal bool TakeIdleForNativeTurn(string sessionId, bool running = false) => _liveSessions.TakeForNativeTurn(sessionId, running);
+
+    internal void RememberNativeTurn(string sessionId) => _liveSessions.RememberNativeTurn(sessionId);
+    public void ReleaseNativeTurn(string sessionId) => _liveSessions.ReleaseNativeTurn(sessionId);
+    void BindNativeSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Track(sessionId, launch);
+    void StopLaunch(InteractiveLaunch launch) { _tabs.StopOwned(launch); _liveSessions.Closed(launch); }
+
     void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
+
+    public bool? HasLiveSession(string sessionId) => _liveSessions.Liveness(sessionId);
 
     public bool HasIdleSession(string sessionId) => _liveSessions.IsAlive(sessionId, _tabs.IsAlive);
 
@@ -139,7 +150,8 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
     }
 
     sealed class Run(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, BackendRequest request,
-        InteractiveLaunch launch, DateTimeOffset started, TimeSpan startupTimeout, Action<string, InteractiveLaunch> rememberSession) : IBackendRun
+        InteractiveLaunch launch, DateTimeOffset started, TimeSpan startupTimeout, Action<string, InteractiveLaunch> rememberSession,
+        Action<string, InteractiveLaunch> bindNativeSession, Action<InteractiveLaunch> stopLaunch) : IBackendRun
     {
         bool _stopped;
         readonly Lock _lifetime = new();
@@ -178,6 +190,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
             var session = request.ResumeSessionId;
             if (session is not null)
             {
+                bindNativeSession(session, launch);
                 yield return new BackendEvidence.Session(request.Correlation, session);
             }
             if (_notStartedError is { } notStarted)
@@ -207,6 +220,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
                 {
                     session = nativeId;
                     _sessionId = nativeId;
+                    bindNativeSession(nativeId, launch);
                     yield return new BackendEvidence.Session(request.Correlation, nativeId);
                 }
                 if (output?.ApiError is { } apiError && session is not null)
@@ -249,7 +263,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
                     var exited = tabs.WrapperExited(launch);
                     if (tabs.StartFailure(launch) is { } failure)
                     {
-                        tabs.StopOwned(launch);
+                        stopLaunch(launch);
                         yield return new BackendEvidence.LaunchFailed(failure);
                         yield break;
                     }
@@ -284,7 +298,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
             lock (_lifetime)
             {
                 _stopped = true;
-                tabs.StopOwned(launch);
+                stopLaunch(launch);
             }
         }
 
@@ -303,7 +317,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
                     // An uncertain turn may have no native session ID yet. Keep its
                     // verified tab for explicit stop; never abandon a live agent.
                 }
-                else { tabs.StopOwned(launch); }
+                else { stopLaunch(launch); }
             }
             return ValueTask.CompletedTask;
         }

@@ -1,4 +1,5 @@
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Host.Features.Setup;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.External;
 using AgentTeamForge.Business.Features.Wake;
@@ -18,7 +19,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null, ClaudeWakeMailbox? claudeMailbox = null, string? launchMode = null,
     Func<string?, string?, string?, HumanInputRequestResult>? humanInput = null, ExternalMemberStore? externalMembers = null,
     GetJob? connectorGet = null, Func<string, string, AttemptClaim?>? takeNativeClaude = null,
-    RemoveWorktree? removeWorktree = null, WorktreeCleanup? worktreeCleanup = null, AgentTeamForge.Business.Features.Usage.SessionTokenUsage? usage = null)
+    RemoveWorktree? removeWorktree = null, WorktreeCleanup? worktreeCleanup = null, Func<string?, string?, string, bool?>? agentLive = null, InteractiveRetentionConfiguration? retentionSettings = null, Action<string, string>? releaseNativeTurn = null, AgentTeamForge.Business.Features.Usage.SessionTokenUsage? usage = null)
 {
     JobResult ReadJob(IpcRequest request)
     {
@@ -70,7 +71,9 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             }
             if (!request.NativeWriteStarted)
             {
-                return new IpcResponse(jobStore.RevertNativeClaudeAttempt(new RunRef(request.JobId, request.NativeRunId, 1, request.NativeCorrelation)));
+                var reverted = jobStore.RevertNativeClaudeAttempt(new RunRef(request.JobId, request.NativeRunId, 1, request.NativeCorrelation));
+                if (reverted) { releaseNativeTurn?.Invoke("claude", attempt.SessionId); }
+                return new IpcResponse(reverted);
             }
             if (request.NoticePosted) { jobStore.RecordNativeClaudePost(request.JobId, request.NativeCorrelation); }
             return new IpcResponse(true);
@@ -202,6 +205,9 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 if (herdrPlacement is null || request.HerdrPlacement is null) { return new IpcResponse(false, JobErrors.InvalidRequest); }
                 try { herdrPlacement.Change(request.HerdrPlacement); return new IpcResponse(true, Outcome: "herdr_placement", HerdrPlacement: herdrPlacement.Default, HerdrMode: true); }
                 catch (ArgumentException e) { return new IpcResponse(false, e.Message); }
+            case IpcProtocol.RetentionSettingsGet:
+            case IpcProtocol.RetentionSettingsPut:
+                return retentionSettings?.Handle(request) ?? new IpcResponse(false, JobErrors.InvalidRequest);
             case IpcProtocol.TierSettingsGet:
                 _ = modelDiscovery?.Warm(configuredBackends ?? []);
                 return tierMap is null ? new IpcResponse(false, JobErrors.InvalidRequest)
@@ -442,6 +448,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
 
     JobResult WithLocation(JobResult result)
     {
+        if (result.Job is { } view) { result = result with { Job = view with { AgentLive = agentLive?.Invoke(view.Backend, view.SessionId, view.Status) } }; }
         if (herdrPlacement is null || result.Job is not { HerdrPlacement: not null } job) { return result; }
         var location = Location(job.JobId, job.ParentJobId);
         return location is null ? result : result with { Job = job with { HerdrSession = location.Value.Session, HerdrTab = location.Value.TabId, HerdrTabLabel = location.Value.TabLabel } };
@@ -472,12 +479,20 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     }
     JobListPage WithLocations(JobListPage page)
     {
-        if (herdrPlacement is null) { return page; }
+
+        var live = new Dictionary<(string? Backend, string? Session), bool?>();
         return page with
         {
             Jobs = [.. page.Jobs.Select(job =>
             {
-                if (job.HerdrPlacement is null) { return job; }
+                var key = (job.Backend, job.SessionId);
+                if (!live.TryGetValue(key, out var observed))
+                {
+                    observed = agentLive?.Invoke(job.Backend, job.SessionId, job.Status);
+                    live[key] = observed;
+                }
+                job = job with { AgentLive = observed };
+                if (herdrPlacement is null || job.HerdrPlacement is null) { return job; }
                 var location = Location(job.JobId, job.ParentJobId);
                 return location is null ? job : job with { HerdrSession = location.Value.Session, HerdrTab = location.Value.TabId, HerdrTabLabel = location.Value.TabLabel };
             })]

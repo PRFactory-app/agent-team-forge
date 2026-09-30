@@ -251,6 +251,16 @@
     effort.disabled = !choices.efforts.length || newAgent.sending || !!newAgent.pending;
   }
 
+  async function loadRetentionSettings() {
+    const r = await api('GET', '/api/settings/retention');
+    if (!r?.ok) { $('retention-status').textContent = r?.error || 'Could not load idle settings.'; return; }
+    const settings = r.retention_settings;
+    $('settings-max-retained').value = settings.max_retained_sessions;
+    $('settings-idle-off').checked = settings.idle_close_minutes === -1;
+    $('settings-idle-minutes').disabled = $('settings-idle-off').checked;
+    $('settings-idle-minutes').value = settings.idle_close_minutes === -1 ? 5 : settings.idle_close_minutes;
+  }
+
   async function loadTierSettings() {
     const r = await api('GET', '/api/settings/tiers');
     if (!r?.ok) { $('settings-status').textContent = r?.error || 'Could not load settings.'; return; }
@@ -1258,6 +1268,7 @@
           j.status === 'completed' ? 'done' : j.status === 'parked' ? 'parked · awaiting reply' : j.status.replaceAll('_', ' '));
         const cardMeta = element('span', 'card-meta');
         cardMeta.append(element('span', '', 'accepted ' + age(j.accepted_at) + ' ago'));
+        if (j.agent_live === false) cardMeta.append(element('span', '', 'agent closed'));
         if (j.status !== 'running' && j.updated_at) cardMeta.append(element('span', '', 'updated ' + age(j.updated_at) + ' ago'));
         const preview = j.last_activity || j.reason_code;
         row.append(chips, state);
@@ -1355,10 +1366,25 @@
       $('settings-view').hidden = false;
       $('settings-toggle').setAttribute('aria-expanded', 'true');
       await loadTierSettings();
+      await loadRetentionSettings();
       if (herdrMode) {
         const placement = await api('GET', '/api/settings/herdr-placement');
         if (placement?.ok) setPlacementControls('settings', placement.herdr_placement);
       }
+    });
+    $('settings-idle-off').addEventListener('change', () => {
+      $('settings-idle-minutes').disabled = $('settings-idle-off').checked;
+    });
+    $('retention-settings').addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = event.currentTarget.querySelector('button');
+      button.disabled = true;
+      const r = await api('PUT', '/api/settings/retention', {
+        max_retained_sessions: Number($('settings-max-retained').value),
+        idle_close_minutes: $('settings-idle-off').checked ? 'off' : Number($('settings-idle-minutes').value),
+      });
+      $('retention-status').textContent = r?.ok ? 'Saved. Applies on the next idle sweep.' : r?.error || 'Could not save idle settings.';
+      button.disabled = false;
     });
     $('settings-back').addEventListener('click', () => {
       $('settings-view').hidden = true;

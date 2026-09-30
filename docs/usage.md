@@ -68,6 +68,19 @@ this branch") or call the MCP tools directly:
    close an idle retained agent, and `revive_agent` to resume a dead session
    with a new instruction and idempotency key.
 
+Idle interactive agents close automatically after 5 minutes (checked every 30 seconds),
+while native transcripts remain available for `follow_up` / `revive_agent` relaunch.
+The web console **Settings → Idle interactive agents** edits both limits while
+the daemon runs: maximum retained sessions **0..64** (default **16**) and idle
+minutes **0..1440** (default **5**), or disable the timeout. A zero for either
+limit retains no idle agents. Lowering a limit closes eligible idle sessions on
+the next sweep (within 30 seconds); follow-ups can still resume saved sessions.
+
+The same settings are available with `atf setup --idle-close-minutes MINUTES|off --max-retained-sessions COUNT`. The state directory's `launch-mode.json` stores
+`idle_close_minutes` (absent = 5, `-1` = off) and `max_retained_sessions`
+(absent = 16). Changes take effect without restarting the daemon. Failed
+owned-session cleanup remains retryable.
+
 Other `submit_job` options:
 
 - `model`: for Codex and Pi a capability tier (`cheapest`, `low`, `medium`,
@@ -205,7 +218,7 @@ accepts `--worktree`; follow-ups reuse the parent's worktree.
 | `needs_reconciliation` | ATF cannot prove whether the prompt ran or how it ended |
 
 `needs_reconciliation` is never replayed automatically. A follow-up waits
-until the session is verified idle or stopped. For a live idle Herdr agent,
+until the session is verified idle or stopped. For a live idle Herdr agent (before automatic idle close),
 ATF settles an acknowledged but unobserved (interrupted) turn as `failed` and resumes the next
 turn in the same session. `stop_job` cancels the fenced job, terminates only a
 verified owned process, and releases the fence once no marked process remains.

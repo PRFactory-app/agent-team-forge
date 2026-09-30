@@ -188,3 +188,44 @@ manual fix: `ALTER TABLE lead_sessions ADD COLUMN display_name TEXT; UPDATE sche
 in existing native-receipt recovery. Finding 2 makes the feature show nothing for headless Codex jobs and
 Desktop leads. Both are small fixes in `InteractiveTranscriptReader.LocateSession`/`IsParent`, and each
 needs one focused test.
+
+## Re-review (2286fba + integration merge 51a32c4)
+
+Checked `git show 2286fba` and the merged tree at `51a32c4`, read-only. Tests run in Release:
+`Features.Usage|SchemaTests|Features.Sessions|InteractiveTranscriptReader|NativeClaude|NativeCodex|JobsMcpBridge`.
+108 total, 104 passed, 4 failed. The 4 failures are the same known Windows timezone/rate-limit cases as
+before.
+
+1. **Fixed.** `HeaderLines` (the 64 KiB byte window) is gone.
+   - `HeaderId` streams `LiveFiles.ReadLines(path).Take(10)` again, which is identical to the code before
+     the refactor.
+   - `ReadClaudeSession`/`ReadCodexThread` pass `usage: false`, so `IsParent` scans the full stream as
+     before. The instance `Read()` path uses the default `usage: false`, so it is unchanged too.
+   - Usage mode limits the scan by record count (50 Claude, 10 Codex/Pi) and never cuts a record.
+   - New tests cover a 270,553-character first Claude record (usage and completed receipt) and a
+     100 KB Codex `session_meta`.
+2. **Fixed.** In usage mode, any string `source` counts as a parent. That covers `cli`, `exec` and
+   `vscode`. An object `source` makes `Str` return null, so it reaches the `subagent` check and is still
+   rejected, as a test confirms. Receipt mode stays `cli`-only, and the theory test asserts that
+   `exec`/`vscode` return no receipt.
+3. **Fixed.** `NativeBindings` excludes `binding_key LIKE 'managed-child:%'`. That prefix is the only
+   binding form used for managed children (`ManagedChildContext.cs:38`, `JobStore.cs:440`,
+   `LeadSessionStore.cs:120`). `LeadUsage` already defaults every page lead to null, so a nested lead
+   gets `null`, and its tokens are counted once, through its job's `session_tokens`. The API shape is
+   unchanged, and the endpoint test asserts the null.
+4. **Fixed.** `FileNotFoundException`/`DirectoryNotFoundException` resets path, offset, usage, seen ids,
+   skip state and `RetryAfter`, then returns null. The next read relocates the transcript, and if it
+   still fails the 30 s negative cache applies. Other IO errors still return the last value, which is
+   the right choice for transient locks. Tests cover both deletion and relocation.
+5. **Fixed.** `NativeKind(CurrentHost()?.Kind, …)` selects the id that matches the host, and a recognised
+   host with no matching id gives no binding. With an unknown host or `pi`, it keeps the old Claude-first
+   fallback. `CurrentHost` is implemented for Linux, Windows and macOS, and the home follows the chosen
+   kind.
+
+Merge `51a32c4` keeps the integrated V30-then-V29 downgrade order in all three SchemaTests fixtures, with
+no leftover V29-only native block. It matches production `Schema.cs`: V29 is `display_name`, V30 is
+`native_*`, and `CurrentVersion = 30`.
+
+No new real bugs found.
+
+**Verdict: APPROVE**

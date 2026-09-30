@@ -78,6 +78,7 @@ public sealed record ListJobsRequest(string? Status = null, int? Limit = null, s
 /// <summary>Inspection view of a job; use job_get for its result.</summary>
 public sealed record JobSummary(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)
 {
+    public bool? AgentLive { get; init; }
     public StartupProgress? Startup { get; init; }
     public string? Backend { get; init; }
     public string? Cwd { get; init; }
