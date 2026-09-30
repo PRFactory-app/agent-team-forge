@@ -46,6 +46,22 @@ public sealed class FollowUpJobTests
     }
 
     [Fact]
+    public async Task Follow_up_of_a_legacy_own_session_job_keeps_its_placement()
+    {
+        using var f = new JobFixture();
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => Agent("sess-legacy"));
+        var legacy = new NewJob(JobFixture.Operator.Principal, JobFixture.Operator.Team, JobFixture.Operator.Agent, AcceptJob.Operation,
+            "legacy", "legacy-fingerprint", "first", "behavior=complete;hold=0;herdr_placement=own-session");
+        var parent = f.Store.AcceptOrGet(legacy, 10) is Accepted accepted ? accepted.Job : throw new InvalidOperationException("expected acceptance");
+        await DispatchNext(f, catalog);
+
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, Accept(f, catalog)).Execute(new FollowUpRequest(parent.JobId, "second", "c"));
+
+        Assert.Equal("accepted", child.Outcome);
+        Assert.Equal("own-session", f.Get().Execute(child.Job!.JobId).Job!.HerdrPlacement);
+    }
+
+    [Fact]
     public async Task Follow_up_resumes_the_parent_session_on_the_parent_backend_and_cwd()
     {
         using var f = new JobFixture();

@@ -84,6 +84,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
 
         if (backend is BackendCatalog.Claude or BackendCatalog.Codex or BackendCatalog.Pi && herdrPlacement is not null)
         {
+            if (request.HerdrPlacement == "own-session") { return JobResult.Fail("herdr_placement own-session was removed; omit it to use the shared default session"); }
             string placement;
             try { placement = herdrPlacement.Resolve(request.HerdrPlacement); }
             catch (ArgumentException e) { return JobResult.Fail(e.Message); }

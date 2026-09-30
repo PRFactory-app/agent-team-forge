@@ -75,6 +75,23 @@ public sealed class AcceptJobTests
     }
 
     [Fact]
+    public void Own_session_placement_is_rejected_for_new_jobs()
+    {
+        using var f = new JobFixture(testProfile: false);
+        using var state = new TempStateDir();
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, ["claude"],
+            herdrPlacement: new HerdrPlacement(state.Path));
+
+        var rejected = accept.Execute(new SubmitJobRequest("own", "work", null, false) { Backend = "claude", HerdrPlacement = "own-session" });
+        var shared = accept.Execute(new SubmitJobRequest("shared", "work", null, false) { Backend = "claude" });
+
+        Assert.Contains("own-session", rejected.Error);
+        Assert.Null(rejected.Job);
+        Assert.Equal("accepted", shared.Outcome);
+        Assert.Equal("herdr-session:default", f.Get().Execute(shared.Job!.JobId).Job!.HerdrPlacement);
+    }
+
+    [Fact]
     public void Unnamed_real_jobs_get_a_stable_backend_name_in_the_list_projection()
     {
         using var f = new JobFixture(testProfile: false);

@@ -26,7 +26,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         try
         {
             session = launch.HerdrPlacement is { } placement && placement.StartsWith("herdr-session:", StringComparison.Ordinal)
-                ? await terminal.ExistingSessionAsync(placement[14..], cancellationToken)
+                ? await terminal.SharedSessionAsync(placement[14..], cancellationToken)
                 : await terminal.StartSessionAsync(cancellationToken);
         }
         catch (InteractiveTerminalUnavailableException ex)

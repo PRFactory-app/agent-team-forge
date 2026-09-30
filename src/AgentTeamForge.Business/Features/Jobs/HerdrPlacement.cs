@@ -14,13 +14,13 @@ public sealed class HerdrPlacement(string statePath, Action<string>? log = null)
     public string Resolve(string? requested)
     {
         var value = requested ?? Default;
-        if (!Valid(value)) { throw new ArgumentException("Invalid Herdr placement; use own-session or herdr-session:<name>"); }
+        if (!Valid(value)) { throw new ArgumentException(Invalid(value)); }
         return value;
     }
 
     public void Change(string value)
     {
-        if (!Valid(value)) { throw new ArgumentException("Invalid Herdr placement; use own-session or herdr-session:<name>"); }
+        if (!Valid(value)) { throw new ArgumentException(Invalid(value)); }
         lock (_gate)
         {
             var temp = _path + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -39,7 +39,12 @@ public sealed class HerdrPlacement(string statePath, Action<string>? log = null)
         }
     }
 
-    public static bool Valid(string? value) => value == "own-session" || value is { Length: > 14 and <= 78 }
+    public const string OwnSessionRemoved = "own-session is no longer supported; use herdr-session:<name>";
+
+    static string Invalid(string? value) => value == "own-session" ? OwnSessionRemoved : "Invalid Herdr placement; use herdr-session:<name>";
+
+    /// <summary>Placements a new job or a saved default may use. Legacy <c>own-session</c> lives on only in old jobs' options.</summary>
+    public static bool Valid(string? value) => value is { Length: > 14 and <= 78 }
         && value.StartsWith("herdr-session:", StringComparison.Ordinal)
         && value[14..].All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
 
@@ -50,6 +55,11 @@ public sealed class HerdrPlacement(string statePath, Action<string>? log = null)
             if (!File.Exists(path)) { return ConfiguredDefault(log); }
             var value = JsonSerializer.Deserialize(File.ReadAllText(path), HerdrPlacementJson.Default.HerdrPlacementFile)?.Placement;
             if (Valid(value)) { return value!; }
+            if (value == "own-session")
+            {
+                log?.Invoke($"warning: {path} holds the removed own-session placement; using the configured Herdr session");
+                return ConfiguredDefault(log);
+            }
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
         {

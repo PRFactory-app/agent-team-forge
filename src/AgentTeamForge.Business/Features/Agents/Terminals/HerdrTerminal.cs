@@ -116,6 +116,13 @@ public sealed class HerdrTerminal
             throw new HerdrLaunchException($"herdr server launch for {name} failed; nothing was stopped or deleted", e);
         }
 
+        var (socket, identity) = await WaitForServerAsync(name, cancellationToken);
+        var created = await OwnedAsync(socket, cancellationToken, "workspace", "create", "--cwd", Home(), "--label", label, "--no-focus");
+        return new(name, socket, identity.Pid, identity.StartTicks, label, Str(created, "result", "workspace", "workspace_id"));
+    }
+
+    async Task<(string Socket, ProcessIdentity Identity)> WaitForServerAsync(string name, CancellationToken cancellationToken)
+    {
         var clock = Stopwatch.StartNew();
         while (true)
         {
@@ -124,8 +131,7 @@ public sealed class HerdrTerminal
                 listed["socket_path"] is JsonValue s && s.TryGetValue<string>(out var socket) && Path.IsPathRooted(socket) &&
                 _runner.FindServers(name) is [var identity])
             {
-                var created = await OwnedAsync(socket, cancellationToken, "workspace", "create", "--cwd", Home(), "--label", label, "--no-focus");
-                return new(name, socket, identity.Pid, identity.StartTicks, label, Str(created, "result", "workspace", "workspace_id"));
+                return (socket, identity);
             }
             if (clock.Elapsed >= _options.StartupTimeout)
             {
@@ -150,9 +156,70 @@ public sealed class HerdrTerminal
         return new(name, socket, server.Pid, server.StartTicks, "", "") { Shared = true };
     }
 
-    public string? CheckExistingSession(string name)
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> StartGates = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Bind to the named shared session, starting its server first when Herdr lists it as stopped with no server.
+    /// Nothing is created inside it and no ownership is recorded: it stays the owner's session. An absent name,
+    /// an ambiguous server set or a half-alive session fails instead of starting a second server.
+    /// </summary>
+    public async Task<OwnedHerdrSession> SharedSessionAsync(string name, CancellationToken cancellationToken)
     {
-        try { _ = ExistingSessionAsync(name, CancellationToken.None).GetAwaiter().GetResult(); return null; }
+        await RequireVisibleProviderAsync(cancellationToken);
+        if (await SharedStateAsync(name, cancellationToken) is not SharedState.Stopped)
+        {
+            return await ExistingSessionAsync(name, cancellationToken);
+        }
+        var gate = StartGates.GetOrAdd(name, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            // Another submit may have started it while this one waited; re-read before acting.
+            if (await SharedStateAsync(name, cancellationToken) is not SharedState.Stopped)
+            {
+                return await ExistingSessionAsync(name, cancellationToken);
+            }
+            try
+            {
+                await _runner.StartDetachedAsync(HerdrCommands.SharedServerStartInfo(name, _options.Environment, _options.ExtraAllowedEnvironment, Home()),
+                    _options.CommandTimeout, cancellationToken);
+            }
+            catch (Exception e) when (e is InvalidOperationException or Win32Exception or IOException)
+            {
+                throw new HerdrLaunchException($"herdr server launch for stopped session '{name}' failed; nothing was stopped or deleted", e);
+            }
+            var (socket, server) = await WaitForServerAsync(name, cancellationToken);
+            return new(name, socket, server.Pid, server.StartTicks, "", "") { Shared = true };
+        }
+        finally { gate.Release(); }
+    }
+
+    enum SharedState { Running, Stopped }
+
+    /// <summary>Running and identifiable, or stopped and startable; every other shape throws.</summary>
+    async Task<SharedState> SharedStateAsync(string name, CancellationToken cancellationToken)
+    {
+        var listed = HerdrOwnership.Find(await GlobalAsync(cancellationToken, "session", "list", "--json"), name)
+            ?? throw new HerdrLaunchException($"Herdr session '{name}' does not exist");
+        var servers = _runner.FindServers(name);
+        if (servers.Count > 1)
+        {
+            throw new HerdrLaunchException($"Herdr session '{name}' has {servers.Count} servers claiming it; stop the extra server(s) - ATF will not choose one");
+        }
+        var isRunning = listed["running"] is JsonValue running && running.TryGetValue<bool>(out var value) && value;
+        return !isRunning && servers.Count == 0 ? SharedState.Stopped : SharedState.Running;
+    }
+
+    /// <summary>Admission check: null when the session is running as one server or is stopped and will be started at launch.</summary>
+    public string? CheckSharedSession(string name)
+    {
+        try
+        {
+            RequireVisibleProviderAsync(CancellationToken.None).GetAwaiter().GetResult();
+            if (SharedStateAsync(name, CancellationToken.None).GetAwaiter().GetResult() is SharedState.Stopped) { return null; }
+            _ = ExistingSessionAsync(name, CancellationToken.None).GetAwaiter().GetResult();
+            return null;
+        }
         catch (Exception e) when (e is HerdrLaunchException or InteractiveTerminalUnavailableException)
         { return e.Message; }
     }

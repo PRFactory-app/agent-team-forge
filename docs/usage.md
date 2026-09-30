@@ -92,7 +92,8 @@ Other `submit_job` options:
   starts. `queue_ttl_s`: cancel with reason `queue_ttl` if not started in time.
 - `name`: agent name for the web console card.
 - `expected_outputs`: output-path metadata retained in `get_job` (not file verification).
-- `herdr_placement`: `own-session` or `herdr-session:<name>` (Herdr mode).
+- `herdr_placement`: `herdr-session:<name>` (Herdr mode; a stopped session is started). Omit it for the
+  daemon's default. `own-session` was removed for new jobs; existing ones keep working.
 
 MCP tools for managed jobs: `submit_job`, `get_job`, `get_job_output`,
 `get_job_activity`, `follow_up`, `list_jobs`, `list_backends`, `stop_job`,

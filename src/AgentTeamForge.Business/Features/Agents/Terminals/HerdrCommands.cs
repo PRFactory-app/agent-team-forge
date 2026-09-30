@@ -42,6 +42,22 @@ static class HerdrCommands
         {
             throw new InvalidOperationException($"session {sessionName} already exists; refusing to adopt it");
         }
+        return ServerStartInfo(sessionName, seed, extraAllowed);
+    }
+
+    /// <summary>
+    /// Detached server launch for an already listed, stopped session. The server gets no Herdr caller context
+    /// (<see cref="LaunchEnvironment"/> strips <c>HERDR_*</c>) and starts in <paramref name="startupCwd"/> like the owner's own.
+    /// </summary>
+    public static ProcessStartInfo SharedServerStartInfo(string sessionName, IReadOnlyDictionary<string, string?> seed, string? extraAllowed, string startupCwd)
+    {
+        var psi = ServerStartInfo(sessionName, seed, extraAllowed);
+        psi.Environment["HERDR_STARTUP_CWD"] = startupCwd;
+        return psi;
+    }
+
+    static ProcessStartInfo ServerStartInfo(string sessionName, IReadOnlyDictionary<string, string?> seed, string? extraAllowed)
+    {
         var psi = new ProcessStartInfo(OperatingSystem.IsMacOS() ? "/bin/sh" : "setsid") { UseShellExecute = false };
         var args = OperatingSystem.IsMacOS()
             ? new[] { "-c", ServerScript + " &", sessionName }

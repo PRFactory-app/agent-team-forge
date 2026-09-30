@@ -240,6 +240,87 @@ public class HerdrTerminalTests
         Assert.Equal(calls, fake.Calls.Count);
     }
 
+    [Fact]
+    public async Task SharedSession_StartsAStoppedListedSessionWithoutOwningIt()
+    {
+        var fake = new FakeHerdr { DefaultRunning = false };
+
+        var session = await Terminal(fake).SharedSessionAsync("default", CancellationToken.None);
+
+        Assert.True(session.Shared);
+        var server = Assert.Single(fake.Detached);
+        Assert.Equal("default", server.ArgumentList[^1]);
+        Assert.Equal("/home/u", server.Environment["HERDR_STARTUP_CWD"]);
+        Assert.DoesNotContain("HERDR_SOCKET_PATH", server.Environment.Keys);
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["workspace" or "tab", "create", ..] or ["session", "stop" or "delete", ..]);
+    }
+
+    [Fact]
+    public async Task SharedSession_StoppedSessionGetsTheAgentTab()
+    {
+        using var state = new TempStateDir();
+        var fake = new FakeHerdr { DefaultRunning = false, BootstrapFromTab = true, SharedWorkspaceLabel = Path.GetFileName(state.Path) };
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", state.Path, null, null, state.File("herdr/bootstrap"))
+        { JobId = "job-stopped", HerdrPlacement = "herdr-session:default" };
+
+        await new HerdrAgentControl(Terminal(fake)).StartAsync(launch, CancellationToken.None);
+
+        Assert.Single(fake.Detached);
+        Assert.Single(fake.Calls, c => c.Args is ["tab", "create", ..]);
+        Assert.Contains(fake.Calls, c => c.Args is ["agent", "start", "atftest", ..]);
+    }
+
+    [Fact]
+    public async Task SharedSession_ConcurrentSubmitsStartOneServer()
+    {
+        var fake = new FakeHerdr { DefaultRunning = false };
+        var terminal = Terminal(fake);
+
+        await Task.WhenAll(terminal.SharedSessionAsync("default", CancellationToken.None), terminal.SharedSessionAsync("default", CancellationToken.None));
+
+        Assert.Single(fake.Detached);
+    }
+
+    [Fact]
+    public async Task SharedSession_AmbiguousAbsentOrHalfAliveNeverStarts()
+    {
+        var ambiguous = new FakeHerdr { DefaultRunning = false, DefaultServerCount = 2 };
+        var error = await Assert.ThrowsAsync<HerdrLaunchException>(() => Terminal(ambiguous).SharedSessionAsync("default", CancellationToken.None));
+        Assert.Contains("2 servers", error.Message);
+        Assert.Contains("2 servers", Terminal(ambiguous).CheckSharedSession("default"));
+
+        var absent = new FakeHerdr();
+        await Assert.ThrowsAsync<HerdrLaunchException>(() => Terminal(absent).SharedSessionAsync("typo", CancellationToken.None));
+        Assert.NotNull(Terminal(absent).CheckSharedSession("typo"));
+
+        var halfAlive = new FakeHerdr { DefaultRunning = false, SharedRunning = true };
+        await Assert.ThrowsAsync<HerdrLaunchException>(() => Terminal(halfAlive).SharedSessionAsync("default", CancellationToken.None));
+
+        Assert.All([ambiguous, absent, halfAlive], f => Assert.Empty(f.Detached));
+    }
+
+    [Fact]
+    public void CheckSharedSession_AcceptsStoppedWithoutStartingIt()
+    {
+        var fake = new FakeHerdr { DefaultRunning = false };
+
+        Assert.Null(Terminal(fake).CheckSharedSession("default"));
+        Assert.Null(Terminal(new FakeHerdr { SharedRunning = true }).CheckSharedSession("default"));
+        Assert.Empty(fake.Detached);
+    }
+
+    [Fact]
+    public async Task RestoreSweep_NeverStartsAStoppedSession()
+    {
+        var fake = new FakeHerdr { DefaultRunning = false };
+        var stale = new OwnedHerdrSession("default", "/s", 999, 1, "", "")
+        { Shared = true, JobId = "job-r", AgentName = RestoredAgent, PaneId = "w1:p2", TabId = "w1:t2" };
+
+        Assert.Equal(0, await Terminal(fake).CloseRestoredPanesAsync("default", [stale], CancellationToken.None));
+
+        Assert.Empty(fake.Detached);
+    }
+
     const string RestoredAgent = "atf0123456789abcdef0123";
 
     static async Task<(OwnedHerdrSession Session, InteractiveLaunch Launch)> SavedSharedRecord(HerdrTerminal terminal, string state, string agentName = RestoredAgent)
@@ -1235,6 +1316,10 @@ public class HerdrTerminalTests
 
         public bool Preexisting { get; init; }
         public bool SharedRunning { get; init; }
+
+        /// <summary>When set, this many servers claim the default session.</summary>
+        public int? DefaultServerCount { get; init; }
+        bool _defaultStarted;
         public bool SharedWorkspaceInitiallyAbsent { get; init; }
         public bool UnreadableWorkspaceList { get; init; }
         public TimeSpan WorkspaceListDelay { get; init; }
@@ -1356,7 +1441,7 @@ public class HerdrTerminalTests
 
         string SessionList()
         {
-            var sessions = new JsonArray(new JsonObject { ["name"] = "default", ["running"] = DefaultRunning, ["socket_path"] = "/home/u/.config/herdr/herdr.sock" });
+            var sessions = new JsonArray(new JsonObject { ["name"] = "default", ["running"] = DefaultRunning || _defaultStarted, ["socket_path"] = "/home/u/.config/herdr/herdr.sock" });
             if (Preexisting)
             {
                 sessions.Add((JsonNode)new JsonObject { ["name"] = TakenName, ["running"] = false });
@@ -1375,13 +1460,15 @@ public class HerdrTerminalTests
             {
                 throw new System.ComponentModel.Win32Exception("setsid missing");
             }
+            if (psi.ArgumentList[^1] == "default") { _defaultStarted = true; return Task.CompletedTask; }
             _name = psi.ArgumentList[^1];
             _running = Fault != SpawnFault.ServerNeverRuns;
             return Task.CompletedTask;
         }
 
         public IReadOnlyList<ProcessIdentity> FindServers(string sessionName) =>
-            SharedRunning && sessionName == "default" ? [new(ServerPid, _serverStart)] :
+            sessionName == "default" && DefaultServerCount is { } count ? [.. Enumerable.Range(0, count).Select(i => new ProcessIdentity(ServerPid + i, _serverStart))] :
+            (SharedRunning || _defaultStarted) && sessionName == "default" ? [new(ServerPid, _serverStart)] :
             !_running || sessionName != _name ? []
             : Fault == SpawnFault.ForeignServerProcess ? [new(ServerPid, _serverStart), new(ServerPid + 1, 5)]
             : [new(ServerPid, _serverStart)];

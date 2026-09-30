@@ -207,7 +207,7 @@ public static class DaemonCommand
         }
         var tierMap = new TierMap(state.Path, modelDiscovery.CachedModels, Log);
         var herdrPlacement = herdrTerminal is null ? null : new HerdrPlacement(state.Path, Log);
-        Func<string, string?>? checkHerdrSession = herdrTerminal is null ? null : herdrTerminal.CheckExistingSession;
+        Func<string, string?>? checkHerdrSession = herdrTerminal is null ? null : herdrTerminal.CheckSharedSession;
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap,
             herdrPlacement, checkHerdrSession, launchMode);
         // Remote claims have their own lead identity and cannot borrow the local MCP lead.

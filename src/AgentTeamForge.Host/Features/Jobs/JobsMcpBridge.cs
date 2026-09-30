@@ -33,7 +33,7 @@ public static class JobsMcpBridge
           "backend":{"type":"string","enum":["claude","codex","pi","cursor","droid","fake"],"description":"Agent CLI the daemon runs for this job. Cursor and Droid require headless launch mode."},
           "model":{"type":"string","description":"Codex/pi/cursor/droid capability tier: cheapest, low, medium, high, xhigh, max; pi also has medium-fast. Tier mappings are configurable; read the effective table in session_info or Settings. Claude: haiku, sonnet, opus (default), fable. Raw model slugs pass through."},
           "effort":{"type":"string","description":"Explicit effort for Claude or a raw/blank Codex/pi model. A capability tier owns its effort and ignores this override."},
-          "herdr_placement":{"type":"string","description":"Optional Herdr placement: own-session or herdr-session:<running session name>. Omit to use the daemon's global default."},
+          "herdr_placement":{"type":"string","description":"Optional: herdr-session:<name> (started if stopped). Omit to use the daemon's default."},
           "expected_outputs":{"type":"array","items":{"type":"string"},"maxItems":100,"description":"Expected output paths retained as metadata; does not verify files."},
           "instruction":{"type":"string","description":"Task for the agent."},
           "name":{"type":"string","description":"Optional name for this agent and its web console card."},
