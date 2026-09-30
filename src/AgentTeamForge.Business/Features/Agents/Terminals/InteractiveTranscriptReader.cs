@@ -540,8 +540,21 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
         }
         // Image-only (or otherwise text-less) input is still a user turn boundary.
         var wanted = kind == InteractiveAgentKind.Codex ? "input_text" : "text";
-        return string.Concat(content.EnumerateArray().Where(item => Str(item, "type") == wanted).Select(item => Str(item, "text")));
+        var text = string.Concat(content.EnumerateArray().Where(item => Str(item, "type") == wanted).Select(item => Str(item, "text")));
+        // Codex injects context (e.g. a mid-turn date change) as user-role items; that is not user input.
+        if (kind == InteractiveAgentKind.Codex && (text.TrimStart().StartsWith("<environment_context>", StringComparison.Ordinal) || NotUserKinds(message)))
+        {
+            return null;
+        }
+        return text;
     }
+
+    static bool NotUserKinds(JsonElement message) =>
+        message.TryGetProperty("internal_chat_message_metadata_passthrough", out var meta)
+        && meta.ValueKind == JsonValueKind.Object
+        && meta.TryGetProperty("content_item_kinds", out var kinds)
+        && kinds.ValueKind == JsonValueKind.Array
+        && !kinds.EnumerateArray().Any(k => k.ValueKind == JsonValueKind.String && k.GetString()!.StartsWith("user.", StringComparison.Ordinal));
 
     // Claude's authenticated inbox persists the posted user line as isMeta=true.
     // Only this native channel shape is a turn boundary; other meta rows remain metadata.
