@@ -29,6 +29,11 @@ PATH. It keeps state in `%USERPROFILE%\.local\state\agentteamforge`. To pin a
 release, download its `install.ps1` asset and run
 `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.0.1`.
 Rerun the one-liner to upgrade after active jobs finish.
+If Defender ASR blocks `atf.exe`, the installer reports the exact blocked path.
+Allow the install folder `%USERPROFILE%\.local\share\agentteamforge\` in Windows
+Security and rerun; this covers staging, releases, and bin. Smart App Control
+has no path allow: it must be off or the binary signed. Retrying alone will not
+fix a Smart App Control block.
 Windows arm64 is recognized by the installer but requires a matching
 `win-arm64` release archive; none is published by the current workflow.
 
