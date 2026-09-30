@@ -57,8 +57,16 @@ internal static partial class LiveNativeSessions
         if (!File.Exists(path)) { return null; }
         using var json = JsonDocument.Parse(File.ReadAllText(path));
         var root = json.RootElement;
-        // A reused PID keeps a stale registry file; only this exact process's entry counts.
-        if (!root.TryGetProperty("procStart", out var procStart) || procStart.ValueKind != JsonValueKind.String || procStart.GetString() != start) { return null; }
+        var recorded = (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("procStart", out var procStart)
+            ? procStart.ValueKind switch
+            {
+                JsonValueKind.String => ulong.TryParse(procStart.GetString(), NumberStyles.None, CultureInfo.InvariantCulture, out var text) ? text : (ulong?)null,
+                JsonValueKind.Number => procStart.TryGetUInt64(out var number) ? number : null,
+                _ => null,
+            }
+            : null) ?? throw new FormatException("Claude session registry without a valid process start");
+        // A reused PID keeps a stale registry file; only a well-formed, different start time is stale.
+        if (recorded.ToString(CultureInfo.InvariantCulture) != start) { return null; }
         return root.TryGetProperty("sessionId", out var id) && id.ValueKind == JsonValueKind.String && id.GetString() is { Length: > 0 } session
             ? session : throw new FormatException("Claude session registry without a session id");
     }

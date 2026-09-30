@@ -36,9 +36,13 @@ public sealed class LiveNativeSessionsTests
             // A stale registry entry of a reused PID does not count.
             File.WriteAllText(Path.Combine(sessions, agent + ".json"), $$"""{"pid":{{agent}},"sessionId":"sess-1","procStart":"1"}""");
             Assert.Empty(LiveNativeSessions.Read(InteractiveAgentKind.Claude, shell.Id, state.Path)!);
-            // An unreadable registry of a process under the shell makes the whole set unknown.
-            File.WriteAllText(Path.Combine(sessions, agent + ".json"), """{"pid":""");
-            Assert.Null(LiveNativeSessions.Read(InteractiveAgentKind.Claude, shell.Id, state.Path));
+            // An unreadable registry of a process under the shell makes the whole set unknown; only a
+            // well-formed, different start time is stale.
+            foreach (var registry in new[] { """{"pid":""", """{"sessionId":"other"}""", """{"sessionId":"other","procStart":"x"}""", """["other"]""" })
+            {
+                File.WriteAllText(Path.Combine(sessions, agent + ".json"), registry);
+                Assert.Null(LiveNativeSessions.Read(InteractiveAgentKind.Claude, shell.Id, state.Path));
+            }
             Assert.Null(LiveNativeSessions.Read(InteractiveAgentKind.Pi, shell.Id, state.Path));
         }
         finally { shell.Kill(entireProcessTree: true); }
