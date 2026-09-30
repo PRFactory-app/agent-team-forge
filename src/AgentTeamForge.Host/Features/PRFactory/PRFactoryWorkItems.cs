@@ -80,11 +80,13 @@ public sealed partial class PRFactoryWorkItems(
             return;
         }
         var offered = new List<PRFactoryWorkItem>();
+        // Only a poll made in this tick may report the cap; a limit left over from an earlier tick never suppresses polling.
+        var capped = false;
         if (repositories.Count > 0)
         {
             offered.AddRange(await client.PollAsync(repositories.Select(r => r.Id), machineId, ct, Math.Min(free, 10)));
+            capped = NoteLimit();
         }
-        var capped = NoteLimit();
         if (allowRepoLess && offered.Count < free && !capped)
         {
             offered.AddRange((await client.PollAsync([], machineId, ct, Math.Min(free - offered.Count, 10)))

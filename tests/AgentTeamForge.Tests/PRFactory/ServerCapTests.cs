@@ -5,6 +5,7 @@ using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Host.Features.PRFactory;
+using AgentTeamForge.Host.Hosting;
 using AgentTeamForge.Tests.Support;
 
 namespace AgentTeamForge.Tests.PRFactory;
@@ -24,6 +25,8 @@ public sealed class ServerCapTests
 
     sealed class Server(PRFactoryWorkItem[] items, string limits, HttpStatusCode claimStatus = HttpStatusCode.OK)
     {
+        public string Limits { get; set; } = limits;
+        public int Polls { get; private set; }
         public int Claims { get; private set; }
 
         public HttpResponseMessage Reply(HttpRequestMessage request)
@@ -32,8 +35,9 @@ public sealed class ServerCapTests
             if (ManagedWire.Reply(request) is { } managed) { return managed; }
             if (path.EndsWith("/poll", StringComparison.Ordinal))
             {
+                Polls++;
                 var list = string.Join(",", items.Select(i => JsonSerializer.Serialize(i, PRFactoryWorkItemJson.Default.PRFactoryWorkItem)));
-                return Json("{\"workItems\":[" + list + "]" + limits + "}");
+                return Json("{\"workItems\":[" + list + "]" + Limits + "}");
             }
             if (path.Contains("/claim/", StringComparison.Ordinal))
             {
@@ -105,5 +109,76 @@ public sealed class ServerCapTests
         var (server, teams, _) = await Tick(3, "", HttpStatusCode.Conflict);
         Assert.Equal(1, server.Claims);
         Assert.Equal(0, teams);
+    }
+
+    [Fact]
+    public async Task Repo_less_only_connection_resumes_polling_after_the_cap_lifts()
+    {
+        using var dir = new TempStateDir();
+        var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var item = NewItem(Guid.NewGuid());
+        item.RepositoryId = null;
+        var server = new Server([item], ",\"maxConcurrentWorkItems\":1,\"activeWorkItems\":1");
+        var teams = new PRFactoryTeamStore(db);
+        // One client across ticks, exactly as PRFactoryHeartbeat keeps it.
+        var client = new PRFactoryClient(PRFactoryClient.CreateHttpClient(Url, "token", new Handler(server.Reply)));
+        var adapter = new PRFactoryWorkItems(Url, [], teams, client,
+            _ => JobResult.Ok(new JobView("lead-job", JobStatus.Running, null, null, 0), "accepted"),
+            _ => null, () => { }, allowRepoLess: true);
+
+        await adapter.TickAsync(null, CancellationToken.None);
+        Assert.Equal(1, server.Polls);
+        Assert.Equal(0, server.Claims);
+
+        server.Limits = ",\"maxConcurrentWorkItems\":1,\"activeWorkItems\":0";
+        await adapter.TickAsync(null, CancellationToken.None);
+        Assert.Equal(2, server.Polls);
+        Assert.Equal(1, server.Claims);
+    }
+
+    [Fact]
+    public async Task Accepted_teams_still_advance_while_the_server_is_at_cap()
+    {
+        using var dir = new TempStateDir();
+        var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var repo = Guid.NewGuid();
+        var item = NewItem(repo);
+        var server = new Server([item], "");
+        var teams = new PRFactoryTeamStore(db);
+        var client = new PRFactoryClient(PRFactoryClient.CreateHttpClient(Url, "token", new Handler(server.Reply)));
+        var status = JobStatus.Running;
+        var adapter = new PRFactoryWorkItems(Url, [new RepositoryMapping(repo, dir.Path)], teams, client,
+            _ => JobResult.Ok(new JobView("lead-job", JobStatus.Running, null, null, 0), "accepted"),
+            id => new JobRecord(id, "prfactory", "connector", "lead", "key", "prompt", "", status,
+                null, null, 0, "codex", null, null, null) with { Cwd = dir.Path }, () => { });
+        await adapter.TickAsync(null, CancellationToken.None);
+        Assert.Single(teams.Pending(Url));
+
+        status = JobStatus.Completed;
+        server.Limits = ",\"maxConcurrentWorkItems\":1,\"activeWorkItems\":1";
+        await adapter.TickAsync(null, CancellationToken.None);
+        Assert.Equal(1, server.Claims);
+        Assert.Empty(teams.Pending(Url));
+    }
+
+    [Fact]
+    public void Disconnect_removes_the_limit_file_and_a_stale_value_is_not_resurrected()
+    {
+        using var dir = new TempStateDir();
+        var state = StateDirectory.Open(dir.Path);
+        var options = new Dictionary<string, string> { ["url"] = Url, ["token-scope"] = "tenant-wide" };
+        Assert.Equal(0, PRFactoryConnection.Run(state, "connect", options, [], new StringReader("fake-token")));
+        PRFactoryConnection.PublishLimit(state, new PRFactoryServerLimit(3, 3, DateTimeOffset.UtcNow));
+        var path = Path.Combine(dir.Path, "prfactory-limit.json");
+        Assert.True(File.Exists(path));
+
+        Assert.Equal(0, PRFactoryConnection.Run(state, "disconnect", options, [], new StringReader("")));
+        Assert.False(File.Exists(path));
+
+        // After reconnecting, a fresh client has no limit and nothing rewrites the old value.
+        Assert.Equal(0, PRFactoryConnection.Run(state, "connect", options, [], new StringReader("fake-token")));
+        Assert.False(File.Exists(path));
+        PRFactoryConnection.PublishLimit(state, new PRFactoryClient(new HttpClient()).Limit);
+        Assert.False(File.Exists(path));
     }
 }
