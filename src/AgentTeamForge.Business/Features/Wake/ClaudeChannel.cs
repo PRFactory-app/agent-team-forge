@@ -21,8 +21,11 @@ public static class ClaudeChannel
         const string prefix = @"\\.\pipe\";
         if (address is null || !address.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) { return null; }
         var name = address[prefix.Length..];
-        return name.Length is > 0 and <= 256 && name != "anonymous"
-            && !name.Any(c => c is '\\' or '/' || char.IsControl(c)) ? name : null;
+        // Claude Code on Windows serves its channel in the session-local namespace (\\.\pipe\LOCAL\cc-msg-...).
+        const string local = @"LOCAL\";
+        var leaf = name.StartsWith(local, StringComparison.OrdinalIgnoreCase) ? name[local.Length..] : name;
+        return name.Length <= 256 && leaf.Length > 0 && !leaf.Equals("anonymous", StringComparison.OrdinalIgnoreCase)
+            && !leaf.Any(c => c is '\\' or '/' || char.IsControl(c)) ? name : null;
     }
 
     public static bool Valid(string? address, string? secret, string? host, string? platform = null)
