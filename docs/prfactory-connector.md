@@ -6,8 +6,8 @@ results posted back to the task. It is opt-in, off by default, and ATF works
 fully without it. Decision record: [ADR 0011](adr/0011-prfactory-outbound-polling.md).
 
 **Status:** the ATF side is built (`src/AgentTeamForge.Host/Features/PRFactory/`).
-The PRFactory server-side durable ATF acceptance is being finalized; until it
-is released, end-to-end use against the hosted app is not supported.
+The PRFactory server-side durable ATF acceptance is merged
+(PRFactory #254).
 
 ## Connect
 
@@ -105,8 +105,8 @@ mapped job is never resubmitted.
 
 This relies on the server not reassigning accepted ATF work while the machine
 is offline. That server-side durable acceptance (tied to machine, work item
-and ATF job identity, reconciled idempotently after a lost response) is the
-part being finalized in PRFactory. If the server revokes authority, ATF keeps
+and ATF job identity, reconciled idempotently after a lost response) is merged
+in PRFactory (#254). If the server revokes authority, ATF keeps
 local results but stops publishing them.
 
 The connector advertises worker contract version `1.0.0` consistently during
@@ -170,8 +170,9 @@ turn deadline restarts at the reset (at most 24 hours when unknown), so a TUI
 that never resumes is still quarantined.
 Accepted-but-unfinished teams are capped (10) and polling asks only for free
 slots. Pruning never removes turns of accepted teams or unresumed parks.
-One connection works several work items at once. When the server advertises its
-worker cap (`maxConcurrentWorkItems`/`activeWorkItems` on poll) and it is reached,
+One connection works several work items at once, up to the worker token's
+`MaxConcurrentWorkItems` on the server. When the server advertises that cap
+(`maxConcurrentWorkItems`/`activeWorkItems` on poll) and it is reached,
 intake pauses for that tick and `atf prfactory status` shows the last seen limit;
 a 409 at claim also stops claiming for the tick.
 
@@ -194,8 +195,7 @@ external-member human waits and multi-repository work.
 
 ATF discovers `base-wip-v1` through `GET /api/worker/capabilities`. When it is
 absent, ATF does not call the legacy WIP, base-conflict or release routes. The
-current PRFactory server does not yet advertise this capability. Its required
-wire additions are recorded in the slice contract before server rollout.
+PRFactory server advertises this capability (PRFactory #263).
 
 For a capable server, the daemon fetches the claimed base branch before the
 lead's first turn. A clean lead with no commits moves to the new base; a lead

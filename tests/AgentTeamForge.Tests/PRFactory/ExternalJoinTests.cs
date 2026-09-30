@@ -360,6 +360,57 @@ public sealed class ExternalJoinTests
         Assert.True(actor.RevokeMember(teamId, ticket.Name));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Repo_external_member_absent_from_recipe_does_not_fail_the_work_item(bool withPlan)
+    {
+        using var dir = new TempStateDir();
+        var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var server = new FakeServer();
+        // e.g. TicketRefinement: no recipe, or a recipe without the repo's desktop-qa member.
+        server.Item.TeamPlan = withPlan
+            ? new PRFactoryTeamPlan { MaxConcurrentChildren = 1, Members = [new PRFactoryTeamMember { Name = "coder", Role = "Coder", Order = 1 }] }
+            : null;
+        var store = new PRFactoryTeamStore(db);
+        var jobs = new JobStore(db, DurabilityCheckpoints.None);
+        var principal = new BoundPrincipal("prfactory", "connector", "connector-lead");
+        var accept = new AcceptJob(jobs, principal, new SpikeLimits(), false, new AdmissionGate(), ["codex"]);
+        var adapter = new PRFactoryWorkItems("https://example.test",
+            [new(server.Item.RepositoryId!.Value, dir.Path, ["desktop-qa"])], store,
+            new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
+            accept.Execute, jobs.GetJob, () => { }, externalTeam: new ExternalTeam(new ExternalMemberStore(db), new WakeStore(db)));
+
+        await adapter.TickAsync(null, CancellationToken.None);
+
+        Assert.DoesNotContain("fail", server.Calls);
+        Assert.Null(store.External("https://example.test", server.Item.Id, "desktop-qa"));
+        Assert.Empty(store.ExternalMembers("https://example.test", server.Item.Id));
+        Assert.NotNull(store.MemberJob("https://example.test", server.Item.Id, "lead", 0));
+        if (withPlan) { Assert.NotNull(store.MemberJob("https://example.test", server.Item.Id, "coder", 0)); }
+    }
+
+    [Fact]
+    public async Task Recipe_member_mapped_external_without_external_team_fails_with_accurate_reason()
+    {
+        using var dir = new TempStateDir();
+        var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var server = new FakeServer();
+        var store = new PRFactoryTeamStore(db);
+        var jobs = new JobStore(db, DurabilityCheckpoints.None);
+        var principal = new BoundPrincipal("prfactory", "connector", "connector-lead");
+        var accept = new AcceptJob(jobs, principal, new SpikeLimits(), false, new AdmissionGate(), ["codex"]);
+        var adapter = new PRFactoryWorkItems("https://example.test",
+            [new(server.Item.RepositoryId!.Value, dir.Path, ["visitor"])], store,
+            new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
+            accept.Execute, jobs.GetJob, () => { });
+
+        await adapter.TickAsync(null, CancellationToken.None);
+
+        Assert.Contains("fail", server.Calls);
+        Assert.Equal("external team members are unavailable on this connector", server.FailureMessage);
+    }
+
     sealed class FakeServer
     {
         public bool LeaseLost { get; set; }
@@ -383,6 +434,7 @@ public sealed class ExternalJoinTests
         public List<PRFactoryStreamLine> Lines { get; } = [];
         public int StreamPosts { get; private set; }
         public string? CompletionMarkdown { get; private set; }
+        public string? FailureMessage { get; private set; }
         public List<string> Calls { get; } = [];
 
         public HttpResponseMessage Reply(HttpRequestMessage request)
@@ -453,6 +505,8 @@ public sealed class ExternalJoinTests
             if (path.Contains("/fail/", StringComparison.Ordinal))
             {
                 Calls.Add("fail");
+                using var body = JsonDocument.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+                FailureMessage = body.RootElement.GetProperty("errorMessage").GetString();
                 return Json("{\"acknowledged\":true}");
             }
             throw new InvalidOperationException(path);

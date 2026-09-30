@@ -362,7 +362,8 @@ public sealed partial class PRFactoryWorkItems(
         }
         var plan = item.TeamPlan;
         var members = (plan?.Members ?? []).Where(m => !m.IsLead).OrderBy(m => m.Order).ToArray();
-        var externalNames = repo?.ExternalMembers ?? [];
+        // A repo's external mapping applies only to members this item's recipe declares.
+        var externalNames = (repo?.ExternalMembers ?? []).Where(name => members.Any(m => m.Name == name)).ToArray();
         if (members.Any(m => m.Name == "lead") || members.Select(m => m.Name).Distinct(StringComparer.Ordinal).Count() != members.Length
             || members.Any(m => string.IsNullOrWhiteSpace(m.Name) || m.MaxIterations is < 1)
             || (plan is not null && (plan.MaxConcurrentChildren < 0 || plan.FreeRoomCeiling < 0)))
@@ -371,11 +372,14 @@ public sealed partial class PRFactoryWorkItems(
             return;
         }
         if (MapBackend(item.AgentType) is null || members.Any(m => !externalNames.Contains(m.Name, StringComparer.Ordinal)
-            && MapBackend(m.Backend ?? item.AgentType) is null)
-            || externalNames.Any(name => !members.Any(m => m.Name == name))
-            || (externalNames.Length > 0 && externalTeam is null))
+            && MapBackend(m.Backend ?? item.AgentType) is null))
         {
             await FinishAsync(team, item, false, "unsupported agent backend", repo?.Directory, ct);
+            return;
+        }
+        if (externalNames.Length > 0 && externalTeam is null)
+        {
+            await FinishAsync(team, item, false, "external team members are unavailable on this connector", repo?.Directory, ct);
             return;
         }
         // The recipe's free room is reserved for later command-driven turns. This slice submits

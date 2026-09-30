@@ -1,7 +1,7 @@
 # AgentTeamForge
 
-**Let your lead coding agent hand work to a team of Claude Code, Codex and Pi
-agents — and keep that work alive when things crash.**
+**Let your lead coding agent hand work to a team of Claude Code, Codex, Pi,
+Cursor and Droid agents — and keep that work alive when things crash.**
 
 AgentTeamForge (`atf`) is a small local daemon. Your lead agent gives it jobs
 over MCP; it runs the agents, remembers every job, and tells the lead when
@@ -9,8 +9,7 @@ results are ready. Close the lead, lose the terminal or restart your
 session — the team keeps working. Watch the agents live in Herdr or terminal
 tabs, or in a small web console.
 
-**Free forever.** Working with a human team? Connect ATF to
-[PRFactory](https://app.prfactory.dev), its optional paid companion.
+**Free forever.** Need tickets, shared workflows and teamwork? [PRFactory](https://app.prfactory.dev) is the optional paid companion.
 
 ![AgentTeamForge web console showing one lead session and its agents](docs/images/web-console.png)
 
@@ -22,7 +21,7 @@ tabs, or in a small web console.
 curl -fsSL https://github.com/PRFactory-app/agent-team-forge/releases/latest/download/install.sh | sh
 ```
 
-Windows PowerShell 5.1 or newer (Windows x64 tester build):
+Windows PowerShell 5.1 or newer (Windows x64):
 
 ```powershell
 irm https://github.com/PRFactory-app/agent-team-forge/releases/latest/download/install.ps1 | iex
@@ -66,7 +65,8 @@ team. More in the [usage guide](docs/usage.md).
 
 ## Features
 
-- Claude Code, Codex and Pi as team members, with model and effort choices
+- Claude Code, Codex and Pi as team members (interactive or headless), plus
+  Cursor CLI and Factory Droid (headless), with model and effort choices
 - Parallel jobs, optional git worktree per job, timeouts
 - Visible, interactive agents you can type into — or headless
 - Web console on localhost: live activity, follow-ups, stop, new agents, model tiers
@@ -76,17 +76,21 @@ team. More in the [usage guide](docs/usage.md).
 ## Platform status
 
 - **Linux x64:** tested end to end with real agents.
-- **Windows x64:** being tested (Windows Terminal tabs).
+- **Windows x64:** supported as of v0.1.0; tested with real Claude Code and Codex agents in Windows Terminal tabs (Pi on Windows not yet tested).
 - **macOS arm64:** release built, untested — testers welcome.
 
-## Working with a human team? → PRFactory
+## PRFactory: tickets, workflows and teamwork
 
-AgentTeamForge is free forever and works fully on its own. When people on your
-team want to hand out work too, [PRFactory](https://app.prfactory.dev) is the
-optional paid companion that replaces Jira for this. Tasks your colleagues
-create and assign in PRFactory are picked up by your ATF agent team, and the
-results are posted back to the task. The connector is opt-in and off until you
-run `atf prfactory connect`.
+AgentTeamForge is free forever and works fully on its own.
+[PRFactory](https://app.prfactory.dev) is the optional paid companion that adds:
+
+- **Ticket management:** tickets your agent team picks up, with results posted
+  back to the ticket.
+- **Prompt templates** for workflows.
+- **Portable agents:** move your agent team and its work between computers.
+- **Collaboration** with other team members on projects.
+
+The connector is opt-in and off until you run `atf prfactory connect`.
 
 ## Learn more
 
