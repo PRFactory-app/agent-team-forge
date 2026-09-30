@@ -114,6 +114,44 @@
     setStatus(message, 'error');
   }
 
+  // Token usage: {input, output, cache_read, cache_write, total} | null | undefined (unknown).
+  function fmtTokens(n) {
+    if (n < 1000) return String(n);
+    if (n < 1e6) return (n / 1000).toFixed(n < 1e4 ? 1 : n < 1e5 ? 1 : 0).replace(/\.0$/, '') + 'k';
+    return (n / 1e6).toFixed(n < 1e7 ? 2 : 1).replace(/\.?0+$/, '') + 'M';
+  }
+  function tokenTip(u, extra) {
+    if (!u) return 'usage unknown';
+    const part = (label, n) => label + ' ' + fmtTokens(n || 0);
+    return [part('input', u.input), part('output', u.output), part('cache read', u.cache_read), part('cache write', u.cache_write)].join(' · ')
+      + (extra ? ' — ' + extra : '');
+  }
+  function usageSum(jobs) {
+    const seen = new Set();
+    const sum = { input: 0, output: 0, cache_read: 0, cache_write: 0, total: 0 };
+    let any = false;
+    for (const j of jobs) {
+      const u = j.session_tokens;
+      if (!u || !j.session_id || seen.has(j.session_id)) continue;
+      seen.add(j.session_id);
+      any = true;
+      for (const k of Object.keys(sum)) sum[k] += u[k] || 0;
+    }
+    return any ? sum : null;
+  }
+  function addUsage(a, b) {
+    if (!a) return b;
+    if (!b) return a;
+    const sum = {};
+    for (const k of ['input', 'output', 'cache_read', 'cache_write', 'total']) sum[k] = (a[k] || 0) + (b[k] || 0);
+    return sum;
+  }
+  function tokenSpan(cls, prefix, u, suffix, tip) {
+    const node = element('span', cls, prefix + (u ? fmtTokens(u.total || 0) + (suffix || '') : '—'));
+    node.title = tokenTip(u, tip);
+    return node;
+  }
+
   function element(tag, cls, value) {
     const node = document.createElement(tag);
     if (cls) node.className = cls;
@@ -1078,6 +1116,14 @@
       if (!groups.has(lead)) groups.set(lead, []);
       groups.get(lead).push(j);
     }
+    const leadTokens = r.lead_tokens || {};
+    const sessionJobs = new Map();
+    for (const j of jobs) if (j.session_id) sessionJobs.set(j.session_id, (sessionJobs.get(j.session_id) || 0) + 1);
+    let totalUsage = usageSum(jobs);
+    for (const u of Object.values(leadTokens)) totalUsage = addUsage(totalUsage, u);
+    const tokenTotal = $('token-total');
+    tokenTotal.textContent = totalUsage ? fmtTokens(totalUsage.total) : '—';
+    tokenTotal.title = tokenTip(totalUsage, 'leads + distinct job sessions on this page');
     const membersByLead = new Map();
     for (const member of (r.external_members || [])) {
       if (member.workspace) knownLeads.set(member.lead_session_id, member.workspace);
@@ -1106,6 +1152,8 @@
       const groupColor = groupFailed ? 'red' : groupRunning ? 'green' : groupQueued ? 'yellow' : 'grey';
       const teamKey = 'team:' + lead;
       const isOpen = teamOpen(teamKey, groupFailed > 0 || groupRunning > 0 || groupQueued > 0);
+      const hasLeadUsage = lead !== 'PRFactory' && lead !== 'No lead session' && Object.hasOwn(leadTokens, lead);
+      const groupUsage = addUsage(usageSum(groupJobs), hasLeadUsage ? leadTokens[lead] : null);
       const teamToggle = element('button', 'team-toggle');
       teamToggle.type = 'button';
       teamToggle.dataset.toggleKey = teamKey;
@@ -1113,6 +1161,7 @@
       teamToggle.setAttribute('aria-label', (isOpen ? 'Collapse ' : 'Expand ') + lead);
       teamToggle.append(light(groupColor, groupFailed ? 'Needs attention' : groupRunning ? 'Running' : groupQueued ? 'Waiting' : 'Done'),
         element('strong', 'team-name', lead === 'PRFactory' ? 'PRFactory' : lead === 'No lead session' ? 'Unassigned' : 'Lead ' + lead.slice(0, 8)),
+        ...(groupUsage ? [tokenSpan('team-tokens', 'Σ ', groupUsage, '', 'group: lead + distinct member sessions')] : []),
         element('span', 'team-counts', `${groupRunning} running · ${groupQueued} waiting · ${groupFailed} failed`),
         element('span', 'team-urgency badge ' + groupColor, groupFailed ? 'Needs attention' : groupRunning ? 'Running' : groupQueued ? 'Waiting' : 'Done'),
         element('span', 'team-chevron', isOpen ? '▾' : '▸'));
@@ -1137,6 +1186,7 @@
       const meta = element('div', 'node-meta');
       if (firstAccepted) meta.append(element('span', '', 'first shown job accepted ' + age(firstAccepted) + ' ago'));
       if (groupJobs[0]?.updated_at) meta.append(element('span', '', 'latest update ' + age(groupJobs[0].updated_at) + ' ago'));
+      if (hasLeadUsage) meta.append(tokenSpan('tokens', 'lead ', leadTokens[lead], ' tok', 'lead own usage'));
       leadBody.append(identity, activity, meta);
       const leadToggle = element('button', 'lead-toggle');
       leadToggle.type = 'button';
@@ -1213,6 +1263,10 @@
         if (preview) open.append(element('span', 'card-activity', '› ' + preview));
         open.append(cardMeta);
         const side = element('div', 'card-side');
+        if (j.session_id && j.session_tokens !== undefined) {
+          const shared = sessionJobs.get(j.session_id) || 1;
+          side.append(tokenSpan('tokens', '', j.session_tokens, ' tok', shared > 1 ? 'session total (shared by ' + shared + ' jobs)' : ''));
+        }
         side.append(element('span', 'elapsed', age(j.accepted_at)));
         if (j.status === 'running' && j.updated_at) side.append(element('span', 'beat', 'last update ' + age(j.updated_at) + ' ago'));
         card.append(open, side);
