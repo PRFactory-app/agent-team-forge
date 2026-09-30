@@ -27,6 +27,7 @@ internal static class JsonCliBackend
         WindowsCliLaunch.Configure(info, name, executable == name);
         try
         {
+            AgentTeamForge.Business.Features.Processes.NonInteractiveProcess.OwnProcessGroup(info);
             var process = Process.Start(info) ?? throw new BackendNotStartedException($"{name} did not start");
             return new Run(process, name, request);
         }
