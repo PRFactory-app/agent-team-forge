@@ -2,7 +2,7 @@
 
 Implemented on `feat/idle-agent-close`. No push performed.
 
-Implementation commit: **5b8e2542ad7c198f2f6c8922ad460462f6bc482a**. This report is committed separately so the implementation hash remains stable.
+Implementation commits: **5b8e2542ad7c198f2f6c8922ad460462f6bc482a** (idle close) and **3af3766da4d9b65d778cc5da6052870e44606948** (live timeout/cap settings and console). Initial report commit: **e7f2f30ae17719412472a9184cc57417c447a04b**. This final report-only commit records the stable implementation hashes.
 
 ## Design and configuration
 
@@ -74,7 +74,7 @@ The additional request made both limits editable in the console without restarti
 
 The focused endpoint test checks bearer/origin rejection, server-side missing/out-of-range/off validation, persistence and reopening the settings source, preservation of another launch setting, live oldest-first cap reduction, and zero limits. It exercises the actual HTTP route and daemon settings handler with a temporary JSON file store. Read/write delegates isolate the pre-existing Windows `StateDirectory.Open` ACL failure in the test fixture; production still uses the existing StateDirectory private-file reads and atomic WriteMode implementation. An initial test run hit that fixture failure before reaching the endpoint; after this test isolation, no new failures remain.
 
-`node --check src/AgentTeamForge.Host/Features/WebConsole/wwwroot/app.js` passes. The final managed publish and published `atf.exe --version` smoke run pass. The previously recorded missing native AOT C++ toolchain remains a limitation. No real browser interaction or Linux/macOS runtime test was performed by this worker.
+`node --check src/AgentTeamForge.Host/Features/WebConsole/wwwroot/app.js` passes. The final managed publish and published `atf.exe --version` smoke run pass. Published CLI checks reject cap 65 and timeout 1441 with exit code 64 before changing state. The previously recorded missing native AOT C++ toolchain remains a limitation. No real browser interaction or Linux/macOS runtime test was performed by this worker.
 
 ## Pre-existing Windows failures
 
