@@ -282,6 +282,22 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task SharedSession_SubmitDuringDelayedServerReadinessWaitsForTheStart()
+    {
+        var fake = new FakeHerdr { DefaultRunning = false, DefaultReadyAfterListCalls = 3 };
+        var terminal = Terminal(fake);
+
+        var first = terminal.SharedSessionAsync("default", CancellationToken.None);
+        var second = terminal.SharedSessionAsync("default", CancellationToken.None);
+        var sessions = await Task.WhenAll(first, second);
+
+        Assert.Single(fake.Detached);
+        Assert.Equal(sessions[0].ServerPid, sessions[1].ServerPid);
+        Assert.All(sessions, session => Assert.True(session.Shared));
+        Assert.Null(terminal.CheckSharedSession("default"));
+    }
+
+    [Fact]
     public async Task SharedSession_AmbiguousAbsentOrHalfAliveNeverStarts()
     {
         var ambiguous = new FakeHerdr { DefaultRunning = false, DefaultServerCount = 2 };
@@ -594,6 +610,55 @@ public class HerdrTerminalTests
         Assert.True(new HerdrAgentControl(terminal).StopJobs(state.Path, ["job-shared"]));
         Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
         Assert.DoesNotContain(fake.Calls, c => c.Args is ["session", "stop" or "delete", ..]);
+    }
+
+    [Fact]
+    public async Task BoundSharedSession_StaysWorkingWhileAnotherServerSharesItsName()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, SharedWorkspaceLabel = Path.GetFileName(state.Path) };
+        var terminal = Terminal(fake);
+        var control = new HerdrAgentControl(terminal);
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("herdr/bootstrap"))
+        { JobId = "job-two", HerdrPlacement = "herdr-session:default" };
+        await control.StartAsync(launch, CancellationToken.None);
+
+        fake.ForeignDefaultServer = true;
+        fake.AgentStatuses.Enqueue("working");
+
+        Assert.Equal(InteractiveAgentStatus.Working, await control.StatusAsync(launch, CancellationToken.None));
+        Assert.False(control.PaneIsGone(launch));
+        // Adoption stays exactly-one.
+        await Assert.ThrowsAsync<HerdrLaunchException>(() => terminal.ExistingSessionAsync("default", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Status_IsGoneOnlyOnProofAndUnverifiedWhenTheProbeFails()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, SharedWorkspaceLabel = Path.GetFileName(state.Path) };
+        var control = new HerdrAgentControl(Terminal(fake));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("herdr/bootstrap"))
+        { JobId = "job-probe", HerdrPlacement = "herdr-session:default" };
+        await control.StartAsync(launch, CancellationToken.None);
+
+        fake.PaneGetError = "io_error";
+        Assert.Equal(InteractiveAgentStatus.Unverified, await control.StatusAsync(launch, CancellationToken.None));
+        fake.PaneGetError = "pane_not_found";
+        Assert.Equal(InteractiveAgentStatus.Gone, await control.StatusAsync(launch, CancellationToken.None));
+    }
+
+    [Fact]
+    public void PreferSocket_IgnoresAnotherHomesServerWithTheSameName()
+    {
+        var ours = (new ProcessIdentity(10, 1), new[] { "HOME=/home/u" });
+        var scratch = (new ProcessIdentity(20, 2), new[] { "HOME=/tmp/scratch", "XDG_CONFIG_HOME=/tmp/scratch/.config" });
+        var socket = "/home/u/.config/herdr/herdr.sock";
+
+        Assert.Equal([ours.Item1], HerdrProcessRunner.PreferSocket([scratch, ours], socket));
+        // A layout that matches nothing falls back to the bare name.
+        Assert.Equal(2, HerdrProcessRunner.PreferSocket([scratch, ours], "/elsewhere/herdr.sock").Count);
+        Assert.Equal(2, HerdrProcessRunner.PreferSocket([scratch, ours], null).Count);
     }
 
     [Theory]
@@ -1320,6 +1385,15 @@ public class HerdrTerminalTests
         /// <summary>When set, this many servers claim the default session.</summary>
         public int? DefaultServerCount { get; init; }
         bool _defaultStarted;
+        int _listsSinceStart;
+
+        /// <summary>After a start, the session lists as running only after this many further session lists.</summary>
+        public int DefaultReadyAfterListCalls { get; init; }
+
+        /// <summary>Another server (other HOME) also named default, next to the recorded one.</summary>
+        public bool ForeignDefaultServer { get; set; }
+
+        public string? PaneGetError { get; set; }
         public bool SharedWorkspaceInitiallyAbsent { get; init; }
         public bool UnreadableWorkspaceList { get; init; }
         public TimeSpan WorkspaceListDelay { get; init; }
@@ -1406,7 +1480,7 @@ public class HerdrTerminalTests
                     }
                 }.ToJsonString()),
                 ["pane", "close", "w1:p2"] => PaneCloseFails ? Err("close_failed") : Ok("{}"),
-                ["pane", "get", "w1:p2"] => _paneGone ? Err("pane_not_found") : Ok(new JsonObject { ["result"] = new JsonObject { ["pane"] = new JsonObject { ["pane_id"] = "w1:p2", ["tab_id"] = "w1:t2", ["terminal_id"] = _terminal } } }.ToJsonString()),
+                ["pane", "get", "w1:p2"] => PaneGetError is { } error ? Err(error) : _paneGone ? Err("pane_not_found") : Ok(new JsonObject { ["result"] = new JsonObject { ["pane"] = new JsonObject { ["pane_id"] = "w1:p2", ["tab_id"] = "w1:t2", ["terminal_id"] = _terminal } } }.ToJsonString()),
                 ["pane", "process-info", "--pane", "w1:p2"] => Ok("""{"result":{"process_info":{"pane_id":"w1:p2","shell_pid":""" + ShellPid + "}}}"),
                 ["pane", "process-info", "--pane", "w1:p1"] => Ok("""{"result":{"process_info":{"pane_id":"w1:p1","shell_pid":""" + ShellPid + "}}}"),
                 ["session", "stop" or "delete", ..] => Ok("{}"),
@@ -1441,7 +1515,7 @@ public class HerdrTerminalTests
 
         string SessionList()
         {
-            var sessions = new JsonArray(new JsonObject { ["name"] = "default", ["running"] = DefaultRunning || _defaultStarted, ["socket_path"] = "/home/u/.config/herdr/herdr.sock" });
+            var sessions = new JsonArray(new JsonObject { ["name"] = "default", ["running"] = DefaultRunning || _defaultStarted && Interlocked.Increment(ref _listsSinceStart) > DefaultReadyAfterListCalls, ["socket_path"] = "/home/u/.config/herdr/herdr.sock" });
             if (Preexisting)
             {
                 sessions.Add((JsonNode)new JsonObject { ["name"] = TakenName, ["running"] = false });
@@ -1466,8 +1540,9 @@ public class HerdrTerminalTests
             return Task.CompletedTask;
         }
 
-        public IReadOnlyList<ProcessIdentity> FindServers(string sessionName) =>
+        public IReadOnlyList<ProcessIdentity> FindServers(string sessionName, string? socketPath = null) =>
             sessionName == "default" && DefaultServerCount is { } count ? [.. Enumerable.Range(0, count).Select(i => new ProcessIdentity(ServerPid + i, _serverStart))] :
+            sessionName == "default" && ForeignDefaultServer && (SharedRunning || _defaultStarted) ? [new(ServerPid, _serverStart), new(ServerPid + 1, 5)] :
             (SharedRunning || _defaultStarted) && sessionName == "default" ? [new(ServerPid, _serverStart)] :
             !_running || sessionName != _name ? []
             : Fault == SpawnFault.ForeignServerProcess ? [new(ServerPid, _serverStart), new(ServerPid + 1, 5)]

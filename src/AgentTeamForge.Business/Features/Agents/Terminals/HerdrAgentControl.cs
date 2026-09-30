@@ -93,6 +93,8 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
 
     internal bool PaneIsGone(OwnedHerdrSession session) => terminal.OwnedPaneIsGone(session);
 
+    public bool PaneIsGone(InteractiveLaunch launch) => !_runs.TryGetValue(launch.AgentName, out var run) || terminal.OwnedPaneIsGone(run.Session);
+
     internal void TransferOwnership(InteractiveLaunch launch)
     {
         if (!_runs.TryGetValue(launch.AgentName, out var run))
@@ -172,9 +174,10 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         {
             return InteractiveAgentStatus.Unverified;
         }
-        if (await terminal.VerifyBindingAsync(binding, cancellationToken) is not null)
+        switch ((await terminal.CheckBindingAsync(binding, cancellationToken)).State)
         {
-            return terminal.HasUnverifiedLiveIdentity(binding) ? InteractiveAgentStatus.Unverified : InteractiveAgentStatus.Gone;
+            case HerdrTerminal.BindingState.Gone: return InteractiveAgentStatus.Gone;
+            case HerdrTerminal.BindingState.Unverified: return InteractiveAgentStatus.Unverified;
         }
         JsonNode state;
         try { state = await terminal.RunOwnedAsync(session, cancellationToken, "agent", "get", binding.PaneId); }

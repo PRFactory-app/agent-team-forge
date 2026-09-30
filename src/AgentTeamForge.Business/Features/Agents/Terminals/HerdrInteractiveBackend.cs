@@ -510,14 +510,15 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                     return ValueTask.CompletedTask;
                 }
                 _stopped = true;
-                if (!_agentExited && _sessionId is { } sessionId)
-                {
-                    rememberSession(sessionId, launch);
-                }
-                else if (_agentExited)
+                // A Gone status is a probe result; close the pane only with process proof that it is gone.
+                if (_agentExited && control.PaneIsGone(launch))
                 {
                     stopLaunch(launch);
                     OwnedSessionStopped = true;
+                }
+                else if (_sessionId is { } sessionId)
+                {
+                    rememberSession(sessionId, launch);
                 }
                 // Unknown native identity still has durable ownership for explicit stop.
             }
@@ -564,6 +565,9 @@ internal interface IHerdrAgentControl
     Task InterruptAsync(InteractiveLaunch launch, CancellationToken cancellationToken);
     Task<InteractiveAgentStatus> StatusAsync(InteractiveLaunch launch, CancellationToken cancellationToken);
     void StopOwned(InteractiveLaunch launch);
+
+    /// <summary>True only with process proof that the launch's server or pane shell no longer exists.</summary>
+    bool PaneIsGone(InteractiveLaunch launch) => true;
 }
 
 internal interface IInteractiveTranscriptReader

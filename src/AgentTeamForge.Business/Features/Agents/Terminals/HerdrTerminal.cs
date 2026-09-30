@@ -129,7 +129,7 @@ public sealed class HerdrTerminal
             var listed = HerdrOwnership.Find(await GlobalAsync(cancellationToken, "session", "list", "--json"), name);
             if (listed?["running"] is JsonValue r && r.TryGetValue<bool>(out var running) && running &&
                 listed["socket_path"] is JsonValue s && s.TryGetValue<string>(out var socket) && Path.IsPathRooted(socket) &&
-                _runner.FindServers(name) is [var identity])
+                _runner.FindServers(name, socket) is [var identity])
             {
                 return (socket, identity);
             }
@@ -149,7 +149,7 @@ public sealed class HerdrTerminal
         var listed = HerdrOwnership.Find(await GlobalAsync(cancellationToken, "session", "list", "--json"), name);
         if (listed?["running"] is not JsonValue running || !running.TryGetValue<bool>(out var isRunning) || !isRunning
             || listed["socket_path"] is not JsonValue socketValue || !socketValue.TryGetValue<string>(out var socket)
-            || !Path.IsPathRooted(socket) || _runner.FindServers(name) is not [var server])
+            || !Path.IsPathRooted(socket) || _runner.FindServers(name, socket) is not [var server])
         {
             throw new HerdrLaunchException($"Herdr session '{name}' is not running as one identifiable server");
         }
@@ -166,15 +166,12 @@ public sealed class HerdrTerminal
     public async Task<OwnedHerdrSession> SharedSessionAsync(string name, CancellationToken cancellationToken)
     {
         await RequireVisibleProviderAsync(cancellationToken);
-        if (await SharedStateAsync(name, cancellationToken) is not SharedState.Stopped)
-        {
-            return await ExistingSessionAsync(name, cancellationToken);
-        }
+        // Inspect launch state only under the per-name gate: while another submit is starting a stopped
+        // server, the session can list as not running with one server, which is not a half-alive session.
         var gate = StartGates.GetOrAdd(name, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken);
         try
         {
-            // Another submit may have started it while this one waited; re-read before acting.
             if (await SharedStateAsync(name, cancellationToken) is not SharedState.Stopped)
             {
                 return await ExistingSessionAsync(name, cancellationToken);
@@ -196,12 +193,14 @@ public sealed class HerdrTerminal
 
     enum SharedState { Running, Stopped }
 
+    internal enum BindingState { Intact, Unverified, Gone }
+
     /// <summary>Running and identifiable, or stopped and startable; every other shape throws.</summary>
     async Task<SharedState> SharedStateAsync(string name, CancellationToken cancellationToken)
     {
         var listed = HerdrOwnership.Find(await GlobalAsync(cancellationToken, "session", "list", "--json"), name)
             ?? throw new HerdrLaunchException($"Herdr session '{name}' does not exist");
-        var servers = _runner.FindServers(name);
+        var servers = _runner.FindServers(name, SocketOf(listed));
         if (servers.Count > 1)
         {
             throw new HerdrLaunchException($"Herdr session '{name}' has {servers.Count} servers claiming it; stop the extra server(s) - ATF will not choose one");
@@ -210,9 +209,14 @@ public sealed class HerdrTerminal
         return !isRunning && servers.Count == 0 ? SharedState.Stopped : SharedState.Running;
     }
 
+    static string? SocketOf(JsonNode listed) =>
+        listed["socket_path"] is JsonValue s && s.TryGetValue<string>(out var socket) && Path.IsPathRooted(socket) ? socket : null;
+
     /// <summary>Admission check: null when the session is running as one server or is stopped and will be started at launch.</summary>
     public string? CheckSharedSession(string name)
     {
+        // A start in progress holds the gate; its half-started server is not an error, and the launch re-checks under the gate.
+        if (StartGates.TryGetValue(name, out var gate) && gate.CurrentCount == 0) { return null; }
         try
         {
             RequireVisibleProviderAsync(CancellationToken.None).GetAwaiter().GetResult();
@@ -389,12 +393,19 @@ public sealed class HerdrTerminal
         return clean.Length == 0 ? "agents" : clean[..Math.Min(clean.Length, 128)];
     }
 
-    /// <summary>Null when the binding still holds; otherwise why it is invalid (replaced, closed or restarted).</summary>
-    public async Task<string?> VerifyBindingAsync(HerdrTabBinding binding, CancellationToken cancellationToken)
+    /// <summary>Null when the binding still holds; otherwise why it is invalid (replaced, closed, restarted or unreadable).</summary>
+    public async Task<string?> VerifyBindingAsync(HerdrTabBinding binding, CancellationToken cancellationToken) =>
+        (await CheckBindingAsync(binding, cancellationToken)).Problem;
+
+    /// <summary>
+    /// Gone only with proof (recorded server or shell process gone or replaced, pane not found, terminal or tab
+    /// mismatch); a probe that merely failed while the recorded identities are intact is Unverified.
+    /// </summary>
+    internal async Task<(BindingState State, string? Problem)> CheckBindingAsync(HerdrTabBinding binding, CancellationToken cancellationToken)
     {
         if (ServerProblem(binding.Session) is { } server)
         {
-            return server;
+            return (ServerIdentityLost(binding.Session) ? BindingState.Gone : BindingState.Unverified, server);
         }
         JsonNode pane;
         try
@@ -403,15 +414,23 @@ public sealed class HerdrTerminal
         }
         catch (HerdrLaunchException e)
         {
-            return $"pane {binding.PaneId} cannot be read: {e.Message}";
+            var notFound = e.Message.Contains("not_found", StringComparison.Ordinal);
+            return (notFound ? BindingState.Gone : BindingState.Unverified, $"pane {binding.PaneId} cannot be read: {e.Message}");
         }
         var facts = pane["result"]?["pane"];
         if (Text(facts?["terminal_id"]) != binding.TerminalId || Text(facts?["tab_id"]) != binding.TabId)
         {
-            return $"pane {binding.PaneId} no longer hosts the bound terminal";
+            return (BindingState.Gone, $"pane {binding.PaneId} no longer hosts the bound terminal");
         }
-        return _runner.Identity(binding.ShellPid)?.StartTicks == binding.ShellStartTicks ? null : "the bound pane shell process was replaced or exited";
+        if (_runner.Identity(binding.ShellPid)?.StartTicks == binding.ShellStartTicks) { return (BindingState.Intact, null); }
+        return (ProcessReplaced(binding.ShellPid, binding.ShellStartTicks) ? BindingState.Gone : BindingState.Unverified,
+            "the bound pane shell process was replaced or exited");
     }
+
+    bool ServerIdentityLost(OwnedHerdrSession session) => ProcessReplaced(session.ServerPid, session.ServerStartTicks);
+
+    bool ProcessReplaced(int pid, ulong startTicks) =>
+        _runner.Identity(pid) is { } identity ? identity.StartTicks != startTicks : !PidMayBeAlive(pid);
 
     /// <summary>Rebuild a binding only from the same server, pane, terminal and shell identity.</summary>
     internal async Task<HerdrTabBinding?> RebindAsync(OwnedHerdrSession session, string bootstrapFile, CancellationToken cancellationToken)
@@ -434,13 +453,9 @@ public sealed class HerdrTerminal
     }
 
     /// <summary>True only with process proof that the recorded server or pane shell no longer exists.</summary>
-    internal bool OwnedPaneIsGone(OwnedHerdrSession session)
-    {
-        bool Replaced(int pid, ulong startTicks) =>
-            _runner.Identity(pid) is { } identity ? identity.StartTicks != startTicks : !PidMayBeAlive(pid);
-        return Replaced(session.ServerPid, session.ServerStartTicks)
-            || session.ShellPid is int shell && session.ShellStartTicks is ulong ticks && Replaced(shell, ticks);
-    }
+    internal bool OwnedPaneIsGone(OwnedHerdrSession session) =>
+        ServerIdentityLost(session)
+        || session.ShellPid is int shell && session.ShellStartTicks is ulong ticks && ProcessReplaced(shell, ticks);
 
     internal bool HasUnverifiedLiveIdentity(HerdrTabBinding binding)
     {
@@ -606,8 +621,9 @@ public sealed class HerdrTerminal
             ? null
             : "owner label workspace missing from the running server");
 
+    // A bound session only needs its recorded server to be among the name matches; uniqueness is for adoption.
     string? ServerProblem(OwnedHerdrSession session) =>
-        _runner.FindServers(session.SessionName) is [var live] && live.Pid == session.ServerPid && live.StartTicks == session.ServerStartTicks
+        _runner.FindServers(session.SessionName, session.SocketPath).Any(live => live.Pid == session.ServerPid && live.StartTicks == session.ServerStartTicks)
             ? null
             : $"herdr server for {session.SessionName} is not the recorded process (PID + start time)";
 
