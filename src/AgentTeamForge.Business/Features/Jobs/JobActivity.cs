@@ -7,6 +7,8 @@ public static class JobActivity
 {
     public const int MaxTextChars = 500;
     public const int MaxPageSize = 50;
+    /// <summary>Interactive transcript log line that carries the native record time with the assistant text.</summary>
+    public const string TranscriptType = "atf_transcript";
 
     public static IReadOnlyList<ActivityEntry> Normalize(string backend, string line, string stream = "stdout")
     {
@@ -48,6 +50,10 @@ public static class JobActivity
                     Add(root.TryGetProperty("is_error", out var error) && error.ValueKind == JsonValueKind.True ? "error" : "result",
                         String(root, "result"));
                 }
+            }
+            else if (type == TranscriptType && backend == "plain")
+            {
+                Add("assistant_text", String(root, "text"));
             }
             else if (backend is not ("claude" or "codex" or "pi"))
             {
@@ -169,8 +175,10 @@ public static class JobActivity
         }
     }
 
+    // Log lines carry no capture time; an event without its own timestamp gets none (the console hides it)
+    // rather than the time the detail happened to be read.
     static ActivityEntry Entry(string kind, string text, string? ts = null) =>
-        new(ts ?? DateTimeOffset.UtcNow.ToString("O"), kind, text.Length > MaxTextChars ? text[..MaxTextChars] + "…" : text);
+        new(ts ?? "", kind, text.Length > MaxTextChars ? text[..MaxTextChars] + "…" : text);
 
     static string? Content(JsonElement part)
     {

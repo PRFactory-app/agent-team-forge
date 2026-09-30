@@ -122,13 +122,7 @@ public sealed partial class PRFactoryClient
     {
         using var response = await httpClient.PostAsJsonAsync($"api/worker/work-items/{id:D}/wip-publication",
             report, PRFactoryBaseWipJson.Default.PRFactoryWipReport, ct);
-        RejectToken(response.StatusCode);
-        if (response.StatusCode == HttpStatusCode.Conflict)
-        {
-            throw new PRFactoryLeaseLostException(id);
-        }
-
-        response.EnsureSuccessStatusCode();
+        await CheckWipStatusAsync(id, response, ct);
         var receipt = await response.Content.ReadFromJsonAsync(PRFactoryBaseWipJson.Default.PRFactoryWipResponse, ct);
         if (receipt is not { Accepted: true, ReceiptId.Length: > 0 } || receipt.VerifiedHeadSha != report.HeadSha)
         {
@@ -142,11 +136,36 @@ public sealed partial class PRFactoryClient
     {
         using var response = await httpClient.PostAsJsonAsync($"api/worker/work-items/{id:D}/wip-publication",
             report, PRFactoryBaseWipJson.Default.PRFactoryWipReport, ct);
+        await CheckWipStatusAsync(id, response, ct);
+    }
+
+    // 422 remote_unverifiable and other 4xx (except token/lease) mean this head can never be acknowledged.
+    static async Task CheckWipStatusAsync(Guid id, HttpResponseMessage response, CancellationToken ct)
+    {
         RejectToken(response.StatusCode);
         if (response.StatusCode == HttpStatusCode.Conflict)
         {
             throw new PRFactoryLeaseLostException(id);
         }
+
+        var code = (int)response.StatusCode;
+        if (code is >= 400 and < 500)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            var error = (string?)body;
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(body);
+                if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && doc.RootElement.TryGetProperty("error", out var e) && e.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    error = e.GetString();
+                }
+            }
+            catch (System.Text.Json.JsonException) { }
+            throw new PRFactoryWipRejectedException(code, error);
+        }
+
         response.EnsureSuccessStatusCode();
     }
 

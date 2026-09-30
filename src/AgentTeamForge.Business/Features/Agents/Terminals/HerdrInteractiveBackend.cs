@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
@@ -369,7 +370,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 {
                     for (var i = _loggedMessages; i < output.Progress.Count; i++)
                     {
-                        log("transcript", Encoding.UTF8.GetBytes(output.Progress[i] + "\n"));
+                        log("transcript", Encoding.UTF8.GetBytes(output.ProgressLine(i) + "\n"));
                     }
                     _loggedMessages = output.Progress.Count;
                 }
@@ -577,9 +578,25 @@ internal interface IInteractiveTranscriptReader
 }
 
 internal sealed record InteractiveTranscript(string SessionId, string? Message, IReadOnlyList<string>? Messages = null, bool Completed = false,
-    bool PendingBackgroundTasks = false, string? BindingError = null, InteractiveApiError? ApiError = null)
+    bool PendingBackgroundTasks = false, string? BindingError = null, InteractiveApiError? ApiError = null, IReadOnlyList<string?>? Times = null)
 {
     public IReadOnlyList<string> Progress => Messages ?? [];
+
+    /// <summary>The log line for message i: JSON carrying the native timestamp when the record has one, else plain text.</summary>
+    public string ProgressLine(int i)
+    {
+        if (Times is not { } times || i >= times.Count || times[i] is not { Length: > 0 } ts) { return Progress[i]; }
+        using var stream = new MemoryStream();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("type", JobActivity.TranscriptType);
+            writer.WriteString("timestamp", ts);
+            writer.WriteString("text", Progress[i]);
+            writer.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
 }
 
 /// <summary>

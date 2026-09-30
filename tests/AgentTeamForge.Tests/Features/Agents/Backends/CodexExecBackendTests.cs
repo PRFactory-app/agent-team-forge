@@ -220,7 +220,40 @@ public sealed class CodexExecBackendTests : IDisposable
 
             """);
         File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        WaitUntilExecutable(script);
         return script;
+    }
+
+    // A parallel test's fork can briefly inherit our write fd, so exec fails with ETXTBSY (26) even though the
+    // file is closed here. Probe with a throwaway exec until the window has passed; the real run then never sees it.
+    static void WaitUntilExecutable(string script)
+    {
+        static void Probe(string script)
+        {
+            using var probe = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(script)
+            {
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false
+            })!;
+            probe.StandardInput.Close();
+            probe.StandardOutput.ReadToEnd();
+            probe.WaitForExit();
+        }
+
+        for (var i = 0; i < 100; i++)
+        {
+            try
+            {
+                Probe(script);
+                return;
+            }
+            catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 26)
+            {
+                Thread.Sleep(20);
+            }
+        }
+        Probe(script);
     }
 
     string[] Argv() => File.ReadAllLines(_dir.File("argv"));

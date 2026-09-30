@@ -212,7 +212,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
                 {
                     for (var i = _loggedMessages; i < output.Progress.Count; i++)
                     {
-                        log("transcript", Encoding.UTF8.GetBytes(output.Progress[i] + "\n"));
+                        log("transcript", Encoding.UTF8.GetBytes(output.ProgressLine(i) + "\n"));
                     }
                     _loggedMessages = output.Progress.Count;
                 }

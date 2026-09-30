@@ -12,7 +12,8 @@ namespace AgentTeamForge.Tests.PRFactory;
 
 public sealed class ServerCapTests
 {
-    const string Url = "https://example.test";
+    // The adapter keeps intake-paused state per server URL process-wide; a URL of its own keeps it out of other tests' logs.
+    const string Url = "https://servercap.example.test";
 
     static PRFactoryWorkItem NewItem(Guid repo) => new()
     {

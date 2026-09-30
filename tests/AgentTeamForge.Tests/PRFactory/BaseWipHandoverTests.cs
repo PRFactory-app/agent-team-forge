@@ -219,4 +219,126 @@ public sealed class BaseWipHandoverTests
         Assert.Single(h.Logs, line => line.Contains("cleanup refused:", StringComparison.Ordinal));
         Assert.DoesNotContain(h.Logs, line => line.Contains("deferred (InvalidOperationException)", StringComparison.Ordinal));
     }
+
+    static PRFactoryWorkItem Work(string type) => new()
+    {
+        Id = Guid.NewGuid(),
+        TicketKey = "PRF-42",
+        Type = type,
+        RepositoryId = Guid.NewGuid(),
+        LeaseToken = Guid.NewGuid(),
+        AgentType = PRFactoryAgentType.Codex,
+        Prompt = "Work",
+        TicketArtefactFolder = "docs/PRF-42",
+    };
+
+    static void WriteNote(string cwd)
+    {
+        Directory.CreateDirectory(Path.Combine(cwd, "docs/PRF-42"));
+        File.WriteAllText(Path.Combine(cwd, "docs/PRF-42/qa.md"), "# Notes");
+    }
+
+    [Fact]
+    public async Task Refinement_completes_without_any_wip_publication()
+    {
+        using var h = new ChainHarness(Work("TicketRefinement"));
+        h.Server.BaseWipSupported = true;
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        h.RunQueued(job => WriteNote(job.Cwd!));
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        Assert.Empty(h.Server.WipReports);
+        Assert.Single(h.Server.Completions);
+        Assert.Empty(h.Server.Failures);
+    }
+
+    [Fact]
+    public async Task Rejected_wip_report_is_sent_once_per_head_and_does_not_block_completion()
+    {
+        using var h = new ChainHarness(Work("Implementation"));
+        h.Server.BaseWipSupported = true;
+        h.Server.WipRejection = System.Net.HttpStatusCode.BadRequest;
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        var (lead, run) = h.StartOne();
+        ChainHarness.Commit(lead.Cwd!, "feature.txt", "work");
+        for (var i = 0; i < 3; i++)
+        {
+            await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        }
+        Assert.Equal(2, h.Server.WipReports.Count); // the base head, then the committed head: one each
+        Assert.Contains(h.Logs, l => l.Contains("rejected (400", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.Logs, l => l.Contains("deferred (HttpRequestException", StringComparison.Ordinal));
+        Assert.True(h.Store.Complete(run, "done"));
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        Assert.Equal(2, h.Server.WipReports.Count);
+        Assert.Single(h.Server.Completions);
+    }
+
+    [Fact]
+    public async Task Lead_instruction_states_the_primary_path_and_the_job_is_named_after_the_work()
+    {
+        using var h = new ChainHarness(Work("TicketRefinement"));
+        await h.Adapter().TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        var (lead, _) = h.StartOne();
+        Assert.Contains("PRFACTORY_PRIMARY_REPO_PATH=" + lead.Cwd, lead.Instruction, StringComparison.Ordinal);
+        Assert.Equal("PRF-42_refinement_lead", lead.TargetAgent);
+    }
+
+    [Fact]
+    public async Task Refinement_with_a_pending_handover_request_still_completes_once_without_a_release()
+    {
+        using var h = new ChainHarness(Work("TicketRefinement"));
+        h.Server.BaseWipSupported = true;
+        h.Server.HandoverRequested = true;
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        h.RunQueued(job => WriteNote(job.Cwd!));
+        for (var i = 0; i < 3; i++)
+        {
+            await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        }
+        Assert.Empty(h.Server.WipReports);
+        Assert.Empty(h.Server.Releases);
+        Assert.Single(h.Server.Completions);
+        Assert.Empty(h.Server.Failures);
+    }
+
+    [Theory]
+    [InlineData("-ABC-1")]
+    [InlineData("_ABC-1")]
+    [InlineData("A.B-1")]
+    [InlineData("")]
+    [InlineData("-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")]
+    [InlineData("ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-1")]
+    public void Connector_job_names_are_valid_and_unique_per_member(string key)
+    {
+        var item = Work("TicketRefinement");
+        item.TicketKey = key;
+        var lead = PRFactoryWorkItems.JobName(item, "lead");
+        var member = PRFactoryWorkItems.JobName(item, "reviewer");
+        Assert.True(AgentTeamForge.Business.Features.Jobs.AcceptJob.ValidAgentName(lead), lead);
+        Assert.True(AgentTeamForge.Business.Features.Jobs.AcceptJob.ValidAgentName(member), member);
+        Assert.NotEqual(lead, member);
+    }
+
+    [Fact]
+    public void Connector_job_names_keep_distinct_keys_distinct_and_clean_keys_readable()
+    {
+        var a = Work("TicketRefinement"); a.TicketKey = "A.B-1";
+        var b = Work("TicketRefinement"); b.TicketKey = "AB-1";
+        Assert.NotEqual(PRFactoryWorkItems.JobName(a, "lead"), PRFactoryWorkItems.JobName(b, "lead"));
+        Assert.Equal("AB-1_refinement_lead", PRFactoryWorkItems.JobName(b, "lead"));
+    }
+
+    [Fact]
+    public void Long_member_names_that_share_a_prefix_get_distinct_job_names()
+    {
+        var item = Work("Implementation");
+        item.TicketKey = "PRF-42";
+        var a = PRFactoryWorkItems.JobName(item, "implementation-reviewer-claude");
+        var b = PRFactoryWorkItems.JobName(item, "implementation-reviewer-codex");
+        Assert.NotEqual(a, b);
+        Assert.True(AgentTeamForge.Business.Features.Jobs.AcceptJob.ValidAgentName(a), a);
+        Assert.True(AgentTeamForge.Business.Features.Jobs.AcceptJob.ValidAgentName(b), b);
+    }
 }

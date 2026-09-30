@@ -21,8 +21,11 @@ public sealed class BranchPublisher(PRFactoryPublicationStore store, Publication
     readonly SemaphoreSlim gate = new(1, 1);
     public void Dispose() => gate.Dispose();
 
-    public static bool ShouldPublish(PublicationRequest request) => !request.ReadOnly &&
-        (request.ProjectInit || request.Type is "Implementation" or "CodeReview" or "CustomStep");
+    public static bool ShouldPublish(PublicationRequest request) =>
+        ShouldPublish(request.ReadOnly, request.ProjectInit, request.Type);
+
+    public static bool ShouldPublish(bool readOnly, bool projectInit, string? type) => !readOnly &&
+        (projectInit || type is "Implementation" or "CodeReview" or "CustomStep");
 
     /// <summary>Freeze every repository head before a caller starts any push.</summary>
     public async Task<PublicationReceipt?> FreezeAsync(PublicationRequest request, CancellationToken ct = default)

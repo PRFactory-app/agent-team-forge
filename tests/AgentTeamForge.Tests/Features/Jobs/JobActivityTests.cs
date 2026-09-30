@@ -1,4 +1,5 @@
 using System.Text;
+using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Tests.Support;
 
@@ -96,5 +97,15 @@ public sealed class JobActivityTests
         File.AppendAllText(path, "boom\n");
         var next = logs.ReadActivity("job", "codex", cursor).Entries;
         Assert.Equal("error", Assert.Single(next).Kind);
+    }
+
+    [Fact]
+    public void Interactive_transcript_lines_carry_their_native_time_and_undated_ones_none()
+    {
+        var dated = new InteractiveTranscript("s", "hi", ["hi", "plain"], Times: ["2026-09-30T10:00:00Z", null]);
+        var entry = Assert.Single(JobActivity.Normalize("plain", dated.ProgressLine(0)));
+        Assert.Equal(("2026-09-30T10:00:00Z", "assistant_text", "hi"), (entry.Ts, entry.Kind, entry.Text));
+        var undated = Assert.Single(JobActivity.Normalize("plain", dated.ProgressLine(1)));
+        Assert.Equal(("", "plain"), (undated.Ts, undated.Text));
     }
 }

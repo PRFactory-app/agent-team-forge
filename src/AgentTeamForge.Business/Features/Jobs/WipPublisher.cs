@@ -11,6 +11,14 @@ public sealed class WipPushException(string branch, string headSha, string messa
     public string HeadSha { get; } = headSha;
 }
 
+/// <summary>The server refused the WIP report for this head (a 4xx other than lease/token); retrying cannot help.</summary>
+public sealed class PRFactoryWipRejectedException(int status, string? error)
+    : InvalidOperationException($"WIP publication rejected ({status}: {error})")
+{
+    public int Status { get; } = status;
+    public string? Error { get; } = error;
+}
+
 public sealed class WipPublisher(PRFactoryHandoverStore store, PublicationAuthority authority)
 {
     static readonly TimeSpan Timeout = TimeSpan.FromMinutes(2);
@@ -59,7 +67,7 @@ public sealed class WipPublisher(PRFactoryHandoverStore store, PublicationAuthor
 
         var head = await Git(cwd, "rev-parse", "HEAD");
         var prior = store.Wip(workspace.Key);
-        if (!forceReport && prior?.HeadSha == head && prior.State == "reported")
+        if (!forceReport && prior?.HeadSha == head && prior.State is "reported" or "rejected")
         {
             return prior;
         }
@@ -110,7 +118,16 @@ public sealed class WipPublisher(PRFactoryHandoverStore store, PublicationAuthor
             throw new InvalidOperationException("WIP remote SHA differs from frozen head.");
         }
 
-        var receipt = await report(branch, head);
+        string receipt;
+        try
+        {
+            receipt = await report(branch, head);
+        }
+        catch (PRFactoryWipRejectedException)
+        {
+            store.SaveWip(intent with { State = "rejected" });
+            throw;
+        }
         var done = intent with { State = "reported", Receipt = receipt };
         store.SaveWip(done);
         return done;

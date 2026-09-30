@@ -32,6 +32,7 @@ sealed class ChainServer(PRFactoryWorkItem item)
     public string? AcceptanceReleaseIdOverride { get; set; }
     public bool HandoverRequested { get; set; }
     public List<JsonElement> WipReports { get; } = [];
+    public HttpStatusCode? WipRejection { get; set; }
     public List<JsonElement> Releases { get; } = [];
     public List<JsonElement> RepositoryResults { get; } = [];
     public Action? OnBlobUpload { get; set; }
@@ -134,6 +135,10 @@ sealed class ChainServer(PRFactoryWorkItem item)
             {
                 var report = JsonElement.Parse(body!);
                 WipReports.Add(report);
+                if (WipRejection is { } rejected)
+                {
+                    return new HttpResponseMessage(rejected) { Content = new StringContent("{\"error\":\"Invalid GitHub URL format\"}") };
+                }
                 return Json("{\"accepted\":true,\"receiptId\":\"" + report.GetProperty("publicationId").GetString()
                     + "\",\"verifiedHeadSha\":\"" + report.GetProperty("headSha").GetString() + "\"}");
             }

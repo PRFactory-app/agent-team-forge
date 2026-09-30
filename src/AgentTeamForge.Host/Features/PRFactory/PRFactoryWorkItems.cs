@@ -180,12 +180,14 @@ public sealed partial class PRFactoryWorkItems(
         catch (Exception ex) when (ex is not (WorkerTokenRejectedException or OutOfMemoryException)
             && !(ex is OperationCanceledException && ct.IsCancellationRequested))
         {
-            if (ex is HttpRequestException or TaskCanceledException && authority is not null)
+            // A 4xx is the server's answer, not a transport failure; only no status or 5xx is.
+            var transport = ex is TaskCanceledException or HttpRequestException { StatusCode: null or >= System.Net.HttpStatusCode.InternalServerError };
+            if (transport && authority is not null)
             {
                 // Ownership is retained; further mutations wait for fresh server confirmation.
                 await authority.TransportFailureAsync(id, null, CancellationToken.None);
             }
-            log?.Invoke($"PRFactory work item {id:D} deferred ({ex.GetType().Name})");
+            log?.Invoke($"PRFactory work item {id:D} deferred ({ex.GetType().Name}{(ex is HttpRequestException { StatusCode: { } status } ? " " + (int)status : "")})");
         }
     }
 
@@ -430,8 +432,8 @@ public sealed partial class PRFactoryWorkItems(
         if (baseWip && team.MachineId is Guid handoverMachine && team.AtfJobId is { Length: > 0 } handoverJob
             && await client.GetHandoverRequestAsync(item.Id, handoverMachine, handoverJob, ct) is { } request)
         {
-            await HandleHandoverAsync(team, item, workspace, request, ct);
-            return; // No new lead, child, command or finalization turn after a handover request.
+            if (await HandleHandoverAsync(team, item, workspace, request, ct)) { return; }
+            // A phase that publishes no branch has nothing to hand over; its request is moot, so finish normally.
         }
         if ((baseWip || multiRepo) && workspace is { RepositoryPath: not null }
             && teams.MemberJob(server, item.Id, "lead", 0) is null)
@@ -492,10 +494,14 @@ public sealed partial class PRFactoryWorkItems(
         }
         string Cwd(string member) => workspace is null ? repo!.Directory
             : member == "lead" ? workspace.LeadPath : workspace.Members.Single(m => m.Name == member).Path;
-        var instruction = multiRepo ? item.Prompt + "\n\nRepository checkout manifest: "
+        var baseInstruction = multiRepo ? item.Prompt + "\n\nRepository checkout manifest: "
             + repositorySets!.Get(WorkspaceKey(item.Id))!.ManifestPath
             + "\nUse your lead or child paths from this manifest. Commit changes in each writable repository."
             : item.Prompt;
+        // The prompts reference these; there is no env plumbing, so each member's own primary path is stated in text.
+        string Instruction(string member) => baseInstruction + "\n\nPRFACTORY_PRIMARY_REPO_PATH=" + Path.GetFullPath(Cwd(member))
+            + (multiRepo ? "\nPRFACTORY_WORKSPACE_MANIFEST=" + repositorySets!.Get(WorkspaceKey(item.Id))!.ManifestPath : "");
+        var instruction = Instruction("lead");
         JobRecord? lead;
         try
         {
@@ -536,7 +542,7 @@ public sealed partial class PRFactoryWorkItems(
                 continue;
             }
 
-            var memberInstruction = $"{instruction}\n\nRole: {member.Role}\nMember: {member.Name}"
+            var memberInstruction = $"{Instruction(member.Name)}\n\nRole: {member.Role}\nMember: {member.Name}"
                 + (string.IsNullOrWhiteSpace(member.Notes) ? "" : $"\nNotes: {member.Notes}");
             JobRecord? child;
             try
@@ -564,6 +570,8 @@ public sealed partial class PRFactoryWorkItems(
         await AdvanceHumanWaitsAsync(item, ct);
         var outputDrained = await UploadManagedAsync(item, ct);
         if (baseWip && workspace is { RepositoryPath: not null } && handovers is not null
+            && BranchPublisher.ShouldPublish(workspace.ReadOnly || item.ReadOnly,
+                string.Equals(item.TicketSource, "ProjectInit", StringComparison.OrdinalIgnoreCase), item.Type)
             && team.MachineId is Guid machine && team.AtfJobId is { Length: > 0 } atfJob
             && item.LeaseToken is Guid wipLease && item.RepositoryId is Guid wipRepo)
         {
@@ -592,11 +600,23 @@ public sealed partial class PRFactoryWorkItems(
                 // Reported, not rethrown: a failed WIP push leaves no receipt (so no release), but must not
                 // stall the lead's completion and final publication.
                 var countText = await TeamWorkspace.Git(workspace.LeadPath, "rev-list", "--count", workspace.BaseSha + ".." + ex.HeadSha);
-                await Guard(item.Id, () => client.ReportWipFailureAsync(item.Id,
-                    new(wipLease, machine, atfJob, wipRepo, workspace.BaseSha!, ex.Branch, ex.HeadSha,
-                        int.Parse(countText, System.Globalization.CultureInfo.InvariantCulture), false, ex.Message,
-                        $"{item.Id:D}:{ex.HeadSha}"), ct), ct);
+                try
+                {
+                    await Guard(item.Id, () => client.ReportWipFailureAsync(item.Id,
+                        new(wipLease, machine, atfJob, wipRepo, workspace.BaseSha!, ex.Branch, ex.HeadSha,
+                            int.Parse(countText, System.Globalization.CultureInfo.InvariantCulture), false, ex.Message,
+                            $"{item.Id:D}:{ex.HeadSha}"), ct), ct);
+                }
+                catch (PRFactoryWipRejectedException rejected)
+                {
+                    log?.Invoke($"PRFactory work item {item.Id:D} WIP failure report rejected ({rejected.Status}: {rejected.Error})");
+                }
                 log?.Invoke($"PRFactory work item {item.Id:D} WIP publication failed; no receipt recorded");
+            }
+            catch (PRFactoryWipRejectedException ex)
+            {
+                // Recorded as rejected for this head by the publisher: no re-report until the head changes.
+                log?.Invoke($"PRFactory work item {item.Id:D} WIP publication rejected ({ex.Status}: {ex.Error}); no receipt, handover disabled");
             }
             catch (InvalidOperationException ex)
             {
@@ -667,6 +687,28 @@ public sealed partial class PRFactoryWorkItems(
             lead.ResultText ?? (!waitForManaged ? "External members completed their work; replies are in the agent stream." : null));
     }
 
+    /// <summary>"KEY-1_refinement_lead": agent names allow only letters, digits, '-' and '_' and start with a letter or digit.
+    /// A name that had to be cleaned, clipped or given a fallback key is clipped and suffixed with a short hash of the original
+    /// (key|phase|member), so distinct inputs stay distinct and the result is always valid.</summary>
+    internal static string JobName(PRFactoryWorkItem item, string member)
+    {
+        static string Clean(string text) => new([.. text.Where(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')]);
+        var originalKey = item.TicketKey ?? "";
+        var originalPhase = item.Type ?? "";
+        var phase = Clean(originalPhase);
+        if (phase.StartsWith("Ticket", StringComparison.Ordinal)) { phase = phase["Ticket".Length..]; }
+        var key = Clean(originalKey);
+        var altered = key != originalKey || Clean(member) != member || key.Length == 0;
+        if (key.Length == 0) { key = item.Id.ToString("N")[..8]; originalKey = item.Id.ToString("N"); }
+        var readable = string.Join('_', new[] { key, phase.ToLowerInvariant(), Clean(member) }.Where(p => p.Length > 0));
+        if (!altered && readable.Length <= 64 && char.IsAsciiLetterOrDigit(readable[0])) { return readable; }
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes($"{originalKey}|{originalPhase}|{member}")))[..6].ToLowerInvariant();
+        var head = readable.TrimStart('-', '_');
+        if (head.Length > 57) { head = head[..57]; }
+        return head.Length == 0 ? hash : head + "_" + hash;
+    }
+
     async Task<JobRecord?> SubmitMember(PRFactoryWorkItem item, string member,
         PRFactoryAgentType agent, string? model, PRFactoryEffort? effort, string instruction, string cwd, bool isolated, CancellationToken ct)
     {
@@ -692,6 +734,7 @@ public sealed partial class PRFactoryWorkItems(
                 Worktree = !isolated && !item.ReadOnly,
                 Model = model,
                 Effort = effort?.ToString().ToLowerInvariant(),
+                TargetAgent = JobName(item, member),
                 LeadSessionId = leadSessionFor?.Invoke(cwd),
             });
             // The member mapping is part of the admitted effect: a concurrent fence must see it.
@@ -868,25 +911,31 @@ public sealed partial class PRFactoryWorkItems(
 
     string WorkspaceKey(Guid id) => $"{server}|{id:D}";
 
-    async Task HandleHandoverAsync(PRFactoryTeamRecord team, PRFactoryWorkItem item,
+    /// <summary>False when the phase publishes no branch: nothing to hand over, the caller proceeds normally.</summary>
+    async Task<bool> HandleHandoverAsync(PRFactoryTeamRecord team, PRFactoryWorkItem item,
         WorkspaceSnapshot? workspace, PRFactoryHandoverRequest request, CancellationToken ct)
     {
+        if (!BranchPublisher.ShouldPublish((workspace?.ReadOnly ?? false) || item.ReadOnly,
+            string.Equals(item.TicketSource, "ProjectInit", StringComparison.OrdinalIgnoreCase), item.Type))
+        {
+            return false;
+        }
         if (workspace is not { RepositoryPath: not null, ReadOnly: false } || handovers is null
             || item.LeaseToken is not Guid lease || item.RepositoryId is not Guid repository
             || team.MachineId is not Guid machine || team.AtfJobId is not { Length: > 0 } atfJob)
         {
             log?.Invoke($"PRFactory work item {item.Id:D} handover deferred: repository workspace unavailable");
-            return;
+            return true;
         }
         bool Quiescent() => teams.MemberJobs(server, item.Id).All(id => getJob(id)?.Status is not
                 (JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation))
             && teams.ExternalMembers(server, item.Id).All(member => member.Closed);
-        if (!Quiescent()) { return; } // Let active turns reach a terminal state; never interrupt dirty buffers.
+        if (!Quiescent()) { return true; } // Let active turns reach a terminal state; never interrupt dirty buffers.
         if (PRFactoryRepositorySet.HasSecondaries(item))
         {
             // Only the primary lead is published and released; secondary checkouts would be left behind.
             log?.Invoke($"PRFactory work item {item.Id:D} handover held: multi-repository handover is unsupported");
-            return;
+            return true;
         }
 
         try
@@ -937,6 +986,7 @@ public sealed partial class PRFactoryWorkItems(
         {
             log?.Invoke($"PRFactory work item {item.Id:D} handover held: {ex.Message}");
         }
+        return true;
     }
 
     async Task<WorkspaceSnapshot> PrepareWorkspaceAsync(PRFactoryWorkItem item, RepositoryMapping? repo,
