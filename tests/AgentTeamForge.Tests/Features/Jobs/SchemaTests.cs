@@ -23,6 +23,10 @@ public sealed class SchemaTests
         {
             using var command = connection.CreateCommand();
             command.CommandText = """
+                ALTER TABLE lead_sessions DROP COLUMN native_home;
+                ALTER TABLE lead_sessions DROP COLUMN native_session_id;
+                ALTER TABLE lead_sessions DROP COLUMN native_kind;
+                DELETE FROM schema_migrations WHERE version=29;
                 DROP TABLE prfactory_multi_refresh;
                 DROP TABLE prfactory_repository_sets;
                 DELETE FROM schema_migrations WHERE version=28;
@@ -59,7 +63,7 @@ public sealed class SchemaTests
         using var check = upgraded.OpenConnection();
         using var query = check.CreateCommand();
         query.CommandText = "SELECT max(version) FROM schema_migrations";
-        Assert.Equal(28L, query.ExecuteScalar());
+        Assert.Equal((long)AgentTeamForge.DAL.Migrations.Schema.CurrentVersion, query.ExecuteScalar());
         query.CommandText = "PRAGMA foreign_key_check";
         using var violations = query.ExecuteReader();
         Assert.False(violations.Read());
@@ -183,6 +187,10 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                ALTER TABLE lead_sessions DROP COLUMN native_home;
+                ALTER TABLE lead_sessions DROP COLUMN native_session_id;
+                ALTER TABLE lead_sessions DROP COLUMN native_kind;
+                DELETE FROM schema_migrations WHERE version=29;
                 DROP TABLE prfactory_multi_refresh;
                 DROP TABLE prfactory_repository_sets;
                 DELETE FROM schema_migrations WHERE version=28;
@@ -283,6 +291,10 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                ALTER TABLE lead_sessions DROP COLUMN native_home;
+                ALTER TABLE lead_sessions DROP COLUMN native_session_id;
+                ALTER TABLE lead_sessions DROP COLUMN native_kind;
+                DELETE FROM schema_migrations WHERE version=29;
                 DROP TABLE prfactory_multi_refresh;
                 DROP TABLE prfactory_repository_sets;
                 DELETE FROM schema_migrations WHERE version=28;

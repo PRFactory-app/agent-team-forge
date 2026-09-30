@@ -85,6 +85,19 @@ public sealed class SessionTokenUsage
                 entry.Offset += start;
                 return entry.Usage;
             }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                if (entry is not null)
+                {
+                    entry.Path = null;
+                    entry.Offset = 0;
+                    entry.Usage = null;
+                    entry.Seen.Clear();
+                    entry.SkippingLine = false;
+                    entry.RetryAfter = DateTime.MinValue;
+                }
+                return null;
+            }
             catch (Exception ex) when (ex is not OutOfMemoryException) { return entry?.Usage; }
         }
     }

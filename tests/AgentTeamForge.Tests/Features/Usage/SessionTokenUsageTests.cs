@@ -27,6 +27,65 @@ public sealed class SessionTokenUsageTests : IDisposable
         {"type":"assistant","sessionId":"claude-session","isSidechain":false,"message":{"id":"{{{{{id}}}}}","usage":{"input_tokens":{{{{{input}}}}},"output_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":4}}}
         """ + "\n";
     [Fact]
+    public void Large_first_Claude_chain_record_preserves_usage_and_native_receipt()
+    {
+        var user = $$$"""{"type":"user","isSidechain":false,"sessionId":"claude-session","message":{"role":"user","content":"{{{new string('x', 270_553)}}} atf-corr:large"}}""";
+        Transcript("claude", "claude-session", user + "\n" + Claude("one")
+            + "{\"type\":\"assistant\",\"sessionId\":\"claude-session\",\"message\":{\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"DONE\"}]}}\n");
+        Assert.Equal(19, reader.Read("claude", "claude-session", home)!.Total);
+        var receipt = AgentTeamForge.Business.Features.Agents.Terminals.InteractiveTranscriptReader.ReadClaudeSession(home, "claude-session", "large");
+        Assert.NotNull(receipt);
+        Assert.True(receipt.Completed);
+        Assert.Equal("DONE", receipt.Message);
+    }
+
+    [Theory]
+    [InlineData("cli")]
+    [InlineData("exec")]
+    [InlineData("vscode")]
+    public void Large_Codex_header_accepts_parent_sources_for_usage_and_preserves_receipt_rules(string source)
+    {
+        var header = $$$"""{"type":"session_meta","payload":{"id":"thread","source":"{{{source}}}","instructions":"{{{new string('x', 100_000)}}}"}}""";
+        Transcript("codex", "thread", header + "\n" + Codex(100, 40, 10)
+            + "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n"
+            + "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"atf-corr:large\"}}\n"
+            + "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"DONE\"}}\n"
+            + "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}\n");
+        Assert.Equal(new TokenUsage(60, 10, 40, 0), reader.Read("codex", "thread", home));
+        var receipt = AgentTeamForge.Business.Features.Agents.Terminals.InteractiveTranscriptReader.ReadCodexThread(home, "thread", "large");
+        if (source == "cli") { Assert.True(receipt!.Completed); }
+        else { Assert.Null(receipt); }
+    }
+
+    [Fact]
+    public void Codex_subagent_transcript_is_not_counted()
+    {
+        Transcript("codex", "thread", "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread\",\"source\":{\"subagent\":\"review\"}}}\n" + Codex(100, 40, 10));
+        Assert.Null(reader.Read("codex", "thread", home));
+    }
+
+    [Fact]
+    public void Deleted_transcript_clears_cached_usage_and_can_be_relocated()
+    {
+        var path = Transcript("claude", "claude-session", Claude("one"));
+        Assert.Equal(19, reader.Read("claude", "claude-session", home)!.Total);
+        File.Delete(path);
+        Assert.Null(reader.Read("claude", "claude-session", home));
+        var moved = Path.Combine(home, "projects", "moved");
+        Directory.CreateDirectory(moved);
+        File.WriteAllText(Path.Combine(moved, "claude-session.jsonl"), Claude("one", 7));
+        Assert.Equal(new TokenUsage(7, 2, 3, 4), reader.Read("claude", "claude-session", home));
+    }
+
+    [Theory]
+    [InlineData("codex", "codex")]
+    [InlineData("claude", "claude")]
+    [InlineData(null, "claude")]
+    public void Native_binding_prefers_actual_host_when_both_environment_ids_exist(string? host, string expected)
+    {
+        Assert.Equal(expected, JobsMcpBridge.NativeKind(host, "claude-session", "codex-thread"));
+    }
+    [Fact]
     public void Claude_dedupes_appends_and_waits_for_complete_lines()
     {
         var line = Claude("one");
@@ -50,7 +109,7 @@ public sealed class SessionTokenUsageTests : IDisposable
         File.WriteAllText(path, Claude("one", 7));
         Assert.Equal(new TokenUsage(7, 2, 3, 4), reader.Read("claude", "claude-session", home));
         File.Delete(path);
-        Assert.Equal(7, reader.Read("claude", "claude-session", home)!.Input);
+        Assert.Null(reader.Read("claude", "claude-session", home));
     }
 
     static string Codex(long input, long cached, long output) => $$$$$"""
@@ -132,6 +191,11 @@ public sealed class SessionTokenUsageTests : IDisposable
         var web = endpoint.Handle(new IpcRequest { Op = IpcProtocol.JobList, IncludeUsage = true });
         Assert.Equal(19, Assert.Single(web.LeadTokens!).Value!.Total);
         Assert.False(web.LeadTokens!.ContainsKey(other.SessionId));
+        var child = sessions.Start("workspace", "managed-child:job-child", "claude", "claude-session", home);
+        accept.Execute(new SubmitJobRequest("nested-page", "hello", null, false) { LeadSessionId = child.SessionId });
+        var nested = endpoint.Handle(new IpcRequest { Op = IpcProtocol.JobList, IncludeUsage = true });
+        Assert.Null(nested.LeadTokens![child.SessionId]);
+        Assert.Empty(sessions.NativeBindings([child.SessionId]));
     }
 
     [Fact]
