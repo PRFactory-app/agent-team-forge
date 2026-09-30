@@ -129,6 +129,71 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task Restart_reattaches_a_native_follow_up_to_its_parents_live_pane_and_settles_it()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr { BootstrapFromTab = true };
+        var terminal = Terminal(fake);
+        var backend = new HerdrInteractiveBackend(terminal, InteractiveAgentKind.Claude, state.Path);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Claude, () => backend);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
+        var parent = accept.Execute(new SubmitJobRequest("parent", "work", null, false) { Backend = BackendCatalog.Claude }).Job!;
+        var parentClaim = f.Store.BeginNextAttempt()!;
+        var parentRun = new RunRef(parent.JobId, parentClaim.RunId, parentClaim.Generation, parentClaim.Correlation);
+        Assert.True(f.Store.RecordSession(parentRun, "claude-native"));
+        Assert.True(f.Store.Complete(parentRun, "ready"));
+        // The parent's pane stays open; only the parent owns its record.
+        var bootstrap = Path.Combine(state.Path, "herdr", "atftest.bootstrap");
+        Directory.CreateDirectory(Path.GetDirectoryName(bootstrap)!);
+        File.WriteAllText(bootstrap, "atftest");
+        var session = await terminal.StartSessionAsync(CancellationToken.None);
+        var binding = await terminal.OpenAgentTabAsync(session, "claude: parent", state.Path, bootstrap,
+            CancellationToken.None, onCreated: created => session = created);
+        HerdrOwnedSessions.Save(new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", state.Path, null, null, bootstrap)
+        { JobId = parent.JobId }, session with { ShellPid = binding.ShellPid, ShellStartTicks = binding.ShellStartTicks });
+
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+        var claudeHome = Path.Combine(state.Path, "claude");
+        var claim = f.Store.BeginNativeClaudeAttempt(parent.JobId, claudeHome, _ => true)!;
+        Assert.Equal(child.JobId, claim.Job.JobId);
+        f.Store.RecordNativeClaudePost(child.JobId, claim.Correlation);
+        f.Store.RecordNativeClaudeReceipt(child.JobId, claim.Correlation);
+        new AgentTeamForge.Business.Features.Recovery.RecoverOnStartup(f.Store,
+            () => HerdrOwnedSessions.Recover(state.Path, f.Store.FenceSession, _ => { })).Execute();
+        Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(child.JobId)!.Status);
+
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        dispatcher.RestoreAfterRestart(f.Store.RestartCandidates());
+        using var lifetime = new CancellationTokenSource();
+        var loop = dispatcher.RunAsync(lifetime.Token);
+        try
+        {
+            Assert.Equal((JobStatus.Running, null), (f.Store.GetJob(child.JobId)!.Status, f.Store.GetJob(child.JobId)!.ReasonCode));
+            Assert.False(f.Store.IsSessionFenced(child.JobId)); // Nor the parent, a session peer.
+            Assert.Equal(JobStatus.Completed, f.Store.GetJob(parent.JobId)!.Status);
+            Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane" or "tab", "close", ..]);
+
+            var transcript = Directory.CreateDirectory(Path.Combine(claudeHome, "projects", "scratch")).FullName;
+            File.WriteAllLines(Path.Combine(transcript, "claude-native.jsonl"),
+            [
+                """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"work"}}""",
+                """{"type":"user","isMeta":true,"isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"Another Claude session sent a message:\nnext atf-corr:""" + claim.Correlation + "\"}}",
+                """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"answered"}]}}""",
+            ]);
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (f.Store.GetJob(child.JobId)!.Status == JobStatus.Running && DateTime.UtcNow < deadline) { await Task.Delay(50, TestContext.Current.CancellationToken); }
+            Assert.Equal((JobStatus.Completed, "answered"), (f.Store.GetJob(child.JobId)!.Status, f.Store.GetJob(child.JobId)!.ResultText));
+            Assert.True(backend.HasLiveSession("claude-native")); // The pane is retained for the next turn.
+        }
+        finally
+        {
+            lifetime.Cancel();
+            await loop;
+        }
+    }
+
+    [Fact]
     public async Task Restart_keeps_unrebindable_live_pane_fenced_and_fails_only_a_proven_gone_one()
     {
         using var state = new TempStateDir();

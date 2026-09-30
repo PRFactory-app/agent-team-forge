@@ -129,6 +129,42 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         return null;
     }
 
+    /// <summary>
+    /// Rebind the pane a native turn was delivered into. Its ownership record belongs to the
+    /// session peer that launched the pane, never to the native follow-up. Returns that owner's
+    /// job id and keeps the session reserved until native settlement; <paramref name="gone"/> as for Reattach.
+    /// </summary>
+    public string? ReattachNativeTurn(string sessionId, string correlation, IReadOnlyList<JobRecord> sessionPeers, out bool gone)
+    {
+        gone = false;
+        if (_control is not HerdrAgentControl control || _kind == InteractiveAgentKind.Pi) { return null; }
+        var owned = HerdrOwnedSessions.Read(_stateRoot, _ => { })
+            .Select(entry => (entry.Path, entry.Session, Owner: sessionPeers.FirstOrDefault(peer => peer.JobId == entry.Session.JobId)))
+            .Where(entry => entry.Owner is not null).ToList();
+        foreach (var (path, session, owner) in owned)
+        {
+            var bootstrap = HerdrOwnedSessions.BootstrapForRecord(path);
+            if (!File.Exists(bootstrap) || control.PaneIsGone(session)) { continue; }
+            var launch = new InteractiveLaunch(_kind, Path.GetFileNameWithoutExtension(bootstrap),
+                owner!.WorktreePath ?? owner.Cwd ?? Environment.CurrentDirectory, sessionId, null, bootstrap)
+            { JobId = owner.JobId, TabLabel = session.TabLabel, LiveReuse = true }.WithSelection(owner.Options);
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                if (!control.RebindAsync(launch, session, timeout.Token).GetAwaiter().GetResult()) { continue; }
+            }
+            catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { continue; }
+            // Bind the transcript so the retained pane can take the next native turn after settlement.
+            try { _transcripts.Read(launch, "atf-corr:" + correlation, DateTimeOffset.MinValue); }
+            catch (IOException) { }
+            BindNativeSession(sessionId, launch);
+            _liveSessions.TakeForNativeTurn(sessionId, running: true);
+            return owner.JobId;
+        }
+        gone = owned.All(entry => control.PaneIsGone(entry.Session));
+        return null;
+    }
+
     internal bool TakeIdleForNativeTurn(string sessionId, bool running = false) => _liveSessions.TakeForNativeTurn(sessionId, running);
 
     internal void RememberNativeTurn(string sessionId) => _liveSessions.RememberNativeTurn(sessionId);

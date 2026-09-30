@@ -941,8 +941,11 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return (IReadOnlyList<string>)ids;
     });
 
-    /// <summary>Restore one verified live interactive attempt without replaying its prompt.</summary>
-    public bool ReattachQuarantined(RunRef run) => Write(connection =>
+    /// <summary>
+    /// Restore one verified live interactive attempt without replaying its prompt.
+    /// A native follow-up turn runs in <paramref name="paneOwner"/>'s pane; its rebound record no longer fences that job.
+    /// </summary>
+    public bool ReattachQuarantined(RunRef run, string? paneOwner = null) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         var updated = Execute(connection, tx, """
@@ -958,12 +961,21 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         if (updated != 1) { return false; }
         Execute(connection, tx, "INSERT INTO events(job_id, run_id, kind, created_at) VALUES ($id, $run, 'running', $now)",
             ("$id", run.JobId), ("$run", run.RunId), ("$now", Now()));
+        if (paneOwner is not null)
+        {
+            Execute(connection, tx, "UPDATE jobs SET session_fenced=0 WHERE job_id=$owner AND status IN ('completed','cancelled','failed')",
+                ("$owner", paneOwner));
+        }
         tx.Commit();
         return true;
     });
 
-    /// <summary>No owned agent could be rebound after restart; release this job's fence.</summary>
-    public bool FailUnattached(string jobId) => Write(connection =>
+    /// <summary>
+    /// No owned agent could be rebound after restart; release this job's fence. With
+    /// <paramref name="releaseNative"/>, a native turn whose pane is proven gone can no longer
+    /// be presented, so its attempt stops holding the session and cannot settle later.
+    /// </summary>
+    public bool FailUnattached(string jobId, bool releaseNative = false) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         var updated = Execute(connection, tx, """
@@ -976,6 +988,13 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             WHERE job_id=$id AND state='needs_reconciliation' AND reason_code='daemon_restart_uncertain';
             INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'failed', $now);
             """, ("$id", jobId), ("$now", Now()));
+        if (releaseNative)
+        {
+            Execute(connection, tx, """
+                UPDATE native_claude_attempts SET state='released' WHERE job_id=$id AND state IN ('posting','posted','received');
+                UPDATE native_codex_attempts SET state='released' WHERE job_id=$id AND state IN ('sent','received');
+                """, ("$id", jobId));
+        }
         tx.Commit();
         return true;
     });
