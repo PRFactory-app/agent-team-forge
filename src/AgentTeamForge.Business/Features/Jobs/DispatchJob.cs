@@ -1006,6 +1006,7 @@ public sealed class DispatchJob : IDisposable
                 }
                 if (submission.SubmissionId is not { } id)
                 {
+                    awaitingSettlement = true;
                     End(run, JobStatus.NeedsReconciliation, "native_submission_unresolved");
                     return;
                 }
@@ -1017,6 +1018,7 @@ public sealed class DispatchJob : IDisposable
             }
             catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested || stopRequested.IsCancellationRequested) { return; }
             catch (OperationCanceledException) { }
+            awaitingSettlement = true;
             End(run, JobStatus.NeedsReconciliation, "native_delivery_unresolved");
         }
         finally

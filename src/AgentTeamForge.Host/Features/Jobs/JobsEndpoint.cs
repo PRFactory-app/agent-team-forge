@@ -71,8 +71,9 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             }
             if (!request.NativeWriteStarted)
             {
-                try { return new IpcResponse(jobStore.RevertNativeClaudeAttempt(new RunRef(request.JobId, request.NativeRunId, 1, request.NativeCorrelation))); }
-                finally { releaseNativeTurn?.Invoke("claude", attempt.SessionId); }
+                var reverted = jobStore.RevertNativeClaudeAttempt(new RunRef(request.JobId, request.NativeRunId, 1, request.NativeCorrelation));
+                if (reverted) { releaseNativeTurn?.Invoke("claude", attempt.SessionId); }
+                return new IpcResponse(reverted);
             }
             if (request.NoticePosted) { jobStore.RecordNativeClaudePost(request.JobId, request.NativeCorrelation); }
             return new IpcResponse(true);

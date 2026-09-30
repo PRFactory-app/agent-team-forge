@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.Business.Features.Recovery;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Features.Sessions;
@@ -753,6 +754,64 @@ public sealed class WtInteractiveBackendTests
         Assert.Empty(tabs.Live);
         Assert.Equal(2, tabs.Stops);
         Assert.False(backend.HasLiveSession(session));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Unresolved_native_codex_keeps_zero_timeout_tab_until_transcript_settles(bool deliveryTimeout)
+    {
+        using var fixture = new JobFixture();
+        var tabs = new TrackingTabs();
+        const string session = "codex-native";
+        var settings = new InteractiveRetentionSettings();
+        using var backend = new WtInteractiveBackend(tabs,
+            new FakeReader(new InteractiveTranscript(session, "done", Completed: true)), InteractiveAgentKind.Codex,
+            Path.GetTempPath(), retentionSettings: () => settings);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Codex, () => backend);
+        var accept = new AcceptJob(fixture.Store, JobFixture.Operator, fixture.Limits, fixture.TestProfile, fixture.Admission, catalog.Names);
+        var parent = accept.Execute(new SubmitJobRequest("parent", "work", null, false) { Backend = BackendCatalog.Codex }).Job!;
+        using var dispatcher = new DispatchJob(fixture.Store, catalog, fixture.Limits, DurabilityCheckpoints.None, fixture.Admission, _ => { })
+        {
+            SubmitNativeCodex = (_, _, _, _) => deliveryTimeout
+                ? Task.FromException<CodexSubmission>(new OperationCanceledException())
+                : Task.FromResult(new CodexSubmission(true, null))
+        };
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
+        var child = new FollowUpJob(fixture.Store, JobFixture.Operator, accept)
+            .Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+        var home = Path.Combine(Path.GetDirectoryName(fixture.DatabasePath)!, "codex-home");
+        var claim = fixture.Store.BeginNativeCodexAttempt(job => backend.TakeIdleForNativeTurn(job.SessionId!), home)!;
+        settings = settings with { IdleCloseMinutes = 0 };
+        await dispatcher.RunAttemptAsync(claim, CancellationToken.None);
+        Assert.Equal(JobStatus.NeedsReconciliation, fixture.Store.GetJob(child.JobId)!.Status);
+        Assert.Single(tabs.Live);
+        Assert.False(backend.HasIdleSession(session));
+
+        var directory = Directory.CreateDirectory(Path.Combine(home, "sessions")).FullName;
+        File.WriteAllLines(Path.Combine(directory, "rollout-test-codex-native.jsonl"),
+        [
+            """{"type":"session_meta","payload":{"id":"codex-native","source":"cli"}}""",
+            """{"type":"event_msg","payload":{"type":"task_started"}}""",
+            $$$"""{"type":"event_msg","payload":{"type":"user_message","message":"atf-corr:{{{claim.Correlation}}}"}}""",
+            """{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"settled"}]}}""",
+            """{"type":"event_msg","payload":{"type":"task_complete"}}"""
+        ]);
+        using var stopping = new CancellationTokenSource();
+        var loop = dispatcher.RunAsync(stopping.Token);
+        try
+        {
+            await Bounded.Until(() => fixture.Store.GetJob(child.JobId)?.Status == JobStatus.Completed, "native settlement");
+            await Bounded.Until(() => backend.HasLiveSession(session) == false, "settled tab close");
+            Assert.Empty(tabs.Live);
+            Assert.False(backend.HasLiveSession(session));
+            Assert.Equal(1, tabs.Stops);
+        }
+        finally
+        {
+            await stopping.CancelAsync();
+            await loop.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+        }
     }
 
     sealed class TrackingTabs : IWtTabControl
