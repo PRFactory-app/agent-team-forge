@@ -42,7 +42,8 @@ windows or headless for background agents. If Herdr cannot run, setup explains
 why and recommends headless; it never switches modes silently. For unattended
 setup, pass `--mode headless` or `--mode herdr` explicitly. Setup registers each
 installed client, including Pi's MCP adapter and wake extension (Pi adapter
-installation needs network). It sets Claude's `crossSessionInbound` to `accept`
+installation needs network). On all platforms, including Windows, it sets
+Claude's `crossSessionInbound` to `accept`
 while preserving other settings. A failed client registration is reported with the
 manual command; setup still completes (`atf setup --check` verifies). Reload
 installed clients afterward. Run

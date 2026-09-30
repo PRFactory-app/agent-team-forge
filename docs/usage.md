@@ -15,7 +15,8 @@ state. Install first: [install](install.md). Platform support:
 Install and log in to the backend CLIs you want first: Claude Code, Codex or
 Pi. Setup registers the `agentteamforge` MCP server in each installed client,
 installs Pi's MCP adapter and wake extension (needs network), and sets
-Claude's `crossSessionInbound` to `accept` so wake notices arrive. Reload the
+Claude's `crossSessionInbound` to `accept` on all platforms, including Windows,
+so wake notices arrive. Reload the
 clients afterwards. See [launch modes](terminal-modes.md) for what each mode
 means.
 

@@ -118,7 +118,7 @@ internal static class ClientSetup
             Console.Out.WriteLine($"{client}: installed (MCP registration updated)");
         }
 
-        if (!OperatingSystem.IsWindows() && run("claude", ["--version"]).ExitCode != 127)
+        if (run("claude", ["--version"]).ExitCode != 127)
         {
             try
             {
