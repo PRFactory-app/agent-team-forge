@@ -170,6 +170,10 @@ turn deadline restarts at the reset (at most 24 hours when unknown), so a TUI
 that never resumes is still quarantined.
 Accepted-but-unfinished teams are capped (10) and polling asks only for free
 slots. Pruning never removes turns of accepted teams or unresumed parks.
+One connection works several work items at once. When the server advertises its
+worker cap (`maxConcurrentWorkItems`/`activeWorkItems` on poll) and it is reached,
+intake pauses for that tick and `atf prfactory status` shows the last seen limit;
+a 409 at claim also stops claiming for the tick.
 
 ## Human questions during a turn
 

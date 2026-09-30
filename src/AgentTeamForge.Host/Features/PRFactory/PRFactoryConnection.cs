@@ -17,6 +17,7 @@ public sealed record PRFactorySettings(string Url, RepositoryMapping[] Repositor
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, WriteIndented = true)]
 [JsonSerializable(typeof(PRFactorySettings))]
 [JsonSerializable(typeof(string[]))]
+[JsonSerializable(typeof(PRFactoryServerLimit))]
 internal sealed partial class PRFactorySettingsJson : JsonSerializerContext;
 
 /// <summary>Owner-private, opt-in connector settings. The token is kept apart from printable settings.</summary>
@@ -26,6 +27,7 @@ public static class PRFactoryConnection
     const string TokenName = "prfactory.token";
     const string RejectedName = "prfactory.rejected";
     const string JoinsName = "prfactory-joins.json";
+    const string LimitName = "prfactory-limit.json";
 
     public static int Run(StateDirectory state, string action, IReadOnlyDictionary<string, string> options, IReadOnlyList<string> args, TextReader tokenInput)
     {
@@ -38,6 +40,7 @@ public static class PRFactoryConnection
                 File.Delete(Path.Combine(state.Path, TokenName));
                 File.Delete(Path.Combine(state.Path, RejectedName));
                 File.Delete(Path.Combine(state.Path, JoinsName));
+                File.Delete(Path.Combine(state.Path, LimitName));
                 Console.WriteLine("PRFactory disconnected.");
                 return 0;
             case "status":
@@ -56,6 +59,13 @@ public static class PRFactoryConnection
                     {
                         Console.WriteLine($"  external members: {string.Join(", ", repository.ExternalMembers)}");
                     }
+                }
+                var limitPath = Path.Combine(state.Path, LimitName);
+                if (File.Exists(limitPath)
+                    && JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(limitPath), PRFactorySettingsJson.Default.PRFactoryServerLimit) is { } limit)
+                {
+                    Console.WriteLine($"Server limit: {limit.Active}/{limit.Max} active work items"
+                        + (limit.AtCap ? " (intake paused)" : "") + $", seen {limit.At:u}");
                 }
                 var joinsPath = Path.Combine(state.Path, JoinsName);
                 if (File.Exists(joinsPath))
@@ -201,6 +211,24 @@ public static class PRFactoryConnection
     public static string ReadToken(StateDirectory state) => Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(Path.Combine(state.Path, TokenName)));
 
     public static void MarkRejected(StateDirectory state) => WritePrivate(Path.Combine(state.Path, RejectedName), "rejected"u8.ToArray());
+
+    /// <summary>Persist the server's advertised cap for `atf prfactory status`; unchanged values are not rewritten.</summary>
+    public static void PublishLimit(StateDirectory state, PRFactoryServerLimit? limit)
+    {
+        var path = Path.Combine(state.Path, LimitName);
+        if (limit is null)
+        {
+            File.Delete(path);
+            return;
+        }
+        if (File.Exists(path)
+            && JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(path), PRFactorySettingsJson.Default.PRFactoryServerLimit) is { } last
+            && last.Max == limit.Max && last.Active == limit.Active)
+        {
+            return;
+        }
+        WritePrivate(path, JsonSerializer.SerializeToUtf8Bytes(limit, PRFactorySettingsJson.Default.PRFactoryServerLimit));
+    }
 
     public static bool IsRejected(StateDirectory state) => File.Exists(Path.Combine(state.Path, RejectedName));
 
