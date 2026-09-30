@@ -310,24 +310,54 @@ public sealed class ExternalMemberStore(JobDatabase database)
             return false;
         }
 
-        using var command = db.CreateCommand();
-        command.Transaction = tx;
-        command.CommandText = """
-            INSERT INTO external_messages(team_id,sender,recipient,sender_seq,text,created_at,wake_key)
-            SELECT $team,$sender,'lead',$position,$text,$now,wake_key FROM external_teams WHERE team_id=$team AND closed_at IS NULL
-            """;
-        command.Parameters.AddWithValue("$team", member.Value.Team);
-        command.Parameters.AddWithValue("$sender", member.Value.Name);
-        command.Parameters.AddWithValue("$position", NextSenderSeq(db, tx, member.Value.Team, "lead", member.Value.Name));
-        command.Parameters.AddWithValue("$text", text);
-        command.Parameters.AddWithValue("$now", now.ToString("O"));
-        if (command.ExecuteNonQuery() != 1)
+        if (!InsertLeadMessage(db, tx, member.Value.Team, member.Value.Name, text, now))
         {
             return false;
         }
 
         tx.Commit();
         return true;
+    }
+
+    public bool SendToLead(string teamId, string sender, string text, DateTimeOffset now, string? commandId)
+    {
+        using var db = database.OpenConnection();
+        using var tx = db.BeginTransaction(deferred: false);
+        if (commandId is not null)
+        {
+            using var command = db.CreateCommand();
+            command.Transaction = tx;
+            command.CommandText = "INSERT OR IGNORE INTO external_delivery_keys(team_id,command_id) VALUES ($team,$command)";
+            command.Parameters.AddWithValue("$team", teamId);
+            command.Parameters.AddWithValue("$command", commandId);
+            if (command.ExecuteNonQuery() == 0)
+            {
+                tx.Commit();
+                return true;
+            }
+        }
+        if (!InsertLeadMessage(db, tx, teamId, sender, text, now))
+        {
+            return false;
+        }
+        tx.Commit();
+        return true;
+    }
+
+    static bool InsertLeadMessage(SqliteConnection db, SqliteTransaction tx, string teamId, string sender, string text, DateTimeOffset now)
+    {
+        using var command = db.CreateCommand();
+        command.Transaction = tx;
+        command.CommandText = """
+            INSERT INTO external_messages(team_id,sender,recipient,sender_seq,text,created_at,wake_key)
+            SELECT $team,$sender,'lead',$position,$text,$now,wake_key FROM external_teams WHERE team_id=$team AND closed_at IS NULL
+            """;
+        command.Parameters.AddWithValue("$team", teamId);
+        command.Parameters.AddWithValue("$sender", sender);
+        command.Parameters.AddWithValue("$position", NextSenderSeq(db, tx, teamId, "lead", sender));
+        command.Parameters.AddWithValue("$text", text);
+        command.Parameters.AddWithValue("$now", now.ToString("O"));
+        return command.ExecuteNonQuery() == 1;
     }
 
     public bool SendToMember(string teamId, string name, string text, string sender, DateTimeOffset now, string? commandId = null)

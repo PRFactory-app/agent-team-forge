@@ -22,6 +22,7 @@ public sealed record WebFollowUpBody(string? Instruction, string? IdempotencyKey
 public sealed record WebSubmitBody(string? Backend, string? Instruction, string? IdempotencyKey, string? Cwd,
     string? Model = null, string? Effort = null, string? LeadSessionId = null, string? Workspace = null, string? Name = null, string? HerdrPlacement = null);
 public sealed record WebJoinTicketBody(string? Name, string? Workspace, string? Note = null);
+public sealed record WebLeadMessageBody(string? Text, string? Workspace, string? IdempotencyKey);
 public sealed record WebTierBody(string? Backend, string? Tier, string? Model, string? Effort, bool ResetAll = false);
 public sealed record WebHerdrPlacementBody(string? HerdrPlacement);
 public sealed record WebDirectoryEntry(string Name, string Path);
@@ -31,6 +32,7 @@ public sealed record WebDirectoryList(string Path, string? Parent, IReadOnlyList
 [JsonSerializable(typeof(WebFollowUpBody))]
 [JsonSerializable(typeof(WebSubmitBody))]
 [JsonSerializable(typeof(WebJoinTicketBody))]
+[JsonSerializable(typeof(WebLeadMessageBody))]
 [JsonSerializable(typeof(WebTierBody))]
 [JsonSerializable(typeof(WebHerdrPlacementBody))]
 [JsonSerializable(typeof(WebDirectoryList))]
@@ -216,6 +218,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
             ("POST", ["jobs", var id, "stop"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStop, JobId = id },
             ("POST", ["jobs", var id, "stop-agent"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStopAgent, JobId = id },
             ("POST", ["leads", var id, "join-ticket"]) when Guid.TryParseExact(id, "D", out _) => await ReadJoinTicketAsync(ctx, id),
+            ("POST", ["leads", var id, "messages"]) when Guid.TryParseExact(id, "D", out _) => await ReadLeadMessageAsync(ctx, id),
             _ => null,
         };
         if (ipc is null)
@@ -355,6 +358,27 @@ public sealed class WebConsoleServer : IAsyncDisposable
             HerdrPlacement = body.HerdrPlacement,
             LeadSessionId = body.LeadSessionId,
             Workspace = body.Workspace
+        };
+    }
+
+    static async Task<IpcRequest?> ReadLeadMessageAsync(HttpContext ctx, string leadId)
+    {
+        var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebLeadMessageBody);
+        if (body is not
+            {
+                Text: { Length: > 0 and <= 65536 } text, Workspace: { Length: > 0 and <= 4096 } workspace,
+                IdempotencyKey: { Length: > 0 and <= MaxKeyChars } key
+            } || !Path.IsPathFullyQualified(workspace))
+        {
+            return null;
+        }
+        return new IpcRequest
+        {
+            Op = IpcProtocol.ExternalOperatorSend,
+            LeadSessionId = leadId,
+            Workspace = workspace,
+            Text = text,
+            IdempotencyKey = key
         };
     }
 
