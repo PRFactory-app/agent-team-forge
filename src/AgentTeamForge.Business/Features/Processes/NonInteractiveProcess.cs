@@ -47,14 +47,14 @@ public static class NonInteractiveProcess
         if (file.Contains('/'))
         {
             var path = Path.GetFullPath(file, startInfo.WorkingDirectory is { Length: > 0 } cwd ? cwd : Environment.CurrentDirectory);
-            return File.Exists(path) ? path : null;
+            return IsExecutable(path) ? path : null;
         }
 
         var searchPath = startInfo.Environment.TryGetValue("PATH", out var value) ? value : Environment.GetEnvironmentVariable("PATH");
         foreach (var dir in (searchPath ?? "").Split(':', StringSplitOptions.RemoveEmptyEntries))
         {
             var candidate = Path.Combine(dir, file);
-            if (File.Exists(candidate))
+            if (IsExecutable(candidate))
             {
                 return candidate;
             }
@@ -62,4 +62,7 @@ public static class NonInteractiveProcess
 
         return null;
     }
+
+    static bool IsExecutable(string path) =>
+        File.Exists(path) && (File.GetUnixFileMode(path) & (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0;
 }
