@@ -12,7 +12,7 @@ namespace AgentTeamForge.Host.Features.PRFactory;
 public sealed record RepositoryMapping(Guid Id, string Directory, string[]? ExternalMembers = null,
     string? Remote = null, string? BaseBranch = null);
 public sealed record PRFactorySettings(string Url, RepositoryMapping[] Repositories,
-    bool TenantWideToken = false, bool RepoLess = true);
+    bool TenantWideToken = false, bool RepoLess = true, string? CaFile = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, WriteIndented = true)]
 [JsonSerializable(typeof(PRFactorySettings))]
@@ -52,6 +52,10 @@ public static class PRFactoryConnection
                 }
                 Console.WriteLine($"PRFactory enabled: {settings.Url}");
                 Console.WriteLine($"Repo-less intake: {(settings.TenantWideToken && settings.RepoLess ? "enabled (declared tenant-wide token)" : "disabled")}");
+                if (settings.CaFile is not null)
+                {
+                    Console.WriteLine($"Extra CA file: {settings.CaFile}");
+                }
                 foreach (var repository in settings.Repositories)
                 {
                     Console.WriteLine($"{repository.Id:D}={repository.Directory}");
@@ -87,6 +91,35 @@ public static class PRFactoryConnection
         }
     }
 
+    /// <summary>Reads a line without echo; Ctrl+C aborts (null). Keys come from <paramref name="readKey"/> so tests can fake them.</summary>
+    internal static string? ReadSecret(Func<ConsoleKeyInfo> readKey)
+    {
+        var buffer = new StringBuilder();
+        while (true)
+        {
+            var key = readKey();
+            if (key.Key == ConsoleKey.Enter)
+            {
+                return buffer.ToString();
+            }
+            if (key.Key == ConsoleKey.C && key.Modifiers.HasFlag(ConsoleModifiers.Control))
+            {
+                return null;
+            }
+            if (key.Key == ConsoleKey.Backspace)
+            {
+                if (buffer.Length > 0)
+                {
+                    buffer.Length--;
+                }
+            }
+            else if (!char.IsControl(key.KeyChar))
+            {
+                buffer.Append(key.KeyChar);
+            }
+        }
+    }
+
     static int Connect(StateDirectory state, IReadOnlyDictionary<string, string> options, IReadOnlyList<string> args, TextReader tokenInput)
     {
         if (options.ContainsKey("token"))
@@ -102,10 +135,35 @@ public static class PRFactoryConnection
             Console.Error.WriteLine("error: require an HTTPS --url");
             return 64;
         }
-        var token = tokenInput.ReadLine()?.Trim();
+        string? caFile = null;
+        if (options.TryGetValue("ca-file", out var caPath))
+        {
+            try
+            {
+                caFile = Path.GetFullPath(caPath);
+                _ = PRFactoryTrust.LoadCa(caFile);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException or FormatException or ArgumentException)
+            {
+                Console.Error.WriteLine("error: --ca-file must be a readable PEM file with at least one certificate");
+                return 64;
+            }
+        }
+        string? token;
+        if (ReferenceEquals(tokenInput, Console.In) && !Console.IsInputRedirected)
+        {
+            Console.Error.Write("PRFactory worker token: ");
+            token = ReadSecret(() => Console.ReadKey(intercept: true));
+            Console.Error.WriteLine();
+        }
+        else
+        {
+            token = tokenInput.ReadLine();
+        }
+        token = token?.Trim();
         if (string.IsNullOrEmpty(token) || token.Any(char.IsControl))
         {
-            Console.Error.WriteLine("error: pipe a nonempty worker token on stdin");
+            Console.Error.WriteLine("error: enter a nonempty worker token (prompt, or pipe it on stdin)");
             return 64;
         }
 
@@ -172,7 +230,7 @@ public static class PRFactoryConnection
             mappings[index] = mappings[index] with { ExternalMembers = [.. mappings[index].ExternalMembers ?? [], spec[(split + 1)..]] };
         }
 
-        var settings = new PRFactorySettings(uri.GetLeftPart(UriPartial.Path).TrimEnd('/'), [.. mappings], tenantWide, repoLess);
+        var settings = new PRFactorySettings(uri.GetLeftPart(UriPartial.Path).TrimEnd('/'), [.. mappings], tenantWide, repoLess, caFile);
         // Publish the token first; a daemon racing this write sees either the old
         // configuration or the new token, and never a partial private file.
         WritePrivate(Path.Combine(state.Path, TokenName), Encoding.UTF8.GetBytes(token));

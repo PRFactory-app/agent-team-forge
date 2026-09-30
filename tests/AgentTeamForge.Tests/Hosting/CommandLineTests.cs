@@ -14,6 +14,11 @@ public sealed class CommandLineTests
     }
 
     [Theory]
+    [InlineData("prfactory connect --url https://x --ca-file /tmp/ca.pem")]
+    [InlineData("prfactory connect --url https://x --ca-file=/tmp/ca.pem")]
+    public void Prfactory_connect_accepts_ca_file(string line) => Assert.Null(Run(line).Exit);
+
+    [Theory]
     [InlineData("worktrees prune --help")]
     [InlineData("worktrees prune -h")]
     [InlineData("worktrees prune --job J --help")]

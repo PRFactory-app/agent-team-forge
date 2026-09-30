@@ -13,8 +13,9 @@ The PRFactory server-side durable ATF acceptance is merged
 
 1. In PRFactory settings, create a repository-scoped **worker** token (not an
    MCP token).
-2. Map each PRFactory repository ID to a local checkout and pipe the token on
-   stdin (the token is never accepted as an argument):
+2. Map each PRFactory repository ID to a local checkout and supply the token (it is never accepted as an
+   argument). In a terminal, `atf` prompts `PRFactory worker token:` and reads it without echo: paste the token
+   when prompted, or pipe it on stdin:
 
    ```sh
    printf '%s\n' "$PRFACTORY_WORKER_TOKEN" | atf prfactory connect \
@@ -25,7 +26,15 @@ The PRFactory server-side durable ATF acceptance is merged
    Repeat `--repo` for more repositories. Add
    `--external REPOSITORY_ID:MEMBER_NAME` for recipe members that are
    interactive Desktop sessions (see below).
-3. `atf prfactory status` shows the URL, mappings, pending join prompts and
+   For a server whose certificate comes from a private CA, add
+   `--ca-file /path/to/ca.pem` (PEM, one or more certificates). The absolute
+   path is stored in the settings, so it survives a daemon autostarted by a
+   client bridge (unlike `SSL_CERT_FILE` in the environment). The CA is trusted
+   in addition to the system store; name mismatches and expired certificates
+   are still rejected. If the file is missing or unreadable when the daemon
+   starts, it logs once and the connector stays stopped (no insecure fallback).
+   Reconnecting without `--ca-file` clears it.
+3. `atf prfactory status` shows the URL, the CA file, mappings, pending join prompts and
    whether the token was rejected. `atf prfactory disconnect` removes the
    settings and token.
 
