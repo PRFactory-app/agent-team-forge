@@ -137,3 +137,32 @@ Local evidence (ignored, not committed): `.named-tabs-build.log`,
 - No opposite-family review was performed by this implementation worker; review
   and integration remain with the parent team. Existing baseline failures were
   reported rather than expanding scope to unrelated platform fixes.
+
+## Additional fix: Claude inbound setup on Windows
+
+Commit `0921fe1a987614e0e5ee22d3a68216a07b173bd3`:
+`Enable Claude crossSessionInbound in setup on Windows`.
+
+Removed the Windows guard in ClientSetup so installed Claude clients get
+`crossSessionInbound: "accept"` in apply mode and validation in check/doctor
+mode on every platform. The existing exit-code-127 not-installed check remains.
+The existing apply regression test already runs on Windows; no relevant test
+skip needed removal. Added one read-only check-mode regression test, and made
+the all-platform behavior explicit in install, usage and native-wake ADR docs.
+
+Windows verification with the same local .NET 11 SDK:
+
+- Solution Release build with `--no-restore --nologo -warnaserror`: passed,
+  zero warnings/errors, 53.30 seconds.
+- Setup tests (`--filter 'FullyQualifiedName~Features.Setup'`, Release,
+  `--no-build --no-restore`): **40 passed, 12 failed, 0 skipped, 52 total**,
+  30 seconds. All 12 remaining failed test names also failed in the earlier
+  full-suite TRX. The existing apply and malformed-settings tests now pass;
+  the new check-mode test also passes. Remaining failures concern Unix file
+  modes, Windows symlink privileges, platform-specific command/autostart
+  expectations and daemon-log cleanup locks. No new failing test names.
+- `git diff --check`: passed. No push and no real user settings modified.
+
+Evidence: `.named-tabs-setup-build.log`, `.named-tabs-setup-tests.log` and
+`tests/AgentTeamForge.Tests/TestResults/named-tabs-setup.trx` (ignored).
+This section is committed separately so it can record the fix's exact SHA.
