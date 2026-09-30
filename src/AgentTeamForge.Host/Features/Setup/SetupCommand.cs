@@ -771,7 +771,7 @@ public static class SetupCommand
         var parent = Path.GetDirectoryName(path)!;
         StateDirectory.CreatePrivateDirectory(parent);
         using var existing = File.Exists(path)
-            ? JsonDocument.Parse(File.ReadAllBytes(path), new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip })
+            ? ClientSetup.ReadClaudeSettings(path)
             : null;
         if (existing is not null && existing.RootElement.ValueKind != JsonValueKind.Object)
         {

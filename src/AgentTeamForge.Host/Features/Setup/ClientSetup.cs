@@ -386,11 +386,18 @@ internal static class ClientSetup
         {
             return false;
         }
-        using var document = JsonDocument.Parse(File.ReadAllBytes(path),
-            new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip });
+        using var document = ReadClaudeSettings(path);
         return document.RootElement.ValueKind == JsonValueKind.Object
             && document.RootElement.TryGetProperty("crossSessionInbound", out var inbound)
             && inbound.ValueKind == JsonValueKind.String && inbound.GetString() == "accept";
+    }
+
+    internal static JsonDocument ReadClaudeSettings(string path)
+    {
+        var bytes = File.ReadAllBytes(path);
+        var offset = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
+        return JsonDocument.Parse(bytes.AsMemory(offset),
+            new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip });
     }
 
     static JsonObject ReadObject(string path)
