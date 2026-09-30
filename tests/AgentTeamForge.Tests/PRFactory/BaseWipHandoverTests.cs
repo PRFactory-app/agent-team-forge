@@ -308,6 +308,7 @@ public sealed class BaseWipHandoverTests
     [InlineData("_ABC-1")]
     [InlineData("A.B-1")]
     [InlineData("")]
+    [InlineData("-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")]
     [InlineData("ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-1")]
     public void Connector_job_names_are_valid_and_unique_per_member(string key)
     {
@@ -318,7 +319,6 @@ public sealed class BaseWipHandoverTests
         Assert.True(AgentTeamForge.Business.Features.Jobs.AcceptJob.ValidAgentName(lead), lead);
         Assert.True(AgentTeamForge.Business.Features.Jobs.AcceptJob.ValidAgentName(member), member);
         Assert.NotEqual(lead, member);
-        Assert.EndsWith("_refinement_lead", lead);
     }
 
     [Fact]
@@ -328,5 +328,17 @@ public sealed class BaseWipHandoverTests
         var b = Work("TicketRefinement"); b.TicketKey = "AB-1";
         Assert.NotEqual(PRFactoryWorkItems.JobName(a, "lead"), PRFactoryWorkItems.JobName(b, "lead"));
         Assert.Equal("AB-1_refinement_lead", PRFactoryWorkItems.JobName(b, "lead"));
+    }
+
+    [Fact]
+    public void Long_member_names_that_share_a_prefix_get_distinct_job_names()
+    {
+        var item = Work("Implementation");
+        item.TicketKey = "PRF-42";
+        var a = PRFactoryWorkItems.JobName(item, "implementation-reviewer-claude");
+        var b = PRFactoryWorkItems.JobName(item, "implementation-reviewer-codex");
+        Assert.NotEqual(a, b);
+        Assert.True(AgentTeamForge.Business.Features.Jobs.AcceptJob.ValidAgentName(a), a);
+        Assert.True(AgentTeamForge.Business.Features.Jobs.AcceptJob.ValidAgentName(b), b);
     }
 }

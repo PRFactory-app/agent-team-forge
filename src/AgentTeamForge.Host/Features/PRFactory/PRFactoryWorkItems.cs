@@ -688,27 +688,25 @@ public sealed partial class PRFactoryWorkItems(
     }
 
     /// <summary>"KEY-1_refinement_lead": agent names allow only letters, digits, '-' and '_' and start with a letter or digit.
-    /// A key that had to be cleaned or shortened gets a short stable hash of the original so distinct keys stay distinct.</summary>
+    /// A name that had to be cleaned, clipped or given a fallback key is clipped and suffixed with a short hash of the original
+    /// (key|phase|member), so distinct inputs stay distinct and the result is always valid.</summary>
     internal static string JobName(PRFactoryWorkItem item, string member)
     {
-        static string Clean(string? text) => new([.. (text ?? "").Where(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')]);
-        static string Clip(string text, int max) => text.Length > max ? text[..max] : text;
-        var original = item.TicketKey ?? "";
-        var key = Clean(original).TrimStart('-', '_');
-        var phase = Clean(item.Type);
+        static string Clean(string text) => new([.. text.Where(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')]);
+        var originalKey = item.TicketKey ?? "";
+        var originalPhase = item.Type ?? "";
+        var phase = Clean(originalPhase);
         if (phase.StartsWith("Ticket", StringComparison.Ordinal)) { phase = phase["Ticket".Length..]; }
-        var suffix = string.Concat(new[] { Clip(phase.ToLowerInvariant(), 16), Clip(Clean(member), 24) }
-            .Where(p => p.Length > 0).Select(p => "_" + p));
-        var room = 64 - suffix.Length;
-        var dirty = key.Length == 0 || key != original;
-        if (key.Length > room) { key = key[..(room - 7)]; dirty = true; }
-        if (dirty)
-        {
-            var source = original.Length > 0 ? original : item.Id.ToString("N");
-            var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source)))[..6].ToLowerInvariant();
-            key = key.Length == 0 ? hash : key + "_" + hash;
-        }
-        return key + suffix;
+        var key = Clean(originalKey);
+        var altered = key != originalKey || Clean(member) != member || key.Length == 0;
+        if (key.Length == 0) { key = item.Id.ToString("N")[..8]; originalKey = item.Id.ToString("N"); }
+        var readable = string.Join('_', new[] { key, phase.ToLowerInvariant(), Clean(member) }.Where(p => p.Length > 0));
+        if (!altered && readable.Length <= 64 && char.IsAsciiLetterOrDigit(readable[0])) { return readable; }
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes($"{originalKey}|{originalPhase}|{member}")))[..6].ToLowerInvariant();
+        var head = readable.TrimStart('-', '_');
+        if (head.Length > 57) { head = head[..57]; }
+        return head.Length == 0 ? hash : head + "_" + hash;
     }
 
     async Task<JobRecord?> SubmitMember(PRFactoryWorkItem item, string member,
