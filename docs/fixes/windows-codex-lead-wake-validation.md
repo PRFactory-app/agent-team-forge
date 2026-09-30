@@ -26,8 +26,14 @@ actual lead receipt for the isolated fake-job smoke, beyond the queue receipt.
 The notice has no job ID: the MCP job list in the regular state directory
 contains the separate planning/review jobs, while the isolated smoke job's
 result was verified through its own bridge before shutdown.
-Fresh real Claude/Codex jobs after client reload, custom-home client restart,
-lead resume and macOS runtime checks also remain pending.
+After reloading the client, explicit wake registration again succeeded and
+the regular daemon completed real Codex and Claude jobs with the expected
+results. The lead received automatic completion notices. A Codex follow-up
+returned the remembered token `RELEASE-910` in the same native session,
+and its automatic completion notice also reached the lead. These release
+smoke checks passed at 07:52 UTC.
+
+Custom-home client restart, lead resume and macOS runtime checks remain pending.
 
 All 59 focused wake and MCP bridge tests pass on Windows, with
 `TreatWarningsAsErrors=true` and no skipped tests.
