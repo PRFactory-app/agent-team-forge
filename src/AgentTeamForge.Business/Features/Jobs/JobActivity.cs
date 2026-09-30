@@ -169,8 +169,10 @@ public static class JobActivity
         }
     }
 
+    // Log lines carry no capture time; an event without its own timestamp gets none (the console hides it)
+    // rather than the time the detail happened to be read.
     static ActivityEntry Entry(string kind, string text, string? ts = null) =>
-        new(ts ?? DateTimeOffset.UtcNow.ToString("O"), kind, text.Length > MaxTextChars ? text[..MaxTextChars] + "…" : text);
+        new(ts ?? "", kind, text.Length > MaxTextChars ? text[..MaxTextChars] + "…" : text);
 
     static string? Content(JsonElement part)
     {
