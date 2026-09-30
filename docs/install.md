@@ -15,7 +15,7 @@ curl -fsSLO https://github.com/PRFactory-app/agent-team-forge/releases/download/
 sh install.sh --version 0.0.1
 ```
 
-For the Windows x64 tester build, run this in Windows PowerShell 5.1 or newer
+For Windows x64, run this in Windows PowerShell 5.1 or newer
 without administrator rights:
 
 ```powershell
@@ -63,8 +63,8 @@ If you intentionally test a temporary binary or state directory, setup requires
 `--force` before writing global MCP registrations. For isolated daemon testing,
 use `atf start --state-dir DIR` or `atf mcp --state-dir DIR` instead.
 
-Linux arm64 and musl are not supported. macOS arm64 and Windows x64 remain
-tester-only until validated on those machines. See [usage](usage.md)
+Linux arm64 and musl are not supported. macOS arm64 remains
+tester-only until validated on that machine. See [usage](usage.md)
 for use, and `"$HOME/.local/bin/atf" uninstall` for removal. See
 [Upgrade and uninstall](#upgrade-and-uninstall).
 
