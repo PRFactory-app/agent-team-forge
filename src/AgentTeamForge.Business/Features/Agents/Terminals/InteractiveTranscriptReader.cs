@@ -49,6 +49,14 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
     internal static InteractiveTranscript? ReadClaudeSession(string home, string sessionId, string correlation) =>
         LocateSession(home, sessionId, InteractiveAgentKind.Claude, usage: false) is { } path
             ? Parse(path, InteractiveAgentKind.Claude, "atf-corr:" + correlation) : null;
+    public NativeTranscriptBinding? Locate(InteractiveLaunch launch, string sessionId)
+    {
+        if (launch.Kind == InteractiveAgentKind.Pi) { return null; }
+        var home = launch.Kind == InteractiveAgentKind.Claude
+            ? ClaudeConfigRoot.Resolve(environment, Path.GetFullPath(launch.WorkingDirectory)) : _codexHome;
+        return LocateSession(home, sessionId, launch.Kind, usage: false) is { } path ? new(sessionId, path) : null;
+    }
+
     public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started)
     {
         if (launch.NativeTranscript is { } retained)

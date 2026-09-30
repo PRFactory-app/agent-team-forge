@@ -404,6 +404,8 @@ public sealed class DispatchJob : IDisposable
             inFlight.Add(Task.Run(() => RunAttemptAsync(new AttemptClaim(job, run.RunId, run.Generation, run.Correlation),
                 stopping.Token, backendRun), CancellationToken.None));
         }
+        // After native turns: their settlement or proven loss resolves the owner's session first.
+        RecoverTerminalPaneOwners();
         var sweeping = SweepQueueAsync(stopping.Token);
         try
         {
@@ -443,7 +445,7 @@ public sealed class DispatchJob : IDisposable
             return true;
         }
         var peers = store.GetSessionJobs(job.JobId).Where(id => id != job.JobId).Select(store.GetJob).OfType<JobRecord>().ToList();
-        var owner = herdr.ReattachNativeTurn(session, run.Correlation, peers, out var gone);
+        var owner = herdr.ReattachNativeTurn(session, peers, out var gone);
         if (owner is null)
         {
             if (!gone)
@@ -461,6 +463,33 @@ public sealed class DispatchJob : IDisposable
         }
         else { ReleaseNativeTurn(job.Backend, session); }
         return true;
+    }
+
+    /// <summary>
+    /// Restart fences every job with a Herdr ownership record. A terminal owner's verified idle pane
+    /// is retained again so follow-ups reach it; a proven-gone pane only releases its fence.
+    /// Unverified or busy panes, and sessions with an unresolved turn, stay fenced.
+    /// </summary>
+    void RecoverTerminalPaneOwners()
+    {
+        IReadOnlyList<string> owners;
+        // Best effort: an unavailable store halts the claim loop that follows.
+        try { owners = store.FencedTerminalJobs(); }
+        catch (StorageException ex) { log($"recovery: pane owner recovery skipped: {ex.Failure}"); return; }
+        foreach (var jobId in owners)
+        {
+            try
+            {
+                if (store.GetJob(jobId) is not { } owner || backends.Resolve(owner.Backend) is not HerdrInteractiveBackend herdr) { continue; }
+                var recovered = herdr.RecoverTerminalOwner(owner, () => store.ReleaseRestartFence(owner.JobId, owner.SessionId));
+                if (recovered == PaneOwnerRecovery.Retained) { log($"recovery: retained the idle Herdr pane of {jobId} for its next turn"); }
+                if (recovered == PaneOwnerRecovery.Gone) { log($"recovery: released the restart fence of {jobId}; its Herdr pane is gone"); }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                log($"recovery: {jobId} remains fenced; pane owner recovery failed: {ex.Message}");
+            }
+        }
     }
 
     /// <summary>

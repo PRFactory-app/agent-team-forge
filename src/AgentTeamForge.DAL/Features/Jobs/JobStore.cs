@@ -941,6 +941,42 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return (IReadOnlyList<string>)ids;
     });
 
+    /// <summary>Terminal jobs still fenced, e.g. by the ownership record of a pane retained across restart.</summary>
+    public IReadOnlyList<string> FencedTerminalJobs() => Read(connection =>
+    {
+        using var command = Command(connection, null,
+            "SELECT job_id FROM jobs WHERE session_fenced=1 AND status IN ('completed','cancelled','failed') ORDER BY accepted_at, job_id");
+        using var reader = command.ExecuteReader();
+        var ids = new List<string>();
+        while (reader.Read()) { ids.Add(reader.GetString(0)); }
+        return (IReadOnlyList<string>)ids;
+    });
+
+    /// <summary>
+    /// Release a terminal job's restart fence after its pane was verified idle or proven gone.
+    /// Refused if the job or its session changed, or any turn in that session is unresolved.
+    /// </summary>
+    public bool ReleaseRestartFence(string jobId, string? sessionId) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        if (Scalar(connection, tx, $"SELECT count(*) FROM jobs WHERE status IN ('running','needs_reconciliation') AND job_id IN ({SessionPeers})",
+                ("$id", jobId)) > 0
+            || sessionId is not null && Scalar(connection, tx, """
+                SELECT (SELECT count(*) FROM native_claude_attempts WHERE session_id=$session AND state IN ('posting','posted','received'))
+                     + (SELECT count(*) FROM native_codex_attempts WHERE thread_id=$session AND state IN ('sent','received'))
+                """, ("$session", sessionId)) > 0)
+        {
+            return false;
+        }
+        var updated = Execute(connection, tx, """
+            UPDATE jobs SET session_fenced=0 WHERE job_id=$id AND session_fenced=1
+              AND status IN ('completed','cancelled','failed') AND session_id IS $session
+            """, ("$id", jobId), ("$session", sessionId));
+        if (updated != 1) { return false; }
+        tx.Commit();
+        return true;
+    });
+
     /// <summary>
     /// Restore one verified live interactive attempt without replaying its prompt.
     /// A native follow-up turn runs in <paramref name="paneOwner"/>'s pane; its rebound record no longer fences that job.

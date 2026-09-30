@@ -36,6 +36,28 @@ public sealed class RetainedSessionsTests
         Assert.Equal(["atf1"], stopped);
         Assert.Equal(1, sessions.Count);
     }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Another_launch_of_the_same_pane_never_closes_it(bool nativeSettlesFirst)
+    {
+        // Restart recovery of a running parent and its native follow-up: two objects, one pane.
+        var stopped = new List<string>();
+        var sessions = new RetainedSessions(l => stopped.Add(l.AgentName));
+        var parent = Launch(1);
+        var native = Launch(1);
+        sessions.Track("s", native);
+        Assert.True(sessions.TakeForNativeTurn("s", running: true));
+
+        if (nativeSettlesFirst) { sessions.RememberNativeTurn("s"); sessions.Remember("s", parent); }
+        else { sessions.Remember("s", parent); sessions.RememberNativeTurn("s"); }
+
+        Assert.Empty(stopped);
+        Assert.True(sessions.TryTake("s", out var retained));
+        Assert.Equal("atf1", retained.AgentName);
+    }
+
     [Fact]
     public void Failed_stop_retries_same_launch()
     {

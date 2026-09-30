@@ -10,6 +10,8 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
 public enum InteractiveAgentKind { Claude, Codex, Pi }
 
+public enum PaneOwnerRecovery { Unverified, Retained, Gone }
+
 /// <summary>Runs a real agent TUI in a tab of an ATF-owned Herdr session.</summary>
 public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionStop, IDisposable
 {
@@ -100,33 +102,20 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         if (run.SubmittedAt is null || owned.Session is null) { gone = true; return null; }
         gone = control.PaneIsGone(owned.Session);
         if (gone) { return null; }
-        var bootstrap = HerdrOwnedSessions.BootstrapForRecord(owned.Path);
-        if (!File.Exists(bootstrap)) { return null; }
-        var agentName = Path.GetFileNameWithoutExtension(bootstrap);
+        var launch = Rebind(control, owned.Path, owned.Session, job, job.SessionId);
+        if (launch is null)
+        {
+            gone = control.PaneIsGone(owned.Session);
+            return null;
+        }
         var request = new BackendRequest(job.JobId, run.Correlation, job.Instruction, job.Options)
         {
             DisplayName = job.TargetAgent,
             ResumeSessionId = job.SessionId,
             WorkingDirectory = job.WorktreePath ?? job.Cwd,
         };
-        var piDirectory = _kind == InteractiveAgentKind.Pi && job.SessionId is { } piSession
-            ? _transcripts.FindPiSessionDirectory(Path.Combine(_stateRoot, "pi-sessions"), piSession) : null;
-        if (_kind == InteractiveAgentKind.Pi && piDirectory is null) { return null; }
-        var launch = new InteractiveLaunch(_kind, agentName, request.WorkingDirectory ?? Environment.CurrentDirectory,
-            job.SessionId, piDirectory, bootstrap)
-        { JobId = job.JobId, TabLabel = owned.Session.TabLabel, LiveReuse = true }.WithSelection(job.Options);
-        try
-        {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            if (control.RebindAsync(launch, owned.Session, timeout.Token).GetAwaiter().GetResult())
-            {
-                return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout,
-                    RememberSession, BindNativeSession, StopLaunch, recovered: true);
-            }
-        }
-        catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { }
-        gone = control.PaneIsGone(owned.Session);
-        return null;
+        return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout,
+            RememberSession, BindNativeSession, StopLaunch, recovered: true);
     }
 
     /// <summary>
@@ -134,7 +123,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     /// session peer that launched the pane, never to the native follow-up. Returns that owner's
     /// job id and keeps the session reserved until native settlement; <paramref name="gone"/> as for Reattach.
     /// </summary>
-    public string? ReattachNativeTurn(string sessionId, string correlation, IReadOnlyList<JobRecord> sessionPeers, out bool gone)
+    public string? ReattachNativeTurn(string sessionId, IReadOnlyList<JobRecord> sessionPeers, out bool gone)
     {
         gone = false;
         if (_control is not HerdrAgentControl control || _kind == InteractiveAgentKind.Pi) { return null; }
@@ -143,26 +132,85 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             .Where(entry => entry.Owner is not null).ToList();
         foreach (var (path, session, owner) in owned)
         {
-            var bootstrap = HerdrOwnedSessions.BootstrapForRecord(path);
-            if (!File.Exists(bootstrap) || control.PaneIsGone(session)) { continue; }
-            var launch = new InteractiveLaunch(_kind, Path.GetFileNameWithoutExtension(bootstrap),
-                owner!.WorktreePath ?? owner.Cwd ?? Environment.CurrentDirectory, sessionId, null, bootstrap)
-            { JobId = owner.JobId, TabLabel = session.TabLabel, LiveReuse = true }.WithSelection(owner.Options);
-            try
-            {
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                if (!control.RebindAsync(launch, session, timeout.Token).GetAwaiter().GetResult()) { continue; }
-            }
-            catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { continue; }
-            // Bind the transcript so the retained pane can take the next native turn after settlement.
-            try { _transcripts.Read(launch, "atf-corr:" + correlation, DateTimeOffset.MinValue); }
-            catch (IOException) { }
+            if (control.PaneIsGone(session) || Rebind(control, path, session, owner!, sessionId) is not { } launch
+                || !BindTranscript(launch, sessionId)) { continue; }
             BindNativeSession(sessionId, launch);
             _liveSessions.TakeForNativeTurn(sessionId, running: true);
-            return owner.JobId;
+            return owner!.JobId;
         }
         gone = owned.All(entry => control.PaneIsGone(entry.Session));
         return null;
+    }
+
+    /// <summary>
+    /// Restart fences every job with an ownership record, including a terminal job whose idle pane
+    /// was retained for its next turn. That pane is retained again only with verified pane identity,
+    /// the job's exact native session and a settled idle agent; <paramref name="releaseFence"/>
+    /// revalidates the session and clears the fence before the pane is offered. A proven-gone pane
+    /// only releases the fence: nothing is started or closed.
+    /// </summary>
+    public PaneOwnerRecovery RecoverTerminalOwner(JobRecord owner, Func<bool> releaseFence)
+    {
+        if (_control is not HerdrAgentControl control) { return PaneOwnerRecovery.Unverified; }
+        var owned = HerdrOwnedSessions.Read(_stateRoot, _ => { }).FirstOrDefault(entry => entry.Session.JobId == owner.JobId);
+        if (owned.Session is null) { return PaneOwnerRecovery.Unverified; }
+        if (control.PaneIsGone(owned.Session)) { return releaseFence() ? PaneOwnerRecovery.Gone : PaneOwnerRecovery.Unverified; }
+        if (owner.SessionId is not { } sessionId || Rebind(control, owned.Path, owned.Session, owner, sessionId) is not { } launch)
+        {
+            return control.PaneIsGone(owned.Session) && releaseFence() ? PaneOwnerRecovery.Gone : PaneOwnerRecovery.Unverified;
+        }
+        if (!BindTranscript(launch, sessionId) || !SettledIdle(launch) || !releaseFence()) { return PaneOwnerRecovery.Unverified; }
+        BindNativeSession(sessionId, launch);
+        _liveSessions.Remember(sessionId, launch);
+        return PaneOwnerRecovery.Retained;
+    }
+
+    // One launch per durable pane record, so every job recovered into a pane shares its retention identity.
+    readonly ConcurrentDictionary<string, InteractiveLaunch> _rebound = new();
+
+    InteractiveLaunch? Rebind(HerdrAgentControl control, string recordPath, OwnedHerdrSession session, JobRecord owner, string? sessionId)
+    {
+        if (_rebound.TryGetValue(recordPath, out var bound) && control.IsBound(bound)) { return bound; }
+        var bootstrap = HerdrOwnedSessions.BootstrapForRecord(recordPath);
+        if (!File.Exists(bootstrap)) { return null; }
+        var piDirectory = _kind == InteractiveAgentKind.Pi && sessionId is not null
+            ? _transcripts.FindPiSessionDirectory(Path.Combine(_stateRoot, "pi-sessions"), sessionId) : null;
+        if (_kind == InteractiveAgentKind.Pi && piDirectory is null) { return null; }
+        var launch = new InteractiveLaunch(_kind, Path.GetFileNameWithoutExtension(bootstrap),
+            owner.WorktreePath ?? owner.Cwd ?? Environment.CurrentDirectory, sessionId, piDirectory, bootstrap)
+        { JobId = owner.JobId, TabLabel = session.TabLabel, LiveReuse = true }.WithSelection(owner.Options);
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            if (!control.RebindAsync(launch, session, timeout.Token).GetAwaiter().GetResult()) { return null; }
+        }
+        catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { return null; }
+        _rebound[recordPath] = launch;
+        return launch;
+    }
+
+    // Pi's session directory was already found by its exact id.
+    bool BindTranscript(InteractiveLaunch launch, string sessionId)
+    {
+        if (_kind == InteractiveAgentKind.Pi) { return true; }
+        launch.NativeTranscript ??= _transcripts.Locate(launch, sessionId);
+        return launch.NativeTranscript?.SessionId == sessionId;
+    }
+
+    // One sample can read idle between steps of a turn that is still working.
+    bool SettledIdle(InteractiveLaunch launch)
+    {
+        for (var sample = 0; ; sample++)
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                if (_control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult() is not (InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done)) { return false; }
+            }
+            catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
+            if (sample == 2) { return true; }
+            Thread.Sleep(250);
+        }
     }
 
     internal bool TakeIdleForNativeTurn(string sessionId, bool running = false) => _liveSessions.TakeForNativeTurn(sessionId, running);
@@ -611,6 +659,9 @@ internal interface IInteractiveTranscriptReader
 {
     InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started);
     string? FindPiSessionDirectory(string root, string sessionId);
+
+    /// <summary>The main transcript whose header names exactly this native session, in the launch's config root.</summary>
+    NativeTranscriptBinding? Locate(InteractiveLaunch launch, string sessionId) => null;
 }
 
 internal sealed record InteractiveTranscript(string SessionId, string? Message, IReadOnlyList<string>? Messages = null, bool Completed = false,
