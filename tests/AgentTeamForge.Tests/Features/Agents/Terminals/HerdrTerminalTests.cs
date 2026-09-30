@@ -649,6 +649,40 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task Status_PersistentProbeFailureNeverMasksAReplacedShell()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, SharedWorkspaceLabel = Path.GetFileName(state.Path) };
+        var control = new HerdrAgentControl(Terminal(fake));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("herdr/bootstrap"))
+        { JobId = "job-shell", HerdrPlacement = "herdr-session:default" };
+        await control.StartAsync(launch, CancellationToken.None);
+
+        fake.PaneGetError = "io_error";
+        Assert.Equal(InteractiveAgentStatus.Unverified, await control.StatusAsync(launch, CancellationToken.None));
+        fake.Replace(Replacement.ShellReplaced);
+        Assert.Equal(InteractiveAgentStatus.Gone, await control.StatusAsync(launch, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task FreshStart_ThenShellReplaced_PaneIsGoneAndStopClosesThePane()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, SharedWorkspaceLabel = Path.GetFileName(state.Path) };
+        var control = new HerdrAgentControl(Terminal(fake));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("herdr/bootstrap"))
+        { JobId = "job-fresh", HerdrPlacement = "herdr-session:default" };
+        await control.StartAsync(launch, CancellationToken.None);
+
+        Assert.False(control.PaneIsGone(launch));
+        fake.Replace(Replacement.ShellReplaced);
+        Assert.True(control.PaneIsGone(launch));
+        control.StopOwned(launch);
+
+        Assert.Contains(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
+    }
+
+    [Fact]
     public void PreferSocket_IgnoresAnotherHomesServerWithTheSameName()
     {
         var ours = (new ProcessIdentity(10, 1), new[] { "HOME=/home/u" });

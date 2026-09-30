@@ -403,10 +403,16 @@ public sealed class HerdrTerminal
     /// </summary>
     internal async Task<(BindingState State, string? Problem)> CheckBindingAsync(HerdrTabBinding binding, CancellationToken cancellationToken)
     {
-        if (ServerProblem(binding.Session) is { } server)
+        // Independent process proof first: a failed probe below must never mask a dead or replaced server or shell.
+        if (ServerIdentityLost(binding.Session))
         {
-            return (ServerIdentityLost(binding.Session) ? BindingState.Gone : BindingState.Unverified, server);
+            return (BindingState.Gone, ServerProblem(binding.Session) ?? "the recorded herdr server exited or was replaced");
         }
+        if (ProcessReplaced(binding.ShellPid, binding.ShellStartTicks))
+        {
+            return (BindingState.Gone, "the bound pane shell process was replaced or exited");
+        }
+        if (ServerProblem(binding.Session) is { } server) { return (BindingState.Unverified, server); }
         JsonNode pane;
         try
         {
@@ -423,8 +429,7 @@ public sealed class HerdrTerminal
             return (BindingState.Gone, $"pane {binding.PaneId} no longer hosts the bound terminal");
         }
         if (_runner.Identity(binding.ShellPid)?.StartTicks == binding.ShellStartTicks) { return (BindingState.Intact, null); }
-        return (ProcessReplaced(binding.ShellPid, binding.ShellStartTicks) ? BindingState.Gone : BindingState.Unverified,
-            "the bound pane shell process was replaced or exited");
+        return (BindingState.Unverified, "the bound pane shell identity cannot be read");
     }
 
     bool ServerIdentityLost(OwnedHerdrSession session) => ProcessReplaced(session.ServerPid, session.ServerStartTicks);
@@ -459,10 +464,9 @@ public sealed class HerdrTerminal
 
     internal bool HasUnverifiedLiveIdentity(HerdrTabBinding binding)
     {
-        var server = _runner.Identity(binding.Session.ServerPid);
-        if (server is { } known && known.StartTicks != binding.Session.ServerStartTicks) { return false; }
-        if (server is null) { return PidMayBeAlive(binding.Session.ServerPid); }
-        return _runner.Identity(binding.ShellPid) is null && PidMayBeAlive(binding.ShellPid);
+        // Proof that either recorded process is gone or replaced wins over an unreadable identity of the other.
+        if (ServerIdentityLost(binding.Session) || ProcessReplaced(binding.ShellPid, binding.ShellStartTicks)) { return false; }
+        return _runner.Identity(binding.Session.ServerPid) is null || _runner.Identity(binding.ShellPid) is null;
     }
 
     static bool PidMayBeAlive(int pid)

@@ -44,8 +44,10 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
                 onCreated: created => { session = created; HerdrOwnedSessions.Save(launch, created); },
                 exclusivePiMcp: launch.Kind == InteractiveAgentKind.Pi && InteractiveAgentCommand.ManagedConfigPath(launch) is { } config
                     && File.Exists(config));
+            // The in-memory session carries the shell identity too, so PaneIsGone sees the same proof as the binding.
+            session = session with { ShellPid = binding.ShellPid, ShellStartTicks = binding.ShellStartTicks };
             _runs[launch.AgentName] = (session, binding);
-            HerdrOwnedSessions.Save(launch, session with { ShellPid = binding.ShellPid, ShellStartTicks = binding.ShellStartTicks });
+            HerdrOwnedSessions.Save(launch, session);
             var args = new List<string> { "agent", "start", launch.AgentName, "--kind", Kind(launch.Kind), "--pane", binding.PaneId, "--timeout", "15000", "--" };
             args.AddRange(AgentArguments(launch));
             await terminal.RunOwnedAsync(session, cancellationToken, [.. args]);
