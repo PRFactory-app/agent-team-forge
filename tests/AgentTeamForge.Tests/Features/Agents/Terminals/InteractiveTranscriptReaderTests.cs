@@ -34,6 +34,8 @@ public sealed class InteractiveTranscriptReaderTests
     static string CodexAssistant(string text) =>
         $$$"""{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{{{text}}}"}]}}""";
 
+    const string CodexEnvContext = """{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context><current_date>2026-10-01</current_date></environment_context>"}],"internal_chat_message_metadata_passthrough":{"content_item_kinds":["environments.environment_context"]}}}""";
+
     static string CodexEventUser(string text) =>
         $$$"""{"type":"event_msg","payload":{"type":"user_message","message":"{{{text}}}"}}""";
     const string Partial = """{"type":"user","message":{"role":"us""";
@@ -96,6 +98,11 @@ public sealed class InteractiveTranscriptReaderTests
         // Codex records the marked input twice (response_item + event_msg, either order); both are the same turn.
         { InteractiveAgentKind.Codex, [CodexMeta, CodexStarted, CodexUser(Marker), CodexEventUser(Marker), CodexAssistant("final"), CodexComplete], "final", true },
         { InteractiveAgentKind.Codex, [CodexMeta, CodexStarted, CodexEventUser(Marker), CodexUser(Marker), CodexAssistant("final"), CodexComplete], "final", true },
+        // Codex-injected environment context mid-turn is not user input; the turn still completes.
+        { InteractiveAgentKind.Codex, [CodexMeta, CodexStarted, CodexUser(Marker), CodexAssistant("interim"), CodexEnvContext,
+            CodexAssistant("final"), CodexComplete], "final", true },
+        { InteractiveAgentKind.Codex, [CodexMeta, CodexStarted, CodexUser(Marker), CodexAssistant("interim"), CodexEnvContext,
+            CodexUser("human takes over"), CodexAssistant("human reply"), CodexComplete], "interim", false },
         // A next user input ends the turn even without a task_started record.
         { InteractiveAgentKind.Codex, [CodexMeta, CodexStarted, CodexUser(Marker), CodexAssistant("interim"),
             CodexUser("human takes over"), CodexAssistant("human reply"), CodexComplete], "interim", false },
