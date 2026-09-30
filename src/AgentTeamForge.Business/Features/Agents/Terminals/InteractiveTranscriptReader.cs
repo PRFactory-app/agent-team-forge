@@ -235,6 +235,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             InteractiveApiError? apiError = null;
             DateTimeOffset? rateLimitReset = null;
             var progress = new List<string>();
+            var times = new List<string?>();
             var backgroundTools = new HashSet<string>();
             var backgroundTasks = new HashSet<string>();
             var knownTasks = new HashSet<string>();
@@ -325,12 +326,13 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                     {
                         last = text;
                         progress.Add(text);
+                        times.Add(Str(root, "timestamp"));
                     }
                 }
             }
             return markerSeen ? new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress, completed,
                 !ended && (backgroundTools.Count > 0 || backgroundTasks.Count > 0),
-                ApiError: backgroundTools.Count == 0 && backgroundTasks.Count == 0 ? apiError : null) : null;
+                ApiError: backgroundTools.Count == 0 && backgroundTasks.Count == 0 ? apiError : null, Times: times) : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {

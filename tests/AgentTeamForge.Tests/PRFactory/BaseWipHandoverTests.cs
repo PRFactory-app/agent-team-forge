@@ -284,4 +284,49 @@ public sealed class BaseWipHandoverTests
         Assert.Contains("PRFACTORY_PRIMARY_REPO_PATH=" + lead.Cwd, lead.Instruction, StringComparison.Ordinal);
         Assert.Equal("PRF-42_refinement_lead", lead.TargetAgent);
     }
+
+    [Fact]
+    public async Task Refinement_with_a_pending_handover_request_still_completes_once_without_a_release()
+    {
+        using var h = new ChainHarness(Work("TicketRefinement"));
+        h.Server.BaseWipSupported = true;
+        h.Server.HandoverRequested = true;
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        h.RunQueued(job => WriteNote(job.Cwd!));
+        for (var i = 0; i < 3; i++)
+        {
+            await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        }
+        Assert.Empty(h.Server.WipReports);
+        Assert.Empty(h.Server.Releases);
+        Assert.Single(h.Server.Completions);
+        Assert.Empty(h.Server.Failures);
+    }
+
+    [Theory]
+    [InlineData("-ABC-1")]
+    [InlineData("_ABC-1")]
+    [InlineData("A.B-1")]
+    [InlineData("")]
+    [InlineData("ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-ABCDEFGHIJKLMNOPQRSTUVWXYZ-1")]
+    public void Connector_job_names_are_valid_and_unique_per_member(string key)
+    {
+        var item = Work("TicketRefinement");
+        item.TicketKey = key;
+        var lead = PRFactoryWorkItems.JobName(item, "lead");
+        var member = PRFactoryWorkItems.JobName(item, "reviewer");
+        Assert.True(AgentTeamForge.Business.Features.Jobs.AcceptJob.ValidAgentName(lead), lead);
+        Assert.True(AgentTeamForge.Business.Features.Jobs.AcceptJob.ValidAgentName(member), member);
+        Assert.NotEqual(lead, member);
+        Assert.EndsWith("_refinement_lead", lead);
+    }
+
+    [Fact]
+    public void Connector_job_names_keep_distinct_keys_distinct_and_clean_keys_readable()
+    {
+        var a = Work("TicketRefinement"); a.TicketKey = "A.B-1";
+        var b = Work("TicketRefinement"); b.TicketKey = "AB-1";
+        Assert.NotEqual(PRFactoryWorkItems.JobName(a, "lead"), PRFactoryWorkItems.JobName(b, "lead"));
+        Assert.Equal("AB-1_refinement_lead", PRFactoryWorkItems.JobName(b, "lead"));
+    }
 }

@@ -432,8 +432,8 @@ public sealed partial class PRFactoryWorkItems(
         if (baseWip && team.MachineId is Guid handoverMachine && team.AtfJobId is { Length: > 0 } handoverJob
             && await client.GetHandoverRequestAsync(item.Id, handoverMachine, handoverJob, ct) is { } request)
         {
-            await HandleHandoverAsync(team, item, workspace, request, ct);
-            return; // No new lead, child, command or finalization turn after a handover request.
+            if (await HandleHandoverAsync(team, item, workspace, request, ct)) { return; }
+            // A phase that publishes no branch has nothing to hand over; its request is moot, so finish normally.
         }
         if ((baseWip || multiRepo) && workspace is { RepositoryPath: not null }
             && teams.MemberJob(server, item.Id, "lead", 0) is null)
@@ -687,16 +687,28 @@ public sealed partial class PRFactoryWorkItems(
             lead.ResultText ?? (!waitForManaged ? "External members completed their work; replies are in the agent stream." : null));
     }
 
-    /// <summary>"KEY-1_refinement_lead": agent names allow only letters, digits, '-' and '_', so '·' becomes '_'.</summary>
-    static string JobName(PRFactoryWorkItem item, string member)
+    /// <summary>"KEY-1_refinement_lead": agent names allow only letters, digits, '-' and '_' and start with a letter or digit.
+    /// A key that had to be cleaned or shortened gets a short stable hash of the original so distinct keys stay distinct.</summary>
+    internal static string JobName(PRFactoryWorkItem item, string member)
     {
         static string Clean(string? text) => new([.. (text ?? "").Where(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')]);
-        var key = Clean(item.TicketKey);
-        if (key.Length == 0) { key = item.Id.ToString("N")[..8]; }
+        static string Clip(string text, int max) => text.Length > max ? text[..max] : text;
+        var original = item.TicketKey ?? "";
+        var key = Clean(original).TrimStart('-', '_');
         var phase = Clean(item.Type);
         if (phase.StartsWith("Ticket", StringComparison.Ordinal)) { phase = phase["Ticket".Length..]; }
-        var name = string.Join('_', new[] { key, phase.ToLowerInvariant(), Clean(member) }.Where(p => p.Length > 0));
-        return name.Length > 64 ? name[..64] : name;
+        var suffix = string.Concat(new[] { Clip(phase.ToLowerInvariant(), 16), Clip(Clean(member), 24) }
+            .Where(p => p.Length > 0).Select(p => "_" + p));
+        var room = 64 - suffix.Length;
+        var dirty = key.Length == 0 || key != original;
+        if (key.Length > room) { key = key[..(room - 7)]; dirty = true; }
+        if (dirty)
+        {
+            var source = original.Length > 0 ? original : item.Id.ToString("N");
+            var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source)))[..6].ToLowerInvariant();
+            key = key.Length == 0 ? hash : key + "_" + hash;
+        }
+        return key + suffix;
     }
 
     async Task<JobRecord?> SubmitMember(PRFactoryWorkItem item, string member,
@@ -901,31 +913,31 @@ public sealed partial class PRFactoryWorkItems(
 
     string WorkspaceKey(Guid id) => $"{server}|{id:D}";
 
-    async Task HandleHandoverAsync(PRFactoryTeamRecord team, PRFactoryWorkItem item,
+    /// <summary>False when the phase publishes no branch: nothing to hand over, the caller proceeds normally.</summary>
+    async Task<bool> HandleHandoverAsync(PRFactoryTeamRecord team, PRFactoryWorkItem item,
         WorkspaceSnapshot? workspace, PRFactoryHandoverRequest request, CancellationToken ct)
     {
+        if (!BranchPublisher.ShouldPublish((workspace?.ReadOnly ?? false) || item.ReadOnly,
+            string.Equals(item.TicketSource, "ProjectInit", StringComparison.OrdinalIgnoreCase), item.Type))
+        {
+            return false;
+        }
         if (workspace is not { RepositoryPath: not null, ReadOnly: false } || handovers is null
             || item.LeaseToken is not Guid lease || item.RepositoryId is not Guid repository
             || team.MachineId is not Guid machine || team.AtfJobId is not { Length: > 0 } atfJob)
         {
             log?.Invoke($"PRFactory work item {item.Id:D} handover deferred: repository workspace unavailable");
-            return;
-        }
-        if (!BranchPublisher.ShouldPublish(workspace.ReadOnly || item.ReadOnly,
-            string.Equals(item.TicketSource, "ProjectInit", StringComparison.OrdinalIgnoreCase), item.Type))
-        {
-            log?.Invoke($"PRFactory work item {item.Id:D} handover held: {item.Type} publishes no branch to hand over");
-            return;
+            return true;
         }
         bool Quiescent() => teams.MemberJobs(server, item.Id).All(id => getJob(id)?.Status is not
                 (JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation))
             && teams.ExternalMembers(server, item.Id).All(member => member.Closed);
-        if (!Quiescent()) { return; } // Let active turns reach a terminal state; never interrupt dirty buffers.
+        if (!Quiescent()) { return true; } // Let active turns reach a terminal state; never interrupt dirty buffers.
         if (PRFactoryRepositorySet.HasSecondaries(item))
         {
             // Only the primary lead is published and released; secondary checkouts would be left behind.
             log?.Invoke($"PRFactory work item {item.Id:D} handover held: multi-repository handover is unsupported");
-            return;
+            return true;
         }
 
         try
@@ -976,6 +988,7 @@ public sealed partial class PRFactoryWorkItems(
         {
             log?.Invoke($"PRFactory work item {item.Id:D} handover held: {ex.Message}");
         }
+        return true;
     }
 
     async Task<WorkspaceSnapshot> PrepareWorkspaceAsync(PRFactoryWorkItem item, RepositoryMapping? repo,
