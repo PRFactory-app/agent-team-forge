@@ -166,3 +166,32 @@ Windows verification with the same local .NET 11 SDK:
 Evidence: `.named-tabs-setup-build.log`, `.named-tabs-setup-tests.log` and
 `tests/AgentTeamForge.Tests/TestResults/named-tabs-setup.trx` (ignored).
 This section is committed separately so it can record the fix's exact SHA.
+
+## Review fix: UTF-8 BOM in Claude settings
+
+Commit `62bc1516f5df5dbd1e808bd2072c23c74531de16`:
+`Accept UTF-8 BOM in Claude settings during setup`.
+
+Resolved Finding 2 (major) with one shared `ReadClaudeSettings` helper that
+strips a leading `EF BB BF` before parsing. Both the current-settings check
+and inbound-settings rewrite use it, retaining existing trailing-comma/comment
+handling. The rewrite still writes UTF-8 without a BOM. Added one regression
+test covering a BOM file with `theme: dark`: apply preserves the theme, sets
+inbound to accept and removes the BOM; check accepts a BOM file already set to
+accept and leaves its bytes unchanged. The supplied review file
+`docs/fixes/named-agent-tabs-review.md` is committed as-is.
+
+Windows verification with the same local SDK:
+
+- Solution Release build (`--no-restore --nologo -warnaserror`): passed,
+  zero warnings/errors, 29.03 seconds.
+- Setup tests (`--filter 'FullyQualifiedName~Features.Setup'`, Release,
+  `--no-build --no-restore`): **41 passed, 12 failed, 0 skipped, 53 total**,
+  14 seconds. Comparing failed test names with the previous Setup TRX showed
+  identical sets. The new BOM test and existing apply, read-only check and
+  malformed-settings tests all passed. The 12 failures remain the previously
+  documented platform/environment issues; no new failures.
+- `git diff --check`: passed. No push; no real user settings modified.
+
+Evidence: `.named-tabs-bom-build.log`, `.named-tabs-bom-setup.log` and
+`tests/AgentTeamForge.Tests/TestResults/named-tabs-bom-setup.trx` (ignored).
