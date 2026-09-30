@@ -23,9 +23,9 @@ Native Claude/Codex delivery bypasses backend `Start`. Those claim paths now res
 
 ## Liveness and resume verification
 
-LRU eviction did not write a separate stopped status to SQLite; it invoked `StopOwned`, leaving the completed job result and native session ID intact. Timeout eviction uses that exact callback. Windows/macOS ownership and process probes stop reporting a live tab; Herdr `StopOwned` removes its owned run/ownership record and status probes report Gone.
+LRU eviction did not write a separate stopped status to SQLite; it invoked `StopOwned`, leaving the completed job result and native session ID intact. Timeout eviction uses that exact callback. Successful owned cleanup now marks the session closed in the daemon liveness ledger. Herdr removes its owned run/ownership record; an absent in-memory control binding also reports closed, without calling StatusAsync.
 
-Job responses previously had no explicit liveness field. Added nullable **`agent_live`** to job_get and job_list responses for settled interactive jobs, using actual backend process/pane probes rather than job status or retention membership. False produces an **“agent closed”** label in the web console. Running/queued jobs, unsupported backends, absent sessions, or failed probes leave it unknown (null). The physical probe still reports a reused session as live when an older completed job shares its session with a current turn.
+Job responses expose nullable **`agent_live`** from daemon-owned in-memory state: a known retained, reserved or running/taken session is live, an owned launch closed by this daemon is false, and unknown ownership is null. False produces an **“agent closed”** label in the web console. Shared sessions are evaluated once per request. No terminal commands, sidecar reads, process-identity checks or scans over the WT job dictionary run from job_get/job_list liveness. This deliberately reports daemon knowledge, rather than probing for an external process death on every read.
 
 Verified the resume path in code: Herdr `Start` reuses only a retained live session; when none remains it launches with the persisted `ResumeSessionId`. Windows/macOS `Start` launches with that same resume ID. Native eligibility becomes false after owned cleanup and ordinary dispatch resumes from the saved transcript. `follow_up` and `revive_agent` preserve the saved session identifier; no transcript or result deletion was introduced. This was code verification and fake-control testing, not a real interactive GUI session test on all three platforms.
 
@@ -151,3 +151,24 @@ These exact names failed both on exported main and in final feature verification
 - `AgentTeamForge.Tests.Features.Setup.SetupCommandTests.LoginAutostartWritesAndRemovesLinuxUnitAndMacPlistInTempHome`
 - `AgentTeamForge.Tests.Features.Setup.SetupCommandTests.PartialRegistrationFailureCanBeRerun`
 - `AgentTeamForge.Tests.Features.Setup.SetupCommandTests.StableBinaryFollowsCurrentReleaseLink`
+
+## Review fixes
+
+Implementation commit: **40a7a4a317eacb8b31ddbcbb1cef030d5cfb37a2**. The report update is committed separately. Read and addressed every finding in `docs/fixes/idle-agent-close-review.md`.
+
+- **H1:** Native reservations are now `Dictionary<string, InteractiveLaunch?>`: the exact removed idle launch, or null for a session reserved while running. `ReleaseNativeTurn` is idempotent and restores only a captured idle launch, restarting its idle clock. Release is wired to Claude pre-write revert in JobsEndpoint, both native claim transactions when no claim is returned (including transaction exceptions), Codex non-start/revert and its ReleaseNativeAttempt else branch, unresolved/NeedsReconciliation exits, cancellation and early native-run exits, and successful native stop_job release. Successful delivery stays reserved until its transcript settles. Rollback/revert/resume tests use real SQLite transactions, an aborting insert trigger, the authenticated Claude completion endpoint and a tracking WT control; exactly one launch remains after ordinary resume and none leaks after idle stop.
+- **H2:** Releasing a null reservation only clears the reservation. It never fabricates an idle settlement for a working parent. The parent's own Remember determines when it is idle. If that parent settles during native submission, its settlement is recorded but protected from sweep, cap eviction and TryTake until the reservation clears. The zero-timeout regression tests both orderings and confirms the running parent is never closed on revert.
+- **M1:** WT native settlement consumes the launch captured by the reservation, with no FirstOrDefault over `_jobs`. The regression creates an old stopped WT launch and a new live launch for one session; native settlement and subsequent idle stop close the new launch, leaving no live tab.
+- **M2:** Successful stop callbacks and explicit owned stops update an in-memory closed tombstone. Herdr also checks its real control's in-memory IsBound dictionary; an unbound known launch reports false rather than null. The regression idle-closes a Herdr pane, then makes the fake control throw on any status probe and confirms HasLiveSession is false; an unknown session remains null.
+- **M3:** Deleted terminal/process probing from generic HasLiveSession. The retained-session ledger tracks bindings, taken/running sessions, native reservations and closed launches. JobsEndpoint evaluates each distinct backend/session once per list request; get evaluates its one session once. WT regression checks two job rows sharing a session produce one lookup and no physical probe.
+- **L1:** The shutdown loop skips macOS backends alongside WT after disposing their timers. macOS idle tabs remain open on daemon stop/upgrade, matching main's behavior and Herdr's shutdown policy.
+
+Validation with the supplied .NET 11 SDK:
+
+- `dotnet build AgentTeamForge.slnx -c Release -warnaserror`: **passed, zero warnings/errors**.
+- Requested groups (`RetainedSessions`, `WtInteractiveBackend`, `Herdr*`, native Claude/Codex delivery, `DispatchJob`, `WebConsole`, `SetupCommand`): feature **297 passed, 65 failed, 5 skipped, 367 total**; exported main **290 passed, 65 failed, 5 skipped, 360 total**. Exact failed test names match.
+- Additional dispatch fault/concurrency coverage: **12 passed, 0 failed** on both feature and main.
+- Combined verification: feature **309 passed, 65 pre-existing failures, 5 skipped, 379 total**; main **302 passed, 65 failed, 5 skipped, 372 total**. All **seven new tests** relative to main pass, including the **three review regressions**.
+- The broader requested selector also matches `AgentTeamForge.Tests.Features.Setup.InstallScriptTests.CompletionPrintsQuotedAbsoluteSetupCommand`. This failure was absent from the earlier narrower report but is now independently reproduced on exported main. The other selected failures are already in the earlier Windows baseline list. No new feature failure was introduced.
+- Managed publish and the published `atf.exe --version` smoke run pass (`atf 0.0.1-dev`). The previously documented unavailable native AOT C++ toolchain remains unchanged.
+- `git diff --check` passes. Files were staged explicitly. The lead's uncommitted `.github/workflows/release.yml` change and untracked review document were not edited, staged or committed. No push performed.
