@@ -137,11 +137,11 @@ public sealed class ExternalJoinScenarios
             })).Ok);
         }
 
-        var water = (await SpikeRig.CallAsync(member, "external_read", new()
+        var water = await SpikeRig.CallAsync(member, "external_read", new()
         {
             ["member_token"] = token,
             ["limit"] = 0
-        }));
+        });
         Assert.Empty(water.Messages!);
         Assert.Equal(50, water.UnreadCount);
         Assert.True(water.HasMore);

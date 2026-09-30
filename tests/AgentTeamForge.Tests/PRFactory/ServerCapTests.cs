@@ -150,7 +150,8 @@ public sealed class ServerCapTests
         var adapter = new PRFactoryWorkItems(Url, [new RepositoryMapping(repo, dir.Path)], teams, client,
             _ => JobResult.Ok(new JobView("lead-job", JobStatus.Running, null, null, 0), "accepted"),
             id => new JobRecord(id, "prfactory", "connector", "lead", "key", "prompt", "", status,
-                null, null, 0, "codex", null, null, null) with { Cwd = dir.Path }, () => { });
+                null, null, 0, "codex", null, null, null) with
+            { Cwd = dir.Path }, () => { });
         await adapter.TickAsync(null, CancellationToken.None);
         Assert.Single(teams.Pending(Url));
 
