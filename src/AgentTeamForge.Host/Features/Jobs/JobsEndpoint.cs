@@ -151,7 +151,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             return sessions.Close(request.LeadSessionId, request.Workspace)
                 ? new IpcResponse(true, Outcome: "closed") : new IpcResponse(false, JobErrors.NotFound);
         }
-        if (request.LeadSessionId is not null && (sessions is null || request.Workspace is null || !sessions.Exists(request.LeadSessionId, request.Workspace)))
+        if (request.Op != IpcProtocol.ExternalOperatorSend && request.LeadSessionId is not null
+            && (sessions is null || request.Workspace is null || !sessions.Exists(request.LeadSessionId, request.Workspace)))
         {
             return new IpcResponse(false, JobErrors.InvalidRequest,
                 ErrorDetail: "Unknown lead session for this workspace; restart the MCP bridge (session_info) and retry.");
@@ -221,6 +222,9 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 return external is null ? new IpcResponse(false, JobErrors.InvalidRequest)
                     : MapExternal(external.ReadLead(request.LeadSessionId, request.Workspace, request.SinceSeq, request.Limit,
                         request.FromAgent, request.Full, request.MaxChars));
+            case IpcProtocol.ExternalOperatorSend:
+                return external is null ? new IpcResponse(false, JobErrors.InvalidRequest)
+                    : MapExternal(external.SendFromOperator(request.LeadSessionId, request.Workspace, request.Text, request.IdempotencyKey));
             case IpcProtocol.JobSubmit:
                 var (submitWakeKey, submitWakeGeneration) = LeadWake(request);
                 return Accepted(accept.Execute(new SubmitJobRequest(request.IdempotencyKey ?? string.Empty, request.Instruction ?? string.Empty, request.Behavior, request.Hold)
