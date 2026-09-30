@@ -146,7 +146,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     /// Restart fences every job with an ownership record, including a terminal job whose idle pane
     /// was retained for its next turn. That pane is retained again only with verified pane identity,
     /// the job's exact native session live in the pane, and transcript evidence that the newest turn
-    /// there is an ATF turn (<paramref name="correlations"/>, newest first) that completed with no
+    /// there is an ATF turn (one of <paramref name="correlations"/>) that completed with no
     /// pending background work. <paramref name="releaseFence"/> revalidates the session and clears the
     /// fence before the pane is offered. A proven-gone pane only releases the fence: nothing is started
     /// or closed. Serialized with stop_agent, which must never see its fence cleared.
@@ -171,20 +171,11 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         }
     }
 
-    // The newest ATF turn found in the transcript must also be its latest native turn (no later human
-    // input), completed with no pending background work. Missing or ambiguous evidence keeps the fence.
-    bool LatestTurnSettled(InteractiveLaunch launch, IReadOnlyList<string> correlations)
-    {
-        foreach (var correlation in correlations)
-        {
-            InteractiveTranscript? turn;
-            try { turn = _transcripts.Read(launch, "atf-corr:" + correlation, DateTimeOffset.MinValue); }
-            catch (IOException) { return false; }
-            if (turn is null) { continue; }
-            return turn is { Completed: true, Superseded: false, PendingBackgroundTasks: false, ApiError: null, BindingError: null };
-        }
-        return false;
-    }
+    // The newest ATF turn in the transcript must also be its latest native turn (no later human input,
+    // no unreadable tail), completed with no pending background work. Missing or ambiguous evidence keeps the fence.
+    bool LatestTurnSettled(InteractiveLaunch launch, IReadOnlyCollection<string> correlations) =>
+        _transcripts.ReadLatestTurn(launch, correlations)
+            is { Completed: true, Superseded: false, Incomplete: false, PendingBackgroundTasks: false, ApiError: null, BindingError: null };
 
     /// <summary>Tests replace the /proc probe; production asks the transcript reader.</summary>
     internal Func<InteractiveLaunch, int, IReadOnlySet<string>?>? LiveSessionProbe { get; init; }
@@ -690,13 +681,16 @@ internal interface IInteractiveTranscriptReader
     /// <summary>The main transcript whose header names exactly this native session, in the launch's config root.</summary>
     NativeTranscriptBinding? Locate(InteractiveLaunch launch, string sessionId) => null;
 
+    /// <summary>The newest turn carrying one of these ATF correlations, from one read of the bound transcript.</summary>
+    InteractiveTranscript? ReadLatestTurn(InteractiveLaunch launch, IReadOnlyCollection<string> correlations) => null;
+
     /// <summary>The native sessions running under a pane's shell now; null when that cannot be established.</summary>
     IReadOnlySet<string>? LiveSessions(InteractiveLaunch launch, int shellPid) => null;
 }
 
 internal sealed record InteractiveTranscript(string SessionId, string? Message, IReadOnlyList<string>? Messages = null, bool Completed = false,
     bool PendingBackgroundTasks = false, string? BindingError = null, InteractiveApiError? ApiError = null, IReadOnlyList<string?>? Times = null,
-    bool Superseded = false)
+    bool Superseded = false, bool Incomplete = false)
 {
     public IReadOnlyList<string> Progress => Messages ?? [];
 

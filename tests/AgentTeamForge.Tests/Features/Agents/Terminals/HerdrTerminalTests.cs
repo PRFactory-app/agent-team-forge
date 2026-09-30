@@ -350,6 +350,7 @@ public class HerdrTerminalTests
     [InlineData("human")]
     [InlineData("background")]
     [InlineData("unfinished")]
+    [InlineData("malformed")]
     public async Task Restart_keeps_an_idle_pane_fenced_unless_its_latest_turn_settled(string latest)
     {
         using var state = new TempStateDir();
@@ -362,6 +363,9 @@ public class HerdrTerminalTests
             // Idle while a background task the turn started is still running.
             "background" => """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"bg1","name":"Bash","input":{"command":"make","run_in_background":true}}]}}"""
                 + "\n" + ParentTurnDone,
+            // A partially flushed line can hide the next human turn.
+            "malformed" => ParentTurnDone + "\n" + """{"type":"user","isSidechain":fa""" + "\n"
+                + """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"later"}}""",
             _ => """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","content":[{"type":"text","text":"working on it"}]}}""",
         };
         var (backend, catalog, _, parent, _) = await CompletedParentWithLivePane(f, state, fake, parentTurn: turn);

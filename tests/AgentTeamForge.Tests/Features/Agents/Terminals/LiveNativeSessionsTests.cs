@@ -36,6 +36,9 @@ public sealed class LiveNativeSessionsTests
             // A stale registry entry of a reused PID does not count.
             File.WriteAllText(Path.Combine(sessions, agent + ".json"), $$"""{"pid":{{agent}},"sessionId":"sess-1","procStart":"1"}""");
             Assert.Empty(LiveNativeSessions.Read(InteractiveAgentKind.Claude, shell.Id, state.Path)!);
+            // An unreadable registry of a process under the shell makes the whole set unknown.
+            File.WriteAllText(Path.Combine(sessions, agent + ".json"), """{"pid":""");
+            Assert.Null(LiveNativeSessions.Read(InteractiveAgentKind.Claude, shell.Id, state.Path));
             Assert.Null(LiveNativeSessions.Read(InteractiveAgentKind.Pi, shell.Id, state.Path));
         }
         finally { shell.Kill(entireProcessTree: true); }
@@ -58,6 +61,28 @@ public sealed class LiveNativeSessionsTests
                 Thread.Sleep(50);
             }
             Assert.Equal(["thread-live"], live!);
+        }
+        finally { shell.Kill(entireProcessTree: true); }
+    }
+
+    [Fact]
+    public void Codex_process_holding_two_rollouts_reports_both_so_the_identity_is_ambiguous()
+    {
+        Assert.SkipUnless(OperatingSystem.IsLinux(), "reads /proc");
+        using var state = new TempStateDir();
+        var owner = Path.Combine(state.Path, "rollout-2026-10-01T00-00-00-thread-owner.jsonl");
+        var other = Path.Combine(state.Path, "rollout-2026-10-01T00-00-01-thread-other.jsonl");
+        using var shell = Start("exec 3>>\"$1\" 4>>\"$2\"; exec sleep 30", owner, other);
+        try
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            IReadOnlySet<string>? live = null;
+            while (DateTime.UtcNow < deadline && live is not { Count: 2 })
+            {
+                live = LiveNativeSessions.Read(InteractiveAgentKind.Codex, shell.Id, null);
+                Thread.Sleep(50);
+            }
+            Assert.Equal(["thread-other", "thread-owner"], live!.Order());
         }
         finally { shell.Kill(entireProcessTree: true); }
     }
