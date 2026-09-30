@@ -8,6 +8,10 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 /// <summary>Herdr's native agent commands keep input and lifecycle tied to the owned pane.</summary>
 internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readinessTimeout = null) : IHerdrAgentControl
 {
+    // A resumed agent replays its transcript before it is ready, so it gets a longer `agent start` wait.
+    internal const int FreshStartTimeoutMs = 15_000;
+    internal const int ResumeStartTimeoutMs = 90_000;
+
     // stop_job terminates from another thread while the dispatcher is still polling.
     readonly ConcurrentDictionary<string, (OwnedHerdrSession Session, HerdrTabBinding Binding)> _runs = [];
 
@@ -48,9 +52,17 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
             session = session with { ShellPid = binding.ShellPid, ShellStartTicks = binding.ShellStartTicks };
             _runs[launch.AgentName] = (session, binding);
             HerdrOwnedSessions.Save(launch, session);
-            var args = new List<string> { "agent", "start", launch.AgentName, "--kind", Kind(launch.Kind), "--pane", binding.PaneId, "--timeout", "15000", "--" };
+            var startTimeoutMs = launch.ResumeSessionId is null ? FreshStartTimeoutMs : ResumeStartTimeoutMs;
+            var args = new List<string> { "agent", "start", launch.AgentName, "--kind", Kind(launch.Kind), "--pane", binding.PaneId, "--timeout", startTimeoutMs.ToString(), "--" };
             args.AddRange(AgentArguments(launch));
-            await terminal.RunOwnedAsync(session, cancellationToken, [.. args]);
+            try
+            {
+                await terminal.RunOwnedAsync(session, TimeSpan.FromMilliseconds(startTimeoutMs) + TimeSpan.FromSeconds(15), cancellationToken, [.. args]);
+            }
+            catch (HerdrLaunchException) when (launch.ResumeSessionId is not null && !terminal.OwnedPaneIsGone(session))
+            {
+                // A slow resume can miss the start wait while the agent still comes up; PromptAsync proves readiness.
+            }
         }
         catch (Exception ex)
         {
