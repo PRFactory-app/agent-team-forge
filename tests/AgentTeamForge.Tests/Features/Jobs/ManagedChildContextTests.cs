@@ -37,6 +37,25 @@ public sealed class ManagedChildContextTests
         Assert.False(saved["human_input_available"]!.GetValue<bool>());
     }
 
+    [Theory]
+    [InlineData("prfactory:https://x", false)]
+    [InlineData("parent", true)]
+    public void Connector_lead_footer_omits_the_report_to_team_lead_step(string binding, bool reports)
+    {
+        using var f = new JobFixture();
+        var root = Path.GetDirectoryName(f.DatabasePath)!;
+        var lead = new LeadSessionStore(f.Database).Start(root, binding);
+        var team = new ExternalTeam(new ExternalMemberStore(f.Database), new WakeStore(f.Database));
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, ["codex"]);
+        var job = accept.Execute(new SubmitJobRequest("footer", "task", null, false)
+        { Backend = "codex", LeadSessionId = lead.SessionId }).Job!;
+        var context = new ManagedChildContext(f.Store, team, root, "/private/atf");
+
+        var prepared = context.Prepare(new BackendRequest(job.JobId, "correlation", "task", "{}"));
+        Assert.Equal(reports, prepared.Instruction.Contains("send_message(to=\"team-lead\"", StringComparison.Ordinal));
+        Assert.Contains("AgentTeamForge routing", prepared.Instruction, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Local_child_hides_human_input_and_direct_call_returns_guidance()
     {

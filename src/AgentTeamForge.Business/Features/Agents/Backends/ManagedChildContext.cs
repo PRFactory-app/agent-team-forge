@@ -60,16 +60,20 @@ public sealed class ManagedChildContext(JobStore jobs, ExternalTeam teams, strin
                 },
             },
         });
-        var hint = $"AgentTeamForge routing: report to your parent with {ToolPrefix}send_message(to=\"team-lead\", text=...). "
-            + $"Use {ToolPrefix} tools for ATF children; win-agent-teams and Codex built-in collaboration address different teams. "
+        // A PRFactory connector "lead" is a synthetic session nobody reads; completion is native, so no report step.
+        var connectorLead = lead.BindingKey.StartsWith("prfactory:", StringComparison.Ordinal);
+        var hint = connectorLead ? "AgentTeamForge routing: " : $"AgentTeamForge routing: report to your parent with {ToolPrefix}send_message(to=\"team-lead\", text=...). ";
+        hint += $"Use {ToolPrefix} tools for ATF children; win-agent-teams and Codex built-in collaboration address different teams. "
             + $"Your nested lead is separate from your parent membership. {ToolPrefix}read_messages reads your children's reports. "
             + $"New managed work arrives through {ToolPrefix}follow_up or send_message(job_id=..., idempotency_key=...); a live Codex turn queues new work behind the current turn. "
-            + "Messages addressed to external members are inbox-only. Report DONE/FAILED, commit and tests when relevant, then finish your turn; do not poll. "
+            + "Messages addressed to external members are inbox-only. "
+            + (connectorLead ? "Finish your turn when the work is done; do not poll. " : "Report DONE/FAILED, commit and tests when relevant, then finish your turn; do not poll. ")
             + "Final output completes the job only with native backend completion; the word DONE is not a scheduler signal.";
         if (root.Backend == "pi")
         {
             hint = hint.Replace(ToolPrefix, "agentteamforge_", StringComparison.Ordinal)
-                + " In Pi use the MCP adapter proxy: mcp({tool:\"agentteamforge_send_message\",args:{to:\"team-lead\",text:\"your report\"}}); other ATF tools use the same agentteamforge_ prefix.";
+                + (connectorLead ? " In Pi use the MCP adapter proxy: mcp({tool:\"agentteamforge_<tool>\",args:{...}}); ATF tools use the agentteamforge_ prefix."
+                    : " In Pi use the MCP adapter proxy: mcp({tool:\"agentteamforge_send_message\",args:{to:\"team-lead\",text:\"your report\"}}); other ATF tools use the same agentteamforge_ prefix.");
         }
         return request with { ManagedMcpConfig = configPath, Instruction = root.Backend == "fake" ? request.Instruction : request.Instruction + "\n\n" + hint };
     }
