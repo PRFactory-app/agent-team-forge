@@ -158,10 +158,10 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         {
             var owned = HerdrOwnedSessions.Read(_stateRoot, _ => { }).FirstOrDefault(entry => entry.Session.JobId == owner.JobId);
             if (owned.Session is null) { return PaneOwnerRecovery.Unverified; }
-            if (control.PaneIsGone(owned.Session)) { return releaseFence() ? PaneOwnerRecovery.Gone : PaneOwnerRecovery.Unverified; }
+            if (control.PaneIsGone(owned.Session)) { return Gone(owned.Path, releaseFence); }
             if (owner.SessionId is not { } sessionId || Rebind(control, owned.Path, owned.Session, owner, sessionId) is not { } launch)
             {
-                return control.PaneIsGone(owned.Session) && releaseFence() ? PaneOwnerRecovery.Gone : PaneOwnerRecovery.Unverified;
+                return control.PaneIsGone(owned.Session) ? Gone(owned.Path, releaseFence) : PaneOwnerRecovery.Unverified;
             }
             if (!BindTranscript(launch, owned.Session, sessionId) || !SettledIdle(launch) || !LatestTurnSettled(launch, correlations)
                 || !releaseFence()) { return PaneOwnerRecovery.Unverified; }
@@ -169,6 +169,16 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             _liveSessions.Remember(sessionId, launch);
             return PaneOwnerRecovery.Retained;
         }
+    }
+
+    // Nothing is left to stop in a proven-gone pane of a terminal job, so the released record is forgotten
+    // with its fence: otherwise every start re-fences the job from the record and logs the release again.
+    static PaneOwnerRecovery Gone(string recordPath, Func<bool> releaseFence)
+    {
+        if (!releaseFence()) { return PaneOwnerRecovery.Unverified; }
+        try { File.Delete(recordPath); }
+        catch (IOException) { } // Best effort: the next start repeats the release.
+        return PaneOwnerRecovery.Gone;
     }
 
     // The newest ATF turn in the transcript must also be its latest native turn (no later human input,

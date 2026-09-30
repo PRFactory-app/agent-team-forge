@@ -1146,6 +1146,37 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task Proven_gone_pane_of_a_terminal_job_releases_the_fence_once_and_forgets_its_record()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        using var f = new AgentTeamForge.Tests.Support.JobFixture();
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, SharedWorkspaceLabel = Path.GetFileName(state.Path) };
+        var terminal = Terminal(fake);
+        var job = f.Submit("owned");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new AgentTeamForge.DAL.Features.Jobs.RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        f.Store.RecordSession(run, "native-owned");
+        f.Store.Complete(run, "result kept");
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("herdr/bootstrap"))
+        { JobId = job.JobId, HerdrPlacement = "herdr-session:default" };
+        await new HerdrAgentControl(terminal).StartAsync(launch, CancellationToken.None);
+        fake.Replace(Replacement.ShellReplaced);
+        var backend = new HerdrInteractiveBackend(terminal, InteractiveAgentKind.Codex, state.Path);
+
+        // Every start fences each job that has an ownership record.
+        HerdrOwnedSessions.Recover(state.Path, f.Store.FenceSession, _ => { });
+        Assert.Contains(job.JobId, f.Store.FencedTerminalJobs());
+        var owner = f.Store.GetJob(job.JobId)!;
+        Assert.Equal(PaneOwnerRecovery.Gone, backend.RecoverTerminalOwner(owner, [],
+            () => f.Store.ReleaseRestartFence(owner.JobId, owner.SessionId)));
+
+        Assert.False(File.Exists(HerdrOwnedSessions.PathFor(launch)));
+        HerdrOwnedSessions.Recover(state.Path, f.Store.FenceSession, _ => { });
+        Assert.DoesNotContain(job.JobId, f.Store.FencedTerminalJobs());
+        Assert.Equal("result kept", f.Store.GetJob(job.JobId)!.ResultText);
+    }
+
+    [Fact]
     public async Task Stop_agent_after_restart_releases_fence_without_changing_job_outcome()
     {
         using var state = new AgentTeamForge.Tests.Support.TempStateDir();

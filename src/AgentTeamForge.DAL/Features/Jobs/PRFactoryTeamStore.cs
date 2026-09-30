@@ -107,7 +107,7 @@ public sealed partial class PRFactoryTeamStore(JobDatabase database)
         var rows = new List<PRFactoryTeamRecord>();
         using var connection = database.OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT work_item_id, claimed_json, state, uploaded, machine_id, atf_job_id, acceptance_state FROM prfactory_teams WHERE server=$server AND acceptance_state='reconciliation_needed' ORDER BY created_at";
+        command.CommandText = "SELECT work_item_id, claimed_json, state, uploaded, machine_id, atf_job_id, acceptance_state FROM prfactory_teams WHERE server=$server AND state='claimed' AND acceptance_state='reconciliation_needed' ORDER BY created_at";
         command.Parameters.AddWithValue("$server", server);
         using var reader = command.ExecuteReader();
         while (reader.Read())

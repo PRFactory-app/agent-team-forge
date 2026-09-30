@@ -89,6 +89,12 @@ public sealed class AcceptanceTests
         var snapshot = File.ReadAllText(dir.File("prfactory-joins.json"));
         Assert.Contains("reconciliation needed", snapshot, StringComparison.Ordinal);
         Assert.DoesNotContain("external member reviewer", snapshot, StringComparison.Ordinal);
+
+        // Once the server confirms the item terminal and the local team is closed, the fence notice drops out.
+        teams.Finish(ServerUrl, server.Item.Id, "failed");
+        Assert.Empty(teams.ReconciliationNeeded(ServerUrl));
+        PRFactoryConnection.PublishJoinTickets(state, teams, ServerUrl);
+        Assert.DoesNotContain("reconciliation needed", File.ReadAllText(dir.File("prfactory-joins.json")), StringComparison.Ordinal);
     }
 
     [Fact]
