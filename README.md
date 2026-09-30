@@ -1,7 +1,7 @@
 # AgentTeamForge
 
-**Let your lead coding agent hand work to a team of Claude Code, Codex and Pi
-agents — and keep that work alive when things crash.**
+**Let your lead coding agent hand work to a team of Claude Code, Codex, Pi,
+Cursor and Droid agents — and keep that work alive when things crash.**
 
 AgentTeamForge (`atf`) is a small local daemon. Your lead agent gives it jobs
 over MCP; it runs the agents, remembers every job, and tells the lead when
@@ -65,7 +65,8 @@ team. More in the [usage guide](docs/usage.md).
 
 ## Features
 
-- Claude Code, Codex and Pi as team members, with model and effort choices
+- Claude Code, Codex and Pi as team members (interactive or headless), plus
+  Cursor CLI and Factory Droid (headless), with model and effort choices
 - Parallel jobs, optional git worktree per job, timeouts
 - Visible, interactive agents you can type into — or headless
 - Web console on localhost: live activity, follow-ups, stop, new agents, model tiers
