@@ -26,6 +26,11 @@ public sealed class ClaudeMemberWakeTests
     [InlineData(@"\\remote\pipe\claude-channel", null)]
     [InlineData(@"\\.\pipe\", null)]
     [InlineData(@"\\.\pipe\nested\name", null)]
+    [InlineData(@"\\.\pipe\LOCAL\cc-msg-b4549fe1", @"LOCAL\cc-msg-b4549fe1")]
+    [InlineData(@"\\.\pipe\local\cc-msg-b4549fe1", @"local\cc-msg-b4549fe1")]
+    [InlineData(@"\\.\pipe\LOCAL\", null)]
+    [InlineData(@"\\.\pipe\LOCAL\nested\name", null)]
+    [InlineData(@"\\.\pipe\LOCAL\anonymous", null)]
     [InlineData("/tmp/123.sock", null)]
     public void Only_local_flat_pipe_names_are_accepted(string path, string? name) =>
         Assert.Equal(name, ClaudeChannel.PipeName(path));
@@ -41,6 +46,36 @@ public sealed class ClaudeMemberWakeTests
         Assert.True(ClaudeChannel.Valid(@"\\.\pipe\claude", "token", "123", "windows"));
         Assert.False(ClaudeChannel.Valid(@"\\.\pipe\claude", "token", "", "windows"));
         Assert.False(ClaudeChannel.Valid(@"\\server\pipe\claude", "token", "123", "windows"));
+    }
+
+    [Fact]
+    public async Task Windows_session_local_channel_registers_and_receives_a_post_from_its_host()
+    {
+        if (!OperatingSystem.IsWindows()) { return; }
+        var name = @"LOCAL\atf-test-" + Guid.NewGuid().ToString("N");
+        var address = @"\\.\pipe\" + name;
+        var pid = Environment.ProcessId;
+        var host = HostSessionWake.ForClaudeChannel((pid, "claude"), address, "secret", "windows");
+        Assert.NotNull(host);
+        Assert.True(HostSessionWake.OwnsClaudeChannel(host, (pid, "claude"), address, "secret", "windows"));
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using (var server = new NamedPipeServerStream(name, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous))
+        {
+            // Read concurrently, as the Claude host does: an unbuffered pipe write completes only once read.
+            var received = Task.Run(async () =>
+            {
+                await server.WaitForConnectionAsync(timeout.Token);
+                var buffer = new byte[16];
+                return System.Text.Encoding.UTF8.GetString(buffer, 0, await server.ReadAsync(buffer, timeout.Token));
+            });
+            Assert.True(await ClaudePipe.PostAsync(address, pid, "notice"u8.ToArray(), timeout.Token));
+            Assert.Equal("notice", await received);
+        }
+        // The same channel served by a PID other than the registered host is refused before any write.
+        using var other = new NamedPipeServerStream(name, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        _ = other.WaitForConnectionAsync(timeout.Token);
+        Assert.False(await ClaudePipe.PostAsync(address, pid + 1, "x"u8.ToArray(), timeout.Token));
     }
 
     [Fact]
