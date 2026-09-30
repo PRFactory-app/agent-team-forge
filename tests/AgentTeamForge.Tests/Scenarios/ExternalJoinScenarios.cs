@@ -1,3 +1,12 @@
+using System.Net.Http.Headers;
+using AgentTeamForge.Host.Features.WebConsole;
+using AgentTeamForge.DAL.Sqlite;
+using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Host.Features.Jobs;
+using AgentTeamForge.DAL.Features.Wake;
+using AgentTeamForge.DAL.Features.External;
+using AgentTeamForge.Business.Features.External;
+using AgentTeamForge.DAL.Features.Sessions;
 using AgentTeamForge.Host.Transport;
 using AgentTeamForge.Tests.Support;
 using ModelContextProtocol.Protocol;
@@ -9,6 +18,56 @@ namespace AgentTeamForge.Tests.Scenarios;
 [Trait("Category", "Scenario")]
 public sealed class ExternalJoinScenarios
 {
+    [Fact]
+    public async Task Web_operator_message_reaches_lead_inbox_once_and_rejects_inactive_sessions()
+    {
+        using var fixture = new JobFixture();
+        var sessions = new LeadSessionStore(fixture.Database);
+        var workspace = Path.GetDirectoryName(fixture.DatabasePath)!;
+        var lead = sessions.Start(workspace, "web-operator-lead");
+        var external = new ExternalTeam(
+            new ExternalMemberStore(fixture.Database),
+            new WakeStore(fixture.Database));
+        var accept = fixture.Accept();
+        var endpoint = new JobsEndpoint(accept, fixture.Get(),
+            new FollowUpJob(fixture.Store, JobFixture.Operator, accept),
+            fixture.List(), new StopJob(fixture.Store, JobFixture.Operator, _ => { }),
+            new DurabilityCheckpoints(null), () => { }, sessions: sessions, external: external);
+        var token = WebConsoleServer.NewToken();
+        await using var server = await WebConsoleServer.StartAsync(0, token,
+            (request, _) => Task.FromResult(endpoint.Handle(request)));
+        using var http = new HttpClient { BaseAddress = new Uri(server.Url) };
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        http.DefaultRequestHeaders.Add("Origin", server.Url.TrimEnd('/'));
+        async Task<IpcResponse> Send(string id, string text = "hello from web", string key = "operator-message")
+        {
+            var body = new WebLeadMessageBody(text, workspace, key);
+            using var content = new StringContent(JsonSerializer.Serialize(body,
+                WebConsoleJson.Default.WebLeadMessageBody), Encoding.UTF8, "application/json");
+            using var response = await http.PostAsync($"api/leads/{id}/messages", content, TestContext.Current.CancellationToken);
+            return JsonSerializer.Deserialize(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken),
+                IpcJson.Default.IpcResponse)!;
+        }
+        Assert.True((await Send(lead.SessionId)).Ok);
+        Assert.True((await Send(lead.SessionId)).Ok);
+        var read = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.ExternalLeadRead,
+            LeadSessionId = lead.SessionId,
+            Workspace = workspace
+        });
+        Assert.True(read.Ok);
+        var message = Assert.Single(read.Inbox!.Messages);
+        Assert.Equal("operator", message.From);
+        Assert.Equal("hello from web", message.Text);
+        Assert.Equal("invalid_request", external.CreateTicket(lead.SessionId, workspace, "operator", null).Error);
+        Assert.Equal("web_bad_request", (await Send(lead.SessionId, "")).Error);
+        Assert.Equal("web_bad_request", (await Send(lead.SessionId, key: new string('k', 129))).Error);
+        Assert.Equal("invalid_session", (await Send(Guid.NewGuid().ToString("D"))).Error);
+        Assert.True(sessions.Close(lead.SessionId, workspace));
+        Assert.Equal("invalid_session", (await Send(lead.SessionId)).Error);
+    }
+
     [Fact]
     public async Task Ticket_and_join_responses_explain_qualified_external_tool_routing()
     {

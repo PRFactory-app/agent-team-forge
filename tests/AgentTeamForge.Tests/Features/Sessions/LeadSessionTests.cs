@@ -119,7 +119,8 @@ public sealed class LeadSessionTests
     {
         using var f = new JobFixture();
         var sessions = new LeadSessionStore(f.Database);
-        var old = sessions.Start("/workspace/shared", "parent=old");
+        var workspace = Path.GetFullPath(Path.GetDirectoryName(f.DatabasePath)!);
+        var old = sessions.Start(workspace, "parent=old");
         var wake = new WakeStore(f.Database);
         var oldTarget = wake.Register("codex:old", "codex", "old", "", "/tmp");
         var endpoint = Endpoint(f, sessions, wake);
@@ -136,7 +137,7 @@ public sealed class LeadSessionTests
         });
         Assert.True(accepted.Ok);
 
-        var fresh = sessions.Start("/workspace/shared", "parent=new");
+        var fresh = sessions.Start(workspace, "parent=new");
         Assert.NotEqual(old.SessionId, fresh.SessionId);
         Assert.Contains(fresh.RecoverableSessions, candidate => candidate.SessionId == old.SessionId);
         var resumed = endpoint.Handle(new IpcRequest
@@ -146,7 +147,7 @@ public sealed class LeadSessionTests
             Workspace = old.Workspace,
             BindingKey = "parent=new"
         });
-        Assert.True(resumed.Ok);
+        Assert.True(resumed.Ok, resumed.Error);
         Assert.Equal(accepted.Job!.JobId, Assert.Single(List(endpoint, resumed.Session!).Page!.Jobs).JobId);
         var newTarget = wake.Register("codex:new", "codex", "new", "", "/tmp");
         sessions.BindWake(old.SessionId, newTarget.Key, newTarget.Generation);

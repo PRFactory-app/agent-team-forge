@@ -51,7 +51,7 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
     /// <summary>Shared ticket path for MCP leads and in-daemon actors.</summary>
     public ExternalResult CreateTicketForTeam(string? teamId, string? name, string? note)
     {
-        if (teamId is null || name is null || !SafeName.IsMatch(name) || note is { Length: > 4096 })
+        if (teamId is null || name is null || !SafeName.IsMatch(name) || name == "operator" || note is { Length: > 4096 })
         {
             return new("invalid_request");
         }
@@ -107,6 +107,19 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
         }
 
         return members.SendFromMember(secret, text, now()) ? new() : new("membership_revoked");
+    }
+
+    public ExternalResult SendFromOperator(string? sessionId, string? workspace, string? text, string? commandId)
+    {
+        if (text is null || text.Length is < 1 or > MaxText || commandId is { Length: < 1 or > 128 })
+        {
+            return new("invalid_request");
+        }
+        if (sessionId is null || workspace is null || !members.EnsureMcpTeam(sessionId, workspace, now()))
+        {
+            return new("invalid_session");
+        }
+        return members.SendToLead(sessionId, "operator", text, now(), commandId) ? new() : new("invalid_session");
     }
 
     public ExternalResult SendFromLead(string? sessionId, string? workspace, string? name, string? text)

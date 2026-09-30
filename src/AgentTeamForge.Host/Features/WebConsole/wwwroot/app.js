@@ -14,6 +14,20 @@
     const saved = JSON.parse(localStorage.getItem(teamsKey) || '{}');
     if (saved && typeof saved === 'object' && !Array.isArray(saved)) savedTeams = saved;
   } catch { /* Keep in-tab defaults. */ }
+  const maxSavedTeams = 200;
+  function saveTeams(key, value) {
+    if (key) {
+      delete savedTeams[key];
+      savedTeams[key] = value;
+    }
+    const keys = Object.keys(savedTeams);
+    for (const old of keys.slice(0, Math.max(0, keys.length - maxSavedTeams))) delete savedTeams[old];
+    try { localStorage.setItem(teamsKey, JSON.stringify(savedTeams)); } catch { /* Keep the in-tab choice. */ }
+  }
+  // Master-detail layout; this query must match the min-width @media block in app.css.
+  const wide = matchMedia('(min-width: 1100px)');
+  // Pseudo job id for the composer target that messages the lead's inbox instead of a member job.
+  const LEAD_TARGET = '@lead';
   let theme = 'auto';
   try {
     const saved = localStorage.getItem(themeKey);
@@ -400,23 +414,38 @@
     newAgentControls();
   }
 
-  function composer(container, key, targets, lead = false, stopTarget = null) {
+  function composer(container, key, targets, lead = false, stopTarget = null, leadSession = null) {
     const state = composerState(key);
-    if (!targets.some(j => j.job_id === state.targetJobId)) state.targetJobId = targets[0]?.job_id || null;
-    const target = targets.find(j => j.job_id === state.targetJobId);
+    // A real lead (with a workspace) can be messaged directly; it is the default target.
+    const leadInbox = lead && leadSession?.workspace ? leadSession : null;
+    if (!(leadInbox && state.targetJobId === LEAD_TARGET) && !targets.some(j => j.job_id === state.targetJobId)) {
+      state.targetJobId = leadInbox ? LEAD_TARGET : targets[0]?.job_id || null;
+    }
+    const toLead = !!leadInbox && state.targetJobId === LEAD_TARGET;
+    const target = toLead ? undefined : targets.find(j => j.job_id === state.targetJobId);
+    const canSend = toLead || !!target;
     if (target?.status !== 'running') state.interrupt = false;
     const form = element('form', 'composer');
     form.autocomplete = 'off';
     const heading = element('div', 'composer-target');
-    if (lead && targets.length > 1) {
-      const label = element('label', '', 'Message member ');
+    if (lead && (leadInbox ? targets.length > 0 : targets.length > 1)) {
+      const label = element('label', '', leadInbox ? 'Message ' : 'Message member ');
       const picker = element('select', 'composer-picker');
       picker.dataset.composerKey = key;
       picker.dataset.composerRole = 'target';
+      let options = picker;
+      if (leadInbox) {
+        const inbox = element('option', '', 'Lead session (inbox)');
+        inbox.value = LEAD_TARGET;
+        picker.append(inbox);
+        options = element('optgroup');
+        options.label = 'Message member';
+        picker.append(options);
+      }
       for (const j of targets) {
         const option = element('option', '', agentName(j) + ' · ' + j.job_id.slice(-8) + ' · ' + j.status);
         option.value = j.job_id;
-        picker.append(option);
+        options.append(option);
       }
       picker.value = state.targetJobId;
       picker.disabled = state.sending || !!state.pending;
@@ -431,18 +460,20 @@
       label.append(picker);
       heading.append(label);
     } else {
-      heading.textContent = target ? '→ ' + agentName(target) + ' · job ' + target.job_id.slice(-8)
+      heading.textContent = toLead ? '→ Lead session (inbox)'
+        : target ? '→ ' + agentName(target) + ' · job ' + target.job_id.slice(-8)
         : lead ? 'No member agent session to message yet' : 'Agent session not available yet';
     }
     const input = element('textarea', 'composer-input');
     input.rows = 2;
     input.maxLength = 65536;
-    input.placeholder = target ? 'Message this agent…' : 'Available after an agent session starts';
-    input.setAttribute('aria-label', 'Message ' + (target ? agentName(target) : 'agent'));
+    input.placeholder = toLead ? 'Message the lead (lands in read_messages)…'
+      : target ? 'Message this agent…' : 'Available after an agent session starts';
+    input.setAttribute('aria-label', toLead ? 'Message lead session' : 'Message ' + (target ? agentName(target) : 'agent'));
     input.dataset.composerKey = key;
     input.dataset.composerRole = 'message';
     input.value = state.draft;
-    input.disabled = !target || state.sending || !!state.pending;
+    input.disabled = !canSend || state.sending || !!state.pending;
     input.addEventListener('input', () => { state.draft = input.value; send.disabled = !state.draft.trim() || state.sending; });
     input.addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
@@ -457,7 +488,7 @@
     interruptLabel.append(interrupt, document.createTextNode('Interrupt'));
     const send = element('button', 'send-button', state.sending ? 'Sending…' : 'Send');
     send.type = 'submit';
-    send.disabled = !target || !state.draft.trim() || state.sending || !!state.pending;
+    send.disabled = !canSend || !state.draft.trim() || state.sending || !!state.pending;
     const stop = element('button', 'danger-action', 'Stop');
     stop.type = 'button';
     const stoppable = stopTarget || target;
@@ -486,9 +517,10 @@
     state.form = form;
     form.addEventListener('submit', e => {
       e.preventDefault();
-      if (!state.pending && (!target || !state.draft.trim())) return;
+      if (!state.pending && (!canSend || !state.draft.trim())) return;
       if (!state.pending) state.pending = {
         jobId: state.targetJobId, text: state.draft, interrupt: state.interrupt, key: crypto.randomUUID(),
+        lead: toLead ? { id: leadInbox.id, workspace: leadInbox.workspace } : null,
       };
       sendInline(key);
     });
@@ -507,8 +539,12 @@
       if (state.resultNode) state.resultNode.textContent = state.result;
     }
     const attempt = state.pending;
-    const r = await api('POST', '/api/jobs/' + encodeURIComponent(attempt.jobId) + '/follow-up',
-      { instruction: attempt.text, idempotency_key: attempt.key, interrupt: attempt.interrupt });
+    const toLead = attempt.jobId === LEAD_TARGET && !!attempt.lead;
+    const r = toLead
+      ? await api('POST', '/api/leads/' + encodeURIComponent(attempt.lead.id) + '/messages',
+        { text: attempt.text, workspace: attempt.lead.workspace, idempotency_key: attempt.key })
+      : await api('POST', '/api/jobs/' + encodeURIComponent(attempt.jobId) + '/follow-up',
+        { instruction: attempt.text, idempotency_key: attempt.key, interrupt: attempt.interrupt });
     state.sending = false;
     if (!token) return;
     if (!r || r.lost || r.error === 'outcome_unknown') {
@@ -518,8 +554,10 @@
       state.pending = null;
       state.draft = '';
       state.interrupt = false;
-      state.deliveryJobId = r.job?.job_id || null;
-      state.result = 'Queued' + (state.deliveryJobId ? ' · job ' + state.deliveryJobId.slice(-8) : '');
+      // A lead-inbox message has no job to track.
+      state.deliveryJobId = toLead ? null : r.job?.job_id || null;
+      state.result = toLead ? 'Delivered to lead inbox'
+        : 'Queued' + (state.deliveryJobId ? ' · job ' + state.deliveryJobId.slice(-8) : '');
       state.resultClass = '';
     } else if (r.error === 'daemon_unavailable' || r.error === 'web_busy') {
       state.result = 'Not sent (' + r.error + '). Retry with the same key or discard.';
@@ -697,7 +735,27 @@
     container.append(section);
   }
 
+  // Scroll position of a node that is about to be rewritten; a node parked at the bottom follows new content.
+  function scrollState(node) {
+    const top = node.scrollTop;
+    return { top, atBottom: node.scrollHeight > node.clientHeight + 4 && top + node.clientHeight >= node.scrollHeight - 4 };
+  }
+
+  function restoreScroll(node, saved) {
+    node.scrollTop = saved.atBottom ? node.scrollHeight : saved.top;
+  }
+
+  function keepScroll(node, update) {
+    const saved = scrollState(node);
+    update();
+    restoreScroll(node, saved);
+  }
+
   function renderActivity(state, list) {
+    keepScroll(list, () => renderActivityEntries(state, list));
+  }
+
+  function renderActivityEntries(state, list) {
     list.replaceChildren();
     if (state.omitted) list.append(element('li', 'activity-omitted', state.omitted + ' earlier entries omitted; raw logs remain available.'));
     for (const entry of state.entries) {
@@ -773,9 +831,11 @@
     meta.textContent = [job.status, job.reason_code, job.backend, job.session_id,
       job.parent_job_id ? 'parent ' + job.parent_job_id : null,
       job.cwd, 'attempts ' + job.attempts].filter(Boolean).join(' · ');
-    output.textContent = job.result == null
-      ? (job.status === 'queued' || job.status === 'running' ? 'No result yet.' : 'Result unavailable.')
-      : job.result === '' ? '(empty result)' : job.result;
+    keepScroll(output, () => {
+      output.textContent = job.result == null
+        ? (job.status === 'queued' || job.status === 'running' ? 'No result yet.' : 'Result unavailable.')
+        : job.result === '' ? '(empty result)' : job.result;
+    });
   }
 
   async function loadCardDetail(jobId, meta, output) {
@@ -808,20 +868,25 @@
         state.offset = r.output.next_offset;
         if (state.offset >= r.output.end_offset) break;
       }
-      if (state.node?.isConnected) state.node.textContent = state.text;
+      if (state.node?.isConnected) keepScroll(state.node, () => { state.node.textContent = state.text; });
     } finally {
       state.busy = false;
     }
   }
 
+  const panelId = (key) => 'panel-' + key.replaceAll(/[^a-zA-Z0-9-]/g, '-');
+
   function cardPanel(card, key, targets, lead = false, stopTarget = null, leadSession = null) {
     const panel = element('div', 'card-expanded');
     panel.dataset.expandKey = key;
-    panel.id = 'panel-' + key.replaceAll(/[^a-zA-Z0-9-]/g, '-');
+    panel.id = panelId(key);
+    panel.ownerCard = card;
     panel.hidden = expandedKey !== key;
-    if (!stopTarget?.connector) composer(panel, key, targets, lead, stopTarget);
+    if (!stopTarget?.connector) composer(panel, key, targets, lead, stopTarget, leadSession);
     if (leadSession?.workspace) joinTicketForm(panel, leadSession.id, leadSession.workspace);
-    const jobId = composerState(key).targetJobId || stopTarget?.job_id;
+    const chosen = composerState(key).targetJobId;
+    // With the lead inbox chosen there is no job of its own: show the first member's details.
+    const jobId = (chosen === LEAD_TARGET ? targets[0]?.job_id : chosen) || stopTarget?.job_id;
     if (jobId) {
       const job = targets.find(j => j.job_id === jobId) || stopTarget;
       const refreshDetail = cardDetail(panel, jobId);
@@ -838,21 +903,72 @@
     return panel;
   }
 
-  function toggleCard(key) {
+  // `close` forces deselection; in wide mode clicking the selected card keeps it selected.
+  function toggleCard(key, close = false) {
     const scroll = window.scrollY;
-    expandedKey = expandedKey === key ? null : key;
+    const previous = expandedKey;
+    expandedKey = expandedKey === key && (close || !wide.matches) ? null : key;
     for (const panel of document.querySelectorAll('.card-expanded')) {
       const open = panel.dataset.expandKey === expandedKey;
       panel.hidden = !open;
-      panel.parentElement.classList.toggle('selected', open);
-      const button = panel.parentElement.querySelector('[data-toggle-key]');
-      if (button) {
+      panel.ownerCard.classList.toggle('selected', open);
+      if (open) panel.openCard?.();
+    }
+    placeDetail();
+    if (previous !== expandedKey) $('detail-pane').scrollTop = 0;
+    window.scrollTo(0, scroll);
+  }
+
+  function findPanel(key, root = document) {
+    if (!key) return null;
+    return [...root.querySelectorAll('.card-expanded')].find(panel => panel.dataset.expandKey === key) || null;
+  }
+
+  // Selection buttons: accordion semantics when narrow, "current item" semantics when the pane is shown.
+  function syncSelectionAria() {
+    for (const button of document.querySelectorAll('#jobs [data-toggle-key]')) {
+      const key = button.dataset.toggleKey;
+      if (key.startsWith('team:')) continue;
+      const open = key === expandedKey;
+      if (wide.matches) {
+        button.removeAttribute('aria-expanded');
+        button.setAttribute('aria-controls', 'detail-pane');
+        if (open) button.setAttribute('aria-current', 'true'); else button.removeAttribute('aria-current');
+        button.setAttribute('aria-label', 'Show details for ' + button.dataset.toggleLabel);
+      } else {
+        button.removeAttribute('aria-current');
+        button.setAttribute('aria-controls', panelId(key));
         button.setAttribute('aria-expanded', String(open));
         button.setAttribute('aria-label', (open ? 'Collapse ' : 'Expand ') + button.dataset.toggleLabel);
       }
-      if (open) panel.openCard?.();
     }
-    window.scrollTo(0, scroll);
+  }
+
+  // Wide mode shows the selected panel in the side pane; otherwise every panel lives inside its card.
+  function placeDetail() {
+    const pane = $('detail-pane');
+    const hint = pane.querySelector('.detail-empty');
+    const held = pane.querySelector('.card-expanded');
+    if (held) {
+      if (held.ownerCard?.isConnected) {
+        held.ownerCard.append(held);
+        held.hidden = held.dataset.expandKey !== expandedKey;
+      } else held.remove();
+    }
+    for (const node of [...pane.children]) if (node !== hint) node.remove();
+    const panel = wide.matches ? findPanel(expandedKey, $('jobs')) : null;
+    hint.hidden = !!panel;
+    syncSelectionAria();
+    if (!panel) return;
+    const header = element('div', 'detail-header');
+    const toggle = [...document.querySelectorAll('#jobs [data-toggle-key]')].find(b => b.dataset.toggleKey === expandedKey);
+    header.append(element('h3', '', toggle?.dataset.toggleLabel || 'Details'));
+    const closeButton = element('button', '', 'Close');
+    closeButton.type = 'button';
+    closeButton.addEventListener('click', () => toggleCard(expandedKey, true));
+    header.append(closeButton);
+    panel.hidden = false;
+    pane.append(header, panel);
   }
 
   function teamOpen(key, needsAttention) {
@@ -866,8 +982,16 @@
     body.hidden = !open;
     button.setAttribute('aria-expanded', String(open));
     button.setAttribute('aria-label', (open ? 'Collapse ' : 'Expand ') + key.slice(5));
-    savedTeams[key] = open;
-    try { localStorage.setItem(teamsKey, JSON.stringify(savedTeams)); } catch { /* Keep the in-tab choice. */ }
+    saveTeams(key, open);
+  }
+
+  function setAllTeams(open) {
+    for (const button of document.querySelectorAll('#jobs [data-toggle-key^="team:"]')) {
+      delete savedTeams[button.dataset.toggleKey];
+      savedTeams[button.dataset.toggleKey] = open;
+    }
+    saveTeams();
+    loadJobs();
   }
 
   function connect(value) {
@@ -884,6 +1008,33 @@
     ticketTimer = setInterval(updateTicketCountdowns, 1000);
     loadConfig();
     loadJobs();
+  }
+
+  const innerScrollers = ['.activity-entries', '.card-result pre', '.card-logs pre'];
+
+  // The open panel is rebuilt on every poll; remember the pane and inner list scroll positions.
+  function captureInnerScroll() {
+    const panel = findPanel(expandedKey);
+    if (!panel) return null;
+    return {
+      key: expandedKey,
+      pane: $('detail-pane').scrollTop,
+      nodes: innerScrollers.map(selector => {
+        const node = panel.querySelector(selector);
+        return node && node.clientHeight > 0 ? scrollState(node) : null;
+      }),
+    };
+  }
+
+  function restoreInnerScroll(saved) {
+    if (!saved || saved.key !== expandedKey) return;
+    const panel = findPanel(expandedKey);
+    if (!panel) return;
+    innerScrollers.forEach((selector, i) => {
+      const node = panel.querySelector(selector);
+      if (node && saved.nodes[i]) restoreScroll(node, saved.nodes[i]);
+    });
+    $('detail-pane').scrollTop = saved.pane;
   }
 
   async function loadJobs() {
@@ -907,6 +1058,7 @@
       start: active.selectionStart, end: active.selectionEnd,
     } : null;
     const overview = $('jobs');
+    const scrolled = captureInnerScroll();
     overview.replaceChildren();
     nextCursor = r.page && r.page.has_more ? r.page.next_cursor : null;
     $('page-prev').disabled = pageIndex === 0;
@@ -1009,7 +1161,31 @@
       leadToggle.setAttribute('aria-controls', leadPanel.id);
       if (lead !== 'PRFactory') teamContent.append(leadCard);
       const tree = element('div', 'agent-tree');
-      for (const j of groupJobs) {
+      // Finished jobs fold away below the active ones.
+      const isSettled = (j) => j.light === 'grey'
+        && !['queued', 'running', 'parked', 'needs_reconciliation'].includes(j.status);
+      const settledJobs = groupJobs.filter(isSettled);
+      let settledList = null;
+      let settledFold = null;
+      if (settledJobs.length) {
+        const foldKey = 'fold:' + lead;
+        const selectedInside = settledJobs.some(j => 'job:' + j.job_id === expandedKey);
+        const fold = element('details', 'settled-jobs');
+        fold.dataset.foldKey = foldKey;
+        let foldOpen = selectedInside || savedTeams[foldKey] === true;
+        fold.open = foldOpen;
+        fold.addEventListener('toggle', () => {
+          if (fold.open === foldOpen) return;
+          foldOpen = fold.open;
+          saveTeams(foldKey, foldOpen);
+        });
+        fold.append(element('summary', '', settledJobs.length + ' finished'));
+        settledList = element('div', 'settled-list');
+        fold.append(settledList);
+        settledFold = fold;
+      }
+      const ordered = settledJobs.length ? [...groupJobs.filter(j => !isSettled(j)), ...settledJobs] : groupJobs;
+      for (const j of ordered) {
         const key = 'job:' + j.job_id;
         const card = element('article', 'agent-node' + (j.status === 'completed' ? ' settled' : '') + (key === expandedKey ? ' selected' : ''));
         const open = element('button', 'card-main');
@@ -1065,8 +1241,9 @@
         }
         const panel = cardPanel(card, key, j.session_id ? [j] : [], false, j);
         open.setAttribute('aria-controls', panel.id);
-        tree.append(card);
+        (isSettled(j) ? settledList : tree).append(card);
       }
+      if (settledFold) tree.append(settledFold);
       for (const member of members) {
         const node = element('article', 'agent-node external-node');
         node.append(light('yellow', 'External member'), element('strong', 'node-name', member.name),
@@ -1077,8 +1254,12 @@
       overview.append(section);
     }
     if (!groups.size) overview.textContent = 'No jobs on this page.';
-    const openPanel = [...overview.querySelectorAll('.card-expanded')].find(panel => !panel.hidden && !panel.closest('.team-content')?.hidden);
+    // Wide: the pane shows the selection even when its team is collapsed; narrow: the panel must be visible inline.
+    const openPanel = wide.matches ? findPanel(expandedKey, overview)
+      : [...overview.querySelectorAll('.card-expanded')].find(panel => !panel.hidden && !panel.closest('.team-content')?.hidden);
     if (!openPanel) expandedKey = null;
+    placeDetail();
+    restoreInnerScroll(scrolled);
     if (focus) {
       const same = [...document.querySelectorAll('[data-composer-key], [data-toggle-key]')]
         .find(node => (node.dataset.composerKey || node.dataset.toggleKey) === focus.key
@@ -1184,6 +1365,9 @@
       newAgentControls();
     });
     $('refresh').addEventListener('click', loadJobs);
+    $('collapse-all').addEventListener('click', () => setAllTeams(false));
+    $('expand-all').addEventListener('click', () => setAllTeams(true));
+    wide.addEventListener('change', placeDetail);
     $('status-filter').addEventListener('change', () => {
       pageCursors = [null];
       pageIndex = 0;
@@ -1194,7 +1378,7 @@
       if (nextCursor) { pageCursors[++pageIndex] = nextCursor; loadJobs(); }
     });
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape' && expandedKey) { e.preventDefault(); toggleCard(expandedKey); }
+      if (e.key === 'Escape' && expandedKey) { e.preventDefault(); toggleCard(expandedKey, true); }
     });
   });
 })();
