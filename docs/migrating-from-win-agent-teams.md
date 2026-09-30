@@ -29,6 +29,7 @@ surface; tool names differ where ATF uses jobs instead of process records.
 | `delivery_status` | `get_job`; retry with the same idempotency key if acceptance is uncertain | The `delivery` field retains run ID and submission/acknowledgement timestamps, including after cancellation. Acceptance alone is not delivery. |
 | `deliver_pending` | None needed | The daemon dispatches accepted jobs; clients need not drain a send queue. |
 | `session_info` | `session_info` | Reports current and recoverable lead sessions and effective tiers. |
+| — | `set_session_name` | Names the current lead session in the web console; empty clears it. |
 | `resume_session` | `resume_session` | Adopts a previous lead session and its jobs. |
 | `create_join_ticket` | `create_join_ticket` | Issues a one-time ticket for this lead session, valid for ten minutes. Give the returned `join_prompt` to the manually started member. |
 | `join_team` | `join_team` | Exchanges the ticket for a member bearer token. A retry with the same ticket within its ten-minute TTL recovers the same membership and token; after expiry or leave it cannot reopen membership. Bad or expired tickets return `invalid_or_expired_token`. |

@@ -61,7 +61,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
         var piDirectory = _kind == InteractiveAgentKind.Pi ? PiDirectory(request) : null;
         var launch = new InteractiveLaunch(_kind, agentName, cwd, request.ResumeSessionId, piDirectory,
             Path.Combine(_stateRoot, _tabDirectory, agentName + (_tabDirectory == "wt" ? ".launch.ps1" : ".launch.sh")))
-        { JobId = request.JobId }.WithSelection(request.Options);
+        { JobId = request.JobId, TabLabel = HerdrInteractiveBackend.TabLabel(_kind, request.DisplayName, request.JobId) }.WithSelection(request.Options);
         if (OperatingSystem.IsWindows())
         {
             _ = WtTabControl.AgentArguments(launch, "");

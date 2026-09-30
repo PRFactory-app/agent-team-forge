@@ -229,6 +229,7 @@ public static class JobsMcpBridge
             new() { Name = "remove_worktree", Description = "Remove an owned finished job's git worktree if nothing would be lost (no unpushed commits, no dirty or unknown ignored files, no live agent). force=true overrides dirty/ignored files only; dry_run=true reports without removing.", InputSchema = Parse("""{"type":"object","properties":{"job_id":{"type":"string"},"force":{"type":"boolean"},"dry_run":{"type":"boolean"}},"required":["job_id"]}""") },
             new() { Name = "get_job_activity", Description = "Read structured progress with a monotonic after_cursor and bounded limit.", InputSchema = Parse("""{"type":"object","properties":{"job_id":{"type":"string"},"after_cursor":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"required":["job_id"]}""") },
             new() { Name = "list_jobs", Description = "List jobs, newest first, one bounded page at a time.", InputSchema = Parse(ListSchema) },
+            new() { Name = "set_session_name", Description = "Set a display name for this lead session (shown in the web console). Empty clears it.", InputSchema = Parse("""{"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}""") },
             new() { Name = "session_info", Description = "Report this lead's session and recoverable sessions in its workspace.", InputSchema = Parse(EmptySchema) },
             new() { Name = "resume_session", Description = "Adopt a prior lead session and its jobs after a restart.", InputSchema = Parse(ResumeSchema) },
             new() { Name = "close_team", Description = "Close this lead session and revoke all external member tokens.", InputSchema = Parse(EmptySchema) },
@@ -294,6 +295,12 @@ public static class JobsMcpBridge
                     else if (call.Name == "session_info")
                     {
                         response = await SendAsync(new IpcRequest { Op = IpcProtocol.SessionInfo, LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
+                    }
+                    else if (call.Name == "set_session_name")
+                    {
+                        var (nameRequest, rejection) = Map(call.Name, args, testProfile);
+                        response = nameRequest is null ? new IpcResponse(false, rejection)
+                            : await SendAsync(nameRequest with { LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
                     }
                     else if (call.Name == "resume_session")
                     {
@@ -485,6 +492,9 @@ public static class JobsMcpBridge
     internal static (IpcRequest? Request, string? Rejection) Map(string name, IDictionary<string, JsonElement> args, bool testProfile) =>
         name switch
         {
+            "set_session_name" => String(args, "name") is { } sessionName
+                ? (new IpcRequest { Op = IpcProtocol.SessionInfo, SessionName = sessionName }, null)
+                : (null, JobErrors.InvalidRequest),
             "job_submit" or "submit_job" => (new IpcRequest
             {
                 Op = IpcProtocol.JobSubmit,

@@ -115,6 +115,7 @@ public sealed record JobSummaryRecord(string JobId, string Status, string? Reaso
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }
     public string? LeadSessionId { get; init; }
+    public string? LeadName { get; init; }
     public string? LeadWorkspace { get; init; }
     public string? TargetAgent { get; init; }
     public bool Connector { get; init; }

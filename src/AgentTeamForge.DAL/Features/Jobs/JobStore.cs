@@ -1090,7 +1090,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         using var command = Command(connection, null, """
             SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at, j.worktree_path, j.worktree_branch,
                    j.backend, j.session_id, j.parent_job_id, j.lead_session_id, j.target_agent, j.options,
-                   (SELECT s.workspace FROM lead_sessions s WHERE s.session_id=j.lead_session_id AND s.closed_at IS NULL), j.cwd, j.principal='prfactory' AND j.team='connector'
+                   (SELECT s.workspace FROM lead_sessions s WHERE s.session_id=j.lead_session_id AND s.closed_at IS NULL), j.cwd, j.principal='prfactory' AND j.team='connector',
+                   (SELECT s.display_name FROM lead_sessions s WHERE s.session_id=j.lead_session_id AND s.closed_at IS NULL)
             FROM jobs j
             WHERE ((j.principal=$p AND j.team=$t) OR ($connector=1 AND j.principal='prfactory' AND j.team='connector'))
               -- A malformed pre-release row must not break this page or its cursor.
@@ -1127,6 +1128,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 LeadWorkspace = NullableText(reader, 14),
                 Cwd = NullableText(reader, 15),
                 Connector = reader.GetBoolean(16),
+                LeadName = NullableText(reader, 17),
             });
         }
 

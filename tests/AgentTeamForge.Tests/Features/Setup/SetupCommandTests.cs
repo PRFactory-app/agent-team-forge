@@ -484,6 +484,59 @@ public sealed class SetupCommandTests
     }
 
     [Fact]
+    public void CheckRequiresClaudeInboundWithoutChangingSettings()
+    {
+        using var temp = new TempStateDir();
+        var home = temp.File("home");
+        var binary = temp.File("atf");
+        var state = temp.File("state");
+        var settings = Path.Combine(home, ".claude", "settings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(settings)!);
+        const string original = """{"theme":"dark","crossSessionInbound":"refuse"}""";
+        File.WriteAllText(settings, original);
+        (int, string) Runner(string tool, IReadOnlyList<string> args) => tool != "claude"
+            ? (127, "") : args[0] == "--version" ? (0, "test")
+            : (0, $"Scope: User config\n  enabled: true\n  Command: {binary}\n  Args: mcp --state-dir {state}\n");
+
+        Assert.False(ClientSetup.Reconcile(binary, state, home, settings, null, Runner, apply: false));
+        Assert.Equal(original, File.ReadAllText(settings));
+        SetupCommand.EnableClaudeInbound(settings);
+        Assert.True(ClientSetup.Reconcile(binary, state, home, settings, null, Runner, apply: false));
+        using var configured = JsonDocument.Parse(File.ReadAllText(settings));
+        Assert.Equal("dark", configured.RootElement.GetProperty("theme").GetString());
+    }
+
+    [Fact]
+    public void ClaudeSettingsWithUtf8BomAreAppliedAndChecked()
+    {
+        using var temp = new TempStateDir();
+        var home = temp.File("home");
+        var binary = temp.File("atf");
+        var state = temp.File("state");
+        var settings = Path.Combine(home, ".claude", "settings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(settings)!);
+        var encoding = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
+        File.WriteAllText(settings, """{"theme":"dark"}""", encoding);
+        Assert.True(File.ReadAllBytes(settings).AsSpan().StartsWith(encoding.GetPreamble()));
+        (int, string) Runner(string tool, IReadOnlyList<string> args) => tool != "claude"
+            ? (127, "") : args[0] == "--version" ? (0, "test")
+            : (0, $"Scope: User config\n  enabled: true\n  Command: {binary}\n  Args: mcp --state-dir {state}\n");
+
+        Assert.True(ClientSetup.Reconcile(binary, state, home, settings, null, Runner, apply: true));
+        var rewritten = File.ReadAllBytes(settings);
+        Assert.False(rewritten.AsSpan().StartsWith(encoding.GetPreamble()));
+        using var configured = JsonDocument.Parse(rewritten);
+        Assert.Equal("dark", configured.RootElement.GetProperty("theme").GetString());
+        Assert.Equal("accept", configured.RootElement.GetProperty("crossSessionInbound").GetString());
+
+        File.WriteAllText(settings, """{"theme":"dark","crossSessionInbound":"accept"}""", encoding);
+        var beforeCheck = File.ReadAllBytes(settings);
+        Assert.True(beforeCheck.AsSpan().StartsWith(encoding.GetPreamble()));
+        Assert.True(ClientSetup.Reconcile(binary, state, home, settings, null, Runner, apply: false));
+        Assert.Equal(beforeCheck, File.ReadAllBytes(settings));
+    }
+
+    [Fact]
     public async Task StartDetectsOwnedRunningDaemon()
     {
         using var rig = new SpikeRig();
