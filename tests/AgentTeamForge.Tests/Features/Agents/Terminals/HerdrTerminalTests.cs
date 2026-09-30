@@ -271,6 +271,20 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task ResumeLaunch_UsesLongerStartTimeoutAndSurvivesASlowStartWhilePaneLives()
+    {
+        using var state = new TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, AgentStartFails = true, SharedWorkspaceLabel = Path.GetFileName(state.Path) };
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", state.Path, "native-1", null, state.File("herdr/bootstrap"))
+        { JobId = "job-resume", HerdrPlacement = "herdr-session:default" };
+
+        await new HerdrAgentControl(Terminal(fake)).StartAsync(launch, CancellationToken.None);
+
+        var start = Assert.Single(fake.Calls, c => c.Args is ["agent", "start", "atftest", ..]);
+        Assert.Equal(HerdrAgentControl.ResumeStartTimeoutMs.ToString(), start.Args[Array.IndexOf(start.Args, "--timeout") + 1]);
+    }
+
+    [Fact]
     public async Task SharedSession_ConcurrentSubmitsStartOneServer()
     {
         var fake = new FakeHerdr { DefaultRunning = false };

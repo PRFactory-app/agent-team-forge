@@ -583,9 +583,12 @@ public sealed class HerdrTerminal
 
     /// <summary>A raw command against the owned server, after re-proving its identity.</summary>
     internal async Task<JsonNode> RunOwnedAsync(OwnedHerdrSession session, CancellationToken cancellationToken, params string[] args) =>
+        await RunOwnedAsync(session, null, cancellationToken, args);
+
+    internal async Task<JsonNode> RunOwnedAsync(OwnedHerdrSession session, TimeSpan? commandTimeout, CancellationToken cancellationToken, params string[] args) =>
         ServerProblem(session) is { } problem
             ? throw new HerdrLaunchException(problem)
-            : await OwnedAsync(session.SocketPath, cancellationToken, args);
+            : await RunAsync(session.SocketPath, args, cancellationToken, commandTimeout: commandTimeout);
 
     internal async Task<string> ReadAgentAsync(OwnedHerdrSession session, string pane, CancellationToken cancellationToken) =>
         ServerProblem(session) is { } problem
@@ -635,14 +638,15 @@ public sealed class HerdrTerminal
 
     Task<JsonNode> OwnedAsync(string socketPath, CancellationToken cancellationToken, params string[] args) => RunAsync(socketPath, args, cancellationToken);
 
-    async Task<JsonNode> RunAsync(string? socketPath, string[] args, CancellationToken cancellationToken, bool rawText = false)
+    async Task<JsonNode> RunAsync(string? socketPath, string[] args, CancellationToken cancellationToken, bool rawText = false, TimeSpan? commandTimeout = null)
     {
+        var timeout = commandTimeout ?? _options.CommandTimeout;
         var what = "herdr " + string.Join(' ', args.Take(2));
         var psi = HerdrCommands.CommandStartInfo(_options.Environment, _options.ExtraAllowedEnvironment, socketPath, args);
         CapturedProcess r;
         try
         {
-            r = await _runner.CaptureAsync(psi, _options.CommandTimeout, _options.MaxStdoutBytes, _options.MaxStderrBytes, cancellationToken);
+            r = await _runner.CaptureAsync(psi, timeout, _options.MaxStdoutBytes, _options.MaxStderrBytes, cancellationToken);
         }
         catch (Exception e) when (e is InvalidOperationException or Win32Exception or IOException)
         {
@@ -650,7 +654,7 @@ public sealed class HerdrTerminal
         }
         if (r.TimedOut)
         {
-            throw new HerdrLaunchException($"{what} timed out after {_options.CommandTimeout}");
+            throw new HerdrLaunchException($"{what} timed out after {timeout}");
         }
         if (r.StdoutTruncated)
         {
