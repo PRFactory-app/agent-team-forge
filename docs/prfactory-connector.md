@@ -13,8 +13,9 @@ The PRFactory server-side durable ATF acceptance is merged
 
 1. In PRFactory settings, create a repository-scoped **worker** token (not an
    MCP token).
-2. Map each PRFactory repository ID to a local checkout and pipe the token on
-   stdin (the token is never accepted as an argument):
+2. Map each PRFactory repository ID to a local checkout and supply the token (it is never accepted as an
+   argument). In a terminal, `atf` prompts `PRFactory worker token:` and reads it without echo: paste the token
+   when prompted, or pipe it on stdin:
 
    ```sh
    printf '%s\n' "$PRFACTORY_WORKER_TOKEN" | atf prfactory connect \

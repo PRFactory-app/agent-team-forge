@@ -91,6 +91,35 @@ public static class PRFactoryConnection
         }
     }
 
+    /// <summary>Reads a line without echo; Ctrl+C aborts (null). Keys come from <paramref name="readKey"/> so tests can fake them.</summary>
+    internal static string? ReadSecret(Func<ConsoleKeyInfo> readKey)
+    {
+        var buffer = new StringBuilder();
+        while (true)
+        {
+            var key = readKey();
+            if (key.Key == ConsoleKey.Enter)
+            {
+                return buffer.ToString();
+            }
+            if (key.Key == ConsoleKey.C && key.Modifiers.HasFlag(ConsoleModifiers.Control))
+            {
+                return null;
+            }
+            if (key.Key == ConsoleKey.Backspace)
+            {
+                if (buffer.Length > 0)
+                {
+                    buffer.Length--;
+                }
+            }
+            else if (!char.IsControl(key.KeyChar))
+            {
+                buffer.Append(key.KeyChar);
+            }
+        }
+    }
+
     static int Connect(StateDirectory state, IReadOnlyDictionary<string, string> options, IReadOnlyList<string> args, TextReader tokenInput)
     {
         if (options.ContainsKey("token"))
@@ -120,10 +149,21 @@ public static class PRFactoryConnection
                 return 64;
             }
         }
-        var token = tokenInput.ReadLine()?.Trim();
+        string? token;
+        if (ReferenceEquals(tokenInput, Console.In) && !Console.IsInputRedirected)
+        {
+            Console.Error.Write("PRFactory worker token: ");
+            token = ReadSecret(() => Console.ReadKey(intercept: true));
+            Console.Error.WriteLine();
+        }
+        else
+        {
+            token = tokenInput.ReadLine();
+        }
+        token = token?.Trim();
         if (string.IsNullOrEmpty(token) || token.Any(char.IsControl))
         {
-            Console.Error.WriteLine("error: pipe a nonempty worker token on stdin");
+            Console.Error.WriteLine("error: enter a nonempty worker token (prompt, or pipe it on stdin)");
             return 64;
         }
 
