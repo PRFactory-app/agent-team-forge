@@ -15,6 +15,14 @@ $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 function Fail([string]$Message) { throw "atf installer: $Message" }
+function Invoke-Atf([string]$Executable, [string[]]$Arguments) {
+    try {
+        & $Executable @Arguments
+        $script:LASTEXITCODE = $LASTEXITCODE
+    } catch {
+        Fail "could not start '$Executable': $($_.Exception.Message). Windows security may have blocked it. For Defender ASR, allow the install folder '$root\' (%USERPROFILE%\.local\share\agentteamforge\) in Windows Security and rerun. Smart App Control has no path allow: it must be off or the binary signed; retrying alone will not fix a SAC block."
+    }
+}
 function Download([string]$Url, [string]$Destination, [string]$Name) {
     try { Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Destination | Out-Null }
     catch { Fail "could not download $Name from $Url`: $($_.Exception.Message)" }
@@ -40,6 +48,18 @@ if (-not $StateDir) {
 }
 if (-not [IO.Path]::IsPathRooted($StateDir)) { Fail 'state directory must be absolute' }
 
+$backup = Join-Path $root 'bin.previous'
+New-Item -ItemType Directory -Force -Path $root | Out-Null
+try { $installLock = [IO.File]::Open((Join-Path $root 'install.lock'), 'OpenOrCreate', 'ReadWrite', 'None') }
+catch [IO.IOException] { Fail "another installer is running (cannot acquire $root\install.lock): $($_.Exception.Message)" }
+try {
+if (-not (Test-Path $bin) -and (Test-Path $backup)) {
+    if ((Test-Path (Join-Path $backup 'atf.exe') -PathType Leaf) -and
+        (Test-Path (Join-Path $backup '.atf-version') -PathType Leaf)) {
+        Move-Item -LiteralPath $backup -Destination $bin
+    } elseif (-not $Uninstall) { Fail "incomplete backup at $backup; installation left unchanged" }
+}
+
 if ($Uninstall) {
     if ($Version -or $Archive -or $Checksum -or $ReleaseUrl) { Fail 'uninstall cannot be combined with download options' }
     if ($Purge -and (-not (Test-Path (Join-Path $StateDir 'profile.json') -PathType Leaf) -or
@@ -47,11 +67,11 @@ if ($Uninstall) {
     if (Test-Path $binary -PathType Leaf) {
         if (-not (Test-Path (Join-Path $bin '.atf-version') -PathType Leaf)) { Fail "refusing unmanaged $bin" }
         if (Test-Path $StateDir -PathType Container) {
-            & $binary stop --state-dir $StateDir
+            Invoke-Atf $binary @('stop', '--state-dir', $StateDir)
             if ($LASTEXITCODE -ne 0) { Fail 'daemon did not stop; installation left unchanged' }
         }
-        if ($Force) { & $binary uninstall --teardown-only --state-dir $StateDir --force }
-        else { & $binary uninstall --teardown-only --state-dir $StateDir }
+        if ($Force) { Invoke-Atf $binary @('uninstall', '--teardown-only', '--state-dir', $StateDir, '--force') }
+        else { Invoke-Atf $binary @('uninstall', '--teardown-only', '--state-dir', $StateDir) }
         if ($LASTEXITCODE -ne 0) { Fail 'client teardown failed; installation left unchanged' }
     }
     if ($ParentPid -gt 0) {
@@ -65,6 +85,9 @@ if ($Uninstall) {
         }
     }
     if (Test-Path $bin) { Remove-Item $bin -Recurse -Force }
+    foreach ($leftover in @((Join-Path $root 'bin.staging'), $backup)) {
+        if (Test-Path $leftover) { Remove-Item -LiteralPath $leftover -Recurse -Force }
+    }
     if (Test-Path $releases) { Remove-Item $releases -Recurse -Force }
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     if ($userPath) {
@@ -115,7 +138,6 @@ $name = "atf-$Version-$rid.zip"
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $scratch | Out-Null
 $stage = $null
-$backup = Join-Path $root 'bin.previous'
 $extract = $null
 try {
     if (-not $Archive) {
@@ -133,7 +155,7 @@ try {
     $target = Join-Path $releases $Version
     if (Test-Path $target) {
         if (-not (Test-Path (Join-Path $target 'atf.exe') -PathType Leaf)) { Fail "version directory is unmanaged: $target" }
-        if ((& (Join-Path $target 'atf.exe') --version) -ne "atf $Version") { Fail 'installed version failed verification' }
+        if ((Invoke-Atf (Join-Path $target 'atf.exe') @('--version')) -ne "atf $Version") { Fail 'installed version failed verification' }
     } else {
         New-Item -ItemType Directory -Force -Path $releases | Out-Null
         # Extract beside the target: Move-Item cannot move directories across volumes.
@@ -142,17 +164,14 @@ try {
         Expand-Archive -LiteralPath $Archive -DestinationPath $extract
         if (-not (Test-Path (Join-Path $extract 'atf.exe') -PathType Leaf)) { Fail 'archive missing atf.exe' }
         $extractedBinary = Join-Path $extract 'atf.exe'
-        try { $extractedVersion = & $extractedBinary --version }
-        catch {
-            Fail "could not start '$extractedBinary': $($_.Exception.Message). Windows security (Defender ASR / Smart App Control) may have blocked it. Allow that path in the Windows Security notification and rerun; the path will be the same next time."
-        }
+        $extractedVersion = Invoke-Atf $extractedBinary @('--version')
         if ($extractedVersion -ne "atf $Version") { Fail 'archive version mismatch' }
         Move-Item $extract $target
     }
     if (Test-Path $bin) {
         if (-not (Test-Path (Join-Path $bin '.atf-version') -PathType Leaf)) { Fail "refusing unmanaged $bin" }
         if ((Get-Content (Join-Path $bin '.atf-version') -Raw).Trim() -eq $Version) {
-            if ((& $binary --version) -ne "atf $Version") { Fail 'installed binary failed verification' }
+            if ((Invoke-Atf $binary @('--version')) -ne "atf $Version") { Fail 'installed binary failed verification' }
             Ensure-Path $bin
             Write-Output "atf $Version already installed: $binary"
             return
@@ -160,12 +179,15 @@ try {
     }
     $stage = Join-Path $root 'bin.staging'
     if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
-    if (Test-Path $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
+    if ((Test-Path $bin) -and (Test-Path $backup)) {
+        try { Remove-Item -LiteralPath $backup -Recurse -Force }
+        catch { Fail "cannot remove old binary copy at $backup; close processes using that folder and rerun: $($_.Exception.Message)" }
+    }
     Copy-Item $target $stage -Recurse
     Set-Content (Join-Path $stage '.atf-version') $Version -Encoding ascii
     if (Test-Path $bin) {
         if (Test-Path $StateDir -PathType Container) {
-            & $binary stop --state-dir $StateDir
+            Invoke-Atf $binary @('stop', '--state-dir', $StateDir)
             if ($LASTEXITCODE -ne 0) { Fail 'daemon did not stop; installation left unchanged' }
         }
         try { Move-Item $bin $backup }
@@ -188,4 +210,7 @@ try {
     if (Test-Path $scratch) { Remove-Item $scratch -Recurse -Force }
     if ($stage -and (Test-Path $stage)) { Remove-Item $stage -Recurse -Force }
     if ($extract -and (Test-Path $extract)) { Remove-Item $extract -Recurse -Force }
+}
+} finally {
+    $installLock.Dispose()
 }

@@ -70,3 +70,53 @@ The supplied real rc1 archive was therefore not installed, and
 `C:\Users\mikael.liljedahl\.local\share\agentteamforge` was not touched.
 
 Changes and this report are committed on the requested branch; nothing is pushed.
+
+## Review fixes
+
+Read `docs/fixes/installer-fixed-staging-review.md` in full and addressed M1,
+M2, L1, L2 and uninstall leftovers (L3).
+
+- M1: under the installer lock, recover `bin.previous` into missing `bin` only
+  when both `atf.exe` and `.atf-version` are present. This runs before install
+  and uninstall, enabling verification, daemon stop and teardown on the recovered
+  install. An incomplete sole backup is preserved and installation fails clearly;
+  uninstall can still remove that incomplete leftover.
+- M2: all executable calls (three verification paths, daemon stops and teardown)
+  use one `Invoke-Atf` helper. It preserves arguments, native output and exit code.
+  Launch failures name the executable and tell Defender ASR users to allow the
+  install folder `%USERPROFILE%\.local\share\agentteamforge\` in Windows Security.
+  Smart App Control guidance explicitly says it has no path allow and must be
+  off or the binary signed; retries alone will not fix a SAC block. Updated
+  `docs/install.md` accordingly. This supersedes the original path-allow advice.
+- L1: stale `bin.previous` is deleted only when `bin` exists, inside try/catch.
+  Chose the review's permitted clear-failure option: if removal fails, tell the
+  user to close processes using that folder and rerun. The active install remains.
+  The existing post-upgrade delete still warns and retains the old copy on failure.
+- L2: hold a `FileStream` with `FileShare.None` on `$root\install.lock` for the
+  entire install/uninstall, including recovery and cleanup. Contention fails
+  fast with "another installer is running". An outer finally disposes the lock
+  on success, early return and errors. Keep the lock file to avoid deletion races.
+- L3: uninstall removes `bin.staging` and `bin.previous`; existing recursive
+  removal of `releases` also removes every `releases\*.staging` directory.
+
+Validation after review fixes:
+
+- Real Windows PowerShell 5.1.26100.9444 parser: final script passed.
+- Executed the actual helper extracted from the script's AST in PowerShell 5.1:
+  argument forwarding and native exit code 7 passed; a nonexistent executable
+  produced the shared ASR/SAC guidance.
+- Executed the actual lock/recovery blocks extracted from the final script's AST
+  against a temporary directory inside this repository: second lock acquisition
+  failed fast, acquisition after disposal succeeded, complete backup recovery
+  passed, incomplete backup was preserved/refused for install, and incomplete
+  backup did not prevent uninstall cleanup. Temporary fixtures were removed.
+- Re-ran the same `InstallScriptTests` filter with `--no-restore` and minimal
+  console logging. Build passed; tests again exited 1 with 2 passed / 7 failed:
+  the same six `SetUnixFileMode` Windows fixture failures and unchanged autostart
+  assertion failure documented above. No tests were modified or suppressed.
+- `git diff --check` passed. The real rc1 end-to-end install remains skipped
+  because no custom install root is available; the real user installation was
+  untouched. Unix installer remains unchanged.
+
+Review fixes and this appended report are committed on
+`fix/installer-fixed-staging`; nothing is pushed.
