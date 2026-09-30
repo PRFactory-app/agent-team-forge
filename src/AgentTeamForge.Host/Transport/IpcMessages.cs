@@ -128,6 +128,7 @@ public static class IpcProtocol
     public const string ExternalSetWake = "external_set_wake";
     public const string ExternalLeave = "external_leave";
     public const string ExternalLeadSend = "external_lead_send";
+    public const string ExternalOperatorSend = "external_operator_send";
     public const string ExternalLeadRead = "external_lead_read";
     public const string HumanInputRequest = "human_input_request";
 
