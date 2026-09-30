@@ -147,7 +147,7 @@ public static class DaemonCommand
             backends.Register(BackendCatalog.Cursor, () => new HeadlessOnlyBackend(BackendCatalog.Cursor));
             backends.Register(BackendCatalog.Droid, () => new HeadlessOnlyBackend(BackendCatalog.Droid));
         }
-        var idleTimeout = TimeSpan.FromMinutes(SetupCommand.ConfiguredIdleCloseMinutes(state));
+        var retentionSettings = new InteractiveRetentionConfiguration(state);
         var interactiveBackends = new List<IInteractiveSessionStop>();
         HerdrTerminal? herdrTerminal = null;
         if (launchMode == "herdr")
@@ -159,7 +159,7 @@ public static class DaemonCommand
                 Environment = seed,
                 SessionEnvironment = OperatingSystem.IsLinux() ? SystemdUser.ReadSessionEnvironment : null,
             });
-            HerdrInteractiveBackend Interactive(InteractiveAgentKind kind) => new(herdrTerminal, kind, state.Path, idleTimeout);
+            HerdrInteractiveBackend Interactive(InteractiveAgentKind kind) => new(herdrTerminal, kind, state.Path, retentionSettings: () => retentionSettings.Current);
             var claude = Interactive(InteractiveAgentKind.Claude);
             var codex = Interactive(InteractiveAgentKind.Codex);
             var pi = Interactive(InteractiveAgentKind.Pi);
@@ -170,9 +170,9 @@ public static class DaemonCommand
         }
         if (launchMode == "wt")
         {
-            var claude = new WtInteractiveBackend(InteractiveAgentKind.Claude, state.Path, idleTimeout);
-            var codex = new WtInteractiveBackend(InteractiveAgentKind.Codex, state.Path, idleTimeout);
-            var pi = new WtInteractiveBackend(InteractiveAgentKind.Pi, state.Path, idleTimeout);
+            var claude = new WtInteractiveBackend(InteractiveAgentKind.Claude, state.Path, retentionSettings: () => retentionSettings.Current);
+            var codex = new WtInteractiveBackend(InteractiveAgentKind.Codex, state.Path, retentionSettings: () => retentionSettings.Current);
+            var pi = new WtInteractiveBackend(InteractiveAgentKind.Pi, state.Path, retentionSettings: () => retentionSettings.Current);
             interactiveBackends.AddRange([claude, codex, pi]);
             backends.Register(BackendCatalog.Claude, () => claude);
             backends.Register(BackendCatalog.Codex, () => codex);
@@ -182,7 +182,7 @@ public static class DaemonCommand
         {
             var settings = SetupCommand.ConfiguredTerminal(state)!;
             MacInteractiveBackend Interactive(InteractiveAgentKind kind) => new(kind, state.Path,
-                settings.TerminalProvider!, settings.KittyAddress, settings.KittyBinary, idleTimeout);
+                settings.TerminalProvider!, settings.KittyAddress, settings.KittyBinary, retentionSettings: () => retentionSettings.Current);
             var claude = Interactive(InteractiveAgentKind.Claude);
             var codex = Interactive(InteractiveAgentKind.Codex);
             var pi = Interactive(InteractiveAgentKind.Pi);
@@ -235,7 +235,7 @@ public static class DaemonCommand
                     || backends.Resolve(backend) is not IInteractiveSessionStop interactive) { return null; }
                 try { return interactive.HasLiveSession(session); }
                 catch (Exception ex) when (ex is HerdrLaunchException or InteractiveTerminalUnavailableException or IOException or OperationCanceledException) { return null; }
-            });
+            }, retentionSettings);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,

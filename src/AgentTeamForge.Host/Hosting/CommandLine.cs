@@ -6,8 +6,8 @@ internal static class CommandLine
     // A "+" prefix marks a presence-only flag: a bare word after it is a stray argument, not its value.
     static readonly (string Command, string Usage, string[]? Options)[] Commands =
     [
-        ("setup", "setup [--mode headless|herdr|terminal|wt] [--web-port PORT] [--idle-close-minutes MINUTES|off] [--autostart[=off]] [--state-dir DIR] [--check|--apply] [--force]",
-            ["mode", "web-port", "idle-close-minutes", "autostart", "state-dir", "+check", "+apply", "+force"]),
+        ("setup", "setup [--mode headless|herdr|terminal|wt] [--web-port PORT] [--idle-close-minutes MINUTES|off] [--max-retained-sessions COUNT] [--autostart[=off]] [--state-dir DIR] [--check|--apply] [--force]",
+            ["mode", "web-port", "idle-close-minutes", "max-retained-sessions", "autostart", "state-dir", "+check", "+apply", "+force"]),
         ("doctor", "doctor [--state-dir DIR]", ["state-dir"]),
         ("start", "start [--state-dir DIR]", ["state-dir"]),
         ("stop", "stop [--state-dir DIR]", ["state-dir"]),

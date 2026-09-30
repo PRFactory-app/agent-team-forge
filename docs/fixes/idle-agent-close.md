@@ -6,11 +6,18 @@ Implementation commit: **5b8e2542ad7c198f2f6c8922ad460462f6bc482a**. This report
 
 ## Design and configuration
 
-`RetainedSessions` now owns a disposable 30-second `TimeProvider` timer. A monotonic timestamp is recorded when a settled turn calls `Remember`. The sweep checks expiration and removes each eligible session under the existing lock, then invokes the existing owned-session stop callback outside the lock. `TryTake` removes an entry under that same lock before ordinary follow-up reuse. Successful closure drops retention; cleanup exceptions remain retryable through the same best-effort path as LRU eviction. The existing 16-session cap still applies.
+`RetainedSessions` now owns a disposable 30-second `TimeProvider` timer. A monotonic timestamp is recorded when a settled turn calls `Remember`. The sweep checks expiration and removes each eligible session under the existing lock, then invokes the existing owned-session stop callback outside the lock. `TryTake` removes an entry under that same lock before ordinary follow-up reuse. Successful closure drops retention; cleanup exceptions remain retryable through the same best-effort path as LRU eviction. The configurable retained-session cap still applies (default 16); lowering it evicts the oldest entries on the next sweep.
 
-Setting: **`idle_close_minutes`**, stored in the state directory's **`launch-mode.json`** (the actual launch settings file in this checkout, rather than `settings.json`). Default and absent value: **5 minutes**. **0** closes immediately when a turn settles. **-1** disables time-based cleanup, preserving the LRU cap. Other negative persisted values are rejected. `atf setup --idle-close-minutes MINUTES|off` accepts a non-negative integer or `off` (persisted as -1), preserves an existing value when omitted, and documents the option in CLI help. Restart the daemon to apply changes.
+Settings are stored in the state directory's **`launch-mode.json`** (the actual launch settings file in this checkout, rather than `settings.json`):
 
-The Windows, macOS and Herdr constructors accept the timeout; their retained-session timers are disposed on daemon shutdown. The web console Settings view only exposes model tiers, not launch configuration, so no timeout setting UI was added.
+- **`idle_close_minutes`**: default/absent **5**, range **0..1440**, or **-1** for off. Zero closes when the turn settles.
+- **`max_retained_sessions`**: default/absent **16**, range **0..64**. Zero retains no idle sessions.
+
+Both are editable in **web console Settings → Idle interactive agents**. `GET/PUT /api/settings/retention` follows the existing tiers route and bearer/loopback host/origin checks. HTTP PUT requires both fields; idle minutes accepts a number in 0..1440 or the string `off`. The daemon IPC handler independently validates both limits, maps off to -1, and persists through the existing atomic private-file `WriteMode` path. Unrelated launch settings are preserved. Error responses use the console's existing conventions. The small form uses number inputs, an off checkbox, and textContent for status.
+
+CLI options: `atf setup --idle-close-minutes MINUTES|off --max-retained-sessions COUNT`; omitted values preserve existing settings. **No daemon restart is required.** All Windows, macOS and Herdr backends share one live settings source, reloaded on Remember and every sweep. A shortened timeout uses the original idle timestamp. Lowering the cap closes the oldest excess idle sessions within the next 30-second sweep; increasing it allows subsequent turns to retain more sessions. Off disables only timeout closure, not the cap or periodic check. Invalid/unreadable external edits retain the last known good limits; endpoint writes reject invalid values before persistence.
+
+Backend timers are disposed on daemon shutdown. Active ordinary/native turns are outside the retained idle pool, so changing either limit does not stop them.
 
 Native Claude/Codex delivery bypasses backend `Start`. Those claim paths now reserve/remove the retained session under the same lock before delivery and restart retention after native settlement. A native-turn marker prevents the prior run's late unwind from re-retaining an agent during delivery. An ordinary resume clears stale native markers. A Codex queue submission that never started restores idle retention before the existing resume fallback.
 
@@ -39,6 +46,12 @@ Verified the resume path in code: Herdr `Start` reuses only a retained live sess
 - `src/AgentTeamForge.Host/Hosting/CommandLine.cs`
 - `src/AgentTeamForge.Host/Hosting/DaemonCommand.cs`
 - `tests/AgentTeamForge.Tests/Features/Agents/Terminals/RetainedSessionsTests.cs`
+- `src/AgentTeamForge.Business/Features/Agents/Terminals/InteractiveRetentionSettings.cs`
+- `src/AgentTeamForge.Host/Features/Setup/InteractiveRetentionConfiguration.cs`
+- `src/AgentTeamForge.Host/Transport/IpcMessages.cs`
+- `src/AgentTeamForge.Host/Features/WebConsole/WebConsoleServer.cs`
+- `src/AgentTeamForge.Host/Features/WebConsole/wwwroot/index.html`
+- `tests/AgentTeamForge.Tests/Features/WebConsole/WebConsoleServerTests.cs`
 - `docs/fixes/idle-agent-close.md` (this report)
 
 ## Validation
@@ -54,6 +67,14 @@ SDK: `C:/Projekt/git/agent-team-forge/.tools/dotnet11/dotnet.exe`.
 - Managed publish (`dotnet publish ... -c Release --no-build -p:PublishAot=false`) **passed**. Published `.idle-publish-managed/atf.exe --version` with `DOTNET_ROOT` pointing to the supplied SDK **passed**, output `atf 0.0.1-dev`. CLI help includes the new option.
 - `git diff --check`: **passed**.
 - No Linux/macOS machine execution and no opposite-family review performed by this implementation worker; integration review remains with the parent workflow.
+
+## Live-settings follow-up validation
+
+The additional request made both limits editable in the console without restarting. The final Release build with `-warnaserror` passes with **0 warnings and 0 errors**. Final combined selection includes terminal/Herdr, native Claude/Codex delivery, SetupCommandTests, CommandLineTests and WebConsoleServerTests: **386 passed, 71 failed, 5 skipped, 462 total**. The failure names match the main baseline union exactly. Main's WebConsoleServerTests selection adds **41 passed, 0 failed** to the earlier baseline. All **four new tests** pass (three retention tests plus one endpoint test).
+
+The focused endpoint test checks bearer/origin rejection, server-side missing/out-of-range/off validation, persistence and reopening the settings source, preservation of another launch setting, live oldest-first cap reduction, and zero limits. It exercises the actual HTTP route and daemon settings handler with a temporary JSON file store. Read/write delegates isolate the pre-existing Windows `StateDirectory.Open` ACL failure in the test fixture; production still uses the existing StateDirectory private-file reads and atomic WriteMode implementation. An initial test run hit that fixture failure before reaching the endpoint; after this test isolation, no new failures remain.
+
+`node --check src/AgentTeamForge.Host/Features/WebConsole/wwwroot/app.js` passes. The final managed publish and published `atf.exe --version` smoke run pass. The previously recorded missing native AOT C++ toolchain remains a limitation. No real browser interaction or Linux/macOS runtime test was performed by this worker.
 
 ## Pre-existing Windows failures
 

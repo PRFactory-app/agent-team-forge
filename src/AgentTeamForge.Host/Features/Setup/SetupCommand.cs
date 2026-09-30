@@ -51,12 +51,22 @@ public static class SetupCommand
         if (options.TryGetValue("idle-close-minutes", out var idleText))
         {
             if (idleText == "off") { idleMinutes = -1; }
-            else if (int.TryParse(idleText, NumberStyles.None, CultureInfo.InvariantCulture, out var minutes)) { idleMinutes = minutes; }
+            else if (int.TryParse(idleText, NumberStyles.None, CultureInfo.InvariantCulture, out var minutes) && minutes <= 1440) { idleMinutes = minutes; }
             else
             {
-                Console.Error.WriteLine("error: --idle-close-minutes must be a non-negative integer or off");
+                Console.Error.WriteLine("error: --idle-close-minutes must be between 0 and 1440 or off");
                 return 64;
             }
+        }
+        int? maxRetained = null;
+        if (options.TryGetValue("max-retained-sessions", out var maxText))
+        {
+            if (!int.TryParse(maxText, NumberStyles.None, CultureInfo.InvariantCulture, out var cap) || cap > 64)
+            {
+                Console.Error.WriteLine("error: --max-retained-sessions must be between 0 and 64");
+                return 64;
+            }
+            maxRetained = cap;
         }
         var dir = ResolveStateDir(options);
         if (LegacyWindowsStateDir(options, dir) is { } legacy)
@@ -92,7 +102,7 @@ public static class SetupCommand
         if (mode is not ("headless" or "herdr" or "terminal" or "wt")
             && !(check && mode is null) && !(autostart == "off" && !check && configuredMode is null))
         {
-            Console.Error.WriteLine("usage: atf setup [--mode headless|herdr|terminal|wt] [--web-port PORT] [--idle-close-minutes MINUTES|off] [--autostart[=off]] [--state-dir DIR] [--check|--apply] [--force]");
+            Console.Error.WriteLine("usage: atf setup [--mode headless|herdr|terminal|wt] [--web-port PORT] [--idle-close-minutes MINUTES|off] [--max-retained-sessions COUNT] [--autostart[=off]] [--state-dir DIR] [--check|--apply] [--force]");
             return 64;
         }
         if (mode is not null && !ModeAvailable(mode))
@@ -176,7 +186,7 @@ public static class SetupCommand
             : new LaunchModeSettings(mode!);
         var webPort = options.TryGetValue("web-port", out webPortText)
             ? int.Parse(webPortText, CultureInfo.InvariantCulture) : ConfiguredWebPort(state);
-        WriteMode(state, settings with { WebPort = webPort, IdleCloseMinutes = idleMinutes ?? ConfiguredIdleCloseMinutes(state) });
+        WriteMode(state, settings with { WebPort = webPort, IdleCloseMinutes = idleMinutes ?? ConfiguredIdleCloseMinutes(state), MaxRetainedSessions = maxRetained ?? ConfiguredMaxRetainedSessions(state) });
 
         // A failed client `mcp add` is non-fatal (launch config is written; --check is the health gate). Other failures keep exit 1.
         if (!ClientSetup.Reconcile(binary, state.Path, home, settingsPath, extensionPath, commandRunner, apply: true,
@@ -754,7 +764,7 @@ public static class SetupCommand
         return 0;
     }
 
-    static void WriteMode(StateDirectory state, LaunchModeSettings settings)
+    internal static void WriteMode(StateDirectory state, LaunchModeSettings settings)
     {
         var path = Path.Combine(state.Path, SettingsFile);
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -828,7 +838,7 @@ public static class SetupCommand
         }
     }
 
-    static LaunchModeSettings ReadSettings(StateDirectory state)
+    internal static LaunchModeSettings ReadSettings(StateDirectory state)
     {
         var path = Path.Combine(state.Path, SettingsFile);
         LaunchModeSettings? settings;
@@ -843,7 +853,7 @@ public static class SetupCommand
         if (settings?.Mode is not ("headless" or "herdr" or "terminal" or "wt")
             || settings.Mode == "terminal" && (settings.TerminalProvider is not ("terminal" or "kitty")
                 || settings.TerminalProvider == "kitty" && (settings.KittyAddress is null || settings.KittyBinary is null))
-            || settings.WebPort is not (>= 1 and <= 65535) || settings.IdleCloseMinutes < -1)
+            || settings.WebPort is not (>= 1 and <= 65535) || settings.IdleCloseMinutes is < -1 or > 1440 || settings.MaxRetainedSessions is < 0 or > 64)
         {
             throw new StateDirectoryException("launch_mode_invalid");
         }
@@ -891,11 +901,17 @@ public static class SetupCommand
         _ => true,
     };
 
+    internal static LaunchModeSettings? ConfiguredSettings(StateDirectory state) =>
+        File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadSettings(state) : null;
+
     internal static string? ConfiguredMode(StateDirectory state) =>
         File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadMode(state) : null;
 
     internal static LaunchModeSettings? ConfiguredTerminal(StateDirectory state) =>
         File.Exists(Path.Combine(state.Path, SettingsFile)) && ReadSettings(state) is { Mode: "terminal" } settings ? settings : null;
+
+    internal static int ConfiguredMaxRetainedSessions(StateDirectory state) =>
+        File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadSettings(state).MaxRetainedSessions : 16;
 
     internal static int ConfiguredIdleCloseMinutes(StateDirectory state) =>
         File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadSettings(state).IdleCloseMinutes : 5;
@@ -953,6 +969,7 @@ public static class SetupCommand
 
 public sealed record LaunchModeSettings(string Mode, string? TerminalProvider = null, string? KittyAddress = null, string? KittyBinary = null)
 {
+    public int MaxRetainedSessions { get; init; } = 16;
     public int IdleCloseMinutes { get; init; } = 5;
     public int WebPort { get; init; } = SetupCommand.DefaultWebPort;
 }

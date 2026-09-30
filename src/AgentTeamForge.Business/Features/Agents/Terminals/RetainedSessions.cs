@@ -2,7 +2,7 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
 /// <summary>
 /// Idle interactive sessions this daemon keeps open for a follow-up or Stop agent.
-/// Past <see cref="MaxRetained"/> the oldest tab is closed; failed cleanup remains retryable.
+/// Past the configured idle timeout or cap the tab is closed; failed cleanup remains retryable.
 /// </summary>
 internal sealed class RetainedSessions : IDisposable
 {
@@ -14,33 +14,41 @@ internal sealed class RetainedSessions : IDisposable
     readonly Action<InteractiveLaunch> _stop;
     readonly TimeProvider _clock;
     readonly TimeSpan _timeout;
-    readonly ITimer? _timer;
+    readonly ITimer _timer;
+    readonly Func<InteractiveRetentionSettings>? _settings;
 
-    public RetainedSessions(Action<InteractiveLaunch> stop, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null)
+    public RetainedSessions(Action<InteractiveLaunch> stop, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null, Func<InteractiveRetentionSettings>? settings = null)
     {
         _stop = stop;
         _clock = timeProvider ?? TimeProvider.System;
         _timeout = idleTimeout ?? TimeSpan.FromMinutes(5);
-        if (_timeout >= TimeSpan.Zero)
-        {
-            _timer = _clock.CreateTimer(_ => Sweep(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
-        }
+        _settings = settings;
+        _timer = _clock.CreateTimer(_ => Sweep(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
     }
 
-    public void Dispose() => _timer?.Dispose();
+    public void Dispose() => _timer.Dispose();
 
     internal void Sweep()
     {
+        var settings = _settings?.Invoke();
+        var timeout = settings?.IdleTimeout() ?? _timeout;
+        var maxRetained = settings?.MaxRetainedSessions ?? MaxRetained;
         var expired = new List<(string Id, InteractiveLaunch Launch)>();
         lock (_gate)
         {
             foreach (var pair in _sessions.ToArray())
             {
-                if (_timeout >= TimeSpan.Zero && _clock.GetElapsedTime(pair.Value.IdleSince) >= _timeout)
+                if (timeout >= TimeSpan.Zero && _clock.GetElapsedTime(pair.Value.IdleSince) >= timeout)
                 {
                     _sessions.Remove(pair.Key);
                     expired.Add((pair.Key, pair.Value.Launch));
                 }
+            }
+            while (_sessions.Count > maxRetained)
+            {
+                var oldest = _sessions.MinBy(pair => pair.Value.Order);
+                _sessions.Remove(oldest.Key);
+                expired.Add((oldest.Key, oldest.Value.Launch));
             }
         }
         CloseBestEffort(expired);
@@ -92,6 +100,9 @@ internal sealed class RetainedSessions : IDisposable
 
     public void Remember(string sessionId, InteractiveLaunch launch)
     {
+        var settings = _settings?.Invoke();
+        var timeout = settings?.IdleTimeout() ?? _timeout;
+        var maxRetained = settings?.MaxRetainedSessions ?? MaxRetained;
         var evicted = new List<(string Id, InteractiveLaunch Launch)>();
         lock (_gate)
         {
@@ -101,7 +112,7 @@ internal sealed class RetainedSessions : IDisposable
                 evicted.Add((sessionId, replaced.Launch));
             }
             _sessions[sessionId] = (launch, _next++, _clock.GetTimestamp());
-            while (_sessions.Count > MaxRetained || _timeout == TimeSpan.Zero && _sessions.Count > 0)
+            while (_sessions.Count > maxRetained || timeout == TimeSpan.Zero && _sessions.Count > 0)
             {
                 var oldest = _sessions.MinBy(pair => pair.Value.Order);
                 _sessions.Remove(oldest.Key);

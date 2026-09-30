@@ -73,8 +73,18 @@
   </section>
 
   <section id="settings-view" hidden>
-    <div class="section-heading"><div><h2>Settings</h2><p class="note">Changes apply to new jobs. Existing jobs keep their selected model, effort and Herdr placement.</p></div><button id="settings-back" type="button">Back to overview</button></div>
+    <div class="section-heading"><div><h2>Settings</h2><p class="note">Model, effort and Herdr placement changes apply to new jobs. Idle limits also apply to currently retained agents.</p></div><button id="settings-back" type="button">Back to overview</button></div>
     <div id="herdr-settings" hidden><h3>Herdr placement</h3><label>Default <select id="settings-placement"><option value="shared">Shared session</option><option value="own-session">Own session</option></select></label> <label id="settings-session-field" hidden>Session name <input id="settings-session" type="text" maxlength="64" value="default" pattern="[A-Za-z0-9_-]+"></label> <button id="settings-placement-save" type="button">Save placement</button></div>
+    <h3>Idle interactive agents</h3>
+    <p class="note">Changes apply while the daemon runs. Lower limits close the oldest idle agents on the next sweep (within 30 seconds). Saved sessions can still be resumed.</p>
+    <form id="retention-settings">
+      <label>Maximum retained <input id="settings-max-retained" type="number" min="0" max="64" required value="16"></label>
+      <label>Idle minutes <input id="settings-idle-minutes" type="number" min="0" max="1440" required value="5"></label>
+      <label><input id="settings-idle-off" type="checkbox"> Disable idle timeout</label>
+      <button type="submit">Save idle settings</button>
+      <span id="retention-status" role="status"></span>
+      <p class="note">0 for either limit retains no idle agents.</p>
+    </form>
     <h3>Capability tiers</h3>
     <div id="tier-settings"></div>
     <div class="settings-actions"><button id="tiers-reset-all" type="button">Reset all to default</button><span id="settings-status" role="status"></span></div>

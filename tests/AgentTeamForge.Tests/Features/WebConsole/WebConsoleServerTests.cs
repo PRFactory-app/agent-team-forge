@@ -3,6 +3,9 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Business.Features.Agents.Terminals;
+using AgentTeamForge.Host.Features.Setup;
+using AgentTeamForge.Tests.Support;
 using AgentTeamForge.Host.Features.WebConsole;
 using AgentTeamForge.Host.Transport;
 
@@ -63,6 +66,56 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
     HttpRequestMessage Ticket(string leadId, WebJoinTicketBody body, string? token = null, string? origin = null) =>
         Api(HttpMethod.Post, $"/api/leads/{leadId}/join-ticket", token, origin ?? Origin,
             JsonSerializer.Serialize(body, WebConsoleJson.Default.WebJoinTicketBody));
+
+    [Fact]
+    public async Task Retention_settings_validate_persist_and_apply_to_live_sessions()
+    {
+        using var temp = new TempStateDir();
+        var settingsPath = temp.File("launch-mode.json");
+        LaunchModeSettings? Read() => JsonSerializer.Deserialize(File.ReadAllText(settingsPath), SetupCommandJson.Default.LaunchModeSettings);
+        void Write(LaunchModeSettings value) => File.WriteAllText(settingsPath, JsonSerializer.Serialize(value, SetupCommandJson.Default.LaunchModeSettings));
+        Write(new LaunchModeSettings("headless") { WebPort = 9876 });
+        var settings = new InteractiveRetentionConfiguration(Read, Write);
+        Daemon = r => Task.FromResult(settings.Handle(r));
+        const string path = "/api/settings/retention";
+        const string valid = """{"max_retained_sessions":2,"idle_close_minutes":"off"}""";
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Send(Api(HttpMethod.Put, path, WebConsoleServer.NewToken(), Origin, valid))).Status);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Send(Api(HttpMethod.Put, path, origin: "http://attacker.example", json: valid))).Status);
+        Assert.Empty(_forwarded);
+        Assert.Equal(new InteractiveRetentionSettings(), settings.Current);
+        var stopped = new List<InteractiveLaunch>();
+        using var retained = new RetainedSessions(stopped.Add, settings: () => settings.Current);
+        for (var i = 0; i < 3; i++) { retained.Remember("s" + i, new(InteractiveAgentKind.Claude, "atf" + i, temp.Path, null, null, temp.File("b" + i))); }
+        var (savedStatus, savedBody) = await Send(Api(HttpMethod.Put, path, origin: Origin, json: valid));
+        Assert.True(savedBody.Ok);
+        Assert.Equal(HttpStatusCode.OK, savedStatus);
+        Assert.Equal(new InteractiveRetentionSettings(2, -1), new InteractiveRetentionConfiguration(Read, Write).Current);
+        Assert.Equal(9876, Read()!.WebPort);
+        retained.Sweep();
+        Assert.Equal(2, retained.Count);
+        Assert.Equal("atf0", Assert.Single(stopped).AgentName);
+        foreach (var invalid in new[]
+        {
+            """{"max_retained_sessions":65,"idle_close_minutes":5}""",
+            """{"max_retained_sessions":-1,"idle_close_minutes":5}""",
+            """{"max_retained_sessions":2,"idle_close_minutes":1441}""",
+            """{"max_retained_sessions":2,"idle_close_minutes":-1}""",
+            """{"idle_close_minutes":"off"}""",
+            """{"max_retained_sessions":2}"""
+        })
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, (await Send(Api(HttpMethod.Put, path, origin: Origin, json: invalid))).Status);
+        }
+        Assert.False(settings.Handle(new IpcRequest { Op = IpcProtocol.RetentionSettingsPut, MaxRetainedSessions = 65, IdleCloseMinutes = 5 }).Ok);
+        Assert.False(settings.Handle(new IpcRequest { Op = IpcProtocol.RetentionSettingsPut, MaxRetainedSessions = 2, IdleCloseMinutes = 1441 }).Ok);
+        Assert.Equal(new InteractiveRetentionSettings(2, -1), new InteractiveRetentionConfiguration(Read, Write).Current);
+        Assert.Equal(HttpStatusCode.OK, (await Send(Api(HttpMethod.Get, path))).Status);
+        Assert.Equal(HttpStatusCode.OK, (await Send(Api(HttpMethod.Put, path, origin: Origin,
+            json: """{"max_retained_sessions":0,"idle_close_minutes":0}"""))).Status);
+        retained.Sweep();
+        Assert.Equal(0, retained.Count);
+        Assert.Equal(3, stopped.Count);
+    }
 
     [Fact]
     public async Task Tier_settings_require_bearer_host_and_origin_before_forwarding()

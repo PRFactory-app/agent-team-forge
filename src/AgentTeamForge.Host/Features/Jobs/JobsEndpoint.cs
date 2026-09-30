@@ -1,4 +1,5 @@
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Host.Features.Setup;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.External;
 using AgentTeamForge.Business.Features.Wake;
@@ -18,7 +19,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null, ClaudeWakeMailbox? claudeMailbox = null, string? launchMode = null,
     Func<string?, string?, string?, HumanInputRequestResult>? humanInput = null, ExternalMemberStore? externalMembers = null,
     GetJob? connectorGet = null, Func<string, string, AttemptClaim?>? takeNativeClaude = null,
-    RemoveWorktree? removeWorktree = null, WorktreeCleanup? worktreeCleanup = null, Func<string?, string?, string, bool?>? agentLive = null)
+    RemoveWorktree? removeWorktree = null, WorktreeCleanup? worktreeCleanup = null, Func<string?, string?, string, bool?>? agentLive = null, InteractiveRetentionConfiguration? retentionSettings = null)
 {
     JobResult ReadJob(IpcRequest request)
     {
@@ -202,6 +203,9 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 if (herdrPlacement is null || request.HerdrPlacement is null) { return new IpcResponse(false, JobErrors.InvalidRequest); }
                 try { herdrPlacement.Change(request.HerdrPlacement); return new IpcResponse(true, Outcome: "herdr_placement", HerdrPlacement: herdrPlacement.Default, HerdrMode: true); }
                 catch (ArgumentException e) { return new IpcResponse(false, e.Message); }
+            case IpcProtocol.RetentionSettingsGet:
+            case IpcProtocol.RetentionSettingsPut:
+                return retentionSettings?.Handle(request) ?? new IpcResponse(false, JobErrors.InvalidRequest);
             case IpcProtocol.TierSettingsGet:
                 _ = modelDiscovery?.Warm(configuredBackends ?? []);
                 return tierMap is null ? new IpcResponse(false, JobErrors.InvalidRequest)

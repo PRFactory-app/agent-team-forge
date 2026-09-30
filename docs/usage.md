@@ -70,10 +70,16 @@ this branch") or call the MCP tools directly:
 
 Idle interactive agents close automatically after 5 minutes (checked every 30 seconds),
 while native transcripts remain available for `follow_up` / `revive_agent` relaunch.
-Configure with `atf setup --idle-close-minutes MINUTES|off` and restart the daemon:
-`0` closes on turn settlement; `off` keeps only the existing 16-session LRU cap.
-The state directory's `launch-mode.json` stores `idle_close_minutes` (absent = 5,
-`-1` = off). Failed owned-session cleanup remains retryable.
+The web console **Settings → Idle interactive agents** edits both limits while
+the daemon runs: maximum retained sessions **0..64** (default **16**) and idle
+minutes **0..1440** (default **5**), or disable the timeout. A zero for either
+limit retains no idle agents. Lowering a limit closes eligible idle sessions on
+the next sweep (within 30 seconds); follow-ups can still resume saved sessions.
+
+The same settings are available with `atf setup --idle-close-minutes MINUTES|off --max-retained-sessions COUNT`. The state directory's `launch-mode.json` stores
+`idle_close_minutes` (absent = 5, `-1` = off) and `max_retained_sessions`
+(absent = 16). Changes take effect without restarting the daemon. Failed
+owned-session cleanup remains retryable.
 
 Other `submit_job` options:
 

@@ -19,21 +19,21 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
     readonly TimeSpan _startupTimeout;
     readonly Action<InteractiveAgentKind, string>? _configPreflight;
 
-    public WtInteractiveBackend(InteractiveAgentKind kind, string stateRoot, TimeSpan? idleTimeout = null)
-        : this(new WtTabControl(), new InteractiveTranscriptReader(), kind, stateRoot, "wt", configPreflight: InteractiveAgentPreflight.CheckCurrent, idleTimeout: idleTimeout) { }
+    public WtInteractiveBackend(InteractiveAgentKind kind, string stateRoot, TimeSpan? idleTimeout = null, Func<InteractiveRetentionSettings>? retentionSettings = null)
+        : this(new WtTabControl(), new InteractiveTranscriptReader(), kind, stateRoot, "wt", configPreflight: InteractiveAgentPreflight.CheckCurrent, idleTimeout: idleTimeout, retentionSettings: retentionSettings) { }
 
-    internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot, TimeSpan? idleTimeout = null)
-        : this(tabs, transcripts, kind, stateRoot, "wt", idleTimeout: idleTimeout) { }
+    internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot, TimeSpan? idleTimeout = null, Func<InteractiveRetentionSettings>? retentionSettings = null)
+        : this(tabs, transcripts, kind, stateRoot, "wt", idleTimeout: idleTimeout, retentionSettings: retentionSettings) { }
 
     internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot, string tabDirectory, TimeSpan? startupTimeout = null,
-        Action<InteractiveAgentKind, string>? configPreflight = null, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null)
+        Action<InteractiveAgentKind, string>? configPreflight = null, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null, Func<InteractiveRetentionSettings>? retentionSettings = null)
     {
         _tabs = tabs;
         _transcripts = transcripts;
         _kind = kind;
         _stateRoot = stateRoot;
         _tabDirectory = tabDirectory;
-        _liveSessions = new RetainedSessions(tabs.StopOwned, idleTimeout, timeProvider);
+        _liveSessions = new RetainedSessions(tabs.StopOwned, idleTimeout, timeProvider, retentionSettings);
         _startupTimeout = startupTimeout ?? InteractiveStartup.Timeout;
         _configPreflight = configPreflight;
     }

@@ -22,18 +22,18 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     readonly TimeSpan _settleTimeout;
     readonly TimeSpan _startupTimeout;
 
-    public HerdrInteractiveBackend(HerdrTerminal terminal, InteractiveAgentKind kind, string stateRoot, TimeSpan? idleTimeout = null)
-        : this(new HerdrAgentControl(terminal), new InteractiveTranscriptReader(terminal.Env), kind, stateRoot, idleTimeout: idleTimeout) { }
+    public HerdrInteractiveBackend(HerdrTerminal terminal, InteractiveAgentKind kind, string stateRoot, TimeSpan? idleTimeout = null, Func<InteractiveRetentionSettings>? retentionSettings = null)
+        : this(new HerdrAgentControl(terminal), new InteractiveTranscriptReader(terminal.Env), kind, stateRoot, idleTimeout: idleTimeout, retentionSettings: retentionSettings) { }
 
     // settleTimeout: how long an idle agent may go without native completion before the turn is uncertain.
     internal HerdrInteractiveBackend(IHerdrAgentControl control, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot,
-        TimeSpan? settleTimeout = null, TimeSpan? startupTimeout = null, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null)
+        TimeSpan? settleTimeout = null, TimeSpan? startupTimeout = null, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null, Func<InteractiveRetentionSettings>? retentionSettings = null)
     {
         _control = control;
         _transcripts = transcripts;
         _kind = kind;
         _stateRoot = stateRoot;
-        _liveSessions = new RetainedSessions(control.StopOwned, idleTimeout, timeProvider);
+        _liveSessions = new RetainedSessions(control.StopOwned, idleTimeout, timeProvider, retentionSettings);
         _settleTimeout = settleTimeout ?? TimeSpan.FromSeconds(60);
         _startupTimeout = startupTimeout ?? InteractiveStartup.Timeout;
     }

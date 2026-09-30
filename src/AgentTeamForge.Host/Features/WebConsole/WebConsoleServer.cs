@@ -23,6 +23,7 @@ public sealed record WebSubmitBody(string? Backend, string? Instruction, string?
     string? Model = null, string? Effort = null, string? LeadSessionId = null, string? Workspace = null, string? Name = null, string? HerdrPlacement = null);
 public sealed record WebJoinTicketBody(string? Name, string? Workspace, string? Note = null);
 public sealed record WebLeadMessageBody(string? Text, string? Workspace, string? IdempotencyKey);
+public sealed record WebRetentionBody(int? MaxRetainedSessions, JsonElement IdleCloseMinutes);
 public sealed record WebTierBody(string? Backend, string? Tier, string? Model, string? Effort, bool ResetAll = false);
 public sealed record WebHerdrPlacementBody(string? HerdrPlacement);
 public sealed record WebDirectoryEntry(string Name, string Path);
@@ -34,6 +35,7 @@ public sealed record WebDirectoryList(string Path, string? Parent, IReadOnlyList
 [JsonSerializable(typeof(WebJoinTicketBody))]
 [JsonSerializable(typeof(WebLeadMessageBody))]
 [JsonSerializable(typeof(WebTierBody))]
+[JsonSerializable(typeof(WebRetentionBody))]
 [JsonSerializable(typeof(WebHerdrPlacementBody))]
 [JsonSerializable(typeof(WebDirectoryList))]
 public sealed partial class WebConsoleJson : JsonSerializerContext;
@@ -192,6 +194,8 @@ public sealed class WebConsoleServer : IAsyncDisposable
                 Limit = ListJobs.MaxPageSize,
             },
             ("GET", ["config"]) => new IpcRequest { Op = IpcProtocol.JobCapabilities },
+            ("GET", ["settings", "retention"]) => new IpcRequest { Op = IpcProtocol.RetentionSettingsGet },
+            ("PUT", ["settings", "retention"]) => await ReadRetentionAsync(ctx),
             ("GET", ["settings", "tiers"]) => new IpcRequest { Op = IpcProtocol.TierSettingsGet },
             ("PUT", ["settings", "tiers"]) => await ReadTierAsync(ctx),
             ("GET", ["settings", "herdr-placement"]) => new IpcRequest { Op = IpcProtocol.HerdrPlacementGet },
@@ -300,6 +304,17 @@ public sealed class WebConsoleServer : IAsyncDisposable
             Model = body.Model,
             Effort = body.Effort,
         };
+    }
+
+    static async Task<IpcRequest?> ReadRetentionAsync(HttpContext ctx)
+    {
+        var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebRetentionBody);
+        if (body?.MaxRetainedSessions is not (>= 0 and <= 64)) { return null; }
+        int minutes;
+        if (body.IdleCloseMinutes.ValueKind == JsonValueKind.String && body.IdleCloseMinutes.GetString() == "off") { minutes = -1; }
+        else if (body.IdleCloseMinutes.ValueKind != JsonValueKind.Number || !body.IdleCloseMinutes.TryGetInt32(out minutes)
+            || minutes is < 0 or > 1440) { return null; }
+        return new IpcRequest { Op = IpcProtocol.RetentionSettingsPut, MaxRetainedSessions = body.MaxRetainedSessions, IdleCloseMinutes = minutes };
     }
 
     static async Task<IpcRequest?> ReadTierAsync(HttpContext ctx)
