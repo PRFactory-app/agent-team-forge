@@ -88,22 +88,15 @@ public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome 
     public DateTimeOffset? ExpiresAt => Ticket?.ExpiresAt;
     public string? MemberToken => Member?.MemberToken;
     // Inbox fields are flat on the MCP wire (see ForMcp); the nested Inbox is only used daemon->bridge.
-#pragma warning disable IDE0032 // the flat getters merge several sources; these cannot be auto properties
     AgentTeamForge.DAL.Features.External.ExternalInbox? flat;
-    IReadOnlyList<AgentTeamForge.DAL.Features.External.ExternalMessage>? flatMessages;
-    IReadOnlyDictionary<string, long>? flatCursors;
-    long? flatNextSeq, flatSeq;
-    int? flatUnread;
-    bool? flatHasMore;
-#pragma warning restore IDE0032
-    public IReadOnlyList<AgentTeamForge.DAL.Features.External.ExternalMessage>? Messages { get => flat?.Messages ?? flatMessages ?? Inbox?.Messages; init => flatMessages = value; }
-    public long? NextSeq { get => flat?.NextSeq ?? flatNextSeq ?? Inbox?.NextSeq; init => flatNextSeq = value; }
+    public IReadOnlyList<AgentTeamForge.DAL.Features.External.ExternalMessage>? Messages { get => flat?.Messages ?? field ?? Inbox?.Messages; init; }
+    public long? NextSeq { get => flat?.NextSeq ?? field ?? Inbox?.NextSeq; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
-    public long? Seq { get => flat is not null ? flat.SenderSeq : flatSeq ?? Inbox?.SenderSeq; init => flatSeq = value; }
+    public long? Seq { get => flat is not null ? flat.SenderSeq : field ?? Inbox?.SenderSeq; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
-    public IReadOnlyDictionary<string, long>? Cursors { get => flat is not null ? flat.Cursors : flatCursors ?? Inbox?.Cursors; init => flatCursors = value; }
-    public int? UnreadCount { get => flat?.UnreadCount ?? flatUnread ?? Inbox?.UnreadCount; init => flatUnread = value; }
-    public bool? HasMore { get => flat?.HasMore ?? flatHasMore ?? Inbox?.HasMore; init => flatHasMore = value; }
+    public IReadOnlyDictionary<string, long>? Cursors { get => flat is not null ? flat.Cursors : field ?? Inbox?.Cursors; init; }
+    public int? UnreadCount { get => flat?.UnreadCount ?? field ?? Inbox?.UnreadCount; init; }
+    public bool? HasMore { get => flat?.HasMore ?? field ?? Inbox?.HasMore; init; }
 
     /// <summary>MCP-facing copy: inbox fields appear once, at top level, instead of also nested under <c>inbox</c>.</summary>
     public IpcResponse ForMcp() => Inbox is null ? this : (this with { Inbox = null }).WithFlat(Inbox);
