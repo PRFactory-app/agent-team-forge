@@ -87,6 +87,7 @@ public static class JobErrors
 public sealed record JobView(string JobId, string Status, string? Result, string? ReasonCode, int Attempts)
 {
     public string[]? ExpectedOutputs { get; init; }
+    public bool? AgentLive { get; init; }
     public JobDelivery? Delivery { get; init; }
     public StartupProgress? Startup { get; init; }
     public string? Backend { get; init; }

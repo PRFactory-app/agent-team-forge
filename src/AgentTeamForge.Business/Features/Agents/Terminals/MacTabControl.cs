@@ -329,13 +329,15 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
 }
 
 /// <summary>Uses the Windows tab backend's native transcript and evidence loop with a macOS tab host.</summary>
-public sealed class MacInteractiveBackend(InteractiveAgentKind kind, string stateRoot, string provider, string? kittyAddress, string? kittyBinary) : IJobBackend, IInteractiveSessionStop
+public sealed class MacInteractiveBackend(InteractiveAgentKind kind, string stateRoot, string provider, string? kittyAddress, string? kittyBinary, TimeSpan? idleTimeout = null) : IJobBackend, IInteractiveSessionStop, IDisposable
 {
     readonly WtInteractiveBackend _backend = new(new MacTabControl(provider, kittyAddress, kittyBinary),
-        new InteractiveTranscriptReader(), kind, stateRoot, "terminal", configPreflight: InteractiveAgentPreflight.CheckCurrent);
+        new InteractiveTranscriptReader(), kind, stateRoot, "terminal", configPreflight: InteractiveAgentPreflight.CheckCurrent, idleTimeout: idleTimeout);
 
+    public void Dispose() => _backend.Dispose();
     public IBackendRun Start(BackendRequest request) => _backend.Start(request);
     public bool HasIdleSession(string sessionId) => _backend.HasIdleSession(sessionId);
+    public bool HasLiveSession(string sessionId) => _backend.HasLiveSession(sessionId);
     public bool StopIdleSession(string sessionId) => _backend.StopIdleSession(sessionId);
     public void StopAllIdleSessions() => _backend.StopAllIdleSessions();
 

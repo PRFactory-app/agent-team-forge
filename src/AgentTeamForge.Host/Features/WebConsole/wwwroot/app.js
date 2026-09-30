@@ -1208,6 +1208,7 @@
           j.status === 'completed' ? 'done' : j.status === 'parked' ? 'parked · awaiting reply' : j.status.replaceAll('_', ' '));
         const cardMeta = element('span', 'card-meta');
         cardMeta.append(element('span', '', 'accepted ' + age(j.accepted_at) + ' ago'));
+        if (j.agent_live === false) cardMeta.append(element('span', '', 'agent closed'));
         if (j.status !== 'running' && j.updated_at) cardMeta.append(element('span', '', 'updated ' + age(j.updated_at) + ' ago'));
         const preview = j.last_activity || j.reason_code;
         row.append(chips, state);

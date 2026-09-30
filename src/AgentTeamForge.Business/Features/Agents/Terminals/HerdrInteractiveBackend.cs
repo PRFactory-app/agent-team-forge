@@ -10,7 +10,7 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 public enum InteractiveAgentKind { Claude, Codex, Pi }
 
 /// <summary>Runs a real agent TUI in a tab of an ATF-owned Herdr session.</summary>
-public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionStop
+public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionStop, IDisposable
 {
     readonly IHerdrAgentControl _control;
     readonly IInteractiveTranscriptReader _transcripts;
@@ -22,21 +22,23 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     readonly TimeSpan _settleTimeout;
     readonly TimeSpan _startupTimeout;
 
-    public HerdrInteractiveBackend(HerdrTerminal terminal, InteractiveAgentKind kind, string stateRoot)
-        : this(new HerdrAgentControl(terminal), new InteractiveTranscriptReader(terminal.Env), kind, stateRoot) { }
+    public HerdrInteractiveBackend(HerdrTerminal terminal, InteractiveAgentKind kind, string stateRoot, TimeSpan? idleTimeout = null)
+        : this(new HerdrAgentControl(terminal), new InteractiveTranscriptReader(terminal.Env), kind, stateRoot, idleTimeout: idleTimeout) { }
 
     // settleTimeout: how long an idle agent may go without native completion before the turn is uncertain.
     internal HerdrInteractiveBackend(IHerdrAgentControl control, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot,
-        TimeSpan? settleTimeout = null, TimeSpan? startupTimeout = null)
+        TimeSpan? settleTimeout = null, TimeSpan? startupTimeout = null, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null)
     {
         _control = control;
         _transcripts = transcripts;
         _kind = kind;
         _stateRoot = stateRoot;
-        _liveSessions = new RetainedSessions(control.StopOwned);
+        _liveSessions = new RetainedSessions(control.StopOwned, idleTimeout, timeProvider);
         _settleTimeout = settleTimeout ?? TimeSpan.FromSeconds(60);
         _startupTimeout = startupTimeout ?? InteractiveStartup.Timeout;
     }
+
+    public void Dispose() => _liveSessions.Dispose();
 
     public IBackendRun Start(BackendRequest request)
     {
@@ -126,6 +128,13 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         return null;
     }
 
+    internal bool TakeIdleForNativeTurn(string sessionId, bool running = false) => _liveSessions.TakeForNativeTurn(sessionId, running);
+
+    internal void RememberNativeTurn(string sessionId)
+    {
+        if (_nativeSessions.TryGetValue(sessionId, out var launch)) { _liveSessions.RememberNativeTurn(sessionId, launch); }
+    }
+
     void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
 
     internal static string TabLabel(InteractiveAgentKind kind, string? name, string jobId) =>
@@ -177,6 +186,13 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Working or InteractiveAgentStatus.Done;
         }
         catch (Exception ex) when (ex is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
+    }
+
+    public bool HasLiveSession(string sessionId)
+    {
+        if (!_nativeSessions.TryGetValue(sessionId, out var launch)) { return false; }
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult() != InteractiveAgentStatus.Gone;
     }
 
     public bool HasIdleSession(string sessionId) => _liveSessions.IsAlive(sessionId, launch =>

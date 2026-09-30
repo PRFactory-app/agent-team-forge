@@ -68,6 +68,13 @@ this branch") or call the MCP tools directly:
    close an idle retained agent, and `revive_agent` to resume a dead session
    with a new instruction and idempotency key.
 
+Idle interactive agents close automatically after 5 minutes (checked every 30 seconds),
+while native transcripts remain available for `follow_up` / `revive_agent` relaunch.
+Configure with `atf setup --idle-close-minutes MINUTES|off` and restart the daemon:
+`0` closes on turn settlement; `off` keeps only the existing 16-session LRU cap.
+The state directory's `launch-mode.json` stores `idle_close_minutes` (absent = 5,
+`-1` = off). Failed owned-session cleanup remains retryable.
+
 Other `submit_job` options:
 
 - `model`: for Codex and Pi a capability tier (`cheapest`, `low`, `medium`,
@@ -205,7 +212,7 @@ accepts `--worktree`; follow-ups reuse the parent's worktree.
 | `needs_reconciliation` | ATF cannot prove whether the prompt ran or how it ended |
 
 `needs_reconciliation` is never replayed automatically. A follow-up waits
-until the session is verified idle or stopped. For a live idle Herdr agent,
+until the session is verified idle or stopped. For a live idle Herdr agent (before automatic idle close),
 ATF settles an acknowledged but unobserved (interrupted) turn as `failed` and resumes the next
 turn in the same session. `stop_job` cancels the fenced job, terminates only a
 verified owned process, and releases the fence once no marked process remains.

@@ -18,7 +18,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null, ClaudeWakeMailbox? claudeMailbox = null, string? launchMode = null,
     Func<string?, string?, string?, HumanInputRequestResult>? humanInput = null, ExternalMemberStore? externalMembers = null,
     GetJob? connectorGet = null, Func<string, string, AttemptClaim?>? takeNativeClaude = null,
-    RemoveWorktree? removeWorktree = null, WorktreeCleanup? worktreeCleanup = null)
+    RemoveWorktree? removeWorktree = null, WorktreeCleanup? worktreeCleanup = null, Func<string?, string?, string, bool?>? agentLive = null)
 {
     JobResult ReadJob(IpcRequest request)
     {
@@ -442,6 +442,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
 
     JobResult WithLocation(JobResult result)
     {
+        if (result.Job is { } view) { result = result with { Job = view with { AgentLive = agentLive?.Invoke(view.Backend, view.SessionId, view.Status) } }; }
         if (herdrPlacement is null || result.Job is not { HerdrPlacement: not null } job) { return result; }
         var location = Location(job.JobId, job.ParentJobId);
         return location is null ? result : result with { Job = job with { HerdrSession = location.Value.Session, HerdrTab = location.Value.TabId, HerdrTabLabel = location.Value.TabLabel } };
@@ -454,12 +455,13 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
 
     JobListPage WithLocations(JobListPage page)
     {
-        if (herdrPlacement is null) { return page; }
+
         return page with
         {
             Jobs = [.. page.Jobs.Select(job =>
             {
-                if (job.HerdrPlacement is null) { return job; }
+                job = job with { AgentLive = agentLive?.Invoke(job.Backend, job.SessionId, job.Status) };
+                if (herdrPlacement is null || job.HerdrPlacement is null) { return job; }
                 var location = Location(job.JobId, job.ParentJobId);
                 return location is null ? job : job with { HerdrSession = location.Value.Session, HerdrTab = location.Value.TabId, HerdrTabLabel = location.Value.TabLabel };
             })]

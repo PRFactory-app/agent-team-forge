@@ -494,7 +494,9 @@ public sealed class DispatchJob : IDisposable
             || parent.Status == JobStatus.Running && herdr.HasWorkingCodexSession(thread))
         && CodexQueueWake.VerifyCodexThread(new DAL.Features.Wake.WakeRegistration("", 0, "codex", thread, "", codexHome));
 
-    AttemptClaim? ClaimNativeCodex() => store.BeginNativeCodexAttempt(CanNativeCodex, codexHome, Eligible);
+    AttemptClaim? ClaimNativeCodex() => store.BeginNativeCodexAttempt(parent => CanNativeCodex(parent)
+        && backends.Resolve(parent.Backend) is HerdrInteractiveBackend herdr
+        && herdr.TakeIdleForNativeTurn(parent.SessionId!, parent.Status == JobStatus.Running), codexHome, Eligible);
 
     bool CanNativeClaude(JobRecord parent)
     {
@@ -515,8 +517,8 @@ public sealed class DispatchJob : IDisposable
         if (!Eligible(childJobId)) { return null; }
         Func<string, bool>? idle = backends.Resolve(BackendCatalog.Claude) switch
         {
-            HerdrInteractiveBackend herdr => herdr.HasIdleClaudeSession,
-            WtInteractiveBackend wt => wt.HasIdleClaudeSession,
+            HerdrInteractiveBackend herdr => session => herdr.HasIdleClaudeSession(session) && herdr.TakeIdleForNativeTurn(session),
+            WtInteractiveBackend wt => session => wt.HasIdleClaudeSession(session) && wt.TakeIdleForNativeTurn(session),
             _ => null
         };
         return idle is null ? null : store.BeginNativeClaudeAttempt(childJobId, claudeHome, idle);
@@ -893,6 +895,15 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
+    void RememberNativeTurn(string backend, string sessionId)
+    {
+        switch (backends.Resolve(backend))
+        {
+            case HerdrInteractiveBackend herdr: herdr.RememberNativeTurn(sessionId); break;
+            case WtInteractiveBackend wt: wt.RememberNativeTurn(sessionId); break;
+        }
+    }
+
     void ReconcileNativeCodex()
     {
         foreach (var attempt in store.UnresolvedNativeAttempts()) { TrySettleNativeCodex(attempt); }
@@ -904,7 +915,7 @@ public sealed class DispatchJob : IDisposable
         if (receipt is not null) { store.RecordNativeReceipt(attempt.JobId, attempt.Correlation); }
         if (receipt is not { Completed: true, Message: { Length: > 0 } message }) { return false; }
         var settled = store.SettleNativeAttempt(attempt.JobId, attempt.Correlation, message);
-        if (settled) { Signal(); }
+        if (settled) { RememberNativeTurn(BackendCatalog.Codex, attempt.ThreadId); Signal(); }
         return settled;
     }
 
@@ -916,8 +927,11 @@ public sealed class DispatchJob : IDisposable
             if (receipt is not null) { store.RecordNativeClaudeReceipt(attempt.JobId, attempt.Correlation); }
             if (receipt is { Completed: true, Message: { Length: > 0 } message })
             {
-                store.SettleNativeClaudeAttempt(attempt.JobId, attempt.Correlation, message);
-                Signal();
+                if (store.SettleNativeClaudeAttempt(attempt.JobId, attempt.Correlation, message))
+                {
+                    RememberNativeTurn(BackendCatalog.Claude, attempt.SessionId);
+                    Signal();
+                }
             }
         }
     }
@@ -942,7 +956,7 @@ public sealed class DispatchJob : IDisposable
             if (!submission.Started)
             {
                 // Nothing ran, so nothing can be presented: resume carries the turn instead.
-                if (store.RevertNativeAttempt(run)) { log($"codex queue did not start for {run.JobId}; resuming instead"); }
+                if (store.RevertNativeAttempt(run)) { RememberNativeTurn(BackendCatalog.Codex, attempt.ThreadId); log($"codex queue did not start for {run.JobId}; resuming instead"); }
                 else { store.ReleaseNativeAttempt(job.JobId, job.Principal, job.Team); }
                 Signal();
                 return;

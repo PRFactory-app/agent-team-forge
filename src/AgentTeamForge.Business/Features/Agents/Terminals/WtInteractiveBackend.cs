@@ -7,7 +7,7 @@ using AgentTeamForge.Business.Features.Agents.Backends;
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
 /// <summary>Runs an interactive agent in an owned Windows Terminal tab.</summary>
-public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
+public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop, IDisposable
 {
     readonly IWtTabControl _tabs;
     readonly IInteractiveTranscriptReader _transcripts;
@@ -19,24 +19,26 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
     readonly TimeSpan _startupTimeout;
     readonly Action<InteractiveAgentKind, string>? _configPreflight;
 
-    public WtInteractiveBackend(InteractiveAgentKind kind, string stateRoot)
-        : this(new WtTabControl(), new InteractiveTranscriptReader(), kind, stateRoot, "wt", configPreflight: InteractiveAgentPreflight.CheckCurrent) { }
+    public WtInteractiveBackend(InteractiveAgentKind kind, string stateRoot, TimeSpan? idleTimeout = null)
+        : this(new WtTabControl(), new InteractiveTranscriptReader(), kind, stateRoot, "wt", configPreflight: InteractiveAgentPreflight.CheckCurrent, idleTimeout: idleTimeout) { }
 
-    internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot)
-        : this(tabs, transcripts, kind, stateRoot, "wt") { }
+    internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot, TimeSpan? idleTimeout = null)
+        : this(tabs, transcripts, kind, stateRoot, "wt", idleTimeout: idleTimeout) { }
 
     internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot, string tabDirectory, TimeSpan? startupTimeout = null,
-        Action<InteractiveAgentKind, string>? configPreflight = null)
+        Action<InteractiveAgentKind, string>? configPreflight = null, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null)
     {
         _tabs = tabs;
         _transcripts = transcripts;
         _kind = kind;
         _stateRoot = stateRoot;
         _tabDirectory = tabDirectory;
-        _liveSessions = new RetainedSessions(tabs.StopOwned);
+        _liveSessions = new RetainedSessions(tabs.StopOwned, idleTimeout, timeProvider);
         _startupTimeout = startupTimeout ?? InteractiveStartup.Timeout;
         _configPreflight = configPreflight;
     }
+
+    public void Dispose() => _liveSessions.Dispose();
 
     public IBackendRun Start(BackendRequest request)
     {
@@ -113,7 +115,17 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop
         return null;
     }
 
+    internal bool TakeIdleForNativeTurn(string sessionId, bool running = false) => _liveSessions.TakeForNativeTurn(sessionId, running);
+
+    internal void RememberNativeTurn(string sessionId)
+    {
+        var launch = _jobs.Values.FirstOrDefault(l => l.NativeTranscript?.SessionId == sessionId);
+        if (launch is not null) { _liveSessions.RememberNativeTurn(sessionId, launch); }
+    }
+
     void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
+
+    public bool HasLiveSession(string sessionId) => _jobs.Values.Any(launch => launch.NativeTranscript?.SessionId == sessionId && _tabs.IsAlive(launch));
 
     public bool HasIdleSession(string sessionId) => _liveSessions.IsAlive(sessionId, _tabs.IsAlive);
 

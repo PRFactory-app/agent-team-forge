@@ -47,6 +47,17 @@ public static class SetupCommand
             Console.Error.WriteLine("error: --web-port must be between 1 and 65535");
             return 64;
         }
+        int? idleMinutes = null;
+        if (options.TryGetValue("idle-close-minutes", out var idleText))
+        {
+            if (idleText == "off") { idleMinutes = -1; }
+            else if (int.TryParse(idleText, NumberStyles.None, CultureInfo.InvariantCulture, out var minutes)) { idleMinutes = minutes; }
+            else
+            {
+                Console.Error.WriteLine("error: --idle-close-minutes must be a non-negative integer or off");
+                return 64;
+            }
+        }
         var dir = ResolveStateDir(options);
         if (LegacyWindowsStateDir(options, dir) is { } legacy)
         {
@@ -81,7 +92,7 @@ public static class SetupCommand
         if (mode is not ("headless" or "herdr" or "terminal" or "wt")
             && !(check && mode is null) && !(autostart == "off" && !check && configuredMode is null))
         {
-            Console.Error.WriteLine("usage: atf setup [--mode headless|herdr|terminal|wt] [--web-port PORT] [--autostart[=off]] [--state-dir DIR] [--check|--apply] [--force]");
+            Console.Error.WriteLine("usage: atf setup [--mode headless|herdr|terminal|wt] [--web-port PORT] [--idle-close-minutes MINUTES|off] [--autostart[=off]] [--state-dir DIR] [--check|--apply] [--force]");
             return 64;
         }
         if (mode is not null && !ModeAvailable(mode))
@@ -165,7 +176,7 @@ public static class SetupCommand
             : new LaunchModeSettings(mode!);
         var webPort = options.TryGetValue("web-port", out webPortText)
             ? int.Parse(webPortText, CultureInfo.InvariantCulture) : ConfiguredWebPort(state);
-        WriteMode(state, settings with { WebPort = webPort });
+        WriteMode(state, settings with { WebPort = webPort, IdleCloseMinutes = idleMinutes ?? ConfiguredIdleCloseMinutes(state) });
 
         // A failed client `mcp add` is non-fatal (launch config is written; --check is the health gate). Other failures keep exit 1.
         if (!ClientSetup.Reconcile(binary, state.Path, home, settingsPath, extensionPath, commandRunner, apply: true,
@@ -832,7 +843,7 @@ public static class SetupCommand
         if (settings?.Mode is not ("headless" or "herdr" or "terminal" or "wt")
             || settings.Mode == "terminal" && (settings.TerminalProvider is not ("terminal" or "kitty")
                 || settings.TerminalProvider == "kitty" && (settings.KittyAddress is null || settings.KittyBinary is null))
-            || settings.WebPort is not (>= 1 and <= 65535))
+            || settings.WebPort is not (>= 1 and <= 65535) || settings.IdleCloseMinutes < -1)
         {
             throw new StateDirectoryException("launch_mode_invalid");
         }
@@ -885,6 +896,9 @@ public static class SetupCommand
 
     internal static LaunchModeSettings? ConfiguredTerminal(StateDirectory state) =>
         File.Exists(Path.Combine(state.Path, SettingsFile)) && ReadSettings(state) is { Mode: "terminal" } settings ? settings : null;
+
+    internal static int ConfiguredIdleCloseMinutes(StateDirectory state) =>
+        File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadSettings(state).IdleCloseMinutes : 5;
 
     public static int ConfiguredWebPort(StateDirectory state) =>
         File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadSettings(state).WebPort : DefaultWebPort;
@@ -939,6 +953,7 @@ public static class SetupCommand
 
 public sealed record LaunchModeSettings(string Mode, string? TerminalProvider = null, string? KittyAddress = null, string? KittyBinary = null)
 {
+    public int IdleCloseMinutes { get; init; } = 5;
     public int WebPort { get; init; } = SetupCommand.DefaultWebPort;
 }
 

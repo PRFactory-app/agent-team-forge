@@ -147,6 +147,7 @@ public static class DaemonCommand
             backends.Register(BackendCatalog.Cursor, () => new HeadlessOnlyBackend(BackendCatalog.Cursor));
             backends.Register(BackendCatalog.Droid, () => new HeadlessOnlyBackend(BackendCatalog.Droid));
         }
+        var idleTimeout = TimeSpan.FromMinutes(SetupCommand.ConfiguredIdleCloseMinutes(state));
         var interactiveBackends = new List<IInteractiveSessionStop>();
         HerdrTerminal? herdrTerminal = null;
         if (launchMode == "herdr")
@@ -158,7 +159,7 @@ public static class DaemonCommand
                 Environment = seed,
                 SessionEnvironment = OperatingSystem.IsLinux() ? SystemdUser.ReadSessionEnvironment : null,
             });
-            HerdrInteractiveBackend Interactive(InteractiveAgentKind kind) => new(herdrTerminal, kind, state.Path);
+            HerdrInteractiveBackend Interactive(InteractiveAgentKind kind) => new(herdrTerminal, kind, state.Path, idleTimeout);
             var claude = Interactive(InteractiveAgentKind.Claude);
             var codex = Interactive(InteractiveAgentKind.Codex);
             var pi = Interactive(InteractiveAgentKind.Pi);
@@ -169,9 +170,9 @@ public static class DaemonCommand
         }
         if (launchMode == "wt")
         {
-            var claude = new WtInteractiveBackend(InteractiveAgentKind.Claude, state.Path);
-            var codex = new WtInteractiveBackend(InteractiveAgentKind.Codex, state.Path);
-            var pi = new WtInteractiveBackend(InteractiveAgentKind.Pi, state.Path);
+            var claude = new WtInteractiveBackend(InteractiveAgentKind.Claude, state.Path, idleTimeout);
+            var codex = new WtInteractiveBackend(InteractiveAgentKind.Codex, state.Path, idleTimeout);
+            var pi = new WtInteractiveBackend(InteractiveAgentKind.Pi, state.Path, idleTimeout);
             interactiveBackends.AddRange([claude, codex, pi]);
             backends.Register(BackendCatalog.Claude, () => claude);
             backends.Register(BackendCatalog.Codex, () => codex);
@@ -181,10 +182,11 @@ public static class DaemonCommand
         {
             var settings = SetupCommand.ConfiguredTerminal(state)!;
             MacInteractiveBackend Interactive(InteractiveAgentKind kind) => new(kind, state.Path,
-                settings.TerminalProvider!, settings.KittyAddress, settings.KittyBinary);
+                settings.TerminalProvider!, settings.KittyAddress, settings.KittyBinary, idleTimeout);
             var claude = Interactive(InteractiveAgentKind.Claude);
             var codex = Interactive(InteractiveAgentKind.Codex);
             var pi = Interactive(InteractiveAgentKind.Pi);
+            interactiveBackends.AddRange([claude, codex, pi]);
             backends.Register(BackendCatalog.Claude, () => claude);
             backends.Register(BackendCatalog.Codex, () => codex);
             backends.Register(BackendCatalog.Pi, () => pi);
@@ -226,7 +228,14 @@ public static class DaemonCommand
             new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends, dispatcher.SettleCompletedInteractive), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
             (token, _, _) => PRFactoryInteraction.RequestFromManagedChild(externalTeam.ManagedChildName(token)),
             externalMembers, new GetJob(store, connectorPrincipal), dispatcher.TakeNativeClaude,
-            new RemoveWorktree(store, profile.Bound, worktreeCleanup), worktreeCleanup);
+            new RemoveWorktree(store, profile.Bound, worktreeCleanup), worktreeCleanup,
+            (backend, session, status) =>
+            {
+                if (status is JobStatus.Running or JobStatus.Queued || backend is null || session is null
+                    || backends.Resolve(backend) is not IInteractiveSessionStop interactive) { return null; }
+                try { return interactive.HasLiveSession(session); }
+                catch (Exception ex) when (ex is HerdrLaunchException or InteractiveTerminalUnavailableException or IOException or OperationCanceledException) { return null; }
+            });
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
@@ -386,6 +395,7 @@ public static class DaemonCommand
         }
         foreach (var backend in interactiveBackends)
         {
+            (backend as IDisposable)?.Dispose();
             // Windows tabs retain their wrapper and PID sidecars for explicit stop after restart.
             if (backend is WtInteractiveBackend) { continue; }
             try { backend.StopAllIdleSessions(); }
