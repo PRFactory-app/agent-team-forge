@@ -32,7 +32,7 @@ public sealed class ModelSelectionTests
     [Theory]
     [InlineData("cheapest", "gpt-6-luna", "low")]
     [InlineData("low", "gpt-6-luna", "medium")]
-    [InlineData("medium", "gpt-6-luna", "high")]
+    [InlineData("medium", "gpt-6.1-sol", "low")]
     [InlineData("high", "gpt-6.1-sol", "medium")]
     [InlineData("xhigh", "gpt-6.1-sol", "high")]
     [InlineData("max", "gpt-6-astra", "low")]
@@ -191,6 +191,8 @@ public sealed class ModelSelectionTests
     public void Default_sol_tiers_fall_back_to_listed_candidate_but_overrides_stay_strict()
     {
         static IReadOnlyCollection<string> OldOnly(string _) => ["gpt-6-sol"];
+        Assert.Equal(("gpt-6-sol", "low"), ModelSelection.Resolve("codex", "medium", null, OldOnly));
+        Assert.Equal(("gpt-6-sol", "low"), ModelSelection.Resolve("pi", "medium", null, OldOnly));
         Assert.Equal(("gpt-6-sol", "medium"), ModelSelection.Resolve("codex", "high", null, OldOnly));
         Assert.Equal(("gpt-6-sol", "high"), ModelSelection.Resolve("codex", "xhigh", null, OldOnly));
         Assert.Equal(("gpt-6-sol", "high"), ModelSelection.Resolve("pi", "xhigh", null, OldOnly));
