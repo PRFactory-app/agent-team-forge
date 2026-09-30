@@ -88,6 +88,8 @@ public sealed record JobSummary(string JobId, string Status, string? ReasonCode,
     public string? HerdrTab { get; init; }
     public string? HerdrTabLabel { get; init; }
     public string? SessionId { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public AgentTeamForge.Business.Features.Usage.TokenUsage? SessionTokens { get; init; }
     public string? ParentJobId { get; init; }
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }

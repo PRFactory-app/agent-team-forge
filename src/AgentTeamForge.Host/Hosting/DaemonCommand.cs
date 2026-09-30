@@ -226,7 +226,7 @@ public static class DaemonCommand
             new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends, dispatcher.SettleCompletedInteractive), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
             (token, _, _) => PRFactoryInteraction.RequestFromManagedChild(externalTeam.ManagedChildName(token)),
             externalMembers, new GetJob(store, connectorPrincipal), dispatcher.TakeNativeClaude,
-            new RemoveWorktree(store, profile.Bound, worktreeCleanup), worktreeCleanup);
+            new RemoveWorktree(store, profile.Bound, worktreeCleanup), worktreeCleanup, new AgentTeamForge.Business.Features.Usage.SessionTokenUsage());
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,

@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 29;
+    public const int CurrentVersion = 30;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -362,7 +362,13 @@ static class Schema
 
     internal const string V29 = "ALTER TABLE lead_sessions ADD COLUMN display_name TEXT;";
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29];
+    internal const string V30 = """
+        ALTER TABLE lead_sessions ADD COLUMN native_kind TEXT;
+        ALTER TABLE lead_sessions ADD COLUMN native_session_id TEXT;
+        ALTER TABLE lead_sessions ADD COLUMN native_home TEXT;
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

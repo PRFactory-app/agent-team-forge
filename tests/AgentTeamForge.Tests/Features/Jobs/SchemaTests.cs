@@ -23,6 +23,10 @@ public sealed class SchemaTests
         {
             using var command = connection.CreateCommand();
             command.CommandText = """
+                ALTER TABLE lead_sessions DROP COLUMN native_kind;
+                ALTER TABLE lead_sessions DROP COLUMN native_session_id;
+                ALTER TABLE lead_sessions DROP COLUMN native_home;
+                DELETE FROM schema_migrations WHERE version=30;
                 ALTER TABLE lead_sessions DROP COLUMN display_name;
                 DELETE FROM schema_migrations WHERE version=29;
                 DROP TABLE prfactory_multi_refresh;
@@ -185,6 +189,10 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                ALTER TABLE lead_sessions DROP COLUMN native_kind;
+                ALTER TABLE lead_sessions DROP COLUMN native_session_id;
+                ALTER TABLE lead_sessions DROP COLUMN native_home;
+                DELETE FROM schema_migrations WHERE version=30;
                 ALTER TABLE lead_sessions DROP COLUMN display_name;
                 DELETE FROM schema_migrations WHERE version=29;
                 DROP TABLE prfactory_multi_refresh;
@@ -287,6 +295,10 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                ALTER TABLE lead_sessions DROP COLUMN native_kind;
+                ALTER TABLE lead_sessions DROP COLUMN native_session_id;
+                ALTER TABLE lead_sessions DROP COLUMN native_home;
+                DELETE FROM schema_migrations WHERE version=30;
                 ALTER TABLE lead_sessions DROP COLUMN display_name;
                 DELETE FROM schema_migrations WHERE version=29;
                 DROP TABLE prfactory_multi_refresh;
