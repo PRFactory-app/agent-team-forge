@@ -18,7 +18,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null, ClaudeWakeMailbox? claudeMailbox = null, string? launchMode = null,
     Func<string?, string?, string?, HumanInputRequestResult>? humanInput = null, ExternalMemberStore? externalMembers = null,
     GetJob? connectorGet = null, Func<string, string, AttemptClaim?>? takeNativeClaude = null,
-    RemoveWorktree? removeWorktree = null, WorktreeCleanup? worktreeCleanup = null)
+    RemoveWorktree? removeWorktree = null, WorktreeCleanup? worktreeCleanup = null, AgentTeamForge.Business.Features.Usage.SessionTokenUsage? usage = null)
 {
     JobResult ReadJob(IpcRequest request)
     {
@@ -100,7 +100,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             {
                 return new IpcResponse(false, JobErrors.InvalidRequest);
             }
-            return new IpcResponse(true, Outcome: "session", Session: sessions.Start(request.Workspace!, request.BindingKey!));
+            return new IpcResponse(true, Outcome: "session", Session: sessions.Start(request.Workspace!, request.BindingKey!, request.NativeKind, request.NativeSessionId, request.NativeHome));
         }
         if (request.Op == IpcProtocol.SessionResume)
         {
@@ -108,7 +108,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             {
                 return new IpcResponse(false, JobErrors.InvalidRequest);
             }
-            var resumed = sessions.Resume(request.LeadSessionId, request.Workspace!, request.BindingKey!);
+            var resumed = sessions.Resume(request.LeadSessionId, request.Workspace!, request.BindingKey!, request.NativeKind, request.NativeSessionId, request.NativeHome);
             return resumed is null ? new IpcResponse(false, JobErrors.NotFound) : new IpcResponse(true, Outcome: "resumed", Session: resumed);
         }
         if (request.Op == IpcProtocol.SessionInfo)
@@ -330,7 +330,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 });
                 if (listed.Error is not null) { return new IpcResponse(false, listed.Error); }
                 foreach (var job in listed.Page!.Jobs) { MarkWakeRead(request, job.JobId, job.Status); }
-                return new IpcResponse(true, Outcome: "listed", Page: WithLocations(listed.Page),
+                return new IpcResponse(true, Outcome: "listed", Page: WithUsage(WithLocations(listed.Page), request.IncludeUsage), LeadTokens: request.IncludeUsage ? LeadUsage(listed.Page) : null,
                     ExternalMembers: request.IncludeConnector ? externalMembers?.ActiveMcpMembers() : null);
             case IpcProtocol.JobPrune:
                 if (prune is null || request.OlderThanDays is not (>= 1 and <= 36500))
@@ -440,6 +440,24 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         HerdrOwnedSessions.Location(herdrPlacement!.StatePath, jobId)
         ?? (parentJobId is null ? null : HerdrOwnedSessions.Location(herdrPlacement!.StatePath, parentJobId));
 
+    JobListPage WithUsage(JobListPage page, bool include) => !include || usage is null ? page : page with
+    {
+        Jobs = [.. page.Jobs.Select(j => j with { SessionTokens = j.SessionId is null ? null : usage.Read(j.Backend ?? "", j.SessionId, null, j.Cwd) })]
+    };
+
+    Dictionary<string, AgentTeamForge.Business.Features.Usage.TokenUsage?> LeadUsage(JobListPage page)
+    {
+        var ids = page.Jobs.Select(j => j.LeadSessionId).OfType<string>().Distinct().ToArray();
+        var result = ids.ToDictionary(id => id, _ => (AgentTeamForge.Business.Features.Usage.TokenUsage?)null);
+        if (sessions is not null && usage is not null)
+        {
+            foreach (var binding in sessions.NativeBindings(ids))
+            {
+                result[binding.SessionId] = usage.Read(binding.Kind, binding.NativeId, binding.Home);
+            }
+        }
+        return result;
+    }
     JobListPage WithLocations(JobListPage page)
     {
         if (herdrPlacement is null) { return page; }

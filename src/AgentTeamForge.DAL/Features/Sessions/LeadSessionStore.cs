@@ -15,7 +15,7 @@ public sealed record LeadSessionInfo(string SessionId, string Workspace, string 
 /// <summary>One durable lead per MCP binding. Session IDs are explicit recovery handles.</summary>
 public sealed class LeadSessionStore(JobDatabase database)
 {
-    public LeadSessionInfo Start(string workspace, string bindingKey)
+    public LeadSessionInfo Start(string workspace, string bindingKey, string? nativeKind = null, string? nativeSessionId = null, string? nativeHome = null)
     {
         using var connection = database.OpenConnection();
         using var tx = connection.BeginTransaction(deferred: false);
@@ -25,13 +25,16 @@ public sealed class LeadSessionStore(JobDatabase database)
         using var command = connection.CreateCommand();
         command.Transaction = tx;
         command.CommandText = """
-            INSERT INTO lead_sessions(session_id,workspace,binding_key,lead_token,updated_at)
-            VALUES ($id,$workspace,$binding,$token,$now)
-            ON CONFLICT(session_id) DO UPDATE SET binding_key=$binding, updated_at=$now
+            INSERT INTO lead_sessions(session_id,workspace,binding_key,lead_token,updated_at,native_kind,native_session_id,native_home)
+            VALUES ($id,$workspace,$binding,$token,$now,$kind,$native,$home)
+            ON CONFLICT(session_id) DO UPDATE SET binding_key=$binding, updated_at=$now, native_kind=$kind, native_session_id=$native, native_home=$home
             """;
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$workspace", workspace);
         command.Parameters.AddWithValue("$binding", bindingKey);
+        command.Parameters.AddWithValue("$kind", (object?)nativeKind ?? DBNull.Value);
+        command.Parameters.AddWithValue("$native", (object?)nativeSessionId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$home", (object?)nativeHome ?? DBNull.Value);
         command.Parameters.AddWithValue("$token", token);
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.ExecuteNonQuery();
@@ -41,7 +44,7 @@ public sealed class LeadSessionStore(JobDatabase database)
         return Info(id, workspace)!;
     }
 
-    public LeadSessionInfo? Resume(string id, string workspace, string bindingKey)
+    public LeadSessionInfo? Resume(string id, string workspace, string bindingKey, string? nativeKind = null, string? nativeSessionId = null, string? nativeHome = null)
     {
         if (!Guid.TryParseExact(id, "D", out var parsed) || parsed.ToString("D") != id)
         {
@@ -55,10 +58,13 @@ public sealed class LeadSessionStore(JobDatabase database)
         // session, so a bridge restart under the same parent re-adopts it, not the
         // empty session it started with.
         command.CommandText = """
-            UPDATE lead_sessions SET binding_key=$binding, updated_at=$now WHERE session_id=$id AND workspace=$workspace AND closed_at IS NULL;
+            UPDATE lead_sessions SET binding_key=$binding, updated_at=$now, native_kind=$kind, native_session_id=$native, native_home=$home WHERE session_id=$id AND workspace=$workspace AND closed_at IS NULL;
             SELECT changes();
             """;
         command.Parameters.AddWithValue("$binding", bindingKey);
+        command.Parameters.AddWithValue("$kind", (object?)nativeKind ?? DBNull.Value);
+        command.Parameters.AddWithValue("$native", (object?)nativeSessionId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$home", (object?)nativeHome ?? DBNull.Value);
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$workspace", workspace);
@@ -162,6 +168,37 @@ public sealed class LeadSessionStore(JobDatabase database)
         tx.Commit();
     }
 
+    public IReadOnlyList<NativeSessionBinding> NativeBindings(IEnumerable<string> ids)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        var names = new List<string>();
+        foreach (var id in ids.Distinct().Take(50))
+        {
+            var name = "$id" + names.Count;
+            names.Add(name);
+            command.Parameters.AddWithValue(name, id);
+        }
+        if (names.Count == 0) { return []; }
+        command.CommandText = $"""
+            SELECT s.session_id,
+                CASE WHEN s.native_kind IS NOT NULL AND s.native_session_id IS NOT NULL THEN s.native_kind ELSE w.kind END,
+                CASE WHEN s.native_kind IS NOT NULL AND s.native_session_id IS NOT NULL THEN s.native_session_id ELSE w.address END,
+                CASE WHEN s.native_kind IS NOT NULL AND s.native_session_id IS NOT NULL THEN s.native_home ELSE w.home END
+            FROM lead_sessions s LEFT JOIN wake_targets w ON w.target_key=s.wake_key AND w.kind='codex'
+            WHERE s.closed_at IS NULL AND s.session_id IN ({string.Join(",", names)})
+            """;
+        using var reader = command.ExecuteReader();
+        var result = new List<NativeSessionBinding>();
+        while (reader.Read())
+        {
+            if (!reader.IsDBNull(1) && !reader.IsDBNull(2))
+            {
+                result.Add(new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.IsDBNull(3) ? null : reader.GetString(3)));
+            }
+        }
+        return result;
+    }
     static List<SessionRow> Sessions(Microsoft.Data.Sqlite.SqliteConnection connection, string workspace)
     {
         using var command = connection.CreateCommand();
@@ -182,3 +219,5 @@ public sealed class LeadSessionStore(JobDatabase database)
 
     sealed record SessionRow(string Id, string BindingKey, string Token, string UpdatedAt, int Count);
 }
+
+public sealed record NativeSessionBinding(string SessionId, string Kind, string NativeId, string? Home);

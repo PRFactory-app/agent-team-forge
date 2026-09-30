@@ -154,6 +154,14 @@ public static class JobsMcpBridge
         var bindingKey = childBinding ?? $"identity=team-lead\nparent={parentId}\ncwd={workspace}";
         var managedJobId = childBinding is not null && childBinding.StartsWith("managed-child:", StringComparison.Ordinal)
             ? childBinding["managed-child:".Length..] : null;
+        var nativeId = Environment.GetEnvironmentVariable("CLAUDE_CODE_SESSION_ID");
+        var nativeKind = string.IsNullOrWhiteSpace(nativeId) ? "codex" : "claude";
+        if (nativeKind == "codex") { nativeId = Environment.GetEnvironmentVariable("CODEX_THREAD_ID"); }
+        var nativeHome = nativeKind == "claude"
+            ? Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude")
+            : Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        nativeHome = Path.GetFullPath(nativeHome, workspace);
+        if (string.IsNullOrWhiteSpace(nativeId)) { nativeId = null; nativeKind = null; }
         string? sessionId = null;
         async Task<IpcResponse> EnsureSessionAsync(CancellationToken cancellationToken)
         {
@@ -161,7 +169,7 @@ public static class JobsMcpBridge
             {
                 return new IpcResponse(true);
             }
-            var started = await SendAsync(new IpcRequest { Op = IpcProtocol.SessionStart, Workspace = workspace, BindingKey = bindingKey }, cancellationToken);
+            var started = await SendAsync(new IpcRequest { Op = IpcProtocol.SessionStart, Workspace = workspace, BindingKey = bindingKey, NativeKind = nativeKind, NativeSessionId = nativeId, NativeHome = nativeId is null ? null : nativeHome }, cancellationToken);
             if (started.Ok)
             {
                 sessionId = started.Session?.SessionId;
@@ -299,7 +307,7 @@ public static class JobsMcpBridge
                     {
                         var requested = String(args, "session_id");
                         response = requested is null ? new IpcResponse(false, JobErrors.InvalidRequest)
-                            : await SendAsync(new IpcRequest { Op = IpcProtocol.SessionResume, LeadSessionId = requested, Workspace = workspace, BindingKey = bindingKey }, cancellationToken);
+                            : await SendAsync(new IpcRequest { Op = IpcProtocol.SessionResume, LeadSessionId = requested, Workspace = workspace, BindingKey = bindingKey, NativeKind = nativeKind, NativeSessionId = nativeId, NativeHome = nativeId is null ? null : nativeHome }, cancellationToken);
                         if (response.Ok)
                         {
                             // An explicit resume takes over the session's wake, even from another live bridge.
