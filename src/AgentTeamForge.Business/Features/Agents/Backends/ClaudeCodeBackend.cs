@@ -44,6 +44,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
         Process process;
         try
         {
+            AgentTeamForge.Business.Features.Processes.NonInteractiveProcess.OwnProcessGroup(info);
             process = Process.Start(info) ?? throw new BackendNotStartedException("claude did not start");
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException)

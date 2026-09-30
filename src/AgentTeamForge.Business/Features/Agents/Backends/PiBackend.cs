@@ -46,6 +46,7 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
         Process process;
         try
         {
+            AgentTeamForge.Business.Features.Processes.NonInteractiveProcess.OwnProcessGroup(info);
             process = Process.Start(info) ?? throw new BackendNotStartedException("pi did not start");
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException)

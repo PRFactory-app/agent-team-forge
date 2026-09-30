@@ -24,4 +24,20 @@ public sealed class NonInteractiveProcessTests
         Assert.Equal(0, process.ExitCode);
         Assert.Equal("", await output);
     }
+
+    [Fact]
+    public async Task Helper_group_kill_does_not_reach_the_caller()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return;
+        }
+
+        var info = new ProcessStartInfo("/bin/sh", ["-c", "kill -9 0"]) { UseShellExecute = false };
+        using var process = NonInteractiveProcess.Start(info)!;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await process.WaitForExitAsync(timeout.Token);
+
+        Assert.Equal(137, process.ExitCode); // The helper killed only its own group; this test process is alive to assert.
+    }
 }

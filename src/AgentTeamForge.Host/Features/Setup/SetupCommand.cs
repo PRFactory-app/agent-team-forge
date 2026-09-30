@@ -346,6 +346,7 @@ public static class SetupCommand
         {
             binary = ClientSetup.CurrentRelease(binary, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
         }
+        NoteVanishedDaemon(state);
         try
         {
             return OperatingSystem.IsWindows()
@@ -570,6 +571,47 @@ public static class SetupCommand
             await Task.Delay(50);
         }
         return null;
+    }
+
+    /// <summary>Dates a silent death: the last logged daemon reported ready and never logged a stop, yet the lock is free.</summary>
+    static void NoteVanishedDaemon(StateDirectory state)
+    {
+        try
+        {
+            var path = Path.Combine(state.Path, "daemon.log");
+            if (!File.Exists(path))
+            {
+                return;
+            }
+
+            string? starting = null, live = null;
+            foreach (var line in LiveFiles.ReadLines(path))
+            {
+                if (line.Contains(" starting pid=", StringComparison.Ordinal))
+                {
+                    starting = line[(line.LastIndexOf("pid=", StringComparison.Ordinal) + 4)..].Trim();
+                }
+                else if (starting is not null && line.EndsWith(" ready pid=" + starting, StringComparison.Ordinal))
+                {
+                    live = starting;
+                }
+                else if (line.Contains("daemon_already_running", StringComparison.Ordinal))
+                {
+                    starting = null; // The failed second daemon; the ready one is still live.
+                }
+                else if (line.Contains(" stopped reason=", StringComparison.Ordinal) || line.Contains(" stopping: ", StringComparison.Ordinal)
+                    || line.Contains(" fatal:", StringComparison.Ordinal) || line.Contains(" gone without stop", StringComparison.Ordinal))
+                {
+                    live = null;
+                }
+            }
+
+            if (live is not null)
+            {
+                File.AppendAllText(path, $"[atf-daemon] {DateTime.UtcNow:yyyy-MM-dd'T'HH:mm:ss.fff'Z'} previous daemon {live} gone without stop\n");
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
     static bool ReadyLogged(StateDirectory state, int pid)
