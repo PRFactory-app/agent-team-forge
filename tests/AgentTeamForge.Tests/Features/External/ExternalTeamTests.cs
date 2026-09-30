@@ -304,6 +304,29 @@ public sealed class ExternalTeamTests
     }
 
     [Fact]
+    public void Lead_read_returns_only_page_sender_cursors_and_no_nested_inbox()
+    {
+        using var f = new JobFixture();
+        var lead = new LeadSessionStore(f.Database).Start("/workspace/a", "lead-a");
+        var team = Team(f);
+        string? last = null;
+        for (var i = 0; i < 30; i++)
+        {
+            last = team.Join(lead.SessionId, team.CreateTicket(lead.SessionId, lead.Workspace, $"s{i}", null).Ticket!.Token).Member!.MemberToken;
+            Assert.True(team.Send(last, $"m{i}").Ok);
+        }
+        Assert.Equal(30, team.ReadLead(lead.SessionId, lead.Workspace, null, 30).Inbox!.Cursors!.Count);
+        Assert.True(team.Send(last!, "again").Ok);
+
+        var response = new IpcResponse(true, Inbox: team.ReadLead(lead.SessionId, lead.Workspace, null, 50).Inbox).ForMcp();
+        using var json = JsonDocument.Parse(JsonSerializer.Serialize(response, IpcJson.Default.IpcResponse));
+        Assert.False(json.RootElement.TryGetProperty("inbox", out _));
+        Assert.Equal(1, json.RootElement.GetProperty("messages").GetArrayLength());
+        Assert.Equal(["s29"], json.RootElement.GetProperty("cursors").EnumerateObject().Select(p => p.Name));
+        Assert.True(json.RootElement.TryGetProperty("next_seq", out _));
+    }
+
+    [Fact]
     public void Inbox_reads_use_per_sender_cursors_and_support_full_watermark_and_truncation()
     {
         using var f = new JobFixture();
@@ -327,7 +350,7 @@ public sealed class ExternalTeamTests
                 first.Messages[0].Truncated, first.Messages[0].FullLen));
         Assert.Equal(3, first.UnreadCount);
         Assert.Equal(1, first.Cursors!["a"]);
-        Assert.Equal(0, first.Cursors["b"]);
+        Assert.DoesNotContain("b", first.Cursors.Keys);
 
         var onlyA = team.ReadLead(lead.SessionId, lead.Workspace, 0, 1, fromAgent: "a").Inbox!;
         Assert.Null(onlyA.Cursors);

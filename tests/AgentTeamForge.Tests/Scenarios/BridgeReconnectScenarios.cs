@@ -85,7 +85,7 @@ public sealed class BridgeReconnectScenarios
                 ["text"] = "after restart"
             });
             Assert.True(sent.Ok, sent.Error);
-            Assert.Equal("after restart", Assert.Single((await SpikeRig.CallAsync(lead, "read_messages", [])).Inbox!.Messages).Text);
+            Assert.Equal("after restart", Assert.Single((await SpikeRig.CallAsync(lead, "read_messages", [])).Messages!).Text);
             Assert.Equal(session.SessionId, (await SpikeRig.CallAsync(lead, "session_info", [])).Session!.SessionId);
         }
         finally

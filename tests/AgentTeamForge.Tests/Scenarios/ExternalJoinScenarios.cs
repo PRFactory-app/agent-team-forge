@@ -57,7 +57,7 @@ public sealed class ExternalJoinScenarios
             Workspace = workspace
         });
         Assert.True(read.Ok);
-        var message = Assert.Single(read.Inbox!.Messages);
+        var message = Assert.Single(read.Messages!);
         Assert.Equal("operator", message.From);
         Assert.Equal("hello from web", message.Text);
         Assert.Equal("invalid_request", external.CreateTicket(lead.SessionId, workspace, "operator", null).Error);
@@ -141,8 +141,8 @@ public sealed class ExternalJoinScenarios
         {
             ["member_token"] = token,
             ["limit"] = 0
-        })).Inbox!;
-        Assert.Empty(water.Messages);
+        }));
+        Assert.Empty(water.Messages!);
         Assert.Equal(50, water.UnreadCount);
         Assert.True(water.HasMore);
 
@@ -156,13 +156,13 @@ public sealed class ExternalJoinScenarios
             }, cancellationToken: TestContext.Current.CancellationToken);
             var json = Assert.IsType<TextContentBlock>(Assert.Single(call.Content)).Text;
             Assert.True(Encoding.UTF8.GetByteCount(json) < 2 * 1024 * 1024);
-            var page = JsonSerializer.Deserialize(json, IpcJson.Default.IpcResponse)!.Inbox!;
-            Assert.NotEmpty(page.Messages);
-            seen.AddRange(page.Messages.Select(message => message.Seq));
+            var page = JsonSerializer.Deserialize(json, IpcJson.Default.IpcResponse)!;
+            Assert.NotEmpty(page.Messages!);
+            seen.AddRange(page.Messages!.Select(message => message.Seq));
             Assert.Equal(seen.Count < 50, page.HasMore);
         }
         Assert.Equal(Enumerable.Range(1, 50).Select(i => (long)i), seen);
-        Assert.Empty((await SpikeRig.CallAsync(member, "external_read", new() { ["member_token"] = token })).Inbox!.Messages);
+        Assert.Empty((await SpikeRig.CallAsync(member, "external_read", new() { ["member_token"] = token })).Messages!);
     }
 
     [Fact]
@@ -243,7 +243,7 @@ public sealed class ExternalJoinScenarios
         Assert.Equal("work", Assert.Single((await SpikeRig.CallAsync(member, "external_read", new()
         {
             ["member_token"] = joined.MemberToken
-        })).Inbox!.Messages).Text);
+        })).Messages!).Text);
         Assert.True((await SpikeRig.CallAsync(member, "external_send", new()
         {
             ["member_token"] = joined.MemberToken,

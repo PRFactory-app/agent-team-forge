@@ -87,13 +87,30 @@ public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome 
     public string? JoinPrompt => Ticket?.JoinPrompt ?? Member?.JoinPrompt;
     public DateTimeOffset? ExpiresAt => Ticket?.ExpiresAt;
     public string? MemberToken => Member?.MemberToken;
-    public IReadOnlyList<AgentTeamForge.DAL.Features.External.ExternalMessage>? Messages => Inbox?.Messages;
+    // Inbox fields are flat on the MCP wire (see ForMcp); the nested Inbox is only used daemon->bridge.
+    AgentTeamForge.DAL.Features.External.ExternalInbox? flat;
+    IReadOnlyList<AgentTeamForge.DAL.Features.External.ExternalMessage>? flatMessages;
+    IReadOnlyDictionary<string, long>? flatCursors;
+    long? flatNextSeq, flatSeq;
+    int? flatUnread;
+    bool? flatHasMore;
+    public IReadOnlyList<AgentTeamForge.DAL.Features.External.ExternalMessage>? Messages { get => flat?.Messages ?? flatMessages ?? Inbox?.Messages; init => flatMessages = value; }
+    public long? NextSeq { get => flat?.NextSeq ?? flatNextSeq ?? Inbox?.NextSeq; init => flatNextSeq = value; }
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
-    public long? Seq => Inbox?.SenderSeq;
+    public long? Seq { get => flat is not null ? flat.SenderSeq : flatSeq ?? Inbox?.SenderSeq; init => flatSeq = value; }
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
-    public IReadOnlyDictionary<string, long>? Cursors => Inbox?.Cursors;
-    public int? UnreadCount => Inbox?.UnreadCount;
-    public bool? HasMore => Inbox?.HasMore;
+    public IReadOnlyDictionary<string, long>? Cursors { get => flat is not null ? flat.Cursors : flatCursors ?? Inbox?.Cursors; init => flatCursors = value; }
+    public int? UnreadCount { get => flat?.UnreadCount ?? flatUnread ?? Inbox?.UnreadCount; init => flatUnread = value; }
+    public bool? HasMore { get => flat?.HasMore ?? flatHasMore ?? Inbox?.HasMore; init => flatHasMore = value; }
+
+    /// <summary>MCP-facing copy: inbox fields appear once, at top level, instead of also nested under <c>inbox</c>.</summary>
+    public IpcResponse ForMcp() => Inbox is null ? this : (this with { Inbox = null }).WithFlat(Inbox);
+
+    IpcResponse WithFlat(AgentTeamForge.DAL.Features.External.ExternalInbox inbox)
+    {
+        flat = inbox;
+        return this;
+    }
 }
 
 public static class IpcProtocol

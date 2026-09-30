@@ -53,7 +53,7 @@ public sealed class LiveManagedChildRouting
             return response.Job!.Status is "queued" or "running" ? null : response;
         }, "live Claude completion", TimeSpan.FromSeconds(150));
         Assert.True(job.Job!.Status == "completed", $"status={job.Job.Status}, reason={job.Job.ReasonCode}, output={job.Job.Result}");
-        Assert.Equal(report, Assert.Single((await SpikeRig.CallAsync(parent, "read_messages", [])).Inbox!.Messages).Text);
+        Assert.Equal(report, Assert.Single((await SpikeRig.CallAsync(parent, "read_messages", [])).Messages!).Text);
     }
 }
 
@@ -93,13 +93,13 @@ public sealed class ManagedChildRoutingScenarios
         var (childB, _) = await Child(nestedB, "child-b");
         Assert.True((await SpikeRig.CallAsync(childA, "send_message", new() { ["text"] = "report-a" })).Ok);
         Assert.True((await SpikeRig.CallAsync(childB, "send_message", new() { ["to"] = "team-lead", ["text"] = "report-b" })).Ok);
-        Assert.Equal("report-a", Assert.Single((await SpikeRig.CallAsync(nestedA, "read_messages", [])).Inbox!.Messages).Text);
-        Assert.Equal("report-b", Assert.Single((await SpikeRig.CallAsync(nestedB, "read_messages", [])).Inbox!.Messages).Text);
-        Assert.Empty((await SpikeRig.CallAsync(parentA, "read_messages", [])).Inbox!.Messages);
-        Assert.Empty((await SpikeRig.CallAsync(parentB, "read_messages", [])).Inbox!.Messages);
+        Assert.Equal("report-a", Assert.Single((await SpikeRig.CallAsync(nestedA, "read_messages", [])).Messages!).Text);
+        Assert.Equal("report-b", Assert.Single((await SpikeRig.CallAsync(nestedB, "read_messages", [])).Messages!).Text);
+        Assert.Empty((await SpikeRig.CallAsync(parentA, "read_messages", [])).Messages!);
+        Assert.Empty((await SpikeRig.CallAsync(parentB, "read_messages", [])).Messages!);
         var unknown = await SpikeRig.CallAsync(childA, "send_message", new() { ["to"] = "typo", ["text"] = "lost?" });
         Assert.Equal("member_not_found", unknown.Error);
-        Assert.Empty((await SpikeRig.CallAsync(nestedA, "read_messages", [])).Inbox!.Messages);
+        Assert.Empty((await SpikeRig.CallAsync(nestedA, "read_messages", [])).Messages!);
 
         var follow = await SpikeRig.CallAsync(parentA, "follow_up", new()
         {
@@ -116,7 +116,7 @@ public sealed class ManagedChildRoutingScenarios
         Assert.Equal((await SpikeRig.CallAsync(nestedA, "session_info", [])).Session!.SessionId,
             (await SpikeRig.CallAsync(resumed, "session_info", [])).Session!.SessionId);
         Assert.True((await SpikeRig.CallAsync(resumed, "send_message", new() { ["text"] = "resumed-report" })).Ok);
-        Assert.Equal("resumed-report", Assert.Single((await SpikeRig.CallAsync(parentA, "read_messages", [])).Inbox!.Messages).Text);
-        Assert.Empty((await SpikeRig.CallAsync(parentB, "read_messages", [])).Inbox!.Messages);
+        Assert.Equal("resumed-report", Assert.Single((await SpikeRig.CallAsync(parentA, "read_messages", [])).Messages!).Text);
+        Assert.Empty((await SpikeRig.CallAsync(parentB, "read_messages", [])).Messages!);
     }
 }

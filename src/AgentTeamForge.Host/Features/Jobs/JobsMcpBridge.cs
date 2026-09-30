@@ -257,7 +257,7 @@ public static class JobsMcpBridge
             new() { Name = "external_set_wake", Description = "Register native member notices (mcp__agentteamforge__external_set_wake): kind=claude uses this host’s own channel; kind=codex uses codex_thread_id. Pass an empty codex_thread_id without kind to clear. No hooks are installed.", InputSchema = Parse(MemberWakeSchema) },
             new() { Name = "leave_team", Description = "Revoke this external membership without stopping its process.", InputSchema = Parse(LeaveSchema) },
             new() { Name = "send_message", Description = "Send to your ATF parent or a joined external member with to=..., or send managed downstream work with job_id=... and idempotency_key=.... A live Codex child receives managed work through codex queue. This tool does not reach win-agent-teams members.", InputSchema = Parse(LeadSendSchema) },
-            new() { Name = "read_messages", Description = "Read durable messages from external members of this lead session. Without from_agent, since_seq and next_seq use the lead inbox's durable message position across all senders; each message's seq and the cursors map are per sender. With from_agent, since_seq uses that sender's seq.", InputSchema = Parse(LeadReadSchema) },
+            new() { Name = "read_messages", Description = "Read durable messages from external members of this lead session. Without from_agent, since_seq and next_seq use the lead inbox's durable message position across all senders; each message's seq and the cursors map are per sender (cursors lists only senders in this page). With from_agent, since_seq uses that sender's seq.", InputSchema = Parse(LeadReadSchema) },
             new() { Name = "job_submit", Description = "Durably submit a job to the AgentTeamForge daemon (spike).", InputSchema = Parse(testProfile ? TestSubmitSchema : SubmitSchema) },
             new() { Name = "job_get", Description = "Read a job's committed state and result (spike).", InputSchema = Parse(GetSchema) },
             new() { Name = "job_list", Description = "List your jobs' committed state, newest first, one bounded page at a time (read-only, spike).", InputSchema = Parse(ListSchema) },
@@ -296,7 +296,7 @@ public static class JobsMcpBridge
                         return new CallToolResult
                         {
                             IsError = !memberResponse.Ok,
-                            Content = [new TextContentBlock { Text = JsonSerializer.Serialize(memberResponse, IpcJson.Default.IpcResponse) }],
+                            Content = [new TextContentBlock { Text = JsonSerializer.Serialize(memberResponse.ForMcp(), IpcJson.Default.IpcResponse) }],
                         };
                     }
                     await RegisterWakeAsync(cancellationToken);
@@ -400,7 +400,7 @@ public static class JobsMcpBridge
                     return new CallToolResult
                     {
                         IsError = !response.Ok,
-                        Content = [new TextContentBlock { Text = JsonSerializer.Serialize(response, IpcJson.Default.IpcResponse) }],
+                        Content = [new TextContentBlock { Text = JsonSerializer.Serialize(response.ForMcp(), IpcJson.Default.IpcResponse) }],
                     };
                 },
             },

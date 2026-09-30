@@ -612,9 +612,14 @@ public sealed class ExternalMemberStore(JobDatabase database)
         }
         return new ExternalInbox(selected, selected.Count == 0 ? (leadGlobalCursor && fromAgent is null ? sinceSeq ?? 0 : 0)
             : leadGlobalCursor && fromAgent is null ? lastGlobalSeq : selected[^1].Seq,
-            unread > selected.Count, fromAgent is null ? cursors : null,
+            unread > selected.Count,
+            fromAgent is null ? limit == 0 ? cursors : PageCursors(cursors, selected) : null,
             fromAgent is null ? null : cursors.GetValueOrDefault(fromAgent), unread);
     }
+
+    // Only senders present in this page (limit=0 watermark reads keep the full map); the full per-sender map grows with every sender ever seen.
+    static Dictionary<string, long> PageCursors(Dictionary<string, long> cursors, List<ExternalMessage> selected) =>
+        selected.Select(m => m.From).Distinct(StringComparer.Ordinal).ToDictionary(sender => sender, sender => cursors.GetValueOrDefault(sender), StringComparer.Ordinal);
 
     public ExternalInbox? ReadTeam(string teamId, long? sinceSeq, int limit, DateTimeOffset now)
     {
