@@ -337,7 +337,8 @@ public static class DaemonCommand
                     connectorFollowUp.Execute, jobLogs, authority, connectorWorkspaces, workspaceRoot, accounts,
                         publications: connectorPublications, interaction: connectorInteraction, humanWaits: humanWaits,
                         allowRepoLess: settings.TenantWideToken && settings.RepoLess,
-                        handovers: connectorHandovers, repositorySets: connectorRepositorySets).TickAsync(machineId, ct);
+                        handovers: connectorHandovers, repositorySets: connectorRepositorySets,
+                        onLimit: limit => PRFactoryConnection.PublishLimit(state, limit)).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
             },
             onTokenRejected: ct => authority?.TransportFailureAsync(Guid.Empty, System.Net.HttpStatusCode.Unauthorized, ct) ?? Task.CompletedTask,

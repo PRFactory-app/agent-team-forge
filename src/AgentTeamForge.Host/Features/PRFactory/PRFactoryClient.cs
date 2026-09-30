@@ -107,6 +107,9 @@ public sealed partial class PRFactoryClient(HttpClient httpClient, TimeProvider?
         return true;
     }
 
+    /// <summary>The server's worker cap from the latest poll; null when the server does not advertise one.</summary>
+    public PRFactoryServerLimit? Limit { get; private set; }
+
     public async Task<IReadOnlyList<PRFactoryWorkItem>> PollAsync(IEnumerable<Guid> repositories, Guid? machineId, CancellationToken ct,
         int maxItems = 10)
     {
@@ -116,25 +119,29 @@ public sealed partial class PRFactoryClient(HttpClient httpClient, TimeProvider?
         RejectToken(response.StatusCode);
         if (response.StatusCode == HttpStatusCode.NoContent)
         {
+            Limit = null;
             return [];
         }
 
         response.EnsureSuccessStatusCode();
-        return (await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryPollResponse, ct))?.WorkItems ?? [];
+        var poll = await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryPollResponse, ct);
+        Limit = poll is { MaxConcurrentWorkItems: { } max, ActiveWorkItems: { } active }
+            ? new PRFactoryServerLimit(max, active, DateTimeOffset.UtcNow) : null;
+        return poll?.WorkItems ?? [];
     }
 
-    public async Task<PRFactoryWorkItem?> ClaimAsync(Guid id, Guid? machineId, CancellationToken ct)
+    public async Task<(PRFactoryWorkItem? Item, bool Conflict)> ClaimAsync(Guid id, Guid? machineId, CancellationToken ct)
     {
         using var response = await httpClient.PostAsJsonAsync($"api/worker/claim/{id:D}",
             new PRFactoryClaimRequest(Environment.MachineName, workerVersion, machineId), PRFactoryWorkItemJson.Default.PRFactoryClaimRequest, ct);
         RejectToken(response.StatusCode);
         if (response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.NotFound)
         {
-            return null;
+            return (null, response.StatusCode == HttpStatusCode.Conflict);
         }
 
         response.EnsureSuccessStatusCode();
-        return (await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryClaimResponse, ct))?.WorkItem;
+        return ((await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryClaimResponse, ct))?.WorkItem, false);
     }
 
     public async Task<Acceptance> GetAtfAcceptanceAsync(Guid id, Guid machineId, string jobId, CancellationToken ct)

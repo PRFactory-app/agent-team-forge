@@ -17,7 +17,7 @@ public sealed partial class PRFactoryWorkItems(
     AccountAdmission? accounts = null, int maxAcceptedTeams = 10, PRFactoryPublicationStore? publications = null,
     PRFactoryInteraction? interaction = null, HumanWaitStore? humanWaits = null,
     bool allowRepoLess = false, PRFactoryHandoverStore? handovers = null,
-    PRFactoryRepositorySet? repositorySets = null)
+    PRFactoryRepositorySet? repositorySets = null, Action<PRFactoryServerLimit?>? onLimit = null)
 {
     // Parked turns share one account binding per backend until configured accounts exist.
     public const string DefaultAccount = "default";
@@ -80,14 +80,22 @@ public sealed partial class PRFactoryWorkItems(
             return;
         }
         var offered = new List<PRFactoryWorkItem>();
+        // Only a poll made in this tick may report the cap; a limit left over from an earlier tick never suppresses polling.
+        var capped = false;
         if (repositories.Count > 0)
         {
             offered.AddRange(await client.PollAsync(repositories.Select(r => r.Id), machineId, ct, Math.Min(free, 10)));
+            capped = NoteLimit();
         }
-        if (allowRepoLess && offered.Count < free)
+        if (allowRepoLess && offered.Count < free && !capped)
         {
             offered.AddRange((await client.PollAsync([], machineId, ct, Math.Min(free - offered.Count, 10)))
                 .Where(i => i.RepositoryId is null));
+            capped = NoteLimit();
+        }
+        if (capped)
+        {
+            return;
         }
         foreach (var item in offered)
         {
@@ -109,7 +117,13 @@ public sealed partial class PRFactoryWorkItems(
             }
             try
             {
-                var claimed = await client.ClaimAsync(item.Id, machineId, ct);
+                var (claimed, conflict) = await client.ClaimAsync(item.Id, machineId, ct);
+                if (conflict)
+                {
+                    // Most likely the server's worker cap; further claims this tick would hit the same refusal.
+                    log?.Invoke($"PRFactory claim of {item.Id:D} refused (409); stopping claims this tick");
+                    break;
+                }
                 if (claimed is null || claimed.Id != item.Id)
                 {
                     continue;
@@ -125,6 +139,24 @@ public sealed partial class PRFactoryWorkItems(
             await IsolateAsync(item.Id, () => AdvanceAsync(teams.Get(server, item.Id)!, ct), ct);
         }
     }
+
+    // Records the server cap from the latest poll; true when it is reached, so this tick claims nothing.
+    bool NoteLimit()
+    {
+        var limit = client.Limit;
+        onLimit?.Invoke(limit);
+        var capped = limit?.AtCap == true;
+        if (LimitPaused.TryGetValue(server, out var was) ? was != capped : capped)
+        {
+            LimitPaused[server] = capped;
+            log?.Invoke(capped
+                ? $"PRFactory intake paused: server limit reached ({limit!.Active}/{limit.Max} active work items)"
+                : "PRFactory intake resumed: server limit no longer reached");
+        }
+        return capped;
+    }
+
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> LimitPaused = new();
 
     string? BlockedBackend(PRFactoryWorkItem item)
     {

@@ -80,7 +80,12 @@ public sealed class PRFactoryTeamMember
     public string? Notes { get; set; }
 }
 
-public sealed record PRFactoryPollResponse(List<PRFactoryWorkItem> WorkItems);
+// Limit fields are absent on servers that predate the worker cap advertisement.
+public sealed record PRFactoryPollResponse(List<PRFactoryWorkItem> WorkItems, int? MaxConcurrentWorkItems = null, int? ActiveWorkItems = null);
+public sealed record PRFactoryServerLimit(int Max, int Active, DateTimeOffset At)
+{
+    public bool AtCap => Active >= Max;
+}
 public sealed record PRFactoryClaimResponse(PRFactoryWorkItem? WorkItem);
 public sealed record PRFactoryClaimRequest(string MachineName, string WorkerVersion, Guid? MachineId);
 public sealed record PRFactoryAtfAcceptRequest(Guid MachineId, Guid LeaseToken, string JobId);
@@ -113,6 +118,7 @@ public sealed record PRFactoryStreamResponse(bool Accepted, Dictionary<string, l
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true)]
 [JsonSerializable(typeof(PRFactoryPollResponse))]
+[JsonSerializable(typeof(PRFactoryServerLimit))]
 [JsonSerializable(typeof(PRFactoryClaimResponse))]
 [JsonSerializable(typeof(PRFactoryClaimRequest))]
 [JsonSerializable(typeof(PRFactoryAtfAcceptRequest))]
