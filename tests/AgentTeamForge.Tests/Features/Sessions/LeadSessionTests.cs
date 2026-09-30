@@ -10,6 +10,34 @@ namespace AgentTeamForge.Tests.Features.Sessions;
 public sealed class LeadSessionTests
 {
     [Fact]
+    public void Rename_is_durable_workspace_scoped_and_rejects_closed_sessions()
+    {
+        using var f = new JobFixture();
+        var sessions = new LeadSessionStore(f.Database);
+        var lead = sessions.Start("/workspace/shared", "parent=1");
+        Assert.True(sessions.Rename(lead.SessionId, lead.Workspace, "planner"));
+        Assert.Equal("planner", new LeadSessionStore(f.Database).Info(lead.SessionId, lead.Workspace)!.Name);
+        Assert.False(sessions.Rename(lead.SessionId, "/workspace/other", "other"));
+        Assert.True(sessions.Close(lead.SessionId, lead.Workspace));
+        Assert.False(sessions.Rename(lead.SessionId, lead.Workspace, "closed"));
+    }
+
+    [Fact]
+    public void Session_info_renames_validates_and_clears_name()
+    {
+        using var f = new JobFixture();
+        var sessions = new LeadSessionStore(f.Database);
+        var lead = sessions.Start("/workspace/shared", "parent=1");
+        var endpoint = Endpoint(f, sessions);
+        var request = new IpcRequest { Op = IpcProtocol.SessionInfo, LeadSessionId = lead.SessionId, Workspace = lead.Workspace };
+        Assert.Equal("planner", endpoint.Handle(request with { SessionName = " planner " }).Session!.Name);
+        Assert.Equal("planner", endpoint.Handle(request).Session!.Name);
+        Assert.Equal("invalid_request", endpoint.Handle(request with { SessionName = new string('x', 65) }).Error);
+        Assert.Equal("invalid_request", endpoint.Handle(request with { SessionName = "bad\nname" }).Error);
+        Assert.Null(endpoint.Handle(request with { SessionName = "" }).Session!.Name);
+    }
+
+    [Fact]
     public void Two_leads_in_one_folder_list_only_their_own_jobs_by_default()
     {
         using var f = new JobFixture();

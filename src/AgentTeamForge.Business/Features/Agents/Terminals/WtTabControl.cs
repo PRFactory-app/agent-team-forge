@@ -64,7 +64,7 @@ internal sealed class WtTabControl : IWtTabControl
 
         var wt = FindExecutable("wt.exe");
         var args = WtCommandLine.Arguments(
-            ["-w", "wt-atf", "nt", "--title", launch.AgentName, "--suppressApplicationTitle"],
+            ["-w", "wt-atf", "nt", "--title", launch.TabLabel ?? launch.AgentName, "--suppressApplicationTitle"],
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", wrapper]);
         if (wt is null || args is null)
         {

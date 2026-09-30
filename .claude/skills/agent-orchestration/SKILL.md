@@ -102,6 +102,9 @@ interactive agent. Both keep durable history. Never kill processes you don't own
 
 ## 7. Restart recovery
 
+Use `set_session_name(name="planner")` to name your lead session in the web
+console and `session_info`; an empty name clears it.
+
 After your own restart, empty `list_jobs` does not mean no work: call
 `session_info`, then `resume_session(session_id)` for the prior lead session. A
 queued child reporting `parent_needs_reconciliation` is fenced: inspect the

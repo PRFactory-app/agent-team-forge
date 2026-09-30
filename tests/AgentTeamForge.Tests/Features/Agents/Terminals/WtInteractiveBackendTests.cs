@@ -13,6 +13,18 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 public sealed class WtInteractiveBackendTests
 {
     [Fact]
+    public async Task Named_job_uses_display_label_and_keeps_recovery_identifier()
+    {
+        var tabs = new FakeTabs();
+        var backend = new WtInteractiveBackend(tabs, new FakeReader(null), InteractiveAgentKind.Codex, Path.GetTempPath());
+        await using var run = backend.Start(new BackendRequest("job", "corr", "work", "")
+        { WorkingDirectory = Path.GetTempPath(), DisplayName = "reviewer-1" });
+        await run.DeliverAsync(CancellationToken.None);
+        Assert.Equal("codex: reviewer-1", tabs.Launch!.TabLabel);
+        Assert.Matches("^atf[0-9a-f]{20}$", tabs.Launch.AgentName);
+    }
+
+    [Fact]
     public async Task Claude_synthetic_login_error_fails_bound_wt_job()
     {
         using var f = new JobFixture();

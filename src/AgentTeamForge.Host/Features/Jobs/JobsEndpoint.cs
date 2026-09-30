@@ -117,6 +117,18 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             {
                 return new IpcResponse(false, JobErrors.InvalidRequest);
             }
+            if (request.SessionName is { } sessionName)
+            {
+                var name = sessionName.Trim();
+                if (name.Length > 64 || sessionName.Any(char.IsControl))
+                {
+                    return new IpcResponse(false, JobErrors.InvalidRequest);
+                }
+                if (!sessions.Rename(request.LeadSessionId, request.Workspace, name.Length == 0 ? null : name))
+                {
+                    return new IpcResponse(false, JobErrors.NotFound);
+                }
+            }
             var info = sessions.Info(request.LeadSessionId, request.Workspace);
             return info is null ? new IpcResponse(false, JobErrors.NotFound)
                 : new IpcResponse(true, Outcome: "session", Session: info, Tiers: tierMap?.Settings());
