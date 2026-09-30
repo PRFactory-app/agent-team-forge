@@ -114,8 +114,8 @@ if ($Version -notmatch '^[0-9][0-9A-Za-z.+-]*$') { Fail 'invalid version' }
 $name = "atf-$Version-$rid.zip"
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $scratch | Out-Null
-$stage = Join-Path $root ([IO.Path]::GetRandomFileName())
-$backup = Join-Path $root ([IO.Path]::GetRandomFileName())
+$stage = $null
+$backup = Join-Path $root 'bin.previous'
 $extract = $null
 try {
     if (-not $Archive) {
@@ -137,10 +137,16 @@ try {
     } else {
         New-Item -ItemType Directory -Force -Path $releases | Out-Null
         # Extract beside the target: Move-Item cannot move directories across volumes.
-        $extract = Join-Path $root ([IO.Path]::GetRandomFileName())
+        $extract = Join-Path $releases "$Version.staging"
+        if (Test-Path $extract) { Remove-Item -LiteralPath $extract -Recurse -Force }
         Expand-Archive -LiteralPath $Archive -DestinationPath $extract
         if (-not (Test-Path (Join-Path $extract 'atf.exe') -PathType Leaf)) { Fail 'archive missing atf.exe' }
-        if ((& (Join-Path $extract 'atf.exe') --version) -ne "atf $Version") { Fail 'archive version mismatch' }
+        $extractedBinary = Join-Path $extract 'atf.exe'
+        try { $extractedVersion = & $extractedBinary --version }
+        catch {
+            Fail "could not start '$extractedBinary': $($_.Exception.Message). Windows security (Defender ASR / Smart App Control) may have blocked it. Allow that path in the Windows Security notification and rerun; the path will be the same next time."
+        }
+        if ($extractedVersion -ne "atf $Version") { Fail 'archive version mismatch' }
         Move-Item $extract $target
     }
     if (Test-Path $bin) {
@@ -152,6 +158,9 @@ try {
             return
         }
     }
+    $stage = Join-Path $root 'bin.staging'
+    if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+    if (Test-Path $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
     Copy-Item $target $stage -Recurse
     Set-Content (Join-Path $stage '.atf-version') $Version -Encoding ascii
     if (Test-Path $bin) {
@@ -177,6 +186,6 @@ try {
     Write-Output 'Open a new terminal if atf is not yet on PATH; reload agent clients after setup.'
 } finally {
     if (Test-Path $scratch) { Remove-Item $scratch -Recurse -Force }
-    if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+    if ($stage -and (Test-Path $stage)) { Remove-Item $stage -Recurse -Force }
     if ($extract -and (Test-Path $extract)) { Remove-Item $extract -Recurse -Force }
 }

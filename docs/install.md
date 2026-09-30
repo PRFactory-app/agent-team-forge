@@ -29,6 +29,10 @@ PATH. It keeps state in `%USERPROFILE%\.local\state\agentteamforge`. To pin a
 release, download its `install.ps1` asset and run
 `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.0.1`.
 Rerun the one-liner to upgrade after active jobs finish.
+If Windows security (Defender ASR or Smart App Control) blocks `atf.exe`, the
+installer reports the exact blocked path. Allow that path once in the Windows
+Security notification and rerun. The staging path is fixed for each version,
+so retries use the same path.
 Windows arm64 is recognized by the installer but requires a matching
 `win-arm64` release archive; none is published by the current workflow.
 
