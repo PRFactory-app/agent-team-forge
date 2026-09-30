@@ -21,7 +21,7 @@ tabs, or in a small web console.
 curl -fsSL https://github.com/PRFactory-app/agent-team-forge/releases/latest/download/install.sh | sh
 ```
 
-Windows PowerShell 5.1 or newer (Windows x64 tester build):
+Windows PowerShell 5.1 or newer (Windows x64):
 
 ```powershell
 irm https://github.com/PRFactory-app/agent-team-forge/releases/latest/download/install.ps1 | iex
@@ -76,7 +76,7 @@ team. More in the [usage guide](docs/usage.md).
 ## Platform status
 
 - **Linux x64:** tested end to end with real agents.
-- **Windows x64:** being tested (Windows Terminal tabs).
+- **Windows x64:** supported as of v0.1.0; tested with real Claude Code and Codex agents in Windows Terminal tabs (Pi on Windows not yet tested).
 - **macOS arm64:** release built, untested — testers welcome.
 
 ## PRFactory: tickets, workflows and teamwork
