@@ -202,7 +202,7 @@
     tierSettings = r?.tiers || tierSettings;
     herdrMode = !!r?.herdr_mode;
     defaultPlacement = r?.herdr_placement || 'herdr-session:default';
-    $('new-agent-placement-field').hidden = !herdrMode;
+    $('new-agent-session-field').hidden = !herdrMode;
     $('herdr-settings').hidden = !herdrMode;
     setPlacementControls('new-agent', defaultPlacement);
     setPlacementControls('settings', defaultPlacement);
@@ -269,16 +269,11 @@
   }
 
   function setPlacementControls(prefix, value) {
-    const shared = value.startsWith('herdr-session:');
-    $(prefix + '-placement').value = shared ? 'shared' : 'own-session';
-    $(prefix + '-session').value = shared ? value.slice(14) : 'default';
-    $(prefix + '-session-field').hidden = !shared;
-    $(prefix + '-session').required = shared;
+    $(prefix + '-session').value = value.startsWith('herdr-session:') ? value.slice(14) : 'default';
   }
 
   function chosenPlacement(prefix) {
-    return $(prefix + '-placement').value === 'shared'
-      ? 'herdr-session:' + $(prefix + '-session').value.trim() : 'own-session';
+    return 'herdr-session:' + $(prefix + '-session').value.trim();
   }
 
   function renderTierSettings(catalog) {
@@ -1396,12 +1391,6 @@
       $('settings-status').textContent = result?.ok ? 'All tiers reset.' : (result?.error || 'Reset failed.');
       if (result?.ok) { await loadTierSettings(); await loadConfig(); }
     });
-    for (const prefix of ['new-agent', 'settings']) {
-      $(prefix + '-placement').addEventListener('change', () => {
-        $(prefix + '-session-field').hidden = $(prefix + '-placement').value !== 'shared';
-        $(prefix + '-session').required = $(prefix + '-placement').value === 'shared';
-      });
-    }
     $('settings-placement-save').addEventListener('click', async () => {
       const result = await api('PUT', '/api/settings/herdr-placement', { herdr_placement: chosenPlacement('settings') });
       $('settings-status').textContent = result?.ok ? 'Herdr placement saved.' : (result?.error || 'Save failed.');

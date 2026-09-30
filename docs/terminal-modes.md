@@ -87,7 +87,7 @@ reasoning-effort level. Override tier models to match your account.
 
 | Platform | Notes |
 | --- | --- |
-| Linux / Herdr | Tested. Agents share the running `default` session by default, with one workspace per Git repository and one tab per agent. Set `ATF_HERDR_SESSION` before starting the daemon or choose `herdr-session:<name>` in Settings to use another running session. `own-session` is an explicit option. Opt-in live test: `ATF_REAL_HERDR=1` launches only in its own `atf-test-*` session. |
+| Linux / Herdr | Tested. Agents share the `default` session by default, with one workspace per Git repository and one tab per agent. If that session is stopped, ATF starts its server (it does not create an absent session name) and opens the tab there. Set `ATF_HERDR_SESSION` before starting the daemon or choose `herdr-session:<name>` in Settings to use another listed session. `own-session` was removed for new jobs; existing own-session jobs keep follow-up and recovery. Opt-in live test: `ATF_REAL_HERDR=1` launches only in its own `atf-test-*` session. |
 | Windows / `wt` | Partly verified ([platform status](platform-status.md)). State lives under `%USERPROFILE%\.local\state`, not `%LOCALAPPDATA%`, because Windows Terminal tabs cannot read the MSIX-virtualized path. Interactive Codex needs the native `codex.exe`, not a `.cmd` shim. |
 | macOS / `terminal` | Untested. Terminal.app's AppleScript `do script` may open a window rather than a tab. The chosen host is saved; if kitty later disappears, jobs fail rather than switch hosts. Claude native wake is unavailable. |
 

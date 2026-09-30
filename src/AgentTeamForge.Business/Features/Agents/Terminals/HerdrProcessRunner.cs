@@ -19,8 +19,12 @@ interface IHerdrProcessRunner
     /// <summary>Runs a launcher that detaches its payload and exits; throws when it cannot start or fails.</summary>
     Task StartDetachedAsync(ProcessStartInfo psi, TimeSpan timeout, CancellationToken cancellationToken);
 
-    /// <summary>The named server, including Herdr's legacy default <c>herdr server</c>.</summary>
-    IReadOnlyList<ProcessIdentity> FindServers(string sessionName);
+    /// <summary>
+    /// The named server, including Herdr's legacy default <c>herdr server</c>. With <paramref name="socketPath"/> (the
+    /// listed socket of the session) servers whose environment resolves to that socket are preferred over the bare name,
+    /// so another HOME's server with the same session name is not a candidate.
+    /// </summary>
+    IReadOnlyList<ProcessIdentity> FindServers(string sessionName, string? socketPath = null);
 
     ProcessIdentity? Identity(int pid);
 
@@ -80,9 +84,9 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
         }
     }
 
-    public IReadOnlyList<ProcessIdentity> FindServers(string sessionName)
+    public IReadOnlyList<ProcessIdentity> FindServers(string sessionName, string? socketPath = null)
     {
-        var result = new List<ProcessIdentity>();
+        var result = new List<(ProcessIdentity Identity, string[] Environment)>();
         if (OperatingSystem.IsMacOS())
         {
             foreach (var pid in DarwinProcess.Pids())
@@ -90,21 +94,43 @@ sealed class HerdrProcessRunner : IHerdrProcessRunner
                 if (DarwinProcess.Arguments(pid) is var (args, environment)
                     && IsServer(args, environment, sessionName) && Identity(pid) is { } identity)
                 {
-                    result.Add(identity);
+                    result.Add((identity, environment!));
                 }
             }
-            return result;
         }
-        foreach (var dir in Directory.EnumerateDirectories("/proc"))
+        else
         {
-            if (int.TryParse(Path.GetFileName(dir), NumberStyles.None, CultureInfo.InvariantCulture, out var pid) &&
-                Argv(pid) is [var executable, .., "server"] args && Path.GetFileName(executable) == "herdr" &&
-                IsServer(args, Environ(pid), sessionName) && Identity(pid) is { } id)
+            foreach (var dir in Directory.EnumerateDirectories("/proc"))
             {
-                result.Add(id);
+                if (int.TryParse(Path.GetFileName(dir), NumberStyles.None, CultureInfo.InvariantCulture, out var pid) &&
+                    Argv(pid) is [var executable, .., "server"] args && Path.GetFileName(executable) == "herdr" &&
+                    Environ(pid) is { } environment && IsServer(args, environment, sessionName) && Identity(pid) is { } id)
+                {
+                    result.Add((id, environment));
+                }
             }
         }
-        return result;
+        return PreferSocket(result, socketPath);
+    }
+
+    /// <summary>Servers serving <paramref name="socketPath"/> when any do; otherwise every name match (unknown layout).</summary>
+    internal static IReadOnlyList<ProcessIdentity> PreferSocket(IReadOnlyList<(ProcessIdentity Identity, string[] Environment)> servers, string? socketPath)
+    {
+        if (socketPath is not null && servers.Where(s => ServesSocket(s.Environment, socketPath)).ToList() is { Count: > 0 } serving)
+        {
+            return [.. serving.Select(s => s.Identity)];
+        }
+        return [.. servers.Select(s => s.Identity)];
+    }
+
+    /// <summary>Herdr keeps its socket under the config root (HERDR_CONFIG_PATH dir, XDG_CONFIG_HOME or HOME/.config) unless HERDR_SOCKET_PATH overrides it.</summary>
+    internal static bool ServesSocket(string[] environment, string socketPath)
+    {
+        if (Value(environment, "HERDR_SOCKET_PATH") is { Length: > 0 } explicitSocket) { return explicitSocket == socketPath; }
+        var root = Value(environment, "HERDR_CONFIG_PATH") is { Length: > 0 } config ? Path.GetDirectoryName(config)
+            : Value(environment, "XDG_CONFIG_HOME") is { Length: > 0 } xdg ? Path.Combine(xdg, "herdr")
+            : Value(environment, "HOME") is { Length: > 0 } home ? Path.Combine(home, ".config", "herdr") : null;
+        return root is not null && Path.IsPathRooted(root) && Path.TrimEndingDirectorySeparator(socketPath).StartsWith(Path.TrimEndingDirectorySeparator(root) + "/", StringComparison.Ordinal);
     }
 
     /// <summary>An unreadable environment is another user's process, never our server.</summary>

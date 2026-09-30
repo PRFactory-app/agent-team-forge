@@ -52,8 +52,7 @@
         <label>Name <input id="new-agent-name" type="text" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" placeholder="Auto: backend-short id"></label>
         <label>Model / tier <select id="new-agent-model" required></select></label>
         <label id="new-agent-effort-field">Effort <select id="new-agent-effort"></select></label>
-        <label id="new-agent-placement-field" hidden>Herdr placement <select id="new-agent-placement"><option value="shared">Shared session</option><option value="own-session">Own session</option></select></label>
-        <label id="new-agent-session-field" hidden>Session name <input id="new-agent-session" type="text" maxlength="64" value="default" pattern="[A-Za-z0-9_-]+"></label>
+        <label id="new-agent-session-field" hidden>Herdr session <input id="new-agent-session" type="text" maxlength="64" value="default" pattern="[A-Za-z0-9_-]+"></label>
         <label class="new-agent-directory">Working directory <input id="new-agent-cwd" type="text" maxlength="4096" placeholder="/absolute/existing/directory" required></label>
         <button id="new-agent-browse" type="button">Browse directories</button>
         <label>Lead session <select id="new-agent-lead"><option value="">No lead session</option></select></label>
@@ -75,7 +74,7 @@
 
   <section id="settings-view" hidden>
     <div class="section-heading"><div><h2>Settings</h2><p class="note">Model, effort and Herdr placement changes apply to new jobs. Idle limits also apply to currently retained agents.</p></div><button id="settings-back" type="button">Back to overview</button></div>
-    <div id="herdr-settings" hidden><h3>Herdr placement</h3><label>Default <select id="settings-placement"><option value="shared">Shared session</option><option value="own-session">Own session</option></select></label> <label id="settings-session-field" hidden>Session name <input id="settings-session" type="text" maxlength="64" value="default" pattern="[A-Za-z0-9_-]+"></label> <button id="settings-placement-save" type="button">Save placement</button></div>
+    <div id="herdr-settings" hidden><h3>Herdr placement</h3><label id="settings-session-field">Default session <input id="settings-session" type="text" maxlength="64" value="default" pattern="[A-Za-z0-9_-]+"></label> <button id="settings-placement-save" type="button">Save placement</button></div>
     <h3>Idle interactive agents</h3>
     <p class="note">Changes apply while the daemon runs. Lower limits close the oldest idle agents on the next sweep (within 30 seconds). Saved sessions can still be resumed.</p>
     <form id="retention-settings">

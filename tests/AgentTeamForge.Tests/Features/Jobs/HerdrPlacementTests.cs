@@ -13,7 +13,7 @@ public sealed class HerdrPlacementTests
         Assert.Equal("herdr-session:default", settings.Resolve(null));
         settings.Change("herdr-session:default");
         Assert.Equal("herdr-session:default", new HerdrPlacement(state.Path).Resolve(null));
-        Assert.Equal("own-session", settings.Resolve("own-session"));
+        Assert.Equal("herdr-session:other", settings.Resolve("herdr-session:other"));
         Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(state.File("herdr-placement.json")));
     }
 
@@ -26,5 +26,17 @@ public sealed class HerdrPlacementTests
         Assert.Equal("herdr-session:default", settings.Default);
         Assert.Throws<ArgumentException>(() => settings.Change("herdr-session:bad;name"));
         Assert.Throws<ArgumentException>(() => settings.Resolve("herdr-session:"));
+    }
+
+    [Fact]
+    public void OwnSessionIsRejectedAndAStoredOwnSessionFallsBackToTheSharedDefault()
+    {
+        using var state = new TempStateDir();
+        var settings = new HerdrPlacement(state.Path);
+        Assert.Throws<ArgumentException>(() => settings.Change("own-session"));
+        Assert.Throws<ArgumentException>(() => settings.Resolve("own-session"));
+
+        File.WriteAllText(state.File("herdr-placement.json"), """{"Placement":"own-session"}""");
+        Assert.Equal("herdr-session:default", new HerdrPlacement(state.Path).Default);
     }
 }

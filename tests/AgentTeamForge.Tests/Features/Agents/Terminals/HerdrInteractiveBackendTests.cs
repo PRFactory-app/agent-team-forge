@@ -866,6 +866,36 @@ public sealed class HerdrInteractiveBackendTests
         Assert.True(control.Stopped);
     }
 
+    [Fact]
+    public async Task GoneProbeWithLivePaneNeverClosesIt()
+    {
+        var control = new FakeControl { Status = InteractiveAgentStatus.Gone, PaneGone = false };
+        var backend = new HerdrInteractiveBackend(control, new FakeReader(null), InteractiveAgentKind.Claude, Path.GetTempPath());
+        var run = backend.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() });
+        await run.DeliverAsync(CancellationToken.None);
+        Assert.Contains(new BackendEvidence.ProtocolError("interactive_agent_exited"), await Collect(run));
+        await run.DisposeAsync();
+        Assert.False(control.Stopped);
+        Assert.False(run.OwnedSessionStopped);
+    }
+
+    [Fact]
+    public async Task UnverifiedProbesThenTranscriptCompletionStillYieldsTheResult()
+    {
+        var control = new FakeControl { Statuses = new Queue<InteractiveAgentStatus>(Enumerable.Repeat(InteractiveAgentStatus.Unverified, 6)) };
+        var reader = new DelayedReader(6, new InteractiveTranscript("native-1", "finished", ["finished"], Completed: true));
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(), TimeSpan.FromSeconds(10));
+        var run = backend.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() });
+        await run.DeliverAsync(CancellationToken.None);
+
+        var evidence = await Collect(run, TimeSpan.FromSeconds(5));
+        await run.DisposeAsync();
+
+        Assert.Contains(new BackendEvidence.Result("corr", "finished"), evidence);
+        Assert.DoesNotContain(evidence, e => e is BackendEvidence.ProtocolError);
+        Assert.False(control.Stopped);
+    }
+
     [Theory]
     [InlineData(InteractiveAgentKind.Claude)]
     [InlineData(InteractiveAgentKind.Codex)]
@@ -1077,6 +1107,8 @@ public sealed class HerdrInteractiveBackendTests
         public InteractiveAgentStatus Status { get; set; } = InteractiveAgentStatus.Done;
         public Queue<InteractiveAgentStatus>? Statuses { get; set; }
         public bool Stopped { get; private set; }
+        public bool PaneGone { get; init; } = true;
+        public bool PaneIsGone(InteractiveLaunch launch) => PaneGone;
 
         public Task PromptAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken)
         {
