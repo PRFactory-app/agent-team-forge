@@ -10,7 +10,7 @@ public static class ModelSelection
         {
             ["cheapest"] = ("gpt-6-luna", "low"),
             ["low"] = ("gpt-6-luna", "medium"),
-            ["medium"] = ("gpt-6-luna", "high"),
+            ["medium"] = ("gpt-6.1-sol", "low"),
             ["high"] = ("gpt-6.1-sol", "medium"),
             ["xhigh"] = ("gpt-6.1-sol", "high"),
             ["max"] = ("gpt-6-astra", "low"),
@@ -26,7 +26,7 @@ public static class ModelSelection
     static readonly string[] SolCandidates = ["gpt-6.1-sol", "gpt-6-sol"];
 
     static bool IsSolTier(string backend, string tier) =>
-        backend == "pi" && tier == "medium-fast" || backend is "codex" or "pi" && tier is "high" or "xhigh";
+        backend == "pi" && tier == "medium-fast" || backend is "codex" or "pi" && tier is "medium" or "high" or "xhigh";
 
     public static (string Model, string Effort) DefaultTier(string backend, string tier) =>
         backend == "pi" && tier == "medium-fast" ? ("gpt-6.1-sol", "medium")
