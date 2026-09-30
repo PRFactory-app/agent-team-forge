@@ -172,3 +172,14 @@ Validation with the supplied .NET 11 SDK:
 - The broader requested selector also matches `AgentTeamForge.Tests.Features.Setup.InstallScriptTests.CompletionPrintsQuotedAbsoluteSetupCommand`. This failure was absent from the earlier narrower report but is now independently reproduced on exported main. The other selected failures are already in the earlier Windows baseline list. No new feature failure was introduced.
 - Managed publish and the published `atf.exe --version` smoke run pass (`atf 0.0.1-dev`). The previously documented unavailable native AOT C++ toolchain remains unchanged.
 - `git diff --check` passes. Files were staged explicitly. The lead's uncommitted `.github/workflows/release.yml` change and untracked review document were not edited, staged or committed. No push performed.
+
+## Re-review fixes
+
+Implementation commit: `43ad2026c43a652748d7c514ff403f65e29df18e`.
+
+- N1: Both `native_submission_unresolved` and `native_delivery_unresolved` now keep the reservation until native transcript settlement or explicit `stop_job` release. This supersedes the original review's recommendation to release on unresolved exits. Not-started/revert, cancellation, and pre-submit exits still release. Two focused regression cases drive the real WT backend and dispatcher with a zero-minute timeout: the unresolved tab stays live, then transcript reconciliation settles the native job and closes the tab normally.
+- N2: The Claude pre-write callback releases its reservation only when `RevertNativeClaudeAttempt` succeeds; a failed revert cannot release a later reservation.
+
+Validation: Release solution build with `-warnaserror` passed (0 warnings, 0 errors). Requested RetainedSessions, WtInteractiveBackend, NativeClaudeDelivery, NativeCodexDelivery and DispatchJob filter: **106 passed, 5 failed, 0 skipped (111 total)**. Main baseline at `6d496da9c839fe95423a407b3ead7353dca33180`: **99 passed, 5 failed, 0 skipped (104 total)**. Failure identities match exactly: `LongWindowsPromptIsHandedOverAsItsFileWithTheCorrelationMarker(Pi)`, `ManagedWtLaunchAndResumeCarryPrivateMcpConfig(Codex)` and `(Pi)`, `TabLaunchAndResumeCarryResolvedSelection(Pi)`, and `WrapperKeepsPromptAndUsesResumeWithoutExposingItToWt`. Both new unresolved regression cases pass. Final TRX: `.idle-results/rereview-feature/rereview-feature-final.trx`; baseline: `.idle-results/rereview-main/rereview-main.trx`.
+
+Managed Release publish and `atf.exe --version` passed (`atf 0.0.1-dev`). The lead's `.github/workflows/release.yml` remains untouched and unstaged. No push performed.
