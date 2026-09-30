@@ -11,6 +11,19 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 public sealed class ListJobsTests
 {
     [Fact]
+    public void Named_lead_is_exposed_in_job_list()
+    {
+        using var f = new JobFixture();
+        var sessions = new LeadSessionStore(f.Database);
+        var lead = sessions.Start("/workspace/shared", "parent=1");
+        sessions.Rename(lead.SessionId, lead.Workspace, "planner");
+        f.Accept().Execute(new SubmitJobRequest("named-lead", "work", null, false) { LeadSessionId = lead.SessionId });
+        Assert.Equal("planner", Assert.Single(f.List().Execute(new ListJobsRequest()).Page!.Jobs).LeadName);
+        sessions.Rename(lead.SessionId, lead.Workspace, null);
+        Assert.Null(Assert.Single(f.List().Execute(new ListJobsRequest()).Page!.Jobs).LeadName);
+    }
+
+    [Fact]
     public void Console_scope_lists_every_lead_and_connector_but_no_unrelated_principal()
     {
         using var f = new JobFixture();

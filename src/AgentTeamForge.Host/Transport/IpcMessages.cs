@@ -11,6 +11,7 @@ public sealed record IpcRequest
     public string? Credential { get; init; }
     public string? Principal { get; init; }
     public string? LeadSessionId { get; init; }
+    public string? SessionName { get; init; }
     public string? Workspace { get; init; }
     public string? BindingKey { get; init; }
     public bool AllWorkspace { get; init; }

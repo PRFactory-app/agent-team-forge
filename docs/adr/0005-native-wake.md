@@ -30,7 +30,8 @@ extension.
 
 - Claude notices are posted by the recipient's own MCP bridge. Direct daemon
   writes can be held as an unidentified peer (observed with Claude 2.1.283).
-  Setup also sets `crossSessionInbound: accept`; no wake hooks are installed.
+  Setup also sets `crossSessionInbound: accept` on all platforms, including
+  Windows; check/doctor verifies it. No wake hooks are installed.
 - Codex may not pass `CODEX_THREAD_ID` to MCP; the lead then calls
   `register_codex_wake` once.
 - Pi needs the bundled `extensions/pi-wake` extension.

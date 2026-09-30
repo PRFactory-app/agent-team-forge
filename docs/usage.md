@@ -15,7 +15,8 @@ state. Install first: [install](install.md). Platform support:
 Install and log in to the backend CLIs you want first: Claude Code, Codex or
 Pi. Setup registers the `agentteamforge` MCP server in each installed client,
 installs Pi's MCP adapter and wake extension (needs network), and sets
-Claude's `crossSessionInbound` to `accept` so wake notices arrive. Reload the
+Claude's `crossSessionInbound` to `accept` on all platforms, including Windows,
+so wake notices arrive. Reload the
 clients afterwards. See [launch modes](terminal-modes.md) for what each mode
 means.
 
@@ -82,7 +83,7 @@ Other `submit_job` options:
 
 MCP tools for managed jobs: `submit_job`, `get_job`, `get_job_output`,
 `get_job_activity`, `follow_up`, `list_jobs`, `list_backends`, `stop_job`,
-`stop_agent`, `interrupt_job`, `revive_agent`, `session_info`, `resume_session`,
+`stop_agent`, `interrupt_job`, `revive_agent`, `session_info`, `set_session_name`, `resume_session`,
 `register_codex_wake`. `list_backends` reports executable availability and
 model/tier choices. `get_job.delivery` exposes durable delivery evidence. Coming from win-agent-teams? See the
 [migration guide](migrating-from-win-agent-teams.md).
@@ -96,6 +97,10 @@ current session, its stable `lead_token` and recoverable sessions for the
 folder; `resume_session(session_id=...)` adopts a prior session's jobs and
 unread wake notices. A bridge whose parent process and folder survive a
 restart reconnects to the same session automatically.
+
+`set_session_name(name="planner")` gives the current lead a display name in the
+web console and `session_info`. Names are trimmed, limited to 64 characters and
+cannot contain control characters. An empty name clears it.
 
 ### Worktrees
 

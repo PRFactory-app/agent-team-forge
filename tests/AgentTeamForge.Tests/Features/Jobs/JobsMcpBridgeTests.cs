@@ -6,6 +6,19 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 
 public sealed class JobsMcpBridgeTests
 {
+    [Theory]
+    [InlineData("planner")]
+    [InlineData("")]
+    public void Set_session_name_maps_to_session_info(string name)
+    {
+        using var json = JsonDocument.Parse(name.Length == 0 ? """{"name":""}""" : """{"name":"planner"}""");
+        var args = json.RootElement.EnumerateObject().ToDictionary(property => property.Name, property => property.Value);
+        var (request, rejection) = JobsMcpBridge.Map("set_session_name", args, false);
+        Assert.Null(rejection);
+        Assert.Equal(IpcProtocol.SessionInfo, request!.Op);
+        Assert.Equal(name, request.SessionName);
+    }
+
     [Fact]
     public void Submit_maps_lead_supplied_name_to_target_agent()
     {

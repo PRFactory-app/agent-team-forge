@@ -7,6 +7,7 @@ public sealed record RecoverableLeadSession(string SessionId, int JobCount, stri
 public sealed record LeadSessionInfo(string SessionId, string Workspace, string LeadToken, int JobCount,
     IReadOnlyList<RecoverableLeadSession> RecoverableSessions)
 {
+    public string? Name { get; init; }
     public string Identity { get; init; } = "team-lead";
     public string Cwd => Workspace;
     public string SessionDir { get; init; } = string.Empty;
@@ -91,8 +92,20 @@ public sealed class LeadSessionStore(JobDatabase database)
             .Select(s => new RecoverableLeadSession(s.Id, s.Count, s.UpdatedAt)).ToList();
         return new LeadSessionInfo(id, workspace, current.Token, current.Count, recoverable)
         {
+            Name = current.Name,
             SessionDir = Path.Combine(Path.GetDirectoryName(database.Path)!, "lead-sessions", id)
         };
+    }
+
+    public bool Rename(string id, string workspace, string? name)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE lead_sessions SET display_name=$n WHERE session_id=$id AND workspace=$ws AND closed_at IS NULL";
+        command.Parameters.AddWithValue("$n", (object?)name ?? DBNull.Value);
+        command.Parameters.AddWithValue("$id", id);
+        command.Parameters.AddWithValue("$ws", workspace);
+        return command.ExecuteNonQuery() == 1;
     }
 
     public bool Exists(string id, string workspace) => Info(id, workspace) is not null;
@@ -203,7 +216,7 @@ public sealed class LeadSessionStore(JobDatabase database)
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT s.session_id,s.binding_key,s.lead_token,s.updated_at,count(j.job_id)
+            SELECT s.session_id,s.binding_key,s.lead_token,s.updated_at,count(j.job_id),s.display_name
             FROM lead_sessions s LEFT JOIN jobs j ON j.lead_session_id=s.session_id
             WHERE s.workspace=$workspace AND s.closed_at IS NULL GROUP BY s.session_id ORDER BY s.updated_at DESC
             """;
@@ -212,12 +225,12 @@ public sealed class LeadSessionStore(JobDatabase database)
         var result = new List<SessionRow>();
         while (reader.Read())
         {
-            result.Add(new SessionRow(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt32(4)));
+            result.Add(new SessionRow(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt32(4), reader.IsDBNull(5) ? null : reader.GetString(5)));
         }
         return result;
     }
 
-    sealed record SessionRow(string Id, string BindingKey, string Token, string UpdatedAt, int Count);
+    sealed record SessionRow(string Id, string BindingKey, string Token, string UpdatedAt, int Count, string? Name);
 }
 
 public sealed record NativeSessionBinding(string SessionId, string Kind, string NativeId, string? Home);

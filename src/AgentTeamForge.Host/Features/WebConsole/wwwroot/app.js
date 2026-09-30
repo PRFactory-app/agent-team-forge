@@ -49,6 +49,7 @@
   const activities = new Map();
   const jobDetails = new Map();
   const knownLeads = new Map();
+  const leadNames = new Map();
   let leadOptionsKey = '';
   const tickets = new Map();
   const newAgent = { pending: null, sending: false };
@@ -104,6 +105,7 @@
     clearInterval(ticketTimer);
     tickets.clear();
     knownLeads.clear();
+    leadNames.clear();
     leadOptionsKey = '';
     newAgent.pending = null;
     newAgent.sending = false;
@@ -373,7 +375,7 @@
   }
 
   function syncLeadOptions() {
-    const key = JSON.stringify([...knownLeads]);
+    const key = JSON.stringify([[...knownLeads], [...leadNames]]);
     if (key === leadOptionsKey) return;
     leadOptionsKey = key;
     const select = $('new-agent-lead');
@@ -383,7 +385,7 @@
     none.value = '';
     select.append(none);
     for (const [id, workspace] of knownLeads) {
-      const option = element('option', '', id.slice(0, 8) + ' · ' + workspace);
+      const option = element('option', '', (leadNames.get(id) || id.slice(0, 8)) + ' · ' + workspace);
       option.value = id;
       select.append(option);
     }
@@ -1113,6 +1115,10 @@
       counts[color]++;
       const lead = j.connector ? 'PRFactory' : j.lead_session_id || 'No lead session';
       if (!j.connector && j.lead_session_id && j.lead_workspace) knownLeads.set(j.lead_session_id, j.lead_workspace);
+      if (!j.connector && j.lead_session_id) {
+        if (j.lead_name) leadNames.set(lead, j.lead_name);
+        else leadNames.delete(lead);
+      }
       if (!groups.has(lead)) groups.set(lead, []);
       groups.get(lead).push(j);
     }
@@ -1160,7 +1166,7 @@
       teamToggle.setAttribute('aria-expanded', String(isOpen));
       teamToggle.setAttribute('aria-label', (isOpen ? 'Collapse ' : 'Expand ') + lead);
       teamToggle.append(light(groupColor, groupFailed ? 'Needs attention' : groupRunning ? 'Running' : groupQueued ? 'Waiting' : 'Done'),
-        element('strong', 'team-name', lead === 'PRFactory' ? 'PRFactory' : lead === 'No lead session' ? 'Unassigned' : 'Lead ' + lead.slice(0, 8)),
+        element('strong', 'team-name', lead === 'PRFactory' ? 'PRFactory' : lead === 'No lead session' ? 'Unassigned' : 'Lead ' + (leadNames.get(lead) || lead.slice(0, 8))),
         ...(groupUsage ? [tokenSpan('team-tokens', 'Σ ', groupUsage, '', 'group: lead + distinct member sessions')] : []),
         element('span', 'team-counts', `${groupRunning} running · ${groupQueued} waiting · ${groupFailed} failed`),
         element('span', 'team-urgency badge ' + groupColor, groupFailed ? 'Needs attention' : groupRunning ? 'Running' : groupQueued ? 'Waiting' : 'Done'),
@@ -1180,7 +1186,8 @@
       const leadBody = element('div', 'lead-body');
       const identity = element('div', 'node-identity');
       identity.append(element('h3', 'node-name', lead === 'No lead session' ? 'No lead session' : 'Lead session'),
-        element('span', 'session-id', lead === 'No lead session' ? 'unassigned' : lead));
+        element('span', 'session-id', lead === 'No lead session' ? 'unassigned' : (leadNames.get(lead) || lead)));
+      identity.querySelector('.session-id').title = lead;
       const activity = element('p', 'node-activity', groupRunning + ' running · ' + groupQueued + ' queued · ' + groupFailed + ' need attention · ' + groupJobs.length + ' jobs shown');
       const firstAccepted = groupJobs.map(j => j.accepted_at).filter(Boolean).sort()[0];
       const meta = element('div', 'node-meta');

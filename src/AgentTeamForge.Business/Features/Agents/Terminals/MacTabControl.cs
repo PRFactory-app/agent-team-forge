@@ -66,7 +66,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
         await File.WriteAllTextAsync(wrapper, WrapperText(launch, prompt, sidecar,
             Environment.ProcessPath ?? throw new IOException("atf executable path unavailable"), _codexHome), Encoding.UTF8, cancellationToken);
         File.SetUnixFileMode(wrapper, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        var start = LaunchInfo(provider, kittyAddress, kittyBinary, wrapper, launch.AgentName);
+        var start = LaunchInfo(provider, kittyAddress, kittyBinary, wrapper, launch.TabLabel ?? launch.AgentName);
         using var launcher = NonInteractiveProcess.Start(start) ?? throw new IOException("terminal launcher did not start");
         var error = launcher.StandardError.ReadToEndAsync(cancellationToken);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
