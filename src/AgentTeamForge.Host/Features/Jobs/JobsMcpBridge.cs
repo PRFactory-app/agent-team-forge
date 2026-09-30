@@ -310,9 +310,9 @@ public static class JobsMcpBridge
                     }
                     else if (call.Name == "register_codex_wake")
                     {
-                        var host = HostSessionWake.NearestHost();
-                        var home = host?.Kind == "codex" ? HostSessionWake.CodexHome(host.Value.Pid) : null;
-                        var target = home is null ? null : HostSessionWake.ForCodexThread(String(args, "thread_id"), home);
+                        var target = HostSessionWake.ForCodexLead(String(args, "thread_id"), HostSessionWake.CurrentHost(),
+                            pid => HostSessionWake.CodexHome(pid),
+                            message => Console.Error.WriteLine("[atf-bridge] register_codex_wake: " + message));
                         response = target is null ? new IpcResponse(false, JobErrors.InvalidRequest)
                             : await SendAsync(target with { LeadSessionId = sessionId, Workspace = workspace, JobId = managedJobId }, cancellationToken);
                         if (response.Ok && response.WakeGeneration is long generation)

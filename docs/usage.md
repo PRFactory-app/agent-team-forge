@@ -118,6 +118,11 @@ See [ADR 0005](adr/0005-native-wake.md).
   shell tool and call `register_codex_wake(thread_id="...")` once before
   submitting. A Codex lead in a new repository may show **Trust this folder**
   once, even in bypass mode; accept it before leaving the lead unattended.
+  On Windows/macOS, a custom `CODEX_HOME` must also reach the MCP bridge:
+  add `env_vars = ["CODEX_HOME"]` to `[mcp_servers.agentteamforge]` in
+  Codex's `config.toml`, or set that server's `env.CODEX_HOME` explicitly.
+  The bridge verifies the thread under its inherited home; it does not read
+  another process's environment on these platforms.
 - **Pi:** load the bundled extension with the same state directory:
 
   ```sh

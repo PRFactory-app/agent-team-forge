@@ -47,15 +47,19 @@ public sealed class ClaudeMemberWakeTests
     public void Host_binding_rejects_inherited_channels_and_model_supplied_credentials()
     {
         using var dir = new TempStateDir();
-        var socket = dir.File("123.sock");
-        File.WriteAllText(socket, "");
-        Assert.Null(HostSessionWake.ForClaudeChannel((123, "codex"), socket, "secret", "linux"));
-        Assert.Null(HostSessionWake.ForClaudeChannel((124, "claude"), socket, "secret", "macos"));
-        var host = HostSessionWake.ForClaudeChannel((123, "claude"), socket, "secret", "macos");
+        var platform = OperatingSystem.IsWindows() ? "windows" : "macos";
+        var socket = OperatingSystem.IsWindows() ? @"\\.\pipe\claude-test" : dir.File("123.sock");
+        if (!OperatingSystem.IsWindows())
+        {
+            File.WriteAllText(socket, "");
+            Assert.Null(HostSessionWake.ForClaudeChannel((124, "claude"), socket, "secret", platform));
+        }
+        Assert.Null(HostSessionWake.ForClaudeChannel((123, "codex"), socket, "secret", platform));
+        var host = HostSessionWake.ForClaudeChannel((123, "claude"), socket, "secret", platform);
         Assert.NotNull(host);
-        Assert.True(HostSessionWake.OwnsClaudeChannel(host, (123, "claude"), socket, "secret", "macos"));
-        Assert.False(HostSessionWake.OwnsClaudeChannel(host, (456, "claude"), socket, "secret", "macos"));
-        Assert.False(HostSessionWake.OwnsClaudeChannel(host, (123, "claude"), socket, "changed", "macos"));
+        Assert.True(HostSessionWake.OwnsClaudeChannel(host, (123, "claude"), socket, "secret", platform));
+        Assert.False(HostSessionWake.OwnsClaudeChannel(host, (456, "claude"), socket, "secret", platform));
+        Assert.False(HostSessionWake.OwnsClaudeChannel(host, (123, "claude"), socket, "changed", platform));
         var supplied = new IpcRequest { Op = IpcProtocol.ExternalSetWake, WakeAddress = "untrusted", WakeSecret = "untrusted" };
         var bound = JobsMcpBridge.ClaudeMemberWake(supplied, host);
         Assert.Equal(socket, bound.WakeAddress);

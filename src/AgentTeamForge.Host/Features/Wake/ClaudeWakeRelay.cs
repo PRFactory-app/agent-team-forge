@@ -20,8 +20,7 @@ internal static class ClaudeWakeRelay
                 var response = await client.SendAsync(host with { Op = IpcProtocol.ClaudeWakeTake }, cancellationToken);
                 if (response.ClaudeNotice is { } offer)
                 {
-                    var currentHost = OperatingSystem.IsLinux() ? HostSessionWake.NearestHost()
-                        : OperatingSystem.IsWindows() ? WindowsHostAncestry.NearestHost() : MacHostAncestry.NearestHost();
+                    var currentHost = HostSessionWake.CurrentHost();
                     var owned = HostSessionWake.OwnsClaudeChannel(host, currentHost,
                         Environment.GetEnvironmentVariable("CLAUDE_CODE_MESSAGING_SOCKET"),
                         Environment.GetEnvironmentVariable("CLAUDE_CODE_MESSAGING_TOKEN"));
@@ -31,8 +30,7 @@ internal static class ClaudeWakeRelay
                 }
                 if (managedJobId is not null && sessionId?.Invoke() is { } leadSession && workspace is not null)
                 {
-                    var currentHost = OperatingSystem.IsLinux() ? HostSessionWake.NearestHost()
-                        : OperatingSystem.IsWindows() ? WindowsHostAncestry.NearestHost() : MacHostAncestry.NearestHost();
+                    var currentHost = HostSessionWake.CurrentHost();
                     if (HostSessionWake.OwnsClaudeChannel(host, currentHost,
                         Environment.GetEnvironmentVariable("CLAUDE_CODE_MESSAGING_SOCKET"),
                         Environment.GetEnvironmentVariable("CLAUDE_CODE_MESSAGING_TOKEN")))
