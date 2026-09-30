@@ -13,7 +13,7 @@ internal static class CommandLine
         ("stop", "stop [--state-dir DIR]", ["state-dir"]),
         ("web", "web [--open] [--rotate-token] [--state-dir DIR]", ["+open", "+rotate-token", "state-dir", "port"]),
         ("uninstall", "uninstall [--purge] [--force] [--state-dir DIR]", ["+purge", "+force", "state-dir", "+teardown-only"]),
-        ("prfactory connect", "prfactory connect --url HTTPS_URL [--repo ID=DIR]... [--external ID:MEMBER]... [--token-scope tenant-wide|repository] [--repo-less true|false] [--state-dir DIR] (token on stdin)",
+        ("prfactory connect", "prfactory connect --url HTTPS_URL [--repo ID=DIR]... [--external ID:MEMBER]... [--token-scope tenant-wide|repository] [--repo-less true|false] [--ca-file PEM_FILE] [--state-dir DIR] (token on stdin)",
             ["url", "repo", "external", "token", "token-scope", "repo-less", "state-dir"]),
         ("prfactory disconnect", "prfactory disconnect [--state-dir DIR]", ["state-dir"]),
         ("prfactory status", "prfactory status [--state-dir DIR]", ["state-dir"]),

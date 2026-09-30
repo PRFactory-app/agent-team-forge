@@ -24,6 +24,7 @@ public static class PRFactoryHeartbeat
         var interval = TimeSpan.FromSeconds(30);
         var failures = 0;
         var rejected = false;
+        var caLogged = false;
         try
         {
             while (!ct.IsCancellationRequested)
@@ -43,11 +44,28 @@ public static class PRFactoryHeartbeat
                         continue;
                     }
                     var token = PRFactoryConnection.ReadToken(state);
-                    var key = settings.Url + "\n" + token;
+                    var key = settings.Url + "\n" + token + "\n" + settings.CaFile;
                     if (key != connection)
                     {
                         http?.Dispose();
-                        http = PRFactoryClient.CreateHttpClient(settings.Url, token, handlerFactory?.Invoke());
+                        http = null;
+                        var handler = handlerFactory?.Invoke();
+                        if (handler is null && settings.CaFile is not null)
+                        {
+                            try { handler = PRFactoryTrust.CreateHandler(settings.CaFile); }
+                            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException or FormatException)
+                            {
+                                // Fail closed: never fall back to the system store alone or to insecure validation.
+                                if (!caLogged)
+                                {
+                                    caLogged = true;
+                                    log($"PRFactory CA file unusable ({ex.GetType().Name}); connector stopped until it is fixed or reconnected without --ca-file");
+                                }
+                                await delay(TimeSpan.FromSeconds(30), ct);
+                                continue;
+                            }
+                        }
+                        http = PRFactoryClient.CreateHttpClient(settings.Url, token, handler);
                         client = new PRFactoryClient(http);
                         connection = key;
                         machineId = null;
@@ -141,7 +159,7 @@ public static class PRFactoryHeartbeat
         try
         {
             var settings = PRFactoryConnection.LoadSettings(state);
-            return settings is not null && settings.Url + "\n" + PRFactoryConnection.ReadToken(state) == connection;
+            return settings is not null && settings.Url + "\n" + PRFactoryConnection.ReadToken(state) + "\n" + settings.CaFile == connection;
         }
         catch (Exception ex) when (ex is IOException or StateDirectoryException) { return false; }
     }
