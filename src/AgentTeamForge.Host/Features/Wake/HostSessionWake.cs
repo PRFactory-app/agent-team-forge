@@ -1,4 +1,5 @@
 using System.Text;
+using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.Host.Hosting;
 using AgentTeamForge.Host.Transport;
@@ -8,10 +9,13 @@ namespace AgentTeamForge.Host.Features.Wake;
 /// <summary>Resolve the nearest agent host once, as in procinfo.resolve_nearest_host.</summary>
 public static class HostSessionWake
 {
+    internal static (int Pid, string Kind)? CurrentHost() =>
+        OperatingSystem.IsLinux() ? NearestHost()
+        : OperatingSystem.IsWindows() ? WindowsHostAncestry.NearestHost() : MacHostAncestry.NearestHost();
+
     public static IpcRequest? Resolve(StateDirectory state)
     {
-        var host = OperatingSystem.IsLinux() ? NearestHost()
-            : OperatingSystem.IsWindows() ? WindowsHostAncestry.NearestHost() : MacHostAncestry.NearestHost();
+        var host = CurrentHost();
         if ((host is null && !OperatingSystem.IsLinux() || host?.Kind == "codex")
             && Environment.GetEnvironmentVariable("CODEX_THREAD_ID") is { Length: > 0 } thread)
         {
@@ -105,13 +109,31 @@ public static class HostSessionWake
         };
     }
 
-    /// <summary>Read Codex's home from its process, never from a model-supplied tool argument.</summary>
+    internal static IpcRequest? ForCodexLead(string? thread, (int Pid, string Kind)? host,
+        Func<int, string?> codexHome, Action<string>? reject = null)
+    {
+        if (host?.Kind != "codex")
+        {
+            reject?.Invoke("no Codex host ancestor");
+            return null;
+        }
+        var home = codexHome(host.Value.Pid);
+        if (string.IsNullOrWhiteSpace(home))
+        {
+            reject?.Invoke("no trusted Codex home");
+            return null;
+        }
+        var target = ForCodexThread(thread, home);
+        if (target is null) { reject?.Invoke("thread not verified under " + home); }
+        return target;
+    }
+
+    /// <summary>Read the host's environment on Linux, otherwise the bridge's inherited home; never a tool argument.</summary>
     internal static string? CodexHome(int hostPid, string procRoot = "/proc")
     {
         if (!OperatingSystem.IsLinux())
         {
-            return Environment.GetEnvironmentVariable("CODEX_HOME")
-                ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+            return CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
         }
 
         try

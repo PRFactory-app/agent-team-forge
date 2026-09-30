@@ -9,14 +9,14 @@ public sealed class TempStateDir : IDisposable
     public TempStateDir()
     {
         var root = Environment.GetEnvironmentVariable("ATF_TEST_TMP_ROOT")
-            ?? (Directory.Exists("/tmp") ? "/tmp" : System.IO.Path.GetTempPath());
+            ?? (!OperatingSystem.IsWindows() && Directory.Exists("/tmp") ? "/tmp" : System.IO.Path.GetTempPath());
         if (!Directory.Exists(root))
         {
             throw new DirectoryNotFoundException($"Test temp root does not exist: {root}");
         }
 
         Path = System.IO.Path.Combine(root, "atf-" + Guid.NewGuid().ToString("N")[..10]);
-        Directory.CreateDirectory(Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        AgentTeamForge.Host.Hosting.StateDirectory.CreatePrivateDirectory(Path);
     }
 
     public string Path { get; }

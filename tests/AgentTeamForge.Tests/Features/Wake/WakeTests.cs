@@ -473,7 +473,7 @@ public sealed class WakeTests
         using var fixture = new JobFixture();
         var wake = new WakeStore(fixture.Database);
         var sessions = new LeadSessionStore(fixture.Database);
-        var lead = sessions.Start("/workspace/wake-read", "parent=1");
+        var lead = sessions.Start(Path.GetFullPath("/workspace/wake-read"), "parent=1");
         var accept = fixture.Accept();
         var endpoint = new JobsEndpoint(accept, fixture.Get(), new FollowUpJob(fixture.Store, JobFixture.Operator, accept), fixture.List(),
             new StopJob(fixture.Store, JobFixture.Operator, _ => { }), new AgentTeamForge.DAL.Sqlite.DurabilityCheckpoints(null),

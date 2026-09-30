@@ -62,7 +62,7 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
                     }
 
                     if (Path.IsPathFullyQualified(path) && Path.GetRelativePath(sessions, path) is var relative
-                        && relative != ".." && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+                        && !Path.IsPathRooted(relative) && relative != ".." && !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
                     {
                         return true;
                     }
