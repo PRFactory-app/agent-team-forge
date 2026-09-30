@@ -234,7 +234,7 @@ public static class DaemonCommand
                 if (backend is null || session is null
                     || backends.Resolve(backend) is not IInteractiveSessionStop interactive) { return null; }
                 return interactive.HasLiveSession(session);
-            }, retentionSettings, dispatcher.ReleaseNativeTurn);
+            }, retentionSettings, dispatcher.ReleaseNativeTurn, new AgentTeamForge.Business.Features.Usage.SessionTokenUsage());
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,

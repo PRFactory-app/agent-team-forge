@@ -442,6 +442,20 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
             r => Assert.Equal((IpcProtocol.JobGet, "j1"), (r.Op, r.JobId)),
             r => Assert.Equal((IpcProtocol.JobFollowUp, "j1", "next turn", "key-7"), (r.Op, r.JobId, r.Instruction, r.IdempotencyKey)));
         Assert.All(_forwarded, r => Assert.Null(r.Credential));
+        Assert.True(_forwarded[0].IncludeUsage);
+        Assert.All(_forwarded.Skip(1), r => Assert.False(r.IncludeUsage));
+    }
+
+    [Fact]
+    public async Task Web_usage_serializes_unknown_session_totals_as_null()
+    {
+        Daemon = _ => Task.FromResult(new IpcResponse(true,
+            Page: new JobListPage([new JobSummary("j1", "running", null, 1, "now", "now")], 50, false, null),
+            LeadTokens: new Dictionary<string, AgentTeamForge.Business.Features.Usage.TokenUsage?> { ["lead"] = null }));
+        using var response = await _http.SendAsync(Api(HttpMethod.Get, "/api/jobs"), TestContext.Current.CancellationToken);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("page").GetProperty("jobs")[0].GetProperty("session_tokens").ValueKind);
+        Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("lead_tokens").GetProperty("lead").ValueKind);
     }
 
     [Fact]

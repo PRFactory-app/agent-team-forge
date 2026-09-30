@@ -190,6 +190,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
                 Status = request.Query["status"].Count == 0 ? null : request.Query["status"].ToString(),
                 Cursor = request.Query["cursor"].Count == 0 ? null : request.Query["cursor"].ToString(),
                 OrderByActivity = true,
+                IncludeUsage = true,
                 IncludeConnector = true,
                 Limit = ListJobs.MaxPageSize,
             },
@@ -473,6 +474,19 @@ public sealed class WebConsoleServer : IAsyncDisposable
     {
         ctx.Response.StatusCode = status;
         ctx.Response.ContentType = "application/json; charset=utf-8";
+        if (response.LeadTokens is not null && response.Page is not null)
+        {
+            // Web usage has explicit unknowns; ordinary IPC/MCP keeps its existing shape.
+            var json = JsonSerializer.SerializeToNode(response, IpcJson.Default.IpcResponse)!;
+            foreach (var job in json["page"]!["jobs"]!.AsArray())
+            {
+                if (!job!.AsObject().ContainsKey("session_tokens")) { job["session_tokens"] = null; }
+            }
+            await using var writer = new Utf8JsonWriter(ctx.Response.Body);
+            json.WriteTo(writer);
+            await writer.FlushAsync();
+            return;
+        }
         await JsonSerializer.SerializeAsync(ctx.Response.Body, response, IpcJson.Default.IpcResponse);
     }
 

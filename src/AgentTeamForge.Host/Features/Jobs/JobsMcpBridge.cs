@@ -18,6 +18,12 @@ namespace AgentTeamForge.Host.Features.Jobs;
 /// </summary>
 public static class JobsMcpBridge
 {
+    internal static string? NativeKind(string? hostKind, string? claudeId, string? codexId) => hostKind switch
+    {
+        "codex" => string.IsNullOrWhiteSpace(codexId) ? null : "codex",
+        "claude" => string.IsNullOrWhiteSpace(claudeId) ? null : "claude",
+        _ => !string.IsNullOrWhiteSpace(claudeId) ? "claude" : !string.IsNullOrWhiteSpace(codexId) ? "codex" : null
+    };
     const string LimitProperties = """
           "timeout_s":{"type":"integer","minimum":1,"maximum":86400,"description":"Cancel the job (reason timeout) this many seconds after it starts running."},
           "queue_ttl_s":{"type":"integer","minimum":1,"maximum":86400,"description":"Cancel the job (reason queue_ttl) if it has not started this many seconds after acceptance."}
@@ -154,6 +160,14 @@ public static class JobsMcpBridge
         var bindingKey = childBinding ?? $"identity=team-lead\nparent={parentId}\ncwd={workspace}";
         var managedJobId = childBinding is not null && childBinding.StartsWith("managed-child:", StringComparison.Ordinal)
             ? childBinding["managed-child:".Length..] : null;
+        var nativeId = Environment.GetEnvironmentVariable("CLAUDE_CODE_SESSION_ID");
+        var nativeKind = NativeKind(HostSessionWake.CurrentHost()?.Kind, nativeId, Environment.GetEnvironmentVariable("CODEX_THREAD_ID"));
+        nativeId = nativeKind == "claude" ? nativeId : nativeKind == "codex" ? Environment.GetEnvironmentVariable("CODEX_THREAD_ID") : null;
+        var nativeHome = nativeKind == "claude"
+            ? Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude")
+            : Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        nativeHome = Path.GetFullPath(nativeHome, workspace);
+        if (string.IsNullOrWhiteSpace(nativeId)) { nativeId = null; nativeKind = null; }
         string? sessionId = null;
         async Task<IpcResponse> EnsureSessionAsync(CancellationToken cancellationToken)
         {
@@ -161,7 +175,7 @@ public static class JobsMcpBridge
             {
                 return new IpcResponse(true);
             }
-            var started = await SendAsync(new IpcRequest { Op = IpcProtocol.SessionStart, Workspace = workspace, BindingKey = bindingKey }, cancellationToken);
+            var started = await SendAsync(new IpcRequest { Op = IpcProtocol.SessionStart, Workspace = workspace, BindingKey = bindingKey, NativeKind = nativeKind, NativeSessionId = nativeId, NativeHome = nativeId is null ? null : nativeHome }, cancellationToken);
             if (started.Ok)
             {
                 sessionId = started.Session?.SessionId;
@@ -306,7 +320,7 @@ public static class JobsMcpBridge
                     {
                         var requested = String(args, "session_id");
                         response = requested is null ? new IpcResponse(false, JobErrors.InvalidRequest)
-                            : await SendAsync(new IpcRequest { Op = IpcProtocol.SessionResume, LeadSessionId = requested, Workspace = workspace, BindingKey = bindingKey }, cancellationToken);
+                            : await SendAsync(new IpcRequest { Op = IpcProtocol.SessionResume, LeadSessionId = requested, Workspace = workspace, BindingKey = bindingKey, NativeKind = nativeKind, NativeSessionId = nativeId, NativeHome = nativeId is null ? null : nativeHome }, cancellationToken);
                         if (response.Ok)
                         {
                             // An explicit resume takes over the session's wake, even from another live bridge.
