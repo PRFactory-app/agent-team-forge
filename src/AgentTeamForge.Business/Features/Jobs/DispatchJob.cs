@@ -379,6 +379,7 @@ public sealed class DispatchJob : IDisposable
             if (job is null || run is null || job.Status != JobStatus.NeedsReconciliation) { continue; }
             var herdr = backends.Resolve(job.Backend) as HerdrInteractiveBackend;
             var gone = false;
+            if (herdr is not null && RecoverNativeTurn(herdr, job, run)) { continue; }
             var backendRun = herdr?.Reattach(job, run, out gone);
             if (backendRun is null)
             {
@@ -403,6 +404,8 @@ public sealed class DispatchJob : IDisposable
             inFlight.Add(Task.Run(() => RunAttemptAsync(new AttemptClaim(job, run.RunId, run.Generation, run.Correlation),
                 stopping.Token, backendRun), CancellationToken.None));
         }
+        // After native turns: their settlement or proven loss resolves the owner's session first.
+        RecoverTerminalPaneOwners();
         var sweeping = SweepQueueAsync(stopping.Token);
         try
         {
@@ -423,6 +426,70 @@ public sealed class DispatchJob : IDisposable
             finally
             {
                 admission.Close(HaltReason ?? "daemon_stopping");
+            }
+        }
+    }
+
+    /// <summary>
+    /// A native follow-up turn runs in the pane of the job that launched its session and
+    /// settles from the native transcript, so it has no pane record of its own to rebind.
+    /// </summary>
+    bool RecoverNativeTurn(HerdrInteractiveBackend herdr, JobRecord job, RunRecord run)
+    {
+        var claude = store.NativeClaudeAttempt(job.JobId) is { State: "posting" or "posted" or "received" } pending ? pending : null;
+        var codex = claude is null && store.NativeAttempt(job.JobId) is { Unresolved: true } sent ? sent : null;
+        if ((claude?.SessionId ?? codex?.ThreadId) is not { } session) { return false; }
+        if (claude is not null ? TrySettleNativeClaude(claude) : TrySettleNativeCodex(codex!))
+        {
+            log($"recovery: {job.JobId} completed from its native transcript");
+            return true;
+        }
+        var peers = store.GetSessionJobs(job.JobId).Where(id => id != job.JobId).Select(store.GetJob).OfType<JobRecord>().ToList();
+        var owner = herdr.ReattachNativeTurn(session, peers, out var gone);
+        if (owner is null)
+        {
+            if (!gone)
+            {
+                log($"recovery: {job.JobId} remains fenced; its Herdr pane could not be rebound or proven gone");
+                return true;
+            }
+            store.FailUnattached(job.JobId, releaseNative: true);
+            log($"recovery: {job.JobId} failed; no verified live run");
+            return true;
+        }
+        if (store.ReattachQuarantined(new RunRef(job.JobId, run.RunId, run.Generation, run.Correlation), owner))
+        {
+            log($"recovery: reattached native turn {job.JobId} to the live Herdr pane of {owner}");
+        }
+        else { ReleaseNativeTurn(job.Backend, session); }
+        return true;
+    }
+
+    /// <summary>
+    /// Restart fences every job with a Herdr ownership record. A terminal owner's verified idle pane
+    /// is retained again so follow-ups reach it; a proven-gone pane only releases its fence.
+    /// Unverified or busy panes, and sessions with an unresolved turn, stay fenced.
+    /// </summary>
+    void RecoverTerminalPaneOwners()
+    {
+        IReadOnlyList<string> owners;
+        // Best effort: an unavailable store halts the claim loop that follows.
+        try { owners = store.FencedTerminalJobs(); }
+        catch (StorageException ex) { log($"recovery: pane owner recovery skipped: {ex.Failure}"); return; }
+        foreach (var jobId in owners)
+        {
+            try
+            {
+                if (store.GetJob(jobId) is not { } owner || backends.Resolve(owner.Backend) is not HerdrInteractiveBackend herdr) { continue; }
+                // Every ATF turn of this session: native follow-ups also ran in this pane.
+                var correlations = store.GetSessionJobs(jobId).SelectMany(store.GetRuns).Select(run => run.Correlation).ToList();
+                var recovered = herdr.RecoverTerminalOwner(owner, correlations, () => store.ReleaseRestartFence(owner.JobId, owner.SessionId));
+                if (recovered == PaneOwnerRecovery.Retained) { log($"recovery: retained the idle Herdr pane of {jobId} for its next turn"); }
+                if (recovered == PaneOwnerRecovery.Gone) { log($"recovery: released the restart fence of {jobId}; its Herdr pane is gone"); }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                log($"recovery: {jobId} remains fenced; pane owner recovery failed: {ex.Message}");
             }
         }
     }
@@ -963,19 +1030,18 @@ public sealed class DispatchJob : IDisposable
 
     void ReconcileNativeClaude()
     {
-        foreach (var attempt in store.UnresolvedNativeClaudeAttempts())
-        {
-            var receipt = InteractiveTranscriptReader.ReadClaudeSession(attempt.ClaudeHome, attempt.SessionId, attempt.Correlation);
-            if (receipt is not null) { store.RecordNativeClaudeReceipt(attempt.JobId, attempt.Correlation); }
-            if (receipt is { Completed: true, Message: { Length: > 0 } message })
-            {
-                if (store.SettleNativeClaudeAttempt(attempt.JobId, attempt.Correlation, message))
-                {
-                    RememberNativeTurn(BackendCatalog.Claude, attempt.SessionId);
-                    Signal();
-                }
-            }
-        }
+        foreach (var attempt in store.UnresolvedNativeClaudeAttempts()) { TrySettleNativeClaude(attempt); }
+    }
+
+    bool TrySettleNativeClaude(NativeClaudeAttempt attempt)
+    {
+        var receipt = InteractiveTranscriptReader.ReadClaudeSession(attempt.ClaudeHome, attempt.SessionId, attempt.Correlation);
+        if (receipt is not null) { store.RecordNativeClaudeReceipt(attempt.JobId, attempt.Correlation); }
+        if (receipt is not { Completed: true, Message: { Length: > 0 } message }
+            || !store.SettleNativeClaudeAttempt(attempt.JobId, attempt.Correlation, message)) { return false; }
+        RememberNativeTurn(BackendCatalog.Claude, attempt.SessionId);
+        Signal();
+        return true;
     }
 
     async Task RunNativeCodexAsync(RunRef run, NativeCodexAttempt attempt, CancellationToken daemonLifetime, CancellationToken stopRequested)

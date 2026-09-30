@@ -49,6 +49,42 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
     internal static InteractiveTranscript? ReadClaudeSession(string home, string sessionId, string correlation) =>
         LocateSession(home, sessionId, InteractiveAgentKind.Claude, usage: false) is { } path
             ? Parse(path, InteractiveAgentKind.Claude, "atf-corr:" + correlation) : null;
+    public IReadOnlySet<string>? LiveSessions(InteractiveLaunch launch, int shellPid) =>
+        LiveNativeSessions.Read(launch.Kind, shellPid,
+            launch.Kind == InteractiveAgentKind.Claude ? ClaudeConfigRoot.Resolve(environment, Path.GetFullPath(launch.WorkingDirectory)) : null);
+
+    public InteractiveTranscript? ReadLatestTurn(InteractiveLaunch launch, IReadOnlyCollection<string> correlations)
+    {
+        if (launch.NativeTranscript is not { } bound) { return null; }
+        try
+        {
+            if (new FileInfo(bound.Path).Length > MaxTranscriptBytes || HeaderId(bound.Path, launch.Kind) != bound.SessionId) { return null; }
+            // One read: the newest ATF turn is the one whose marker appears last; Parse then shows what followed it.
+            var lines = LiveFiles.ReadLines(bound.Path).ToList();
+            for (var i = lines.Count - 1; i >= 0; i--)
+            {
+                if (LastMarker(lines[i], correlations) is { } marker) { return Parse(bound.Path, launch.Kind, marker, lines); }
+            }
+            return null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+    }
+
+    static string? LastMarker(string line, IReadOnlyCollection<string> correlations)
+    {
+        if (!line.Contains("atf-corr:", StringComparison.Ordinal)) { return null; }
+        return correlations.Select(c => "atf-corr:" + c).Where(m => line.Contains(m, StringComparison.Ordinal))
+            .OrderByDescending(m => line.LastIndexOf(m, StringComparison.Ordinal)).FirstOrDefault();
+    }
+
+    public NativeTranscriptBinding? Locate(InteractiveLaunch launch, string sessionId)
+    {
+        if (launch.Kind == InteractiveAgentKind.Pi) { return null; }
+        var home = launch.Kind == InteractiveAgentKind.Claude
+            ? ClaudeConfigRoot.Resolve(environment, Path.GetFullPath(launch.WorkingDirectory)) : _codexHome;
+        return LocateSession(home, sessionId, launch.Kind, usage: false) is { } path ? new(sessionId, path) : null;
+    }
+
     public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started)
     {
         if (launch.NativeTranscript is { } retained)
@@ -215,7 +251,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
         Console.Error.WriteLine($"[atf-daemon] transcript unreadable: {path}: {e.GetType().Name}: {e.Message}");
     }
 
-    static InteractiveTranscript? Parse(string path, InteractiveAgentKind kind, string marker)
+    static InteractiveTranscript? Parse(string path, InteractiveAgentKind kind, string marker, IReadOnlyList<string>? lines = null)
     {
         try
         {
@@ -231,6 +267,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             var markerSeen = false;
             var completed = false;
             var ended = false;
+            var incomplete = false;
             string? last = null;
             InteractiveApiError? apiError = null;
             DateTimeOffset? rateLimitReset = null;
@@ -239,7 +276,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             var backgroundTools = new HashSet<string>();
             var backgroundTasks = new HashSet<string>();
             var knownTasks = new HashSet<string>();
-            foreach (var line in LiveFiles.ReadLines(path))
+            foreach (var line in lines ?? LiveFiles.ReadLines(path))
             {
                 JsonDocument json;
                 try { json = JsonDocument.Parse(line); }
@@ -249,6 +286,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                     // so nothing after it is attributed to this turn.
                     if (markerSeen)
                     {
+                        incomplete = true;
                         break;
                     }
                     continue;
@@ -295,6 +333,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                     }
                     if (kind == InteractiveAgentKind.Codex && EventType(root) == "task_started")
                     {
+                        ended = true;
                         break;
                     }
                     if (kind == InteractiveAgentKind.Claude)
@@ -332,7 +371,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             }
             return markerSeen ? new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress, completed,
                 !ended && (backgroundTools.Count > 0 || backgroundTasks.Count > 0),
-                ApiError: backgroundTools.Count == 0 && backgroundTasks.Count == 0 ? apiError : null, Times: times) : null;
+                ApiError: backgroundTools.Count == 0 && backgroundTasks.Count == 0 ? apiError : null, Times: times, Superseded: ended, Incomplete: incomplete) : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {

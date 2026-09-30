@@ -187,6 +187,18 @@ public sealed class InteractiveTranscriptReaderTests
     }
 
     [Fact]
+    public void Unreadable_line_after_a_turn_keeps_its_result_but_marks_the_tail_incomplete()
+    {
+        using var state = new TempStateDir();
+        var dir = Directory.CreateDirectory(Path.Combine(state.Path, "claude", "projects", "scratch"));
+        File.WriteAllLines(Path.Combine(dir.FullName, "claude-native.jsonl"),
+            [ClaudeUser("work " + Marker), ClaudeAssistant("done", "end_turn"), Partial, ClaudeUser("later human turn")]);
+        var turn = InteractiveTranscriptReader.ReadClaudeSession(Path.Combine(state.Path, "claude"), "claude-native", "turn-1");
+        // Historical attribution is unchanged; only "nothing came after it" is unproven.
+        Assert.Equal(("done", true, true, false), (turn?.Message, turn?.Completed, turn?.Incomplete, turn?.Superseded));
+    }
+
+    [Fact]
     public void Claude_monthly_spend_limit_maps_to_rate_limit_with_utc_reset()
     {
         using var state = new TempStateDir();

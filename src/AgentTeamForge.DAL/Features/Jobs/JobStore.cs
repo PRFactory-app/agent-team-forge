@@ -65,7 +65,11 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         {
             return false;
         }
-        Execute(connection, tx, "UPDATE jobs SET session_fenced=1 WHERE job_id=$id", ("$id", jobId));
+        // Recorded so restart recovery never mistakes this fence for its own record fence.
+        Execute(connection, tx, """
+            UPDATE jobs SET session_fenced=1 WHERE job_id=$id;
+            INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'stop_fenced', $now);
+            """, ("$id", jobId), ("$now", Now()));
         tx.Commit();
         return true;
     });
@@ -941,8 +945,49 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return (IReadOnlyList<string>)ids;
     });
 
-    /// <summary>Restore one verified live interactive attempt without replaying its prompt.</summary>
-    public bool ReattachQuarantined(RunRef run) => Write(connection =>
+    /// <summary>Terminal jobs still fenced, e.g. by the ownership record of a pane retained across restart.</summary>
+    public IReadOnlyList<string> FencedTerminalJobs() => Read(connection =>
+    {
+        using var command = Command(connection, null,
+            "SELECT job_id FROM jobs WHERE session_fenced=1 AND status IN ('completed','cancelled','failed') ORDER BY accepted_at, job_id");
+        using var reader = command.ExecuteReader();
+        var ids = new List<string>();
+        while (reader.Read()) { ids.Add(reader.GetString(0)); }
+        return (IReadOnlyList<string>)ids;
+    });
+
+    /// <summary>
+    /// Release a terminal job's restart fence after its pane was verified idle or proven gone.
+    /// Refused if the job or its session changed, any turn in that session is unresolved, or
+    /// stop_agent ever fenced the job: only the ownership-record fence of a restart is released.
+    /// </summary>
+    public bool ReleaseRestartFence(string jobId, string? sessionId) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        if (Scalar(connection, tx, $"SELECT count(*) FROM jobs WHERE status IN ('running','needs_reconciliation') AND job_id IN ({SessionPeers})",
+                ("$id", jobId)) > 0
+            || Scalar(connection, tx, "SELECT count(*) FROM events WHERE job_id=$id AND kind='stop_fenced'", ("$id", jobId)) > 0
+            || sessionId is not null && Scalar(connection, tx, """
+                SELECT (SELECT count(*) FROM native_claude_attempts WHERE session_id=$session AND state IN ('posting','posted','received'))
+                     + (SELECT count(*) FROM native_codex_attempts WHERE thread_id=$session AND state IN ('sent','received'))
+                """, ("$session", sessionId)) > 0)
+        {
+            return false;
+        }
+        var updated = Execute(connection, tx, """
+            UPDATE jobs SET session_fenced=0 WHERE job_id=$id AND session_fenced=1
+              AND status IN ('completed','cancelled','failed') AND session_id IS $session
+            """, ("$id", jobId), ("$session", sessionId));
+        if (updated != 1) { return false; }
+        tx.Commit();
+        return true;
+    });
+
+    /// <summary>
+    /// Restore one verified live interactive attempt without replaying its prompt.
+    /// A native follow-up turn runs in <paramref name="paneOwner"/>'s pane; its rebound record no longer fences that job.
+    /// </summary>
+    public bool ReattachQuarantined(RunRef run, string? paneOwner = null) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         var updated = Execute(connection, tx, """
@@ -958,12 +1003,21 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         if (updated != 1) { return false; }
         Execute(connection, tx, "INSERT INTO events(job_id, run_id, kind, created_at) VALUES ($id, $run, 'running', $now)",
             ("$id", run.JobId), ("$run", run.RunId), ("$now", Now()));
+        if (paneOwner is not null)
+        {
+            Execute(connection, tx, "UPDATE jobs SET session_fenced=0 WHERE job_id=$owner AND status IN ('completed','cancelled','failed')",
+                ("$owner", paneOwner));
+        }
         tx.Commit();
         return true;
     });
 
-    /// <summary>No owned agent could be rebound after restart; release this job's fence.</summary>
-    public bool FailUnattached(string jobId) => Write(connection =>
+    /// <summary>
+    /// No owned agent could be rebound after restart; release this job's fence. With
+    /// <paramref name="releaseNative"/>, a native turn whose pane is proven gone can no longer
+    /// be presented, so its attempt stops holding the session and cannot settle later.
+    /// </summary>
+    public bool FailUnattached(string jobId, bool releaseNative = false) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         var updated = Execute(connection, tx, """
@@ -976,6 +1030,13 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             WHERE job_id=$id AND state='needs_reconciliation' AND reason_code='daemon_restart_uncertain';
             INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'failed', $now);
             """, ("$id", jobId), ("$now", Now()));
+        if (releaseNative)
+        {
+            Execute(connection, tx, """
+                UPDATE native_claude_attempts SET state='released' WHERE job_id=$id AND state IN ('posting','posted','received');
+                UPDATE native_codex_attempts SET state='released' WHERE job_id=$id AND state IN ('sent','received');
+                """, ("$id", jobId));
+        }
         tx.Commit();
         return true;
     });

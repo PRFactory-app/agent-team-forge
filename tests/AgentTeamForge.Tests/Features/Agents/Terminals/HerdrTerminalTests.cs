@@ -128,6 +128,323 @@ public class HerdrTerminalTests
         await reattached.DisposeAsync();
     }
 
+    /// <summary>A completed Claude parent whose idle pane (and native transcript) outlived the daemon.</summary>
+    private static async Task<(HerdrInteractiveBackend Backend, BackendCatalog Catalog, AcceptJob Accept, JobRecord Parent, string Transcript)>
+        CompletedParentWithLivePane(JobFixture f, TempStateDir state, FakeHerdr fake, Func<IReadOnlySet<string>?>? liveSessions = null, string parentTurn = ParentTurnDone)
+    {
+        var terminal = Terminal(fake, new Dictionary<string, string?>(Desktop) { ["HOME"] = state.Path });
+        // The /proc probe of the pane's live native session, which the fake pane cannot provide.
+        var backend = new HerdrInteractiveBackend(terminal, InteractiveAgentKind.Claude, state.Path)
+        { LiveSessionProbe = (_, _) => liveSessions is null ? new HashSet<string> { "claude-native" } : liveSessions() };
+        var catalog = new BackendCatalog().Register(BackendCatalog.Claude, () => backend);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
+        var parent = accept.Execute(new SubmitJobRequest("parent", "work", null, false) { Backend = BackendCatalog.Claude }).Job!;
+        var parentClaim = f.Store.BeginNextAttempt()!;
+        var parentRun = new RunRef(parent.JobId, parentClaim.RunId, parentClaim.Generation, parentClaim.Correlation);
+        Assert.True(f.Store.RecordSession(parentRun, "claude-native"));
+        Assert.True(f.Store.Complete(parentRun, "ready"));
+        // The parent's pane stays open; only the parent owns its record.
+        var bootstrap = Path.Combine(state.Path, "herdr", "atftest.bootstrap");
+        Directory.CreateDirectory(Path.GetDirectoryName(bootstrap)!);
+        File.WriteAllText(bootstrap, "atftest");
+        var session = await terminal.StartSessionAsync(CancellationToken.None);
+        var binding = await terminal.OpenAgentTabAsync(session, "claude: parent", state.Path, bootstrap,
+            CancellationToken.None, onCreated: created => session = created);
+        HerdrOwnedSessions.Save(new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", state.Path, null, null, bootstrap)
+        { JobId = parent.JobId }, session with { ShellPid = binding.ShellPid, ShellStartTicks = binding.ShellStartTicks });
+        var transcript = Path.Combine(Directory.CreateDirectory(Path.Combine(state.Path, ".claude", "projects", "scratch")).FullName, "claude-native.jsonl");
+        File.WriteAllLines(transcript,
+        [
+            """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"work atf-corr:""" + parentClaim.Correlation + "\"}}",
+            .. parentTurn.Split('\n'),
+        ]);
+        return (backend, catalog, accept, f.Store.GetJob(parent.JobId)!, transcript);
+    }
+
+    private const string ParentTurnDone =
+        """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"ready"}]}}""";
+
+    private static void RecoverRecords(JobFixture f, TempStateDir state) =>
+        new AgentTeamForge.Business.Features.Recovery.RecoverOnStartup(f.Store,
+            () => HerdrOwnedSessions.Recover(state.Path, f.Store.FenceSession, _ => { })).Execute();
+
+    [Fact]
+    public async Task Restart_reattaches_a_native_follow_up_to_its_parents_live_pane_and_settles_it()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr { BootstrapFromTab = true };
+        var (backend, catalog, accept, parent, transcript) = await CompletedParentWithLivePane(f, state, fake);
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+        var claim = f.Store.BeginNativeClaudeAttempt(parent.JobId, Path.Combine(state.Path, ".claude"), _ => true)!;
+        Assert.Equal(child.JobId, claim.Job.JobId);
+        f.Store.RecordNativeClaudePost(child.JobId, claim.Correlation);
+        f.Store.RecordNativeClaudeReceipt(child.JobId, claim.Correlation);
+        RecoverRecords(f, state);
+        Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(child.JobId)!.Status);
+
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        dispatcher.RestoreAfterRestart(f.Store.RestartCandidates());
+        using var lifetime = new CancellationTokenSource();
+        var loop = dispatcher.RunAsync(lifetime.Token);
+        try
+        {
+            Assert.Equal((JobStatus.Running, null), (f.Store.GetJob(child.JobId)!.Status, f.Store.GetJob(child.JobId)!.ReasonCode));
+            Assert.False(f.Store.IsSessionFenced(child.JobId)); // Nor the parent, a session peer.
+            Assert.Equal(JobStatus.Completed, f.Store.GetJob(parent.JobId)!.Status);
+            Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane" or "tab", "close", ..]);
+
+            File.AppendAllLines(transcript,
+            [
+                """{"type":"user","isMeta":true,"isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"Another Claude session sent a message:\nnext atf-corr:""" + claim.Correlation + "\"}}",
+                """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"answered"}]}}""",
+            ]);
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (f.Store.GetJob(child.JobId)!.Status == JobStatus.Running && DateTime.UtcNow < deadline) { await Task.Delay(50, TestContext.Current.CancellationToken); }
+            Assert.Equal((JobStatus.Completed, "answered"), (f.Store.GetJob(child.JobId)!.Status, f.Store.GetJob(child.JobId)!.ResultText));
+            // The pane is retained, bound to its exact native session, for the next native turn.
+            Assert.True(backend.HasIdleClaudeSession("claude-native"));
+            Assert.True(backend.HasIdleSession("claude-native"));
+        }
+        finally
+        {
+            lifetime.Cancel();
+            await loop;
+        }
+    }
+
+    [Fact]
+    public async Task Restart_settles_a_native_turn_from_its_transcript_and_releases_the_parents_fence()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr { BootstrapFromTab = true };
+        var (backend, catalog, accept, parent, transcript) = await CompletedParentWithLivePane(f, state, fake);
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+        var claim = f.Store.BeginNativeClaudeAttempt(parent.JobId, Path.Combine(state.Path, ".claude"), _ => true)!;
+        f.Store.RecordNativeClaudePost(child.JobId, claim.Correlation);
+        // The native turn finished while the daemon was down.
+        File.AppendAllLines(transcript,
+        [
+            """{"type":"user","isMeta":true,"isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"Another Claude session sent a message:\nnext atf-corr:""" + claim.Correlation + "\"}}",
+            """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"answered"}]}}""",
+        ]);
+        RecoverRecords(f, state);
+        Assert.True(f.Store.IsSessionFenced(parent.JobId));
+
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        dispatcher.RestoreAfterRestart(f.Store.RestartCandidates());
+        using var lifetime = new CancellationTokenSource();
+        var loop = dispatcher.RunAsync(lifetime.Token);
+        lifetime.Cancel();
+        await loop;
+
+        Assert.Equal((JobStatus.Completed, "answered"), (f.Store.GetJob(child.JobId)!.Status, f.Store.GetJob(child.JobId)!.ResultText));
+        Assert.False(f.Store.IsSessionFenced(parent.JobId));
+        Assert.True(backend.HasIdleClaudeSession("claude-native"));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane" or "tab", "close", ..]);
+    }
+
+    [Fact]
+    public async Task Restart_retains_a_completed_idle_pane_so_a_follow_up_is_accepted_and_delivered_there()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr { BootstrapFromTab = true };
+        var (_, catalog, accept, parent, _) = await CompletedParentWithLivePane(f, state, fake);
+        RecoverRecords(f, state);
+        var follow = new FollowUpJob(f.Store, JobFixture.Operator, accept);
+        Assert.Equal(JobErrors.ParentNotReady, follow.Execute(new FollowUpRequest(parent.JobId, "early", "early")).Error);
+
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        dispatcher.RestoreAfterRestart(f.Store.RestartCandidates());
+        using var lifetime = new CancellationTokenSource();
+        var loop = dispatcher.RunAsync(lifetime.Token);
+        try
+        {
+            Assert.False(f.Store.IsSessionFenced(parent.JobId));
+            var child = follow.Execute(new FollowUpRequest(parent.JobId, "next turn", "next")).Job!;
+            dispatcher.Signal();
+            await Bounded.Until(() => fake.Snapshot().Any(c => c.Args is ["--session", _, "agent", "prompt", _, var prompt, ..]
+                && prompt.StartsWith("next turn", StringComparison.Ordinal)), "follow-up prompt delivery");
+            Assert.Equal(JobStatus.Running, f.Store.GetJob(child.JobId)!.Status);
+            // Delivered into the retained pane: no new tab, nothing closed.
+            Assert.Single(fake.Snapshot(), c => c.Args is ["tab", "create", ..]);
+            Assert.DoesNotContain(fake.Snapshot(), c => c.Args is ["pane" or "tab", "close", ..]);
+        }
+        finally
+        {
+            lifetime.Cancel();
+            await loop;
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Restart_keeps_a_busy_owner_pane_fenced_and_releases_a_proven_gone_one_untouched(bool gone)
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr { BootstrapFromTab = true };
+        var (backend, catalog, _, parent, _) = await CompletedParentWithLivePane(f, state, fake);
+        RecoverRecords(f, state);
+        if (gone) { fake.Replace(Replacement.ServerRestarted); }
+        else { for (var i = 0; i < 8; i++) { fake.AgentStatuses.Enqueue("working"); } } // A human typed into the pane.
+
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        dispatcher.RestoreAfterRestart(f.Store.RestartCandidates());
+        using var lifetime = new CancellationTokenSource();
+        var loop = dispatcher.RunAsync(lifetime.Token);
+        lifetime.Cancel();
+        await loop;
+
+        Assert.Equal(!gone, f.Store.IsSessionFenced(parent.JobId));
+        Assert.False(backend.HasIdleSession("claude-native"));
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(parent.JobId)!.Status);
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane" or "tab", "close", ..] or ["session", "stop" or "delete", ..]);
+        Assert.Single(fake.Calls, c => c.Args is ["tab", "create", ..]);
+    }
+
+    private static async Task RestartDispatcherAsync(JobFixture f, BackendCatalog catalog)
+    {
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        dispatcher.RestoreAfterRestart(f.Store.RestartCandidates());
+        using var lifetime = new CancellationTokenSource();
+        var loop = dispatcher.RunAsync(lifetime.Token);
+        lifetime.Cancel();
+        await loop;
+    }
+
+    [Fact]
+    public async Task Stop_agent_racing_restart_recovery_keeps_the_pane_fenced()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr { BootstrapFromTab = true };
+        var (backend, catalog, _, parent, _) = await CompletedParentWithLivePane(f, state, fake);
+        RecoverRecords(f, state);
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        dispatcher.RestoreAfterRestart(f.Store.RestartCandidates());
+        using var lifetime = new CancellationTokenSource();
+
+        // stop_agent holds the gate across its fence and pane close; this close does not finish.
+        Task loop;
+        backend.SessionStopGate.Enter();
+        try
+        {
+            loop = Task.Run(() => dispatcher.RunAsync(lifetime.Token), TestContext.Current.CancellationToken);
+            Thread.Sleep(2000); // Longer than recovery takes. The gate is thread-affine: no await while holding it.
+            Assert.True(f.Store.IsSessionFenced(parent.JobId)); // Recovery waits for the gate.
+            Assert.True(f.Store.TryFenceSessionForStop(parent.JobId));
+        }
+        finally { backend.SessionStopGate.Exit(); }
+        lifetime.Cancel();
+        await loop;
+
+        Assert.True(f.Store.IsSessionFenced(parent.JobId));
+        Assert.False(backend.HasIdleSession("claude-native"));
+    }
+
+    [Theory]
+    [InlineData("human")]
+    [InlineData("background")]
+    [InlineData("unfinished")]
+    [InlineData("malformed")]
+    public async Task Restart_keeps_an_idle_pane_fenced_unless_its_latest_turn_settled(string latest)
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr { BootstrapFromTab = true };
+        var turn = latest switch
+        {
+            // A human typed into the retained pane while the daemon was down.
+            "human" => ParentTurnDone + "\n" + """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"one more thing"}}""",
+            // Idle while a background task the turn started is still running.
+            "background" => """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"bg1","name":"Bash","input":{"command":"make","run_in_background":true}}]}}"""
+                + "\n" + ParentTurnDone,
+            // A partially flushed line can hide the next human turn.
+            "malformed" => ParentTurnDone + "\n" + """{"type":"user","isSidechain":fa""" + "\n"
+                + """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"later"}}""",
+            _ => """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","content":[{"type":"text","text":"working on it"}]}}""",
+        };
+        var (backend, catalog, _, parent, _) = await CompletedParentWithLivePane(f, state, fake, parentTurn: turn);
+        RecoverRecords(f, state);
+
+        await RestartDispatcherAsync(f, catalog);
+
+        Assert.True(f.Store.IsSessionFenced(parent.JobId));
+        Assert.False(backend.HasIdleSession("claude-native"));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane" or "tab", "close", ..]);
+    }
+
+    [Theory]
+    [InlineData("other")]
+    [InlineData("claude-native,other")]
+    [InlineData("")]
+    [InlineData(null)]
+    public async Task Restart_keeps_a_pane_fenced_unless_it_runs_exactly_the_owners_session(string? live)
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr { BootstrapFromTab = true };
+        var (backend, catalog, _, parent, _) = await CompletedParentWithLivePane(f, state, fake,
+            () => live?.Split(',', StringSplitOptions.RemoveEmptyEntries).ToHashSet());
+        RecoverRecords(f, state);
+
+        await RestartDispatcherAsync(f, catalog);
+
+        Assert.True(f.Store.IsSessionFenced(parent.JobId));
+        Assert.False(backend.HasIdleSession("claude-native"));
+        Assert.False(backend.HasIdleClaudeSession("claude-native"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Restart_of_a_busy_parent_and_its_native_turn_shares_one_pane_in_either_settlement_order(bool nativeSettlesFirst)
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr { BootstrapFromTab = true };
+        var terminal = Terminal(fake, new Dictionary<string, string?>(Desktop) { ["HOME"] = state.Path });
+        var backend = new HerdrInteractiveBackend(terminal, InteractiveAgentKind.Codex, state.Path)
+        { LiveSessionProbe = (_, _) => new HashSet<string> { "thread-busy" } };
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission,
+            new BackendCatalog().Register(BackendCatalog.Codex, () => backend).Names);
+        var parent = accept.Execute(new SubmitJobRequest("parent", "work", null, false) { Backend = BackendCatalog.Codex }).Job!;
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        f.Store.RecordStartup(run, "submitted");
+        Assert.True(f.Store.RecordSession(run, "thread-busy"));
+        var bootstrap = Path.Combine(state.Path, "herdr", "atftest.bootstrap");
+        Directory.CreateDirectory(Path.GetDirectoryName(bootstrap)!);
+        File.WriteAllText(bootstrap, "atftest");
+        var session = await terminal.StartSessionAsync(CancellationToken.None);
+        var binding = await terminal.OpenAgentTabAsync(session, "codex: parent", state.Path, bootstrap,
+            CancellationToken.None, onCreated: created => session = created);
+        HerdrOwnedSessions.Save(new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, bootstrap)
+        { JobId = parent.JobId }, session with { ShellPid = binding.ShellPid, ShellStartTicks = binding.ShellStartTicks });
+        var rollout = Directory.CreateDirectory(Path.Combine(state.Path, ".codex", "sessions")).FullName;
+        File.WriteAllLines(Path.Combine(rollout, "rollout-test-thread-busy.jsonl"),
+            ["""{"type":"session_meta","payload":{"id":"thread-busy","source":"cli"}}"""]);
+        var running = f.Store.GetJob(parent.JobId)!;
+
+        // Restart: the parent's own observer and its queued native turn rebind the same pane.
+        var observer = backend.Reattach(running, f.Store.GetRuns(parent.JobId).Single(), out var gone);
+        Assert.False(gone);
+        Assert.NotNull(observer);
+        Assert.Equal(parent.JobId, backend.ReattachNativeTurn("thread-busy", [running], out _));
+        Assert.True(backend.HasLiveCodexSession("thread-busy"));
+
+        if (nativeSettlesFirst) { backend.RememberNativeTurn("thread-busy"); await observer.DisposeAsync(); }
+        else { await observer.DisposeAsync(); backend.RememberNativeTurn("thread-busy"); }
+
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane" or "tab", "close", ..]);
+        Assert.True(backend.HasIdleSession("thread-busy"));
+        Assert.True(backend.HasIdleCodexSession("thread-busy"));
+    }
+
     [Fact]
     public async Task Restart_keeps_unrebindable_live_pane_fenced_and_fails_only_a_proven_gone_one()
     {
@@ -1467,6 +1784,9 @@ public class HerdrTerminalTests
 
         public List<Call> Calls { get; } = [];
 
+        /// <summary>For reads racing a live dispatcher.</summary>
+        public Call[] Snapshot() { lock (Calls) { return [.. Calls]; } }
+
         public List<ProcessStartInfo> Detached { get; } = [];
 
         public List<int> Killed { get; } = [];
@@ -1507,7 +1827,7 @@ public class HerdrTerminalTests
         public async Task<CapturedProcess> CaptureAsync(ProcessStartInfo psi, TimeSpan timeout, int maxStdoutBytes, int maxStderrBytes, CancellationToken cancellationToken)
         {
             string[] args = [.. psi.ArgumentList];
-            Calls.Add(new(args, new Dictionary<string, string?>(psi.Environment)));
+            lock (Calls) { Calls.Add(new(args, new Dictionary<string, string?>(psi.Environment))); }
             if (args is ["workspace", "list"] && WorkspaceListDelay > TimeSpan.Zero) { await Task.Delay(WorkspaceListDelay, cancellationToken); }
             return args switch
             {

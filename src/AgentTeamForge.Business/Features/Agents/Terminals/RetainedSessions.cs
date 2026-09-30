@@ -159,7 +159,9 @@ internal sealed class RetainedSessions : IDisposable
                 if (reserved is null) { _sessions[sessionId] = (launch, _next++, _clock.GetTimestamp()); }
                 return;
             }
-            if (_sessions.TryGetValue(sessionId, out var replaced) && !ReferenceEquals(replaced.Launch, launch))
+            // The agent name is the pane's durable identity: another launch object for the
+            // same pane (e.g. restart recovery) replaces the entry but never closes that pane.
+            if (_sessions.TryGetValue(sessionId, out var replaced) && replaced.Launch.AgentName != launch.AgentName)
             {
                 evicted.Add((sessionId, replaced.Launch));
             }
