@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 
@@ -25,13 +26,13 @@ public static class PRFactoryTrust
         {
             SslOptions = new SslClientAuthenticationOptions
             {
-                RemoteCertificateValidationCallback = (_, certificate, _, errors) => Validate(roots, certificate, errors)
+                RemoteCertificateValidationCallback = (_, certificate, chain, errors) => Validate(roots, certificate, errors, chain)
             }
         };
     }
 
     /// <summary>System validation wins; only a pure chain-trust failure is retried against the extra roots.</summary>
-    public static bool Validate(X509Certificate2Collection roots, System.Security.Cryptography.X509Certificates.X509Certificate? certificate, SslPolicyErrors errors)
+    public static bool Validate(X509Certificate2Collection roots, System.Security.Cryptography.X509Certificates.X509Certificate? certificate, SslPolicyErrors errors, X509Chain? presented = null)
     {
         if (errors == SslPolicyErrors.None)
         {
@@ -46,7 +47,17 @@ public static class PRFactoryTrust
         using var chain = new X509Chain();
         chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
         chain.ChainPolicy.CustomTrustStore.AddRange(roots);
+        // Same policy as the system validation (server-auth EKU); only the trust root differs. Revocation is
+        // NoCheck because the default online mode fails a private CA without CRL/OCSP endpoints (RevocationStatusUnknown).
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+        chain.ChainPolicy.ApplicationPolicy.Add(new Oid("1.3.6.1.5.5.7.3.1"));
+        if (presented is not null)
+        {
+            foreach (var element in presented.ChainElements)
+            {
+                chain.ChainPolicy.ExtraStore.Add(element.Certificate);
+            }
+        }
         if (!chain.Build(leaf))
         {
             return false; // Expired, untrusted or otherwise invalid.

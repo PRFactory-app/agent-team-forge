@@ -12,7 +12,7 @@ namespace AgentTeamForge.Tests.PRFactory;
 
 public sealed class CaFileTests
 {
-    static (X509Certificate2 Ca, X509Certificate2 Leaf) Issue(string host = "localhost", bool expired = false)
+    static (X509Certificate2 Ca, X509Certificate2 Leaf) Issue(string host = "localhost", bool expired = false, string eku = "1.3.6.1.5.5.7.3.1")
     {
         using var caKey = RSA.Create(2048);
         var caRequest = new CertificateRequest("CN=Test CA", caKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
@@ -25,7 +25,7 @@ public sealed class CaFileTests
         var san = new SubjectAlternativeNameBuilder();
         san.AddDnsName(host);
         leafRequest.CertificateExtensions.Add(san.Build());
-        leafRequest.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new Oid("1.3.6.1.5.5.7.3.1")], false));
+        leafRequest.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new Oid(eku)], false));
         var from = expired ? DateTimeOffset.UtcNow.AddDays(-20) : DateTimeOffset.UtcNow.AddDays(-1);
         var to = expired ? DateTimeOffset.UtcNow.AddDays(-10) : DateTimeOffset.UtcNow.AddDays(10);
         using var signed = leafRequest.Create(ca, from, to, RandomNumberGenerator.GetBytes(8));
@@ -112,5 +112,43 @@ public sealed class CaFileTests
         Assert.False(PRFactoryTrust.Validate([expiredCa], expired, SslPolicyErrors.RemoteCertificateChainErrors));
         var (otherCa, _) = Issue();
         Assert.False(PRFactoryTrust.Validate([otherCa], leaf, SslPolicyErrors.RemoteCertificateChainErrors));
+    }
+
+    [Fact]
+    public void Extra_root_still_requires_server_auth_eku()
+    {
+        var (ca, clientOnly) = Issue(eku: "1.3.6.1.5.5.7.3.2");
+        Assert.False(PRFactoryTrust.Validate([ca], clientOnly, SslPolicyErrors.RemoteCertificateChainErrors));
+    }
+
+    [Fact]
+    public void Intermediate_from_the_presented_chain_validates_against_a_root_only_ca_file()
+    {
+        using var rootKey = RSA.Create(2048);
+        var rootReq = new CertificateRequest("CN=Root", rootKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        rootReq.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 1, true));
+        using var root = rootReq.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-30), DateTimeOffset.UtcNow.AddDays(30));
+
+        using var interKey = RSA.Create(2048);
+        var interReq = new CertificateRequest("CN=Inter", interKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        interReq.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+        using var interCert = interReq.Create(root, DateTimeOffset.UtcNow.AddDays(-20), DateTimeOffset.UtcNow.AddDays(20), RandomNumberGenerator.GetBytes(8));
+        using var inter = interCert.CopyWithPrivateKey(interKey);
+
+        using var leafKey = RSA.Create(2048);
+        var leafReq = new CertificateRequest("CN=localhost", leafKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        leafReq.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new Oid("1.3.6.1.5.5.7.3.1")], false));
+        using var leaf = leafReq.Create(inter, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(10), RandomNumberGenerator.GetBytes(8));
+
+        using var presented = new X509Chain();
+        presented.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+        presented.ChainPolicy.CustomTrustStore.Add(root);
+        presented.ChainPolicy.ExtraStore.Add(inter);
+        presented.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+        Assert.True(presented.Build(leaf));
+
+        X509Certificate2Collection roots = [root];
+        Assert.False(PRFactoryTrust.Validate(roots, leaf, SslPolicyErrors.RemoteCertificateChainErrors));
+        Assert.True(PRFactoryTrust.Validate(roots, leaf, SslPolicyErrors.RemoteCertificateChainErrors, presented));
     }
 }
