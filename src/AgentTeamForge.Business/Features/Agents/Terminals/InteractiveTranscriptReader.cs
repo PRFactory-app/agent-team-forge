@@ -21,7 +21,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
     const int MaxTranscriptBytes = 32 * 1024 * 1024;
     const int MaxResultChars = 32 * 1024;
 
-    internal static string? LocateSession(string home, string sessionId, InteractiveAgentKind kind)
+    internal static string? LocateSession(string home, string sessionId, InteractiveAgentKind kind, bool usage = true)
     {
         var root = Path.Combine(home, kind == InteractiveAgentKind.Claude ? "projects" : "sessions");
         if (!Directory.Exists(root)) { return null; }
@@ -35,7 +35,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
         {
             foreach (var path in Directory.EnumerateFiles(root, pattern, SearchOption.AllDirectories))
             {
-                if (HeaderId(path, kind, bounded: true) == sessionId && IsParent(path, kind, bounded: true) == true) { return path; }
+                if (HeaderId(path, kind) == sessionId && IsParent(path, kind, usage: usage) == true) { return path; }
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
@@ -43,11 +43,11 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
     }
 
     internal static InteractiveTranscript? ReadCodexThread(string home, string thread, string correlation) =>
-        LocateSession(home, thread, InteractiveAgentKind.Codex) is { } path
+        LocateSession(home, thread, InteractiveAgentKind.Codex, usage: false) is { } path
             ? Parse(path, InteractiveAgentKind.Codex, "atf-corr:" + correlation) : null;
 
     internal static InteractiveTranscript? ReadClaudeSession(string home, string sessionId, string correlation) =>
-        LocateSession(home, sessionId, InteractiveAgentKind.Claude) is { } path
+        LocateSession(home, sessionId, InteractiveAgentKind.Claude, usage: false) is { } path
             ? Parse(path, InteractiveAgentKind.Claude, "atf-corr:" + correlation) : null;
     public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started)
     {
@@ -95,13 +95,14 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
     }
 
     // Native ancestry, not file recency, distinguishes a TUI from inherited child history.
-    static bool? IsParent(string path, InteractiveAgentKind kind, bool bounded = false)
+    static bool? IsParent(string path, InteractiveAgentKind kind, bool usage = false)
     {
         try
         {
             // Codex/Pi carry ancestry in their header; Claude records it on every chain record
             // (system/attachment/message), which can follow a long preamble of metadata lines.
-            var lines = bounded ? HeaderLines(path) : LiveFiles.ReadLines(path);
+            var lines = LiveFiles.ReadLines(path);
+            if (usage) { lines = lines.Take(kind == InteractiveAgentKind.Claude ? 50 : 10); }
             foreach (var line in kind == InteractiveAgentKind.Claude ? lines : lines.Take(10))
             {
                 using var json = JsonDocument.Parse(line);
@@ -109,7 +110,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                 if (kind == InteractiveAgentKind.Codex && Str(root, "type") == "session_meta"
                     && root.TryGetProperty("payload", out var meta))
                 {
-                    if (Str(meta, "source") == "cli") { return true; }
+                    if (Str(meta, "source") is { } sourceKind && (usage || sourceKind == "cli")) { return true; }
                     if (meta.TryGetProperty("source", out var source) && source.ValueKind == JsonValueKind.Object
                         && source.TryGetProperty("subagent", out _)) { return false; }
                     return null;
@@ -173,21 +174,11 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
         catch (IOException) { return DateTime.MinValue; }
     }
 
-    static string[] HeaderLines(string path)
-    {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        var bytes = new byte[(int)Math.Min(stream.Length, 64 * 1024)];
-        stream.ReadExactly(bytes);
-        var text = System.Text.Encoding.UTF8.GetString(bytes);
-        var end = text.LastIndexOf('\n');
-        return end < 0 ? [] : text[..end].Split('\n');
-    }
-
-    static string? HeaderId(string path, InteractiveAgentKind kind, bool bounded = false)
+    static string? HeaderId(string path, InteractiveAgentKind kind)
     {
         try
         {
-            foreach (var line in (bounded ? HeaderLines(path) : LiveFiles.ReadLines(path)).Take(10))
+            foreach (var line in LiveFiles.ReadLines(path).Take(10))
             {
                 using var json = JsonDocument.Parse(line);
                 var root = json.RootElement;

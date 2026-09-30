@@ -18,6 +18,12 @@ namespace AgentTeamForge.Host.Features.Jobs;
 /// </summary>
 public static class JobsMcpBridge
 {
+    internal static string? NativeKind(string? hostKind, string? claudeId, string? codexId) => hostKind switch
+    {
+        "codex" => string.IsNullOrWhiteSpace(codexId) ? null : "codex",
+        "claude" => string.IsNullOrWhiteSpace(claudeId) ? null : "claude",
+        _ => !string.IsNullOrWhiteSpace(claudeId) ? "claude" : !string.IsNullOrWhiteSpace(codexId) ? "codex" : null
+    };
     const string LimitProperties = """
           "timeout_s":{"type":"integer","minimum":1,"maximum":86400,"description":"Cancel the job (reason timeout) this many seconds after it starts running."},
           "queue_ttl_s":{"type":"integer","minimum":1,"maximum":86400,"description":"Cancel the job (reason queue_ttl) if it has not started this many seconds after acceptance."}
@@ -155,8 +161,8 @@ public static class JobsMcpBridge
         var managedJobId = childBinding is not null && childBinding.StartsWith("managed-child:", StringComparison.Ordinal)
             ? childBinding["managed-child:".Length..] : null;
         var nativeId = Environment.GetEnvironmentVariable("CLAUDE_CODE_SESSION_ID");
-        var nativeKind = string.IsNullOrWhiteSpace(nativeId) ? "codex" : "claude";
-        if (nativeKind == "codex") { nativeId = Environment.GetEnvironmentVariable("CODEX_THREAD_ID"); }
+        var nativeKind = NativeKind(HostSessionWake.CurrentHost()?.Kind, nativeId, Environment.GetEnvironmentVariable("CODEX_THREAD_ID"));
+        nativeId = nativeKind == "claude" ? nativeId : nativeKind == "codex" ? Environment.GetEnvironmentVariable("CODEX_THREAD_ID") : null;
         var nativeHome = nativeKind == "claude"
             ? Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude")
             : Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");

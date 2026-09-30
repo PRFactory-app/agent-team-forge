@@ -199,7 +199,7 @@ public sealed class LeadSessionStore(JobDatabase database)
                 CASE WHEN s.native_kind IS NOT NULL AND s.native_session_id IS NOT NULL THEN s.native_session_id ELSE w.address END,
                 CASE WHEN s.native_kind IS NOT NULL AND s.native_session_id IS NOT NULL THEN s.native_home ELSE w.home END
             FROM lead_sessions s LEFT JOIN wake_targets w ON w.target_key=s.wake_key AND w.kind='codex'
-            WHERE s.closed_at IS NULL AND s.session_id IN ({string.Join(",", names)})
+            WHERE s.closed_at IS NULL AND s.binding_key NOT LIKE 'managed-child:%' AND s.session_id IN ({string.Join(",", names)})
             """;
         using var reader = command.ExecuteReader();
         var result = new List<NativeSessionBinding>();
