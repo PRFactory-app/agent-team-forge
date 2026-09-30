@@ -49,6 +49,10 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
     internal static InteractiveTranscript? ReadClaudeSession(string home, string sessionId, string correlation) =>
         LocateSession(home, sessionId, InteractiveAgentKind.Claude, usage: false) is { } path
             ? Parse(path, InteractiveAgentKind.Claude, "atf-corr:" + correlation) : null;
+    public IReadOnlySet<string>? LiveSessions(InteractiveLaunch launch, int shellPid) =>
+        LiveNativeSessions.Read(launch.Kind, shellPid,
+            launch.Kind == InteractiveAgentKind.Claude ? ClaudeConfigRoot.Resolve(environment, Path.GetFullPath(launch.WorkingDirectory)) : null);
+
     public NativeTranscriptBinding? Locate(InteractiveLaunch launch, string sessionId)
     {
         if (launch.Kind == InteractiveAgentKind.Pi) { return null; }
@@ -303,6 +307,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                     }
                     if (kind == InteractiveAgentKind.Codex && EventType(root) == "task_started")
                     {
+                        ended = true;
                         break;
                     }
                     if (kind == InteractiveAgentKind.Claude)
@@ -340,7 +345,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             }
             return markerSeen ? new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress, completed,
                 !ended && (backgroundTools.Count > 0 || backgroundTasks.Count > 0),
-                ApiError: backgroundTools.Count == 0 && backgroundTasks.Count == 0 ? apiError : null, Times: times) : null;
+                ApiError: backgroundTools.Count == 0 && backgroundTasks.Count == 0 ? apiError : null, Times: times, Superseded: ended) : null;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {

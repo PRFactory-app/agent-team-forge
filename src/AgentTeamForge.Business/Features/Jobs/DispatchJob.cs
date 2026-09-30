@@ -481,7 +481,10 @@ public sealed class DispatchJob : IDisposable
             try
             {
                 if (store.GetJob(jobId) is not { } owner || backends.Resolve(owner.Backend) is not HerdrInteractiveBackend herdr) { continue; }
-                var recovered = herdr.RecoverTerminalOwner(owner, () => store.ReleaseRestartFence(owner.JobId, owner.SessionId));
+                // Every ATF turn of this session, newest first: native follow-ups also ran in this pane.
+                var correlations = store.GetSessionJobs(jobId).SelectMany(store.GetRuns)
+                    .OrderByDescending(run => run.StartedAt, StringComparer.Ordinal).Select(run => run.Correlation).ToList();
+                var recovered = herdr.RecoverTerminalOwner(owner, correlations, () => store.ReleaseRestartFence(owner.JobId, owner.SessionId));
                 if (recovered == PaneOwnerRecovery.Retained) { log($"recovery: retained the idle Herdr pane of {jobId} for its next turn"); }
                 if (recovered == PaneOwnerRecovery.Gone) { log($"recovery: released the restart fence of {jobId}; its Herdr pane is gone"); }
             }

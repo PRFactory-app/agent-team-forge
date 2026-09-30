@@ -133,7 +133,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         foreach (var (path, session, owner) in owned)
         {
             if (control.PaneIsGone(session) || Rebind(control, path, session, owner!, sessionId) is not { } launch
-                || !BindTranscript(launch, sessionId)) { continue; }
+                || !BindTranscript(launch, session, sessionId)) { continue; }
             BindNativeSession(sessionId, launch);
             _liveSessions.TakeForNativeTurn(sessionId, running: true);
             return owner!.JobId;
@@ -145,25 +145,49 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     /// <summary>
     /// Restart fences every job with an ownership record, including a terminal job whose idle pane
     /// was retained for its next turn. That pane is retained again only with verified pane identity,
-    /// the job's exact native session and a settled idle agent; <paramref name="releaseFence"/>
-    /// revalidates the session and clears the fence before the pane is offered. A proven-gone pane
-    /// only releases the fence: nothing is started or closed.
+    /// the job's exact native session live in the pane, and transcript evidence that the newest turn
+    /// there is an ATF turn (<paramref name="correlations"/>, newest first) that completed with no
+    /// pending background work. <paramref name="releaseFence"/> revalidates the session and clears the
+    /// fence before the pane is offered. A proven-gone pane only releases the fence: nothing is started
+    /// or closed. Serialized with stop_agent, which must never see its fence cleared.
     /// </summary>
-    public PaneOwnerRecovery RecoverTerminalOwner(JobRecord owner, Func<bool> releaseFence)
+    public PaneOwnerRecovery RecoverTerminalOwner(JobRecord owner, IReadOnlyList<string> correlations, Func<bool> releaseFence)
     {
         if (_control is not HerdrAgentControl control) { return PaneOwnerRecovery.Unverified; }
-        var owned = HerdrOwnedSessions.Read(_stateRoot, _ => { }).FirstOrDefault(entry => entry.Session.JobId == owner.JobId);
-        if (owned.Session is null) { return PaneOwnerRecovery.Unverified; }
-        if (control.PaneIsGone(owned.Session)) { return releaseFence() ? PaneOwnerRecovery.Gone : PaneOwnerRecovery.Unverified; }
-        if (owner.SessionId is not { } sessionId || Rebind(control, owned.Path, owned.Session, owner, sessionId) is not { } launch)
+        lock (SessionStopGate)
         {
-            return control.PaneIsGone(owned.Session) && releaseFence() ? PaneOwnerRecovery.Gone : PaneOwnerRecovery.Unverified;
+            var owned = HerdrOwnedSessions.Read(_stateRoot, _ => { }).FirstOrDefault(entry => entry.Session.JobId == owner.JobId);
+            if (owned.Session is null) { return PaneOwnerRecovery.Unverified; }
+            if (control.PaneIsGone(owned.Session)) { return releaseFence() ? PaneOwnerRecovery.Gone : PaneOwnerRecovery.Unverified; }
+            if (owner.SessionId is not { } sessionId || Rebind(control, owned.Path, owned.Session, owner, sessionId) is not { } launch)
+            {
+                return control.PaneIsGone(owned.Session) && releaseFence() ? PaneOwnerRecovery.Gone : PaneOwnerRecovery.Unverified;
+            }
+            if (!BindTranscript(launch, owned.Session, sessionId) || !SettledIdle(launch) || !LatestTurnSettled(launch, correlations)
+                || !releaseFence()) { return PaneOwnerRecovery.Unverified; }
+            BindNativeSession(sessionId, launch);
+            _liveSessions.Remember(sessionId, launch);
+            return PaneOwnerRecovery.Retained;
         }
-        if (!BindTranscript(launch, sessionId) || !SettledIdle(launch) || !releaseFence()) { return PaneOwnerRecovery.Unverified; }
-        BindNativeSession(sessionId, launch);
-        _liveSessions.Remember(sessionId, launch);
-        return PaneOwnerRecovery.Retained;
     }
+
+    // The newest ATF turn found in the transcript must also be its latest native turn (no later human
+    // input), completed with no pending background work. Missing or ambiguous evidence keeps the fence.
+    bool LatestTurnSettled(InteractiveLaunch launch, IReadOnlyList<string> correlations)
+    {
+        foreach (var correlation in correlations)
+        {
+            InteractiveTranscript? turn;
+            try { turn = _transcripts.Read(launch, "atf-corr:" + correlation, DateTimeOffset.MinValue); }
+            catch (IOException) { return false; }
+            if (turn is null) { continue; }
+            return turn is { Completed: true, Superseded: false, PendingBackgroundTasks: false, ApiError: null, BindingError: null };
+        }
+        return false;
+    }
+
+    /// <summary>Tests replace the /proc probe; production asks the transcript reader.</summary>
+    internal Func<InteractiveLaunch, int, IReadOnlySet<string>?>? LiveSessionProbe { get; init; }
 
     // One launch per durable pane record, so every job recovered into a pane shares its retention identity.
     readonly ConcurrentDictionary<string, InteractiveLaunch> _rebound = new();
@@ -189,10 +213,13 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         return launch;
     }
 
-    // Pi's session directory was already found by its exact id.
-    bool BindTranscript(InteractiveLaunch launch, string sessionId)
+    // The pane must run exactly this native session now: an operator may have resumed or started
+    // another one in the retained pane while the daemon was down. Pi's identity cannot be proven.
+    bool BindTranscript(InteractiveLaunch launch, OwnedHerdrSession pane, string sessionId)
     {
-        if (_kind == InteractiveAgentKind.Pi) { return true; }
+        if (_kind == InteractiveAgentKind.Pi || pane.ShellPid is not { } shell) { return false; }
+        var live = LiveSessionProbe is { } probe ? probe(launch, shell) : _transcripts.LiveSessions(launch, shell);
+        if (live is not { Count: 1 } || !live.Contains(sessionId)) { return false; }
         launch.NativeTranscript ??= _transcripts.Locate(launch, sessionId);
         return launch.NativeTranscript?.SessionId == sessionId;
     }
@@ -662,10 +689,14 @@ internal interface IInteractiveTranscriptReader
 
     /// <summary>The main transcript whose header names exactly this native session, in the launch's config root.</summary>
     NativeTranscriptBinding? Locate(InteractiveLaunch launch, string sessionId) => null;
+
+    /// <summary>The native sessions running under a pane's shell now; null when that cannot be established.</summary>
+    IReadOnlySet<string>? LiveSessions(InteractiveLaunch launch, int shellPid) => null;
 }
 
 internal sealed record InteractiveTranscript(string SessionId, string? Message, IReadOnlyList<string>? Messages = null, bool Completed = false,
-    bool PendingBackgroundTasks = false, string? BindingError = null, InteractiveApiError? ApiError = null, IReadOnlyList<string?>? Times = null)
+    bool PendingBackgroundTasks = false, string? BindingError = null, InteractiveApiError? ApiError = null, IReadOnlyList<string?>? Times = null,
+    bool Superseded = false)
 {
     public IReadOnlyList<string> Progress => Messages ?? [];
 

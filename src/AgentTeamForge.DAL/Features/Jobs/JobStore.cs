@@ -65,7 +65,11 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         {
             return false;
         }
-        Execute(connection, tx, "UPDATE jobs SET session_fenced=1 WHERE job_id=$id", ("$id", jobId));
+        // Recorded so restart recovery never mistakes this fence for its own record fence.
+        Execute(connection, tx, """
+            UPDATE jobs SET session_fenced=1 WHERE job_id=$id;
+            INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'stop_fenced', $now);
+            """, ("$id", jobId), ("$now", Now()));
         tx.Commit();
         return true;
     });
@@ -954,13 +958,15 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
     /// <summary>
     /// Release a terminal job's restart fence after its pane was verified idle or proven gone.
-    /// Refused if the job or its session changed, or any turn in that session is unresolved.
+    /// Refused if the job or its session changed, any turn in that session is unresolved, or
+    /// stop_agent ever fenced the job: only the ownership-record fence of a restart is released.
     /// </summary>
     public bool ReleaseRestartFence(string jobId, string? sessionId) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         if (Scalar(connection, tx, $"SELECT count(*) FROM jobs WHERE status IN ('running','needs_reconciliation') AND job_id IN ({SessionPeers})",
                 ("$id", jobId)) > 0
+            || Scalar(connection, tx, "SELECT count(*) FROM events WHERE job_id=$id AND kind='stop_fenced'", ("$id", jobId)) > 0
             || sessionId is not null && Scalar(connection, tx, """
                 SELECT (SELECT count(*) FROM native_claude_attempts WHERE session_id=$session AND state IN ('posting','posted','received'))
                      + (SELECT count(*) FROM native_codex_attempts WHERE thread_id=$session AND state IN ('sent','received'))
