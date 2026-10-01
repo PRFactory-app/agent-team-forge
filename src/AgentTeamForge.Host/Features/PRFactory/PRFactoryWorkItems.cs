@@ -448,8 +448,10 @@ public sealed partial class PRFactoryWorkItems(
                 return;
             }
         }
-        if (baseWip && team.MachineId is Guid handoverMachine && team.AtfJobId is { Length: > 0 } handoverJob
-            && await client.GetHandoverRequestAsync(item.Id, handoverMachine, handoverJob, ct) is { } request)
+        var handoverRequest = baseWip && team.MachineId is Guid handoverMachine && team.AtfJobId is { Length: > 0 } handoverJob
+            ? await client.GetHandoverRequestAsync(item.Id, handoverMachine, handoverJob, ct) : null;
+        if (handoverRequest is null) { heldReasons.TryRemove((server, item.Id), out _); }
+        if (handoverRequest is { } request)
         {
             if (await HandleHandoverAsync(team, item, workspace, request, ct)) { return; }
             // A phase that publishes no branch has nothing to hand over; its request is moot, so finish normally.
@@ -1015,6 +1017,7 @@ public sealed partial class PRFactoryWorkItems(
             await coordinator.ReleaseAsync(item, workspace, machine, atfJob, request.Reason, Quiescent, ct, Preserve);
             await Observe(item.Id, "revoked", "handover_released", ct);
             teams.Finish(server, item.Id, "completed");
+            heldReasons.TryRemove((server, item.Id), out _);
             try
             {
                 await coordinator.CleanupReleasedAsync(workspace, Quiescent, TimeSpan.Zero);
@@ -1059,13 +1062,16 @@ public sealed partial class PRFactoryWorkItems(
     }
 
     // Daemon-lived: the adapter is rebuilt every heartbeat, and a held request must not repost its notice each time.
-    static readonly System.Collections.Concurrent.ConcurrentDictionary<(string, Guid, string, string), byte> heldReasons = [];
+    // Only the latest notice per work item is kept, and it is dropped once the request is gone, so this stays bounded by active holds.
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<(string, Guid), (string RequestId, string Reason)> heldReasons = [];
+
+    internal static bool HasHeldNotice(string server, Guid itemId) => heldReasons.ContainsKey((server, itemId));
 
     /// <summary>Log a held handover reason and show it on the agent stream once per request and reason; retried until delivered.</summary>
     async Task HeldOnceAsync(PRFactoryWorkItem item, string requestId, string reason, CancellationToken ct)
     {
-        var key = (server, item.Id, requestId, reason);
-        if (heldReasons.ContainsKey(key)) { return; }
+        var key = (server, item.Id);
+        if (heldReasons.TryGetValue(key, out var last) && last == (requestId, reason)) { return; }
         log?.Invoke($"PRFactory work item {item.Id:D} handover held: {reason}");
         try
         {
@@ -1074,7 +1080,7 @@ public sealed partial class PRFactoryWorkItems(
                 $"handover-held:{item.Id:N}:{seq}",
                 [new("member", item.Id.ToString("D"), "handover", "atf", "Waiting", item.RepositoryId, "lead")],
                 [new("handover", seq, DateTimeOffset.UtcNow, "Record", "Handover held: " + reason, "handover-held")]), ct), ct);
-            heldReasons[key] = 0;
+            heldReasons[key] = (requestId, reason);
         }
         catch (Exception ex) when (ex is HttpRequestException or PRFactoryStreamRejectedException)
         {

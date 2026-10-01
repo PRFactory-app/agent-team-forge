@@ -151,6 +151,11 @@ public sealed class BaseWipHandoverTests
         await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
         await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
         Assert.Single(h.Server.Lines, line => line.RecordKind == "handover-held");
+        // Once the request is gone the entry is pruned, so the dedupe set stays bounded by active holds.
+        Assert.True(PRFactoryWorkItems.HasHeldNotice(ChainServer.Url, item.Id));
+        h.Server.HandoverRequested = false;
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        Assert.False(PRFactoryWorkItems.HasHeldNotice(ChainServer.Url, item.Id));
     }
 
     [Fact]
