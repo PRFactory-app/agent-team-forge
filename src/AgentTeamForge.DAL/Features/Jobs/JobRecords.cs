@@ -67,6 +67,9 @@ public sealed record JobRecord(
     public string? WorktreeBranch { get; init; }
     public string? WorktreeBase { get; init; }
     public int? TimeoutSeconds { get; init; }
+
+    /// <summary>Latest event sequence when read; a wake acknowledgement must match it to prove the observed state is current.</summary>
+    public long Revision { get; init; }
 }
 
 public sealed record Accepted(JobRecord Job, string? InterruptedJobId = null);
@@ -107,6 +110,8 @@ public sealed record RunRecord(string RunId, long Generation, string Correlation
 /// <summary>Read-only inspection row: committed state only, no instruction or result payload.</summary>
 public sealed record JobSummaryRecord(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)
 {
+    public bool Unread { get; init; }
+    public long Revision { get; init; }
     public string? Options { get; init; }
     public string? Backend { get; init; }
     public string? Cwd { get; init; }

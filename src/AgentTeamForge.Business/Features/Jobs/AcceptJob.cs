@@ -212,7 +212,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
                 Accepted accepted => JobResult.Ok(GetJob.ToView(accepted.Job), "accepted"),
                 Existing existing => JobResult.Ok(GetJob.ToView(existing.Job), "existing"),
                 Conflict => JobResult.Fail(JobErrors.IdempotencyConflict),
-                ParentNotReady => JobResult.Fail(JobErrors.ParentNotReady),
+                ParentNotReady => JobResult.Fail(JobErrors.ParentNotReady, parentJobId is null ? null : JobErrors.ParentNotReadyDetail(store, parentJobId)),
                 ParentNotFound => JobResult.Fail(JobErrors.NotFound),
                 QueueFull => JobResult.Fail(JobErrors.QueueFull),
             };

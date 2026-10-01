@@ -77,5 +77,6 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal, bool intera
         Cwd = JobWorktree.WorkingDirectory(job),
         WorktreePath = job.WorktreePath,
         WorktreeBranch = job.WorktreeBranch,
+        Revision = job.Revision,
     };
 }

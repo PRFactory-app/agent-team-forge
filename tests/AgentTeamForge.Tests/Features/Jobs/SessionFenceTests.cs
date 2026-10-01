@@ -142,4 +142,21 @@ public sealed class SessionFenceTests
         Assert.False(f.Store.IsSessionFenced(parent.JobId));
         Assert.Equal(c.Job!.JobId, f.Store.BeginNextAttempt()!.Job.JobId);
     }
+
+    [Fact]
+    public void Parent_not_ready_names_the_fencing_peer_and_says_to_stop_it()
+    {
+        using var f = new JobFixture();
+        var parent = f.Submit("a");
+        var a = f.Store.BeginNextAttempt()!;
+        var ar = new RunRef(a.Job.JobId, a.RunId, a.Generation, a.Correlation);
+        f.Store.RecordSession(ar, "native-session");
+        f.Store.EndUnsuccessfully(ar, JobStatus.NeedsReconciliation, "interactive_delivery_not_confirmed");
+
+        var refused = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept()).Execute(new FollowUpRequest(parent.JobId, "again", "b"));
+
+        Assert.Equal(JobErrors.ParentNotReady, refused.Error);
+        Assert.Contains(parent.JobId, refused.Detail);
+        Assert.Contains("stop_job", refused.Detail);
+    }
 }

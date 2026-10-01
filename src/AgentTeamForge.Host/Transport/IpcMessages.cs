@@ -15,6 +15,7 @@ public sealed record IpcRequest
     public string? Workspace { get; init; }
     public string? BindingKey { get; init; }
     public bool AllWorkspace { get; init; }
+    public bool Unread { get; init; }
     public string? IdempotencyKey { get; init; }
     public string? Instruction { get; init; }
     public string? Behavior { get; init; }

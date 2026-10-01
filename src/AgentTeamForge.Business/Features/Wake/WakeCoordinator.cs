@@ -29,7 +29,10 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
         public long Generation = generation;
         public DateTimeOffset? FirstNew;
         public WakeBackoff Backoff = new();
+        public int Renotifies;
+        public long LatestSeq;
     }
+    static readonly TimeSpan MaxRenotify = TimeSpan.FromMinutes(60);
     readonly Dictionary<string, State> states = [];
     readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
     readonly TimeSpan coalesceWindow = coalesce ?? TimeSpan.FromSeconds(2);
@@ -65,18 +68,25 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
                 states[stateKey] = state;
             }
             var current = now();
+            if (snapshot.LatestSeq > state.LatestSeq)
+            {
+                // A newly finished job must not wait behind retry/reminder backoff earned by older ones.
+                state.LatestSeq = snapshot.LatestSeq;
+                state.Backoff.Reset();
+                state.Renotifies = 0;
+                state.FirstNew = current;
+            }
             if (current < state.Backoff.Until)
             {
                 continue;
             }
 
-            var expired = snapshot.ParkJobId is null && snapshot.LastSuccess is not null && current - snapshot.LastSuccess >= renotifyWindow;
-            if (snapshot.Outstanding && !expired)
-            {
-                continue;
-            }
-
-            if (snapshot.LatestSeq <= snapshot.NotifiedSeq && !expired)
+            // A newly finished job wakes after the coalesce window; an unchanged unread set is
+            // reminded at doubling intervals (renotify, 2x, 4x ... capped at an hour).
+            var isNew = snapshot.LatestSeq > snapshot.NotifiedSeq;
+            var interval = TimeSpan.FromTicks(Math.Min(MaxRenotify.Ticks, renotifyWindow.Ticks << Math.Min(state.Renotifies, 8)));
+            var expired = snapshot.ParkJobId is null && !isNew && snapshot.LastSuccess is not null && current - snapshot.LastSuccess >= interval;
+            if (!isNew && !expired)
             {
                 continue;
             }
@@ -94,7 +104,7 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
                 ? "[AgentTeamForge wake] An interactive agent is idle without a native completion. Call mcp__agentteamforge__list_jobs and mcp__agentteamforge__get_job."
                 : snapshot.External
                 ? $"[AgentTeamForge wake] {snapshot.Unread} external message(s) await reading. Call mcp__agentteamforge__external_read or mcp__agentteamforge__read_messages."
-                : $"[AgentTeamForge wake] {snapshot.Unread} completed job(s) await reading. Call mcp__agentteamforge__list_jobs and mcp__agentteamforge__get_job.";
+                : $"[AgentTeamForge wake] {snapshot.Unread} job(s) finished or need attention. Call mcp__agentteamforge__list_jobs with unread=true, then get_job.";
             bool posted;
             try { posted = await poster.PostAsync(target, notice, cancellationToken); }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -106,6 +116,7 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
             {
                 state.Backoff.Reset();
                 state.FirstNew = null;
+                state.Renotifies = isNew ? 0 : state.Renotifies + 1;
             }
             else
             {

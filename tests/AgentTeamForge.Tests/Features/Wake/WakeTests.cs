@@ -202,8 +202,9 @@ public sealed class WakeTests
         time += TimeSpan.FromSeconds(1);
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
         Assert.Single(poster.Attempts);
-        Assert.Contains("2 completed job(s)", poster.Attempts[0].Notice);
+        Assert.Contains("2 job(s)", poster.Attempts[0].Notice);
         Assert.Contains("list_jobs", poster.Attempts[0].Notice);
+        Assert.Contains("unread=true", poster.Attempts[0].Notice);
         Assert.Contains("get_job", poster.Attempts[0].Notice);
         time += TimeSpan.FromSeconds(10);
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
@@ -290,7 +291,7 @@ public sealed class WakeTests
             .TickAsync(TestContext.Current.CancellationToken);
         Assert.Equal(2, poster.Attempts.Count);
         Assert.Contains(poster.Attempts, attempt => attempt.Notice.Contains("external message(s)"));
-        Assert.Contains(poster.Attempts, attempt => attempt.Notice.Contains("completed job(s)"));
+        Assert.Contains(poster.Attempts, attempt => attempt.Notice.Contains("job(s) finished"));
     }
 
     [Fact]
@@ -596,7 +597,7 @@ public sealed class WakeTests
         var poster = new FakePoster();
         await new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero)
             .TickAsync(TestContext.Current.CancellationToken);
-        Assert.Contains("1 completed job(s)", Assert.Single(poster.Attempts).Notice);
+        Assert.Contains("1 job(s)", Assert.Single(poster.Attempts).Notice);
     }
 
     [Fact]
@@ -867,5 +868,161 @@ public sealed class WakeTests
         var poster = new PiExtensionWake(dir.Path);
         Assert.True(await poster.PostAsync(target, "call job_get", TestContext.Current.CancellationToken));
         Assert.Contains("call job_get", await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken));
+    }
+    static (WakeStore Wake, LeadSessionStore Sessions, string LeadId, WakeRegistration Target) LeadWithWake(JobFixture fixture, string name)
+    {
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/" + name, "parent=1");
+        var target = wake.Register("codex:" + name, "codex", "thread", "", "/tmp");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        return (wake, sessions, lead.SessionId, target);
+    }
+
+    static (string JobId, RunRef Run) LeadJob(JobFixture fixture, string leadId, WakeRegistration target, string key)
+    {
+        var job = fixture.Accept().Execute(new SubmitJobRequest(key, "work", null, false)
+        { LeadSessionId = leadId, WakeKey = target.Key, WakeGeneration = target.Generation }).Job!;
+        var claim = fixture.Store.BeginNextAttempt()!;
+        return (job.JobId, new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation));
+    }
+
+    [Fact]
+    public void Read_while_wake_is_cleared_survives_reregistration()
+    {
+        using var fixture = new JobFixture();
+        var (wake, sessions, leadId, target) = LeadWithWake(fixture, "cleared");
+        var (jobId, run) = LeadJob(fixture, leadId, target, "cleared");
+        Assert.True(fixture.Store.Complete(run, "done"));
+        Assert.True(wake.ClearLead(leadId, target.Key, target.Generation));
+
+        wake.MarkReadForLead(jobId, JobStatus.Completed, null, leadId);
+        var again = wake.Register(target.Key, "codex", "thread", "", "/tmp");
+        sessions.BindWake(leadId, again.Key, again.Generation);
+
+        Assert.Empty(wake.Pending());
+    }
+
+    [Fact]
+    public async Task New_completion_wakes_after_coalesce_while_an_older_job_is_unread()
+    {
+        using var fixture = new JobFixture();
+        var store = new WakeStore(fixture.Database);
+        var target = store.Register("codex:new", "codex", "thread", "", "/tmp");
+        Finish(fixture, target, "old");
+        var time = DateTimeOffset.UtcNow;
+        var poster = new FakePoster();
+        var coordinator = new WakeCoordinator(store, poster, _ => { }, () => time, TimeSpan.Zero);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Single(poster.Attempts);
+
+        Finish(fixture, target, "new");
+        time += TimeSpan.FromSeconds(1);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, poster.Attempts.Count);
+        Assert.Contains("2 job(s)", poster.Attempts[1].Notice);
+    }
+
+    [Fact]
+    public async Task Renotify_backs_off_for_an_unchanged_unread_set()
+    {
+        using var fixture = new JobFixture();
+        var store = new WakeStore(fixture.Database);
+        var target = store.Register("codex:backoff", "codex", "thread", "", "/tmp");
+        Finish(fixture, target, "one");
+        var time = DateTimeOffset.UtcNow;
+        var poster = new FakePoster();
+        var coordinator = new WakeCoordinator(store, poster, _ => { }, () => time, TimeSpan.Zero);
+        async Task Tick(TimeSpan advance)
+        {
+            time += advance;
+            await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        }
+
+        await Tick(TimeSpan.Zero);
+        Assert.Single(poster.Attempts);
+        await Tick(TimeSpan.FromMinutes(5));
+        Assert.Equal(2, poster.Attempts.Count);
+        await Tick(TimeSpan.FromMinutes(5)); // next reminder is due after 10 minutes
+        Assert.Equal(2, poster.Attempts.Count);
+        await Tick(TimeSpan.FromMinutes(5));
+        Assert.Equal(3, poster.Attempts.Count);
+    }
+
+    [Fact]
+    public async Task Job_read_while_needs_reconciliation_wakes_again_when_it_completes()
+    {
+        using var fixture = new JobFixture();
+        var (wake, _, leadId, target) = LeadWithWake(fixture, "rearm");
+        var (jobId, run) = LeadJob(fixture, leadId, target, "rearm");
+        Assert.True(fixture.Store.RecordSession(run, "native"));
+        fixture.Store.RecordStartup(run, "submitted");
+        Assert.Equal([jobId], fixture.Store.QuarantineUncertainAttempts());
+        var observed = fixture.Store.GetJob(jobId)!;
+        wake.MarkReadForLead(jobId, observed.Status, observed.Revision, leadId);
+        Assert.Empty(wake.Pending());
+
+        Assert.True(fixture.Store.ReattachQuarantined(run));
+        Assert.True(fixture.Store.Complete(run, "done"));
+        // The lead observed needs_reconciliation before the completion; that stale read must not consume it.
+        wake.MarkReadForLead(jobId, observed.Status, observed.Revision, leadId);
+        wake.MarkReadForLead(jobId, JobStatus.Completed, observed.Revision, leadId);
+        Assert.Equal(1, Assert.Single(wake.Pending()).Unread);
+
+        var poster = new FakePoster();
+        await new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero).TickAsync(TestContext.Current.CancellationToken);
+        Assert.Single(poster.Attempts);
+    }
+
+    [Fact]
+    public void List_jobs_unread_returns_only_unread_finished_jobs_regardless_of_since()
+    {
+        using var fixture = new JobFixture();
+        var (wake, _, leadId, target) = LeadWithWake(fixture, "unread");
+        var (readId, readRun) = LeadJob(fixture, leadId, target, "read");
+        Assert.True(fixture.Store.Complete(readRun, "done"));
+        var (unreadId, unreadRun) = LeadJob(fixture, leadId, target, "unread");
+        Assert.True(fixture.Store.Complete(unreadRun, "done"));
+        var (runningId, _) = LeadJob(fixture, leadId, target, "running");
+        wake.MarkReadForLead(readId, JobStatus.Completed, null, leadId);
+
+        var list = new ListJobs(fixture.Store, JobFixture.Operator);
+        var page = list.Execute(new ListJobsRequest(Since: DateTimeOffset.UtcNow.AddHours(1).ToString("O")) { Unread = true, LeadSessionId = leadId });
+        Assert.Equal(unreadId, Assert.Single(page.Page!.Jobs).JobId);
+        var unreadOnly = list.Execute(new ListJobsRequest { Unread = true, LeadSessionId = leadId }).Page!.Jobs;
+        Assert.Equal(unreadId, Assert.Single(unreadOnly).JobId);
+        Assert.True(unreadOnly[0].Unread);
+        Assert.DoesNotContain(list.Execute(new ListJobsRequest { LeadSessionId = leadId }).Page!.Jobs, j => j.JobId == runningId && j.Unread);
+    }
+    [Fact]
+    public async Task New_completion_wakes_after_coalesce_even_at_the_retry_cap()
+    {
+        using var fixture = new JobFixture();
+        var store = new WakeStore(fixture.Database);
+        var target = store.Register("codex:cap", "codex", "thread", "", "/tmp");
+        Finish(fixture, target, "old");
+        var time = DateTimeOffset.UtcNow;
+        var reachable = false;
+        var poster = new FakePoster((_, _) => reachable);
+        var coordinator = new WakeCoordinator(store, poster, _ => { }, () => time);
+        for (var i = 0; i < 10; i++)
+        {
+            time += TimeSpan.FromSeconds(301);
+            await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        }
+        var failed = poster.Attempts.Count;
+        Assert.True(failed >= 8);
+
+        Finish(fixture, target, "new");
+        reachable = true;
+        time += TimeSpan.FromSeconds(1);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(failed, poster.Attempts.Count); // coalesce window still open
+        time += TimeSpan.FromSeconds(2);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(failed + 1, poster.Attempts.Count);
+        Assert.Contains("2 job(s)", poster.Attempts[^1].Notice);
     }
 }

@@ -97,6 +97,7 @@ public static class JobsMcpBridge
           "since":{"type":"string","description":"Include jobs accepted at or after this ISO 8601 time."},
           "limit":{"type":"integer","minimum":1,"maximum":50,"description":"Page size; default 20."},
           "cursor":{"type":"string","description":"next_cursor from the previous page."},
+          "unread":{"type":"boolean","description":"Only finished jobs not read yet, regardless of since."},
           "all_workspace":{"type":"boolean","description":"Include every lead's jobs in this workspace."}}}
         """;
 
@@ -598,6 +599,7 @@ public static class JobsMcpBridge
         OptionalString(args, "status", out var status) && OptionalString(args, "cursor", out var cursor)
             && OptionalString(args, "backend", out var backend) && OptionalString(args, "since", out var since)
             && (!args.TryGetValue("all_workspace", out var all) || all.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            && (!args.TryGetValue("unread", out var unreadArg) || unreadArg.ValueKind is JsonValueKind.True or JsonValueKind.False)
             ? (new IpcRequest
             {
                 Op = IpcProtocol.JobList,
@@ -606,7 +608,8 @@ public static class JobsMcpBridge
                 Since = since,
                 Limit = Integer(args, "limit"),
                 Cursor = cursor,
-                AllWorkspace = args.TryGetValue("all_workspace", out var scope) && scope.ValueKind == JsonValueKind.True
+                AllWorkspace = args.TryGetValue("all_workspace", out var scope) && scope.ValueKind == JsonValueKind.True,
+                Unread = args.TryGetValue("unread", out var unread) && unread.ValueKind == JsonValueKind.True
             }, null)
             : (null, JobErrors.InvalidRequest);
 
