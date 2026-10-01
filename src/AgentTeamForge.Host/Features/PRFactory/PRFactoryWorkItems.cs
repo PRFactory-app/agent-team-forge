@@ -971,7 +971,7 @@ public sealed partial class PRFactoryWorkItems(
         if (PRFactoryRepositorySet.HasSecondaries(item))
         {
             // Only the primary lead is published and released; secondary checkouts would be left behind.
-            log?.Invoke($"PRFactory work item {item.Id:D} handover held: multi-repository handover is unsupported");
+            await HeldOnceAsync(item, "multi-repository handover is unsupported", ct);
             return true;
         }
 
@@ -979,7 +979,7 @@ public sealed partial class PRFactoryWorkItems(
         {
             foreach (var path in new[] { workspace.LeadPath }.Concat(workspace.Members.Select(m => m.Path)))
             {
-                if ((await TeamWorkspace.Git(path, "status", "--porcelain", "--untracked-files=all")).Length != 0)
+                if ((await TeamWorkspace.Git(path, PRFactoryHandover.DirtyArgs(item.TicketArtefactFolder))).Length != 0)
                 {
                     throw new InvalidOperationException("Uncommitted work remains; handover held.");
                 }
@@ -1021,9 +1021,30 @@ public sealed partial class PRFactoryWorkItems(
         }
         catch (InvalidOperationException ex)
         {
-            log?.Invoke($"PRFactory work item {item.Id:D} handover held: {ex.Message}");
+            await HeldOnceAsync(item, ex.Message, ct);
         }
         return true;
+    }
+
+    readonly HashSet<(Guid, string)> heldReasons = [];
+
+    /// <summary>Log a held handover reason once per distinct reason, and show it on the agent stream so the server UI can display it.</summary>
+    async Task HeldOnceAsync(PRFactoryWorkItem item, string reason, CancellationToken ct)
+    {
+        if (!heldReasons.Add((item.Id, reason))) { return; }
+        log?.Invoke($"PRFactory work item {item.Id:D} handover held: {reason}");
+        try
+        {
+            var seq = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            await Guard(item.Id, async () => await client.UploadStreamAsync(item.Id, new PRFactoryStreamBatch(item.LeaseToken,
+                $"handover-held:{item.Id:N}:{seq}",
+                [new("member", item.Id.ToString("D"), "handover", "atf", "Waiting", item.RepositoryId, "lead")],
+                [new("handover", seq, DateTimeOffset.UtcNow, "Record", "Handover held: " + reason, "handover-held")]), ct), ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or PRFactoryStreamRejectedException)
+        {
+            log?.Invoke($"PRFactory work item {item.Id:D} handover held notice not delivered: {ex.Message}");
+        }
     }
 
     async Task<WorkspaceSnapshot> PrepareWorkspaceAsync(PRFactoryWorkItem item, RepositoryMapping? repo,
@@ -1362,7 +1383,8 @@ public sealed partial class PRFactoryWorkItems(
         else
         {
             await Guard(item.Id, () => client.FailAsync(item.Id, item.LeaseToken, error, ct,
-                error.StartsWith("agent_rate_limited", StringComparison.Ordinal)), ct);
+                error.StartsWith("agent_rate_limited", StringComparison.Ordinal),
+                    error.StartsWith("agent_rate_limited", StringComparison.Ordinal) ? error : ""), ct);
             StopManagedJobs(item.Id);
             teams.Finish(server, item.Id, error.StartsWith("multi-repository", StringComparison.Ordinal) ? "refused" : "failed");
             await Observe(item.Id, "completed", "failure_reported", ct);

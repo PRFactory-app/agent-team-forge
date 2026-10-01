@@ -80,8 +80,8 @@ intake; local jobs continue.
   lead and members become ordinary ATF jobs in an owned team workspace (see
   below), in the launch mode chosen at setup. Each member submission is keyed by server, work
   item, member and turn (`prfactory_members`), so a repeated claim never
-  starts a second job. One mapped repository per work item; multi-repository
-  work is refused.
+  starts a second job. A work item may span several mapped
+  repositories (`multi-repo-v1`); an unmapped secondary repository fails the phase.
 - **Commands.** The daemon drains pending server commands. `SendMessage`
   becomes a `follow_up` for a managed member, or a message to an external
   member. `KillAgent` stops a managed member's job, or closes the external team
@@ -130,10 +130,10 @@ and ATF job identity, reconciled idempotently after a lost response) is merged
 in PRFactory (#254). If the server revokes authority, ATF keeps
 local results but stops publishing them.
 
-The connector advertises worker contract version `1.0.0` consistently during
-registration, polling and claiming. This is PRFactory's single-repository
-compatibility level, independent of the ATF product version; it does not claim
-the newer multi-repository capability.
+The connector advertises worker contract version `1.0.0`, or `1.1.0` when the
+server supports `multi-repo-v1`, consistently during registration, polling and
+claiming. This is PRFactory's contract level, independent of the ATF product
+version.
 
 ## Authority and cancellation
 
@@ -182,7 +182,9 @@ push failures fail the phase; read-only phases never push.
 ## Account limits and backlog
 
 A headless connector turn that reports a usage or spend limit fails with
-`agent_rate_limited`; PRFactory receives `/fail` with `shouldRetry=true`. The
+`agent_rate_limited`; PRFactory receives `/fail` with `shouldRetry=true` and the limit text (including
+the reset time) in the details. The server currently ignores `shouldRetry` for ATF-accepted
+items, so the phase ends Failed rather than being requeued. The
 backend's default account is then blocked for new claims until the reported
 reset (one hour when none is reported) while other backends continue. An
 interactive turn (Herdr, terminal tabs) keeps its live TUI instead: the limit
@@ -208,9 +210,9 @@ resumed and streamed; ATF maps their internal statuses to PRFactory's coarse
 lifecycle values.
 
 Registration advertises `authority-disposition-v1`, `remote-publication-v1`,
-`workspace-continuity-v1`, `blob-attachments-v1` and `base-wip-v1`.
+`workspace-continuity-v1`, `blob-attachments-v1`, `base-wip-v1`, `multi-repo-v1` and `pull-request-v1`.
 Not advertised yet: `human-wait-v1` (needs the server's `questionId` wire), readiness probes,
-external-member human waits and multi-repository work.
+external-member human waits and `hostingDecisionWrite`.
 
 ## Base freshness and WIP handover
 

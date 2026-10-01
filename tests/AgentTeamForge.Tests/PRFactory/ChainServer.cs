@@ -31,6 +31,8 @@ sealed class ChainServer(PRFactoryWorkItem item)
     public bool BaseWipSupported { get; set; }
     public string? AcceptanceReleaseIdOverride { get; set; }
     public bool HandoverRequested { get; set; }
+    /// <summary>Like the real server: a release makes the item pending again with the handover fields for the next claim.</summary>
+    public bool ReleaseRequeues { get; set; }
     public List<JsonElement> WipReports { get; } = [];
     public HttpStatusCode? WipRejection { get; set; }
     public List<JsonElement> Releases { get; } = [];
@@ -147,6 +149,15 @@ sealed class ChainServer(PRFactoryWorkItem item)
                 var release = JsonElement.Parse(body!);
                 Releases.Add(release);
                 HandoverRequested = false;
+                if (ReleaseRequeues)
+                {
+                    Item.HandoverReleaseId = release.GetProperty("releaseId").GetString();
+                    Item.HandoverRepositoryId = release.GetProperty("repositoryId").GetGuid();
+                    Item.HandoverBaseCommitSha = release.GetProperty("baseCommitSha").GetString();
+                    Item.StartFromBranch = release.GetProperty("wipBranchName").GetString();
+                    Item.StartCommitSha = release.GetProperty("verifiedWipSha").GetString();
+                    (AcceptedJobId, Status, Offered) = (null, 1, true);
+                }
                 return Json("{\"released\":true,\"releaseId\":\"" + release.GetProperty("releaseId").GetString()
                     + "\",\"verifiedWipSha\":\"" + release.GetProperty("verifiedWipSha").GetString() + "\"}");
             }

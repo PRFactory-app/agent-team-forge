@@ -44,6 +44,28 @@ sealed class ChainHarness : IDisposable
             (_, _) => true, id => Store.GetJob(id)?.Status is not (JobStatus.Queued or JobStatus.Running));
     }
 
+    /// <summary>A second daemon on its own database and clone, sharing the peer's server and remote.</summary>
+    public ChainHarness(ChainHarness peer)
+    {
+        Remote = peer.Remote;
+        Repo = root.File("repo");
+        Git(root.Path, "clone", Remote, Repo);
+        BaseSha = peer.BaseSha;
+        Database = JobDatabase.Create(root.File("jobs.db"), TimeSpan.FromSeconds(2));
+        Store = new JobStore(Database, DurabilityCheckpoints.None);
+        Teams = new PRFactoryTeamStore(Database);
+        Authorities = new PRFactoryAuthorityStore(Database);
+        Workspaces = new TeamWorkspace(new PRFactoryWorkspaceStore(Database));
+        Server = peer.Server;
+        var accept = new AcceptJob(Store, Connector, new SpikeLimits(), true, new AdmissionGate(), ["codex"]);
+        Accept = accept;
+        FollowUp = new FollowUpJob(Store, Connector, accept);
+        Stop = new StopJob(Store, Connector, _ => { });
+        var stopAgent = new StopAgent(Store, Connector, new BackendCatalog().Register("codex", () => new ScriptedBackend(_ => [])));
+        Authority = new PRFactoryAuthority(ChainServer.Url, Authorities, Teams, Stop.Execute, stopAgent.Execute,
+            (_, _) => true, id => Store.GetJob(id)?.Status is not (JobStatus.Queued or JobStatus.Running));
+    }
+
     public string Remote { get; }
     public string Repo { get; }
     public string BaseSha { get; }

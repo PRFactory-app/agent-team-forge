@@ -220,6 +220,48 @@ public sealed class BaseWipHandoverTests
         Assert.DoesNotContain(h.Logs, line => line.Contains("deferred (InvalidOperationException)", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task Handover_chain_releases_from_one_daemon_and_the_other_adopts_the_exact_tip_and_completes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var item = Work("Implementation");
+        using var a = new ChainHarness(item);
+        a.Server.BaseWipSupported = true;
+        a.Server.ReleaseRequeues = true;
+        await a.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, ct);
+        var (lead, run) = a.StartOne();
+        var head = ChainHarness.Commit(lead.Cwd!, "work.txt", "from A");
+        // An untracked ticket document is uploaded by publication, so it must not block release.
+        Directory.CreateDirectory(Path.Combine(lead.Cwd!, "docs/PRF-42"));
+        File.WriteAllText(Path.Combine(lead.Cwd!, "docs/PRF-42/notes.md"), "# notes");
+        Assert.True(a.Store.Complete(run, "done"));
+        a.Server.HandoverRequested = true;
+        for (var i = 0; i < 5 && a.Server.Releases.Count == 0; i++)
+        {
+            await a.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, ct);
+        }
+        var release = Assert.Single(a.Server.Releases);
+        Assert.Equal(head, release.GetProperty("verifiedWipSha").GetString());
+        Assert.Equal("completed", a.Teams.Get(ChainServer.Url, item.Id)!.State);
+
+        using var b = new ChainHarness(a);
+        for (var i = 0; i < 3 && b.Teams.Get(ChainServer.Url, item.Id) is null; i++)
+        {
+            await b.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, ct);
+        }
+        var workspace = b.Workspaces.Get($"{ChainServer.Url}|{item.Id:D}")!;
+        Assert.Equal(head, ChainHarness.Git(workspace.LeadPath, "rev-parse", "HEAD"));
+        var (leadB, runB) = b.StartOne();
+        ChainHarness.Commit(leadB.Cwd!, "more.txt", "from B");
+        Assert.True(b.Store.Complete(runB, "done"));
+        for (var i = 0; i < 5 && a.Server.Completions.Count == 0; i++)
+        {
+            await b.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, ct);
+        }
+        Assert.Single(a.Server.Completions);
+        Assert.Empty(a.Server.Failures);
+    }
+
     static PRFactoryWorkItem Work(string type) => new()
     {
         Id = Guid.NewGuid(),

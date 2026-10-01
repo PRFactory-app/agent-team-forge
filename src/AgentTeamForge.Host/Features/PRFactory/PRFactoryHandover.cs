@@ -193,6 +193,17 @@ public sealed partial class PRFactoryClient
 /// <summary>Handover only after all writers are quiescent and committed work has a verified WIP receipt.</summary>
 public sealed class PRFactoryHandover(PRFactoryClient client, PRFactoryHandoverStore store, PublicationAuthority authority)
 {
+    static readonly string[] DocumentExtensions = ["md", "html", "json"];
+
+    /// <summary>Dirty check that ignores the top-level documents of the ticket folder: publication uploads those, so they never block release.</summary>
+    public static string[] DirtyArgs(string? artefactFolder)
+    {
+        string[] args = ["status", "--porcelain", "--untracked-files=all"];
+        if (string.IsNullOrWhiteSpace(artefactFolder)) { return args; }
+        var folder = artefactFolder.Replace('\\', '/').Trim('/');
+        return [.. args, "--", ".", .. DocumentExtensions.Select(e => $":(exclude,glob){folder}/*.{e}")];
+    }
+
     public async Task<PRFactoryReleaseResponse> ReleaseAsync(PRFactoryWorkItem item, WorkspaceSnapshot workspace,
         Guid machineId, string atfJobId, string reason, Func<bool> writersQuiescent, CancellationToken ct)
     {
@@ -210,7 +221,7 @@ public sealed class PRFactoryHandover(PRFactoryClient client, PRFactoryHandoverS
             throw new InvalidOperationException("Accepted repository identity is missing.");
         }
 
-        var dirty = await TeamWorkspace.Git(workspace.LeadPath, "status", "--porcelain", "--untracked-files=all");
+        var dirty = await TeamWorkspace.Git(workspace.LeadPath, DirtyArgs(item.TicketArtefactFolder));
         if (dirty.Length != 0)
         {
             throw new InvalidOperationException("Release refused: uncommitted work remains in the lead checkout.");
@@ -218,7 +229,7 @@ public sealed class PRFactoryHandover(PRFactoryClient client, PRFactoryHandoverS
 
         foreach (var member in workspace.Members)
         {
-            var status = await TeamWorkspace.Git(member.Path, "status", "--porcelain", "--untracked-files=all");
+            var status = await TeamWorkspace.Git(member.Path, DirtyArgs(item.TicketArtefactFolder));
             if (status.Length != 0)
             {
                 throw new InvalidOperationException("Release refused: child workspace has uncommitted work.");
