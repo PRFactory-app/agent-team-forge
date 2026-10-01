@@ -31,6 +31,17 @@ public sealed class JobActivityTests
         Assert.Equal(JobActivity.MaxTextChars + 1, Assert.Single(JobActivity.Normalize("plain", new string('x', 1000))).Text.Length);
     }
 
+    [Theory]
+    [InlineData("claude", """{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm"}]}}""")]
+    [InlineData("pi", """{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"}]}}""")]
+    [InlineData("codex", """{"type":"item.completed","item":{"type":"reasoning","text":"hmm"}}""")]
+    public void Thinking_is_its_own_activity_kind_and_empty_thinking_is_skipped(string backend, string line)
+    {
+        var entry = Assert.Single(JobActivity.Normalize(backend, line));
+        Assert.Equal(("thinking", "hmm"), (entry.Kind, entry.Text));
+        Assert.Empty(JobActivity.Normalize(backend, line.Replace("hmm", "")));
+    }
+
     [Fact]
     public void Cursor_pages_only_complete_lines_and_resumes_after_new_output()
     {

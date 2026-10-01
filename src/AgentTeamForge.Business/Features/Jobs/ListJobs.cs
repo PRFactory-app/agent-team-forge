@@ -59,6 +59,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
             LeadName = r.LeadName,
             TargetAgent = r.TargetAgent,
             Connector = r.Connector,
+            WorkItemId = r.WorkItemId,
             LastActivity = logs?.LastActivity(r.JobId, r.Backend ?? ""),
         }).ToList();
         return new JobListResult(new JobListPage(jobs, limit, hasMore, hasMore ? jobs[^1].JobId : null), null);
@@ -98,6 +99,8 @@ public sealed record JobSummary(string JobId, string Status, string? ReasonCode,
     public string? LeadName { get; init; }
     public string? LeadWorkspace { get; init; }
     public string? TargetAgent { get; init; }
+    /// <summary>PRFactory work item of a connector job; null for ordinary jobs.</summary>
+    public string? WorkItemId { get; init; }
     public bool Connector { get; init; }
     public string Light => Status switch
     {

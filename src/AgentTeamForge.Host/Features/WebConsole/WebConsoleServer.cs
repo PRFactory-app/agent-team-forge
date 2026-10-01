@@ -202,7 +202,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
             ("GET", ["settings", "herdr-placement"]) => new IpcRequest { Op = IpcProtocol.HerdrPlacementGet },
             ("PUT", ["settings", "herdr-placement"]) => await ReadHerdrPlacementAsync(ctx),
             ("POST", ["jobs"]) => await ReadSubmitAsync(ctx),
-            ("GET", ["jobs", var id]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobGet, JobId = id, IncludeConnector = true },
+            ("GET", ["jobs", var id]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobGet, JobId = id, IncludeConnector = true, IncludeInstruction = true },
             ("GET", ["jobs", var id, "output"]) when ValidId(id) => new IpcRequest
             {
                 Op = IpcProtocol.JobOutput,

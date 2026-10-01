@@ -135,12 +135,10 @@ main { padding-top: 23px; }
 .team-content { padding-top: 8px; }
 .external-node { display: flex; }
 .external-node .badge { margin-left: auto; }
-.lead-card { min-width: 0; border: 1px solid var(--border-strong); border-left: 3px solid var(--accent); border-radius: var(--radius-md); background: var(--raised); }
+.lead-card { min-width: 0; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--raised); }
 .lead-toggle { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 15px; width: 100%; padding: 17px 18px; border: 0; background: transparent; color: inherit; text-align: left; }
 .lead-toggle:hover { border: 0; }
 .lead-card.selected { border-color: var(--accent); }
-.lead-card.is-failed { border-left-color: var(--danger); }
-.lead-card.is-waiting { border-left-color: var(--warning); }
 .lead-state { margin-top: 5px; color: var(--secondary); font-size: 12px; }
 .lead-body { min-width: 0; }
 .node-identity { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; min-width: 0; }
@@ -221,6 +219,7 @@ main { padding-top: 23px; }
 .kind-tool_result .activity-kind, .kind-status .activity-kind { color: var(--muted); }
 .kind-error .activity-kind, .kind-error .activity-text, .activity-error { color: var(--danger); }
 .kind-result .activity-kind { color: var(--success); }
+.kind-thinking .activity-text { font-style: italic; }
 .activity-empty, .activity-omitted { color: var(--muted); font: 11px var(--font-mono); }
 .card-logs summary { cursor: pointer; color: var(--secondary); font-size: 12px; }
 .card-logs button { padding: 3px 7px; font-size: 11px; }

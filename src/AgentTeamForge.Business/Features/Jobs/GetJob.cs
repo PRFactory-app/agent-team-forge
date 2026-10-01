@@ -34,7 +34,7 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal, bool intera
         try
         {
             var jobs = store.ListJobs(principal.Principal, principal.Team, Math.Clamp(limit, 1, 200));
-            return new JobResult(null, "listed", null) { Jobs = [.. jobs.Select(j => View(j) with { Result = null })] };
+            return new JobResult(null, "listed", null) { Jobs = [.. jobs.Select(j => View(j) with { Result = null, Instruction = null })] };
         }
         catch (StorageException ex)
         {
@@ -44,6 +44,7 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal, bool intera
 
     JobView View(JobRecord job) => ToView(job) with
     {
+        Instruction = job.Instruction,
         ReasonCode = job.Status == JobStatus.Queued && job.ParentJobId is { } parent && store.IsSessionFenced(parent)
             ? "parent_needs_reconciliation" : job.ReasonCode,
         Startup = StartupProgress.Read(store, job.JobId, job.Status, job.Backend, job.ReasonCode, interactiveLaunch),

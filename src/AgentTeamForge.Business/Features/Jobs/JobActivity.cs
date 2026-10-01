@@ -72,6 +72,10 @@ public static class JobActivity
                                 {
                                     Add("assistant_text", String(part, "text"));
                                 }
+                                else if (String(part, "type") == "thinking")
+                                {
+                                    Add("thinking", String(part, "thinking"));
+                                }
                                 else if (String(part, "type") == "tool_use")
                                 {
                                     Add("tool_call", String(part, "name"));
@@ -115,6 +119,10 @@ public static class JobActivity
                         {
                             Add("assistant_text", String(item, "text"));
                         }
+                        else if (itemType == "reasoning")
+                        {
+                            Add("thinking", String(item, "text"));
+                        }
                         else if (itemType is "command_execution" or "mcp_tool_call" or "file_change")
                         {
                             Add("tool_result", String(item, "aggregated_output") ?? String(item, "output") ?? String(item, "status") ?? itemType);
@@ -146,6 +154,10 @@ public static class JobActivity
                             if (String(part, "type") == "text")
                             {
                                 Add("assistant_text", String(part, "text"));
+                            }
+                            else if (String(part, "type") == "thinking")
+                            {
+                                Add("thinking", String(part, "thinking"));
                             }
                             else if (String(part, "type") == "toolCall")
                             {

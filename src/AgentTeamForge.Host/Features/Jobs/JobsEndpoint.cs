@@ -314,7 +314,9 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     MarkWakeRead(request, found.Job.JobId, found.Job.Status);
                     MarkParentWakeRead(request, found.Job.ParentJobId);
                 }
-                return Map(WithLocation(found)) with { HerdrMode = herdrPlacement is not null };
+                var located = WithLocation(found);
+                if (!request.IncludeInstruction && located.Job is not null) { located = located with { Job = located.Job with { Instruction = null } }; }
+                return Map(located) with { HerdrMode = herdrPlacement is not null };
             case IpcProtocol.JobOutput:
                 var outputJob = ReadJob(request);
                 if (outputJob.Error is not null)

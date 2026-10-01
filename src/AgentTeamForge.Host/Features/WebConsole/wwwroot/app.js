@@ -802,7 +802,7 @@
     list.replaceChildren();
     if (state.omitted) list.append(element('li', 'activity-omitted', state.omitted + ' earlier entries omitted; raw logs remain available.'));
     for (const entry of state.entries) {
-      const kind = ['assistant_text', 'tool_call', 'tool_result', 'status', 'error', 'result'].includes(entry.kind) ? entry.kind : 'status';
+      const kind = ['assistant_text', 'tool_call', 'tool_result', 'status', 'error', 'result', 'thinking'].includes(entry.kind) ? entry.kind : 'status';
       const item = element('li', 'activity-entry kind-' + kind);
       const when = new Date(entry.ts);
       if (Number.isFinite(when.getTime())) {
