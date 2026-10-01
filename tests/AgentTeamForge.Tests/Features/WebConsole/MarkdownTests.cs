@@ -141,6 +141,38 @@ public sealed class MarkdownTests
     }
 
     [Fact]
+    public void Wide_table_with_many_short_rows_falls_back_to_literal_pre()
+    {
+        var input = "|" + string.Concat(Enumerable.Repeat("h|", 2000)) + "\n|" + string.Concat(Enumerable.Repeat("-|", 2000)) + "\n"
+            + string.Concat(Enumerable.Repeat("|\n", 2000));
+
+        var tree = Parse(input);
+
+        Assert.DoesNotContain("td", Types(tree));
+        Assert.Equal("pre", (string)tree[0]!["t"]!);
+    }
+
+    [Fact]
+    public void Many_overlong_autolink_lines_are_fast_and_literal()
+    {
+        var input = string.Join("\n", Enumerable.Repeat(string.Concat(Enumerable.Repeat("http://", 2000)), 10));
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        var tree = Parse(input);
+
+        Assert.DoesNotContain("a", Types(tree));
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(10), clock.Elapsed.ToString());
+    }
+
+    [Fact]
+    public void Fenced_code_keeps_tabs_verbatim()
+    {
+        var fence = Walk(Parse("```\nall:\n\tgo build\t# x\n```")).Single();
+
+        Assert.Equal("all:\n\tgo build\t# x", (string)fence["v"]!);
+    }
+
+    [Fact]
     public void Huge_input_is_one_pre_node()
     {
         var tree = Parse(new string('x', 200_001));

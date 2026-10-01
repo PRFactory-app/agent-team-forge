@@ -6,6 +6,9 @@
   const MAX_INPUT = 200000;
   const MAX_LINE = 20000;
   const MAX_DEPTH = 3;
+  const MAX_CELLS = 20000;
+  const MAX_HREF = 2048;
+  let cellBudget = MAX_CELLS;
   const HREF = /^https?:\/\/[^\s\u0000-\u001f\u007f]+$/i;
 
   const text = (v) => ({ t: 'text', v });
@@ -13,7 +16,7 @@
 
   function safeHref(raw) {
     const href = raw.trim();
-    return href.length <= 2048 && HREF.test(href) ? href : null;
+    return href.length <= MAX_HREF && HREF.test(href) ? href : null;
   }
 
   // indexOf that remembers a failed search, so unmatched openers stay linear.
@@ -87,17 +90,28 @@
       } else if ((ch === 'h' || ch === 'H') && !isWord(s[i - 1]) && s[i - 1] !== '(') {
         const head = s.slice(i, i + 8).toLowerCase();
         if (head.startsWith('http://') || head.startsWith('https://')) {
+          // Scan at most one href's worth; a rejected or over-long token is consumed as literal
+          // text so its suffix is never rescanned.
+          const limit = Math.min(s.length, i + MAX_HREF + 2);
           let end = i;
-          while (end < s.length && !/[\s<>]/.test(s[end])) end++;
+          while (end < limit && !/[\s<>]/.test(s[end])) end++;
+          if (end < s.length && end === limit) {
+            while (end < s.length && !/[\s<>]/.test(s[end])) end++;
+            buf += s.slice(i, end);
+            i = end;
+            continue;
+          }
           while (end > i && '.,;:!?)]}\'"*_'.includes(s[end - 1])) end--;
           const url = s.slice(i, end);
           const href = safeHref(url);
           if (href) {
             flush();
             out.push(node('a', [text(url)], { href }));
-            i = end;
-            continue;
+          } else {
+            buf += url;
           }
+          i = end;
+          continue;
         }
       }
       buf += ch;
@@ -178,7 +192,7 @@
     return hashes < end && hashes > 0 && (s[hashes - 1] === ' ' || s[hashes - 1] === '\t') ? s.slice(0, hashes).trimEnd() : s;
   }
 
-  function parseBlocks(lines) {
+  function parseBlocks(lines, raw) {
     const out = [];
     let i = 0;
     while (i < lines.length) {
@@ -192,7 +206,7 @@
         while (i < lines.length) {
           const t = lines[i].trim();
           if (t.length >= marker.length && t[0] === marker[0] && t.split(t[0]).join('') === '') break;
-          body.push(lines[i]);
+          body.push(raw[i]);
           i++;
         }
         i++;
@@ -207,13 +221,23 @@
       }
       if (isTableStart(lines, i)) {
         const head = splitRow(lines[i]);
-        const rows = [node('tr', head.map(c => node('th', parseInline(c))))];
+        const first = i;
         i += 2;
-        while (i < lines.length && !blank(lines[i]) && lines[i].includes('|')) {
+        let last = i;
+        while (last < lines.length && !blank(lines[last]) && lines[last].includes('|')) last++;
+        // Rows are padded to the header width, so budget the generated cells before allocating any.
+        const cost = head.length * (last - i + 1);
+        if (cost > cellBudget) {
+          out.push({ t: 'pre', v: raw.slice(first, last).join('\n') });
+          i = last;
+          continue;
+        }
+        cellBudget -= cost;
+        const rows = [node('tr', head.map(c => node('th', parseInline(c))))];
+        for (; i < last; i++) {
           const cells = splitRow(lines[i]);
           while (cells.length < head.length) cells.push('');
           rows.push(node('tr', cells.slice(0, head.length).map(c => node('td', parseInline(c)))));
-          i++;
         }
         out.push(node('table', rows));
         continue;
@@ -239,10 +263,20 @@
     return out;
   }
 
+  // Tabs only matter as indentation for list markers; fenced code keeps the raw lines.
+  function expandLeadingTabs(line) {
+    let end = 0;
+    while (end < line.length && (line[end] === ' ' || line[end] === '\t')) end++;
+    return line.indexOf('\t') < 0 || line.indexOf('\t') >= end ? line
+      : line.slice(0, end).split('\t').join('  ') + line.slice(end);
+  }
+
   function parseMarkdown(input) {
     const s = String(input ?? '');
     if (s.length > MAX_INPUT) return [{ t: 'pre', v: s }];
-    return parseBlocks(s.replace(/\r\n?/g, '\n').replace(/\t/g, '  ').split('\n'));
+    cellBudget = MAX_CELLS;
+    const raw = s.replace(/\r\n?/g, '\n').split('\n');
+    return parseBlocks(raw.map(expandLeadingTabs), raw);
   }
 
   globalThis.AtfLib = { parseMarkdown, safeHref };
