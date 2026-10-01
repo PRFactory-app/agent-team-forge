@@ -10,7 +10,7 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
 public enum InteractiveAgentKind { Claude, Codex, Pi }
 
-public enum PaneOwnerRecovery { Unverified, Retained, Gone }
+public enum PaneOwnerRecovery { Unverified, Retained, Gone, GoneAgain }
 
 /// <summary>Runs a real agent TUI in a tab of an ATF-owned Herdr session.</summary>
 public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionStop, IDisposable
@@ -158,10 +158,10 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         {
             var owned = HerdrOwnedSessions.Read(_stateRoot, _ => { }).FirstOrDefault(entry => entry.Session.JobId == owner.JobId);
             if (owned.Session is null) { return PaneOwnerRecovery.Unverified; }
-            if (control.PaneIsGone(owned.Session)) { return releaseFence() ? PaneOwnerRecovery.Gone : PaneOwnerRecovery.Unverified; }
+            if (control.PaneIsGone(owned.Session)) { return Gone(owned.Path, releaseFence); }
             if (owner.SessionId is not { } sessionId || Rebind(control, owned.Path, owned.Session, owner, sessionId) is not { } launch)
             {
-                return control.PaneIsGone(owned.Session) && releaseFence() ? PaneOwnerRecovery.Gone : PaneOwnerRecovery.Unverified;
+                return control.PaneIsGone(owned.Session) ? Gone(owned.Path, releaseFence) : PaneOwnerRecovery.Unverified;
             }
             if (!BindTranscript(launch, owned.Session, sessionId) || !SettledIdle(launch) || !LatestTurnSettled(launch, correlations)
                 || !releaseFence()) { return PaneOwnerRecovery.Unverified; }
@@ -169,6 +169,18 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             _liveSessions.Remember(sessionId, launch);
             return PaneOwnerRecovery.Retained;
         }
+    }
+
+    // The record stays as proof for the restored-pane sweep and stop_agent. A sibling marker makes
+    // later starts repeat the release silently instead of logging it again.
+    static PaneOwnerRecovery Gone(string recordPath, Func<bool> releaseFence)
+    {
+        if (!releaseFence()) { return PaneOwnerRecovery.Unverified; }
+        var marker = recordPath + ".gone";
+        if (File.Exists(marker)) { return PaneOwnerRecovery.GoneAgain; }
+        try { File.WriteAllText(marker, "released"); }
+        catch (IOException) { } // Best effort: the next start logs again.
+        return PaneOwnerRecovery.Gone;
     }
 
     // The newest ATF turn in the transcript must also be its latest native turn (no later human input,
