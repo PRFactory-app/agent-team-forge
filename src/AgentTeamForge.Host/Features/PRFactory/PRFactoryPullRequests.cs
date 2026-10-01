@@ -51,12 +51,12 @@ public sealed partial class PRFactoryPullRequests(
                 throw new Failure($"Remote branch {request.HeadBranch} moved; republish it before opening the pull request.");
             }
             var created = false;
-            var existing = await OpenAsync(env, token, slug, request, ct);
+            var existing = await OpenAsync(env, token, owner, repo, request, ct);
             if (existing is null)
             {
                 await Gh(env, token, ["pr", "create", "--repo", slug, "--head", request.HeadBranch, "--base", request.BaseBranch,
                     "--title", request.Title, "--body-file", "-"], request.Body, ct);
-                existing = await OpenAsync(env, token, slug, request, ct)
+                existing = await OpenAsync(env, token, owner, repo, request, ct)
                     ?? throw new Failure("GitHub did not list the pull request after creating it.");
                 created = true;
             }
@@ -163,23 +163,32 @@ public sealed partial class PRFactoryPullRequests(
 
     sealed record Listed(int Number, string Url, string HeadRefOid);
 
-    async Task<Listed?> OpenAsync(IReadOnlyDictionary<string, string?> env, string token, string slug,
+    // Only a same-repository PR for the published repository, branch and base qualifies; forks share branch names.
+    async Task<Listed?> OpenAsync(IReadOnlyDictionary<string, string?> env, string token, string owner, string repo,
         PRFactoryPullRequestRequest request, CancellationToken ct)
     {
-        var json = await Gh(env, token, ["pr", "list", "--repo", slug, "--head", request.HeadBranch, "--base", request.BaseBranch,
-            "--state", "open", "--json", "number,url,headRefOid"], null, ct);
+        var json = await Gh(env, token, ["pr", "list", "--repo", $"{owner}/{repo}", "--head", request.HeadBranch, "--base", request.BaseBranch,
+            "--state", "open", "--json", "number,url,headRefOid,headRefName,baseRefName,isCrossRepository,headRepository,headRepositoryOwner"], null, ct);
         try
         {
             using var document = JsonDocument.Parse(json);
+            var eligible = new List<Listed>();
             foreach (var entry in document.RootElement.EnumerateArray())
             {
                 var url = entry.GetProperty("url").GetString();
-                if (url is not null && url.StartsWith("https://", StringComparison.Ordinal))
+                if (entry.GetProperty("isCrossRepository").GetBoolean()
+                    || entry.GetProperty("headRefName").GetString() != request.HeadBranch
+                    || entry.GetProperty("baseRefName").GetString() != request.BaseBranch
+                    || !string.Equals(entry.GetProperty("headRepositoryOwner").GetProperty("login").GetString(), owner, StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(entry.GetProperty("headRepository").GetProperty("name").GetString(), repo, StringComparison.OrdinalIgnoreCase)
+                    || url is null || !url.StartsWith("https://", StringComparison.Ordinal))
                 {
-                    return new(entry.GetProperty("number").GetInt32(), url, entry.GetProperty("headRefOid").GetString() ?? "");
+                    continue;
                 }
+                eligible.Add(new(entry.GetProperty("number").GetInt32(), url, entry.GetProperty("headRefOid").GetString() ?? ""));
             }
-            return null;
+            return eligible.FirstOrDefault(p => string.Equals(p.HeadRefOid, request.HeadSha, StringComparison.OrdinalIgnoreCase))
+                ?? eligible.FirstOrDefault();
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException)
         {

@@ -31,6 +31,16 @@ public sealed class PullRequestTests
         public string RemoteHead = Sha;
         public bool ExistingPr;
         public string PrHead = Sha;
+        public string[] ForkEntries = [];
+        public bool CreateHidden;
+        public string Limits = "";
+        public PRFactoryWorkItem? Ordinary;
+        public int OrdinaryClaims;
+
+        public static string Entry(int number, string sha, bool cross = false, string owner = "mikaelliljedahl") =>
+            "{\"number\":" + number + ",\"url\":\"https://github.com/mikaelliljedahl/atf-demo/pull/" + number + "\",\"headRefOid\":\"" + sha
+            + "\",\"headRefName\":\"prfactory/PRF-1\",\"baseRefName\":\"main\",\"isCrossRepository\":" + (cross ? "true" : "false")
+            + ",\"headRepository\":{\"name\":\"atf-demo\"},\"headRepositoryOwner\":{\"login\":\"" + owner + "\"}}";
         public PRFactoryPublicationStore Publications;
 
         public Fixture(string headBranch = "prfactory/PRF-1", string remote = Remote, bool publish = true)
@@ -61,8 +71,7 @@ public sealed class PullRequestTests
             if (args.StartsWith("api ", StringComparison.Ordinal)) { return Task.FromResult(new ProcessResult(0, RemoteHead + "\n", "")); }
             if (args.StartsWith("pr list", StringComparison.Ordinal))
             {
-                var list = ExistingPr
-                    ? "[{\"number\":7,\"url\":\"https://github.com/mikaelliljedahl/atf-demo/pull/7\",\"headRefOid\":\"" + PrHead + "\"}]" : "[]";
+                var list = "[" + string.Join(',', ForkEntries.Concat(ExistingPr && !CreateHidden ? [Entry(7, PrHead)] : [])) + "]";
                 return Task.FromResult(new ProcessResult(0, list, ""));
             }
             if (args.StartsWith("pr create", StringComparison.Ordinal)) { ExistingPr = true; return Task.FromResult(new ProcessResult(0, "https://github.com/x/y/pull/7\n", "")); }
@@ -76,10 +85,13 @@ public sealed class PullRequestTests
             if (path.EndsWith("/poll", StringComparison.Ordinal))
             {
                 PollQueries.Add(request.RequestUri.Query);
-                return Json("{\"workItems\":[" + JsonSerializer.Serialize(Item, PRFactoryWorkItemJson.Default.PRFactoryWorkItem) + "]}");
+                var items = new[] { Ordinary, Item }.OfType<PRFactoryWorkItem>()
+                    .Select(i => JsonSerializer.Serialize(i, PRFactoryWorkItemJson.Default.PRFactoryWorkItem));
+                return Json("{\"workItems\":[" + string.Join(',', items) + "]" + Limits + "}");
             }
             if (path.Contains("/claim/", StringComparison.Ordinal))
             {
+                if (Ordinary is not null && path.EndsWith(Ordinary.Id.ToString("D"), StringComparison.Ordinal)) { OrdinaryClaims++; }
                 return Json("{\"workItem\":" + JsonSerializer.Serialize(Item, PRFactoryWorkItemJson.Default.PRFactoryWorkItem) + "}");
             }
             if (path.Contains("/complete/", StringComparison.Ordinal))
@@ -179,6 +191,51 @@ public sealed class PullRequestTests
 
         Assert.Empty(f.Calls);
         Assert.Contains("did not publish", Assert.Single(f.Failures).GetProperty("errorMessage").GetString());
+    }
+
+    [Fact]
+    public async Task A_fork_pull_request_is_skipped_for_the_same_repository_one()
+    {
+        using var f = new Fixture { ExistingPr = true };
+        f.ForkEntries = [Fixture.Entry(3, Sha, cross: true, owner: "someone"), Fixture.Entry(4, "ffffffffffffffffffffffffffffffffffffffff", cross: true, owner: "other")];
+        await f.Handle();
+
+        Assert.DoesNotContain(f.Calls, c => c.Args.Take(2).SequenceEqual(["pr", "create"]));
+        var result = JsonElement.Parse(Assert.Single(f.Completions).GetProperty("resultMarkdown").GetString()!);
+        Assert.Equal(7, result.GetProperty("number").GetInt32());
+    }
+
+    [Fact]
+    public async Task A_fork_only_pull_request_at_the_same_sha_is_never_reused()
+    {
+        using var f = new Fixture { CreateHidden = true };
+        f.ForkEntries = [Fixture.Entry(3, Sha, cross: true, owner: "someone")];
+        await f.Handle();
+
+        Assert.Single(f.Calls, c => c.Args.Take(2).SequenceEqual(["pr", "create"]));
+        Assert.Empty(f.Completions);
+        Assert.Single(f.Failures);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(",\"maxConcurrentWorkItems\":1,\"activeWorkItems\":1")]
+    public async Task Pull_request_work_runs_when_teams_are_full_or_the_server_is_at_cap_without_a_team(string limits)
+    {
+        using var f = new Fixture { Limits = limits };
+        f.Ordinary = new PRFactoryWorkItem { Id = Guid.NewGuid(), RepositoryId = f.Repo, ReadOnly = true, AgentType = PRFactoryAgentType.Codex, Prompt = "x" };
+        var teams = new PRFactoryTeamStore(JobDatabase.Create(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".db"), TimeSpan.FromSeconds(2)));
+        var client = f.Client();
+        await client.SupportsBaseWipAsync(CancellationToken.None);
+        var adapter = new PRFactoryWorkItems(Url, [new RepositoryMapping(f.Repo, Path.GetTempPath())], teams, client,
+            _ => throw new InvalidOperationException("no team job expected"), _ => null, () => { },
+            maxAcceptedTeams: limits.Length == 0 ? 0 : 10, pullRequests: f.Executor());
+        await adapter.TickAsync(null, CancellationToken.None);
+
+        Assert.Single(f.Completions);
+        Assert.Equal(0, f.OrdinaryClaims);
+        Assert.Null(teams.Get(Url, f.Item.Id));
+        Assert.Null(teams.Get(Url, f.Ordinary.Id));
     }
 
     [Fact]
