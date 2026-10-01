@@ -64,58 +64,67 @@ public sealed class WebConsoleScenarios
         }, "two web teams");
         Assert.Equal(2, listed.Jobs.Select(j => j.LeadSessionId).Distinct().Count());
 
-        var chromium = new ProcessStartInfo("/usr/bin/chromium")
+        async Task<string> DumpAsync(string target)
         {
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        foreach (var arg in new[]
-        {
-            "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
-            "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
-            "--virtual-time-budget=7000", "--dump-dom", "--user-data-dir=" + Path.Combine(rig.StateDir, "browser"), url,
-        })
-        {
-            chromium.ArgumentList.Add(arg);
-        }
-        using var browser = Process.Start(chromium)!;
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(30));
-        var domTask = browser.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
-        var stderrTask = browser.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
-        var timedOut = false;
-        try
-        {
-            await browser.WaitForExitAsync(deadline.Token);
-        }
-        catch (OperationCanceledException) when (!TestContext.Current.CancellationToken.IsCancellationRequested)
-        {
-            timedOut = true;
-        }
-        finally
-        {
-            if (!browser.HasExited)
+            var chromium = new ProcessStartInfo("/usr/bin/chromium")
             {
-                try
-                {
-                    OwnedProcessTermination.Kill(browser);
-                }
-                catch (InvalidOperationException)
-                {
-                    // Exited between the check and kill.
-                }
-                using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                await browser.WaitForExitAsync(stop.Token);
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (var arg in new[]
+            {
+                "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+                "--no-first-run", "--no-default-browser-check", "--disable-background-networking",
+                "--virtual-time-budget=7000", "--dump-dom", "--user-data-dir=" + Path.Combine(rig.StateDir, "browser-" + Guid.NewGuid().ToString("N")[..6]), target,
+            })
+            {
+                chromium.ArgumentList.Add(arg);
             }
+            using var browser = Process.Start(chromium)!;
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            deadline.CancelAfter(TimeSpan.FromSeconds(30));
+            var domTask = browser.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+            var stderrTask = browser.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+            var timedOut = false;
+            try
+            {
+                await browser.WaitForExitAsync(deadline.Token);
+            }
+            catch (OperationCanceledException) when (!TestContext.Current.CancellationToken.IsCancellationRequested)
+            {
+                timedOut = true;
+            }
+            finally
+            {
+                if (!browser.HasExited)
+                {
+                    try
+                    {
+                        OwnedProcessTermination.Kill(browser);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Exited between the check and kill.
+                    }
+                    using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await browser.WaitForExitAsync(stop.Token);
+                }
+            }
+            var dom = await domTask;
+            var stderr = await stderrTask;
+            if (timedOut)
+            {
+                throw new TimeoutException($"Chromium did not finish rendering the web console within 30 seconds. Exit code: {browser.ExitCode}. Stderr: {stderr}. Partial DOM: {dom}");
+            }
+            Assert.True(browser.ExitCode == 0, $"Chromium exited with code {browser.ExitCode}. Stderr: {stderr}");
+            return dom;
         }
-        var dom = await domTask;
-        var stderr = await stderrTask;
-        if (timedOut)
-        {
-            throw new TimeoutException($"Chromium did not finish rendering the web console within 30 seconds. Exit code: {browser.ExitCode}. Stderr: {stderr}. Partial DOM: {dom}");
-        }
-        Assert.True(browser.ExitCode == 0, $"Chromium exited with code {browser.ExitCode}. Stderr: {stderr}");
+
+        // Chat is the default view; the card dashboard is one tab away and renders as before.
+        var chatDom = await DumpAsync(url);
+        Assert.Contains("class=\"row lead-row", chatDom, StringComparison.Ordinal);
+        var dom = await DumpAsync(url + "&v=jobs");
         Assert.Contains("Lead " + firstSession.SessionId[..8], dom, StringComparison.Ordinal);
         Assert.Contains("Lead " + secondSession.SessionId[..8], dom, StringComparison.Ordinal);
         Assert.Contains("class=\"team-toggle\"", dom, StringComparison.Ordinal);

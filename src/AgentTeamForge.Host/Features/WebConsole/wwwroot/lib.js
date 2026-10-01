@@ -279,5 +279,70 @@
     return parseBlocks(raw.map(expandLeadingTabs), raw);
   }
 
-  globalThis.AtfLib = { parseMarkdown, safeHref };
+  // ---- Chat model helpers (pure) ----
+  const NOT_SETTLED = ['queued', 'running', 'parked', 'needs_reconciliation'];
+  // Finished work folds away: grey light and not waiting on anything.
+  const isSettled = (j) => j.light === 'grey' && !NOT_SETTLED.includes(j.status);
+
+  // Connector jobs are named <key>_<phase>_<member>; a clipped name has fewer segments and yields no key/phase.
+  function connectorParts(name) {
+    const parts = String(name ?? '').split('_');
+    const display = parts.join(' \u00b7 ');
+    if (parts.length < 3 || !parts[0] || !parts[1]) return { display, key: null, phase: null, member: null };
+    return { display, key: parts[0], phase: parts[1], member: parts.slice(2).join('_') };
+  }
+
+  const newestFirst = (a, b) => (b.accepted_at || '').localeCompare(a.accepted_at || '') || b.job_id.localeCompare(a.job_id);
+
+  // Oldest-first chain of turns: start at startId (default: newest job) and walk parent_job_id.
+  // `missing` is a parent that is not in `jobs` (caller fetches it); a cycle or more than `cap` turns stops.
+  function threadChain(jobs, startId, cap = 30) {
+    const byId = new Map();
+    for (const j of jobs) if (j && j.job_id) byId.set(j.job_id, j);
+    let cur = startId ? byId.get(startId) : [...byId.values()].sort(newestFirst)[0];
+    const chain = [];
+    const seen = new Set();
+    let missing = startId && !cur ? startId : null;
+    let truncated = false;
+    while (cur && !seen.has(cur.job_id)) {
+      seen.add(cur.job_id);
+      chain.push(cur);
+      const parent = cur.parent_job_id;
+      if (!parent) break;
+      if (chain.length >= cap) { truncated = true; break; }
+      cur = byId.get(parent);
+      if (!cur) missing = parent;
+    }
+    return { chain: chain.reverse(), missing, truncated };
+  }
+
+  // One agent per session (a job without a session is its own agent), grouped under its lead,
+  // PRFactory or Unassigned. Newest first everywhere.
+  function groupAgents(jobs, extraLeadIds = []) {
+    const agents = new Map();
+    for (const j of jobs) {
+      const key = 'agent:' + (j.session_id || j.job_id);
+      if (!agents.has(key)) agents.set(key, { key, jobs: [] });
+      agents.get(key).jobs.push(j);
+    }
+    const groups = new Map();
+    const group = (id, kind) => {
+      if (!groups.has(id)) groups.set(id, { id, kind, agents: [] });
+      return groups.get(id);
+    };
+    const recent = (a, b) => (b.updated_at || '').localeCompare(a.updated_at || '');
+    for (const a of agents.values()) {
+      a.jobs.sort(newestFirst);
+      a.newest = a.jobs[0];
+      // A follow-up may not carry the lead; any turn of the session that does keeps the agent under it.
+      const lead = a.jobs.find(j => j.lead_session_id)?.lead_session_id;
+      (a.jobs.some(j => j.connector) ? group('PRFactory', 'prfactory') : lead ? group(lead, 'lead') : group('', 'unassigned')).agents.push(a);
+    }
+    for (const id of extraLeadIds) group(id, 'lead');
+    const latest = (g) => g.agents[0]?.newest ?? {};
+    for (const g of groups.values()) g.agents.sort((a, b) => recent(a.newest, b.newest));
+    return [...groups.values()].sort((a, b) => recent(latest(a), latest(b)));
+  }
+
+  globalThis.AtfLib = { parseMarkdown, safeHref, isSettled, connectorParts, threadChain, groupAgents };
 })();
