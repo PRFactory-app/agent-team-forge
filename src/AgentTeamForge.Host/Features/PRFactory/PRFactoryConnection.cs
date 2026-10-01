@@ -12,7 +12,7 @@ namespace AgentTeamForge.Host.Features.PRFactory;
 public sealed record RepositoryMapping(Guid Id, string Directory, string[]? ExternalMembers = null,
     string? Remote = null, string? BaseBranch = null);
 public sealed record PRFactorySettings(string Url, RepositoryMapping[] Repositories,
-    bool TenantWideToken = false, bool RepoLess = true, string? CaFile = null);
+    bool TenantWideToken = false, bool RepoLess = true, string? CaFile = null, string? GitHubUser = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, WriteIndented = true)]
 [JsonSerializable(typeof(PRFactorySettings))]
@@ -55,6 +55,10 @@ public static class PRFactoryConnection
                 if (settings.CaFile is not null)
                 {
                     Console.WriteLine($"Extra CA file: {settings.CaFile}");
+                }
+                if (settings.GitHubUser is not null)
+                {
+                    Console.WriteLine($"GitHub user for pull requests: {settings.GitHubUser}");
                 }
                 foreach (var repository in settings.Repositories)
                 {
@@ -149,6 +153,16 @@ public static class PRFactoryConnection
                 return 64;
             }
         }
+        string? gitHubUser = null;
+        if (options.TryGetValue("github-user", out var login))
+        {
+            if (!PRFactoryPullRequests.IsGitHubLogin(login))
+            {
+                Console.Error.WriteLine("error: --github-user must be a GitHub login");
+                return 64;
+            }
+            gitHubUser = login;
+        }
         string? token;
         if (ReferenceEquals(tokenInput, Console.In) && !Console.IsInputRedirected)
         {
@@ -230,7 +244,7 @@ public static class PRFactoryConnection
             mappings[index] = mappings[index] with { ExternalMembers = [.. mappings[index].ExternalMembers ?? [], spec[(split + 1)..]] };
         }
 
-        var settings = new PRFactorySettings(uri.GetLeftPart(UriPartial.Path).TrimEnd('/'), [.. mappings], tenantWide, repoLess, caFile);
+        var settings = new PRFactorySettings(uri.GetLeftPart(UriPartial.Path).TrimEnd('/'), [.. mappings], tenantWide, repoLess, caFile, gitHubUser);
         // Publish the token first; a daemon racing this write sees either the old
         // configuration or the new token, and never a partial private file.
         WritePrivate(Path.Combine(state.Path, TokenName), Encoding.UTF8.GetBytes(token));

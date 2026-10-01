@@ -17,7 +17,8 @@ public sealed partial class PRFactoryWorkItems(
     AccountAdmission? accounts = null, int maxAcceptedTeams = 10, PRFactoryPublicationStore? publications = null,
     PRFactoryInteraction? interaction = null, HumanWaitStore? humanWaits = null,
     bool allowRepoLess = false, PRFactoryHandoverStore? handovers = null,
-    PRFactoryRepositorySet? repositorySets = null, Action<PRFactoryServerLimit?>? onLimit = null)
+    PRFactoryRepositorySet? repositorySets = null, Action<PRFactoryServerLimit?>? onLimit = null,
+    PRFactoryPullRequests? pullRequests = null)
 {
     // Parked turns share one account binding per backend until configured accounts exist.
     public const string DefaultAccount = "default";
@@ -99,6 +100,22 @@ public sealed partial class PRFactoryWorkItems(
         }
         foreach (var item in offered)
         {
+            if (item.Type == nameof(PRFactoryWorkItemType.PullRequestCreate))
+            {
+                // Worker-native: no team, account or admission slot. A lost completion is retried after lease expiry and is idempotent.
+                if (item.Id == Guid.Empty || pullRequests is null) { continue; }
+                var (claimedPr, prConflict) = await client.ClaimAsync(item.Id, machineId, ct);
+                if (prConflict)
+                {
+                    log?.Invoke($"PRFactory claim of {item.Id:D} refused (409); stopping claims this tick");
+                    break;
+                }
+                if (claimedPr is { } pr && pr.Id == item.Id)
+                {
+                    await IsolateAsync(item.Id, () => pullRequests.HandleAsync(pr, ct), ct);
+                }
+                continue;
+            }
             if (item.Id == Guid.Empty || teams.Get(server, item.Id) is not null
                 || item.RepositoryId is null && !allowRepoLess)
             {
