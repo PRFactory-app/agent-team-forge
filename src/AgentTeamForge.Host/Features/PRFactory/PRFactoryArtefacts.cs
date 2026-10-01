@@ -10,7 +10,8 @@ internal static partial class PRFactoryArtefacts
     internal const long MaxUploadBytes = 20 * 1024 * 1024;
 
     public static async Task<List<PRFactoryArtefactFile>> CollectAsync(PRFactoryWorkItem item, string cwd, string? resultText, CancellationToken ct,
-        IReadOnlyList<(Guid Id, string Name, string Path)>? planRepositories = null)
+        IReadOnlyList<(Guid Id, string Name, string Path, string? BaseSha, string? BaseBranch)>? planRepositories = null,
+        string? baseSha = null, string? baseBranch = null)
     {
         var files = new List<PRFactoryArtefactFile>();
         long total = 0;
@@ -68,12 +69,14 @@ internal static partial class PRFactoryArtefacts
         }
         if (item.RepositoryId is { } repositoryId && item.Type == "Planning")
         {
-            var selected = planRepositories ?? [(repositoryId, RepositoryName(item, cwd), cwd)];
+            var selected = planRepositories ?? [(repositoryId, RepositoryName(item, cwd), cwd, baseSha, baseBranch)];
             var repositories = new List<PRFactoryPlanRepository>();
-            foreach (var (id, name, path) in selected)
+            foreach (var (id, name, path, planBase, planBranch) in selected)
             {
-                var head = JobWorktree.Head(path);
-                var paths = await JobWorktree.TrackedPathsAsync(path, ct);
+                // The plan basis is the base the plan was written against, not the lead's HEAD after
+                // the finalize turn committed the plan documents on top of it.
+                var head = planBase ?? JobWorktree.Head(path);
+                var paths = await JobWorktree.TrackedPathsAsync(path, ct, planBase);
                 if (head is null || paths is null)
                 {
                     // Single-repository planning keeps its pre-multi-repo behaviour: no basis, no failure.
@@ -81,7 +84,7 @@ internal static partial class PRFactoryArtefacts
                     if (planRepositories is null) { break; }
                     throw new InvalidDataException($"Planning repository {name} has no committed basis.");
                 }
-                repositories.Add(new(id, name, JobWorktree.Branch(path), head, paths));
+                repositories.Add(new(id, name, planBase is null ? JobWorktree.Branch(path) : planBranch ?? JobWorktree.Branch(path), head, paths));
             }
             if (repositories.Count > 0)
             {

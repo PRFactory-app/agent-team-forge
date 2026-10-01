@@ -159,7 +159,30 @@ public sealed class MultiRepositoryTests
         Assert.Contains(files, f => f.FileName == "plan.md");
         Assert.DoesNotContain(files, f => f.Kind == "plan-basis");
         await Assert.ThrowsAsync<InvalidDataException>(() => PRFactoryArtefacts.CollectAsync(item, dir.Path, null,
-            CancellationToken.None, [(item.RepositoryId!.Value, "primary", dir.Path)]));
+            CancellationToken.None, [(item.RepositoryId!.Value, "primary", dir.Path, null, null)]));
+    }
+
+    [Fact]
+    public async Task Planning_basis_is_the_workspace_base_not_the_head_after_plan_docs_were_committed()
+    {
+        using var dir = new AgentTeamForge.Tests.Support.TempStateDir();
+        ChainHarness.Git(dir.Path, "init", "-b", "main");
+        File.WriteAllText(Path.Combine(dir.Path, "base.txt"), "base");
+        ChainHarness.Git(dir.Path, "add", "--", "base.txt");
+        ChainHarness.Git(dir.Path, "-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "-m", "base");
+        var baseSha = ChainHarness.Git(dir.Path, "rev-parse", "HEAD").Trim();
+        var item = new PRFactoryWorkItem { Id = Guid.NewGuid(), Type = "Planning", RepositoryId = Guid.NewGuid(), TicketArtefactFolder = "docs/PRF-9" };
+        Directory.CreateDirectory(Path.Combine(dir.Path, "docs/PRF-9"));
+        File.WriteAllText(Path.Combine(dir.Path, "docs/PRF-9/plan.md"), "Plan");
+        ChainHarness.Git(dir.Path, "add", "--", "docs/PRF-9/plan.md");
+        ChainHarness.Git(dir.Path, "-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "-m", "plan");
+        Assert.NotEqual(baseSha, ChainHarness.Git(dir.Path, "rev-parse", "HEAD").Trim());
+
+        var files = await PRFactoryArtefacts.CollectAsync(item, dir.Path, null, CancellationToken.None, null, baseSha, "main");
+        using var basis = System.Text.Json.JsonDocument.Parse(files.Single(f => f.Kind == "plan-basis").Content);
+        var repository = basis.RootElement.GetProperty("repositories")[0];
+        Assert.Equal(baseSha, repository.GetProperty("headSha").GetString());
+        Assert.Equal<string>(["base.txt"], [.. repository.GetProperty("paths").EnumerateArray().Select(p => p.GetString()!)]);
     }
 
     [Fact]

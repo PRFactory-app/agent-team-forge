@@ -98,6 +98,22 @@ public sealed class AcceptanceTests
     }
 
     [Fact]
+    public async Task Polling_an_already_fenced_item_does_not_log_the_fence_again()
+    {
+        using var dir = new TempStateDir();
+        var teams = new PRFactoryTeamStore(JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2)));
+        var server = new FakeServer(NewItem());
+        var logs = new List<string>();
+        var adapter = Adapter(dir, teams, server, () => { }, log: logs.Add);
+        server.Status = 1;
+        await adapter.TickAsync(Machine, CancellationToken.None);
+        server.Status = 6;
+        for (var i = 0; i < 3; i++) { await adapter.TickAsync(Machine, CancellationToken.None); }
+        Assert.Equal("reconciliation_needed", teams.Get(ServerUrl, server.Item.Id)!.AcceptanceState);
+        Assert.Single(logs, l => l.Contains("reconciliation needed", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Acceptance_conflict_fences_before_any_job_dispatch()
     {
         using var dir = new TempStateDir();

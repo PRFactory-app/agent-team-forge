@@ -26,9 +26,11 @@ public static class JobWorktree
 
     public static string? Branch(string cwd) => Git(cwd, QueryTimeout, "symbolic-ref", "--quiet", "--short", "HEAD");
 
-    public static async Task<string[]?> TrackedPathsAsync(string cwd, CancellationToken ct)
+    public static async Task<string[]?> TrackedPathsAsync(string cwd, CancellationToken ct, string? rev = null)
     {
-        var output = await GitCaptureAsync(cwd, QueryTimeout, false, false, ct, "ls-files", "-z", "--full-name", "--", ":/");
+        var output = rev is null
+            ? await GitCaptureAsync(cwd, QueryTimeout, false, false, ct, "ls-files", "-z", "--full-name", "--", ":/")
+            : await GitCaptureAsync(cwd, QueryTimeout, false, false, ct, "ls-tree", "-r", "-z", "--name-only", "--full-tree", rev);
         // Never certify a truncated tree. The query helper bounds captured output.
         return output is null || Encoding.UTF8.GetByteCount(output) >= MaxGitOutputBytes
             ? null : output.Split('\0', StringSplitOptions.RemoveEmptyEntries);

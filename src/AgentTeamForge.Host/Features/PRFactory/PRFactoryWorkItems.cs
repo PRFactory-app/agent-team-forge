@@ -348,15 +348,18 @@ public sealed partial class PRFactoryWorkItems(
                 log?.Invoke($"PRFactory work item {id:D} {acceptance.Disposition} by server; local execution stopped");
                 return false;
             default:
-                await FenceAsync(id, acceptance.Reason ?? "reconciliation_needed", ct);
+                await FenceAsync(id, acceptance.Reason ?? "reconciliation_needed", ct, team.AcceptanceState == "reconciliation_needed");
                 return false;
         }
     }
 
-    async Task FenceAsync(Guid id, string reason, CancellationToken ct)
+    // A repeat poll of an already fenced team still retries Observe (the authority write may have failed
+    // after SetAcceptance committed) but neither re-sets the state nor logs again.
+    async Task FenceAsync(Guid id, string reason, CancellationToken ct, bool alreadyFenced = false)
     {
-        teams.SetAcceptance(server, id, "reconciliation_needed");
+        if (!alreadyFenced) { teams.SetAcceptance(server, id, "reconciliation_needed"); }
         await Observe(id, "reconciliation-needed", reason, ct);
+        if (alreadyFenced) { return; }
         log?.Invoke($"PRFactory work item {id:D} reconciliation needed ({reason}); dispatch and publication fenced");
     }
 
@@ -1254,9 +1257,11 @@ public sealed partial class PRFactoryWorkItems(
                 {
                     var planRepositories = repositorySets?.Get(WorkspaceKey(item.Id)) is { } planSet
                         ? planSet.Members.Select(entry => (Guid.Parse(entry.Id), entry.Name,
-                            workspaces!.Get(entry.WorkspaceKey)!.LeadPath)).ToArray() : null;
+                            workspaces!.Get(entry.WorkspaceKey)!.LeadPath,
+                            workspaces.Get(entry.WorkspaceKey)!.BaseSha, workspaces.Get(entry.WorkspaceKey)!.BaseBranch)).ToArray() : null;
                     var artefacts = await PRFactoryArtefacts.CollectAsync(item,
-                        cwd ?? throw new InvalidDataException("Missing lead worktree"), result, ct, planRepositories);
+                        cwd ?? throw new InvalidDataException("Missing lead worktree"), result, ct, planRepositories,
+                        workspace?.BaseSha, workspace?.BaseBranch);
                     payload = JsonSerializer.Serialize(new PRFactoryArtefactRequest(artefacts, item.LeaseToken), PRFactoryWorkItemJson.Default.PRFactoryArtefactRequest);
                 }
                 catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException)
