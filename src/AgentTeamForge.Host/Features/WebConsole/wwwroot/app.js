@@ -124,6 +124,8 @@
     chat.groups = [];
     chat.jobs = [];
     chat.jobsById = new Map();
+    sound.prev = null;
+    $('composer').hidden = true;
     $('thread-inner').replaceChildren();
     $('session-list').replaceChildren();
     failedFetches.clear();
@@ -684,6 +686,7 @@
       state.interrupt = false;
       // A lead-inbox message has no job to track.
       state.deliveryJobId = toLead ? null : r.job?.job_id || null;
+      if (toLead) rememberLeadMessage(attempt.lead.id, attempt.text);
       state.result = toLead ? 'Delivered to lead inbox'
         : 'Queued' + (state.deliveryJobId ? ' · job ' + state.deliveryJobId.slice(-8) : '');
       state.resultClass = '';
@@ -695,7 +698,9 @@
       state.result = 'Failed: ' + (r.error_detail || r.error);
       state.resultClass = 'error';
     }
-    await loadJobs();
+    await poll();
+    syncComposer();
+    if (state.form === $('composer') && !state.sending) $('draft').focus();
   }
 
   async function refreshDeliveries() {
@@ -717,6 +722,7 @@
         state.resultNode.className = 'composer-result ' + state.resultClass;
       }
     }
+    if (composerKey) syncComposer();
   }
 
   function ticketState(leadId) {
@@ -1455,6 +1461,7 @@
   function showView(name) {
     if (name === 'settings' && view !== 'settings') prevView = view;
     view = name;
+    if (name === 'jobs') sound.prev = null;
     $('chat-view').hidden = name !== 'chat';
     $('jobs-view').hidden = name !== 'jobs';
     $('settings-view').hidden = name !== 'settings';
@@ -1535,6 +1542,11 @@
     chat.jobsById = new Map(jobs.map(j => [j.job_id, j]));
     chat.leadTokens = r.lead_tokens || {};
     chat.groups = AtfLib.groupAgents(jobs, chat.members.map(m => m.lead_session_id));
+    const events = AtfLib.soundEvents(sound.prev, jobs);
+    sound.prev = events.map;
+    const kind = AtfLib.pickSound(sound.gate, events, performance.now());
+    if (kind) playSound(kind);
+    refreshDeliveries();
     let usage = usageSum(jobs);
     for (const u of Object.values(chat.leadTokens)) usage = addUsage(usage, u);
     $('bar-running').textContent = String(jobs.filter(j => j.status === 'running').length);
@@ -1631,6 +1643,7 @@
     const head = $('thread-head');
     const found = findSelection();
     head.replaceChildren();
+    syncComposer();
     if (!found) { head.append(element('div', 'head-title', 'Select a session')); return; }
     const title = element('div', 'head-title');
     const meta = element('div', 'head-meta');
@@ -1941,6 +1954,17 @@
         line.append(dot('yellow', false, 'External member'), element('strong', '', m.name), element('span', '', 'external · waiting'));
         inner.append(line);
       }
+      const sent = leadMessages(g.id);
+      if (sent.length) inner.append(element('div', 'sys', 'Sent from this browser tab'));
+      for (const m of sent) {
+        const msg = element('div', 'msg out');
+        const meta = element('div', 'msg-meta');
+        meta.append(element('span', 'who', 'You'), pill('in inbox', 'info'), element('span', '', new Date(m.at).toLocaleTimeString()));
+        const bubble = element('div', 'bubble');
+        bubble.append(element('div', 'instruction-text', m.text));
+        msg.append(meta, bubble);
+        inner.append(msg);
+      }
     });
   }
 
@@ -1956,6 +1980,186 @@
         else await renderAgentThread(found, chat.gen);
       } while (chat.dirty);
     } finally { chat.busy = false; }
+  }
+
+  // ---- Composer (pinned under the thread) and sent lead messages ----
+  const leadMessagesKey = (id) => 'atf.web.leadmsgs:' + id;
+  const LEAD_MESSAGE_CAP = 50;
+
+  // The inbox is write-only from the web, so sent lead messages are kept for this tab only.
+  function leadMessages(id) {
+    try {
+      const list = JSON.parse(sessionStorage.getItem(leadMessagesKey(id)) || '[]');
+      return Array.isArray(list) ? list.filter(m => typeof m?.text === 'string') : [];
+    } catch { return []; }
+  }
+
+  function rememberLeadMessage(id, text) {
+    try {
+      const list = [...leadMessages(id), { text, at: Date.now() }].slice(-LEAD_MESSAGE_CAP);
+      sessionStorage.setItem(leadMessagesKey(id), JSON.stringify(list));
+    } catch { /* The message was delivered; only the local echo is lost. */ }
+  }
+
+  // Who the composer would message for the current selection, or null (connector, unassigned, lead without workspace).
+  function composerContext() {
+    const found = findSelection();
+    if (!found) return null;
+    if (found.kind === 'lead') {
+      const workspace = knownLeads.get(found.group.id);
+      return workspace ? { key: 'chat:' + chat.sel, lead: { id: found.group.id, workspace }, job: null } : null;
+    }
+    const n = found.agent.newest;
+    return n.connector ? null : { key: 'chat:' + chat.sel, lead: null, job: n, leadId: n.lead_session_id || found.group.id };
+  }
+
+  let composerKey = null;
+
+  function composerHeight() {
+    const form = $('composer');
+    document.documentElement.style.setProperty('--composer-h', form.hidden ? '0px' : form.offsetHeight + 'px');
+  }
+
+  function autosizeDraft() {
+    const t = $('draft');
+    t.style.height = 'auto';
+    t.style.height = Math.min(t.scrollHeight, 200) + 'px';
+    composerHeight();
+  }
+
+  function syncComposer() {
+    const form = $('composer');
+    const c = composerContext();
+    if (composerKey && composerKey !== c?.key) {
+      const old = composerState(composerKey);
+      old.form = null;
+      old.resultNode = null;
+    }
+    form.hidden = !c;
+    composerKey = c?.key || null;
+    if (!c) { composerHeight(); return; }
+    const state = composerState(c.key);
+    const n = c.job;
+    const toLead = !n;
+    const busy = state.sending || !!state.pending;
+    state.form = form;
+    state.resultNode = $('composer-status');
+    state.targetJobId = toLead ? LEAD_TARGET : n.job_id;
+    if (!n || n.status !== 'running') state.interrupt = false;
+    $('target-name').textContent = toLead ? leadLabel(c.lead.id) + ' · lead inbox' : displayName(n);
+    const leadId = n && c.leadId && knownLeads.has(c.leadId) ? c.leadId : null;
+    $('to-lead').hidden = !leadId;
+    $('to-lead').dataset.leadId = leadId || '';
+    $('interrupt-label').hidden = toLead;
+    $('interrupt').checked = state.interrupt;
+    $('interrupt').disabled = toLead || n.status !== 'running' || busy;
+    $('stop-job').hidden = $('stop-agent').hidden = toLead;
+    $('stop-job').disabled = toLead || !['queued', 'running', 'needs_reconciliation'].includes(n.status);
+    $('stop-agent').disabled = toLead || n.agent_live === false;
+    const draft = $('draft');
+    if (draft.value !== state.draft) draft.value = state.draft;
+    draft.disabled = busy;
+    draft.placeholder = toLead ? 'Message the lead (lands in its inbox)…'
+      : 'Message ' + displayName(n) + '…' + (n.agent_live === false ? ' (resumes its saved session)' : n.status === 'running' ? ' (queues behind the running turn)' : '');
+    $('send').disabled = !state.draft.trim() || busy;
+    $('send').textContent = state.sending ? 'Sending…' : 'Send';
+    $('send-retry').hidden = $('send-discard').hidden = !state.pending || state.sending;
+    const status = $('composer-status');
+    status.textContent = state.result || (n?.agent_live === false ? 'Agent closed — sending resumes it'
+      : 'Enter sends · Shift+Enter newline · draft kept per session');
+    status.className = 'composer-status ' + (state.result ? state.resultClass : n?.agent_live === false ? 'warn' : '');
+    autosizeDraft();
+  }
+
+  function submitComposer() {
+    const c = composerContext();
+    if (!c) return;
+    const state = composerState(c.key);
+    if (state.sending || (!state.pending && !state.draft.trim())) return;
+    if (!state.pending) state.pending = {
+      jobId: c.job ? c.job.job_id : LEAD_TARGET, text: state.draft, interrupt: state.interrupt, key: crypto.randomUUID(),
+      lead: c.job ? null : { id: c.lead.id, workspace: c.lead.workspace },
+    };
+    sendInline(c.key);
+  }
+
+  function wireComposer() {
+    const draft = $('draft');
+    $('composer').addEventListener('submit', e => { e.preventDefault(); submitComposer(); });
+    draft.addEventListener('input', () => {
+      if (!composerKey) return;
+      composerState(composerKey).draft = draft.value;
+      $('send').disabled = !draft.value.trim();
+      autosizeDraft();
+    });
+    draft.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); submitComposer(); }
+    });
+    $('interrupt').addEventListener('change', () => { if (composerKey) composerState(composerKey).interrupt = $('interrupt').checked; });
+    $('to-lead').addEventListener('click', () => {
+      const id = $('to-lead').dataset.leadId;
+      if (id) { selectKey('lead:' + id, true); $('draft').focus(); }
+    });
+    $('send-retry').addEventListener('click', () => { if (composerKey) sendInline(composerKey); });
+    $('send-discard').addEventListener('click', () => {
+      if (!composerKey) return;
+      const state = composerState(composerKey);
+      state.pending = null;
+      state.result = 'Message attempt discarded.';
+      state.resultClass = 'warn';
+      syncComposer();
+    });
+    const stop = (agent) => {
+      const n = composerContext()?.job;
+      // stopJob picks job stop vs agent stop from the status; a settled status means "stop the agent".
+      if (n) stopJob(n.job_id, agent ? 'completed' : n.status, composerKey);
+    };
+    $('stop-job').addEventListener('click', () => stop(false));
+    $('stop-agent').addEventListener('click', () => stop(true));
+    window.addEventListener('resize', composerHeight);
+  }
+
+  // ---- Sounds (decision 11): synthesized with Web Audio, only while this tab is open ----
+  const soundKey = 'atf.web.sound';
+  const sound = { ctx: null, on: true, prev: null, gate: {} };
+  try { if (localStorage.getItem(soundKey) === 'off') sound.on = false; } catch { /* Default on. */ }
+
+  function syncSoundToggle() {
+    $('sound-toggle').textContent = sound.on ? 'Sound on' : 'Sound off';
+    $('sound-toggle').setAttribute('aria-pressed', String(sound.on));
+  }
+
+  // Browsers only allow audio after a user gesture; the first click or key anywhere unlocks it.
+  function unlockAudio() {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!sound.ctx && Ctx) sound.ctx = new Ctx();
+      sound.ctx?.resume?.();
+    } catch { /* No audio available. */ }
+  }
+
+  function tone(type, from, to, start, length, peak) {
+    const ctx = sound.ctx;
+    const t = ctx.currentTime + start;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(from, t);
+    if (to !== from) osc.frequency.exponentialRampToValueAtTime(to, t + length);
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(peak, t + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + length);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + length + 0.02);
+  }
+
+  function playSound(kind) {
+    if (!sound.on || sound.ctx?.state !== 'running') return;
+    try {
+      if (kind === 'done') tone('sine', 880, 1320, 0, 0.15, 0.18);
+      else { tone('triangle', 330, 330, 0, 0.2, 0.22); tone('triangle', 247, 247, 0.2, 0.2, 0.22); }
+    } catch { /* Sound is best effort. */ }
   }
 
   async function stopJob(jobId, status, cardKey) {
@@ -1976,10 +2180,20 @@
       state.resultClass = r.ok ? '' : 'error';
     }
     setStatus(message, r.ok ? '' : 'error');
-    await loadJobs();
+    await poll();
+    syncComposer();
   }
 
   document.addEventListener('DOMContentLoaded', () => {
+    wireComposer();
+    syncSoundToggle();
+    $('sound-toggle').addEventListener('click', () => {
+      sound.on = !sound.on;
+      unlockAudio();
+      try { localStorage.setItem(soundKey, sound.on ? 'on' : 'off'); } catch { /* Keep the in-tab choice. */ }
+      syncSoundToggle();
+    });
+    for (const name of ['pointerdown', 'keydown']) document.addEventListener(name, unlockAudio, { capture: true });
     $('settings-toggle').addEventListener('click', async () => {
       showView('settings');
       await loadTierSettings();

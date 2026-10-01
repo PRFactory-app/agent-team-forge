@@ -349,9 +349,31 @@ button.row:hover { border-color: transparent; background: var(--neutral-soft); }
 .cdot .state-label { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .cdot.green .dot { animation: beacon 1.6s ease-in-out infinite; }
 .cdot.closed .dot { color: transparent; box-shadow: inset 0 0 0 1.5px var(--faint); }
+/* Composer: always sends to the selected thread's agent (lead thread -> lead inbox). */
+.composer { display: grid; gap: 8px; padding: 10px 20px 14px; border-top: 1px solid var(--border); background: var(--surface); }
+.composer[hidden] { display: none; }
+.composer-inner { display: grid; gap: 8px; width: 100%; max-width: 860px; margin: 0 auto; }
+.composer-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; color: var(--muted); font-size: 12px; }
+.composer-tools label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.composer-tools .spacer { flex: 1; }
+.composer-tools button { padding: 3px 9px; font-size: 12px; }
+.target { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font: 11.5px var(--font-mono); }
+.target strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 600; }
+#to-lead { padding: 1px 8px; color: var(--accent-text); border-color: var(--accent-line); background: transparent; font: 11px var(--font-mono); }
+.danger-btn { color: var(--danger-text); border-color: var(--danger-line); }
+.composer-box { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: end; gap: 8px; padding: 6px 6px 6px 12px; border: 1px solid var(--input-border); border-radius: 12px; background: var(--input-bg); }
+.composer-box:focus-within { border-color: var(--accent); box-shadow: var(--shadow-focus); }
+#draft { width: 100%; min-height: 24px; max-height: 200px; padding: 4px 0; border: 0; background: transparent; resize: none; outline: none; line-height: 1.5; box-shadow: none; }
+#draft:focus { box-shadow: none; }
+#send { padding: 6px 14px; border-color: var(--accent); background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.composer-status { min-height: 1.4em; color: var(--faint); font: 11px var(--font-mono); overflow-wrap: anywhere; }
+.composer-status.warn { color: var(--warning-text); }
+.composer-status.error { color: var(--danger-text); }
+@media (max-width: 700px) { .composer { padding: 8px 16px 12px; } }
+
 @media (prefers-reduced-motion: reduce) { .cdot.green .dot { animation: none; } }
 
-.chat-main { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; position: relative; }
+.chat-main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; position: relative; }
 .thread-head { display: flex; align-items: flex-start; gap: 12px; min-width: 0; padding: 12px 20px; border-bottom: 1px solid var(--border); }
 #drawer-open { flex: none; padding: 4px 9px; }
 .head-text { min-width: 0; flex: 1; }
@@ -416,7 +438,7 @@ button.row:hover { border-color: transparent; background: var(--neutral-soft); }
 .member-line .muted { margin-left: auto; color: var(--faint); }
 div.member-line { cursor: default; }
 .empty { display: grid; justify-items: center; gap: 6px; padding: 60px 16px; color: var(--muted); text-align: center; }
-#jump { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); padding: 5px 13px; border-color: var(--accent-line); border-radius: 999px; background: var(--surface); color: var(--accent-text); box-shadow: var(--shadow-lg); font: 500 12px var(--font-sans); z-index: 3; }
+#jump { position: absolute; left: 50%; bottom: calc(var(--composer-h, 0px) + 12px); transform: translateX(-50%); padding: 5px 13px; border-color: var(--accent-line); border-radius: 999px; background: var(--surface); color: var(--accent-text); box-shadow: var(--shadow-lg); font: 500 12px var(--font-sans); z-index: 3; }
 .backdrop { display: none; }
 
 /* Below the master-detail breakpoint the session list becomes a drawer. */

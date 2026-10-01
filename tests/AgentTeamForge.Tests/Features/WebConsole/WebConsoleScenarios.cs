@@ -129,6 +129,98 @@ public sealed class WebConsoleScenarios
         Assert.Contains("Lead " + secondSession.SessionId[..8], dom, StringComparison.Ordinal);
         Assert.Contains("class=\"team-toggle\"", dom, StringComparison.Ordinal);
         Assert.Contains("class=\"team-content\"", dom, StringComparison.Ordinal);
+
+        // Drive the chat composer in a real page over the DevTools protocol: type a follow-up and send it.
+        var profile = Path.Combine(rig.StateDir, "browser-composer");
+        var driven = new ProcessStartInfo("/usr/bin/chromium") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var arg in new[]
+        {
+            "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run",
+            "--no-default-browser-check", "--remote-debugging-port=0", "--user-data-dir=" + profile, url,
+        })
+        {
+            driven.ArgumentList.Add(arg);
+        }
+        using var drivenBrowser = Process.Start(driven)!;
+        _ = drivenBrowser.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+        _ = drivenBrowser.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            var portFile = Path.Combine(profile, "DevToolsActivePort");
+            var debugPort = await Bounded.Until(
+                () => Task.FromResult(File.Exists(portFile) && File.ReadAllLines(portFile) is [{ Length: > 0 } line, ..] ? line : null),
+                "chromium debugging port");
+            using var devtools = new HttpClient();
+            var socketUrl = await Bounded.Until(async () =>
+            {
+                var targets = JsonDocument.Parse(await devtools.GetStringAsync($"http://127.0.0.1:{debugPort}/json/list", TestContext.Current.CancellationToken));
+                return targets.RootElement.EnumerateArray().Where(t => t.GetProperty("type").GetString() == "page")
+                    .Select(t => t.GetProperty("webSocketDebuggerUrl").GetString()).FirstOrDefault();
+            }, "chromium page target");
+            using var socket = new System.Net.WebSockets.ClientWebSocket();
+            await socket.ConnectAsync(new Uri(socketUrl), TestContext.Current.CancellationToken);
+            var script = """
+                (async () => {
+                  const wait = async (ok) => { for (let i = 0; i < 150; i++) { const v = ok(); if (v) return v; await new Promise(r => setTimeout(r, 100)); } return null; };
+                  if (!await wait(() => document.getElementById('composer')?.hidden === false && document.getElementById('target-name').textContent)) return 'no composer';
+                  const draft = document.getElementById('draft');
+                  draft.value = 'composer follow-up';
+                  draft.dispatchEvent(new Event('input', { bubbles: true }));
+                  document.getElementById('send').click();
+                  return await wait(() => /^Queued/.test(document.getElementById('composer-status').textContent) && document.getElementById('composer-status').textContent) || 'not queued: ' + document.getElementById('composer-status').textContent;
+                })()
+                """;
+            string? status = null;
+            var buffer = new byte[64 * 1024];
+            // The first navigation may still be settling; retry while the execution context is replaced.
+            for (var attempt = 1; status is null; attempt++)
+            {
+                var request = $$$$"""{"id":{{{{attempt}}}},"method":"Runtime.evaluate","params":{"expression":"{{{{JsonEncodedText.Encode(script)}}}}","awaitPromise":true,"returnByValue":true}}""";
+                await socket.SendAsync(Encoding.UTF8.GetBytes(request), System.Net.WebSockets.WebSocketMessageType.Text, true, TestContext.Current.CancellationToken);
+                while (status is null)
+                {
+                    using var message = new MemoryStream();
+                    System.Net.WebSockets.WebSocketReceiveResult received;
+                    do
+                    {
+                        received = await socket.ReceiveAsync(buffer, TestContext.Current.CancellationToken);
+                        message.Write(buffer, 0, received.Count);
+                    }
+                    while (!received.EndOfMessage);
+                    var reply = JsonDocument.Parse(message.ToArray()).RootElement;
+                    if (!reply.TryGetProperty("id", out var id) || id.GetInt32() != attempt)
+                    {
+                        continue;
+                    }
+
+                    if (!reply.TryGetProperty("result", out var evaluated))
+                    {
+                        Assert.True(attempt < 20, "protocol error: " + reply.GetRawText());
+                        await Task.Delay(250, TestContext.Current.CancellationToken);
+                        break;
+                    }
+
+                    status = evaluated.GetProperty("result").TryGetProperty("value", out var value) && value.ValueKind == JsonValueKind.String
+                        ? value.GetString()
+                        : "evaluate failed: " + reply.GetRawText();
+                }
+            }
+
+            Assert.True(status.StartsWith("Queued", StringComparison.Ordinal), status);
+            // The follow-up reached the daemon as a new job chained to the held one.
+            await Bounded.Until(async () =>
+            {
+                var json = await http.GetStringAsync("api/jobs", TestContext.Current.CancellationToken);
+                return json.Contains("\"parent_job_id\":\"", StringComparison.Ordinal) ? json : null;
+            }, "composer follow-up job");
+        }
+        finally
+        {
+            if (!drivenBrowser.HasExited)
+            {
+                OwnedProcessTermination.Kill(drivenBrowser);
+            }
+        }
     }
 
     [Fact]
