@@ -111,6 +111,23 @@ public sealed class WakeStore(JobDatabase database)
         command.ExecuteNonQuery();
     }
 
+    /// <summary>Acks by owning lead session, so a read while the wake is cleared or not yet re-registered still counts.</summary>
+    public void MarkReadForLead(string jobId, string observedStatus, string leadSessionId)
+    {
+        if (observedStatus is Jobs.JobStatus.Queued or Jobs.JobStatus.Running) { return; }
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE wake_jobs SET read_at=$now WHERE job_id=$job AND read_at IS NULL
+            AND EXISTS (SELECT 1 FROM jobs WHERE job_id=$job AND lead_session_id=$lead
+                AND status IN ('completed','failed','needs_reconciliation','cancelled'));
+            """;
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$job", jobId);
+        command.Parameters.AddWithValue("$lead", leadSessionId);
+        command.ExecuteNonQuery();
+    }
+
     public IReadOnlyList<WakeSnapshot> Pending()
     {
         using var connection = database.OpenConnection();

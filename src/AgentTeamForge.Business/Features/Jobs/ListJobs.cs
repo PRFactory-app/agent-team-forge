@@ -38,9 +38,10 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
         try
         {
             // One extra row decides truncation without a separate count query.
-            var since = request.Since is null ? null : DateTimeOffset.Parse(request.Since, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind).ToUniversalTime().ToString("O");
+            // unread=true is "everything I have not read", so a since window must not hide it.
+            var since = request.Since is null || request.Unread ? null : DateTimeOffset.Parse(request.Since, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind).ToUniversalTime().ToString("O");
             rows = store.ListJobs(principal.Principal, principal.Team, request.Status, request.Backend, since, request.Cursor, limit + 1,
-                request.LeadSessionId, request.AllWorkspace ? request.Workspace : null, request.OrderByActivity, request.IncludeConnector);
+                request.LeadSessionId, request.AllWorkspace ? request.Workspace : null, request.OrderByActivity, request.IncludeConnector, request.Unread);
         }
         catch (StorageException ex)
         {
@@ -66,6 +67,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
             TargetAgent = r.TargetAgent,
             Connector = r.Connector,
             WorkItemId = r.WorkItemId,
+            Unread = r.Unread,
             LastActivity = logs?.LastActivity(r.JobId, r.Backend ?? ""),
         }).ToList();
         return new JobListResult(new JobListPage(jobs, limit, hasMore, hasMore ? jobs[^1].JobId : null), null);
@@ -80,6 +82,7 @@ public sealed record ListJobsRequest(string? Status = null, int? Limit = null, s
     public string? Workspace { get; init; }
     public bool OrderByActivity { get; init; }
     public bool IncludeConnector { get; init; }
+    public bool Unread { get; init; }
 }
 
 /// <summary>Inspection view of a job; use job_get for its result.</summary>
@@ -108,6 +111,7 @@ public sealed record JobSummary(string JobId, string Status, string? ReasonCode,
     /// <summary>PRFactory work item of a connector job; null for ordinary jobs.</summary>
     public string? WorkItemId { get; init; }
     public bool Connector { get; init; }
+    public bool Unread { get; init; }
     public string Light => Status switch
     {
         JobStatus.Queued or "waiting" or "parked" => "yellow",

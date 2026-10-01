@@ -610,7 +610,7 @@ public sealed class ExternalMemberStore(JobDatabase database)
             }
             cursors = updated;
         }
-        return new ExternalInbox(selected, selected.Count == 0 ? (leadGlobalCursor && fromAgent is null ? sinceSeq ?? 0 : 0)
+        return new ExternalInbox(selected, selected.Count == 0 ? (leadGlobalCursor && fromAgent is null ? sinceSeq ?? 0 : fromAgent is null ? cursors.Values.DefaultIfEmpty(0).Max() : cursors.GetValueOrDefault(fromAgent))
             : leadGlobalCursor && fromAgent is null ? lastGlobalSeq : selected[^1].Seq,
             unread > selected.Count,
             fromAgent is null ? limit == 0 ? cursors : PageCursors(cursors, selected) : null,

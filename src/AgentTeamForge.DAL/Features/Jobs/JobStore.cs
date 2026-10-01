@@ -47,6 +47,20 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return (IReadOnlyList<string>)ids;
     });
 
+    /// <summary>A job read while needs_reconciliation that later settles or reattaches must wake its lead again.</summary>
+    static void RearmWake(SqliteConnection connection, SqliteTransaction tx, string jobId) =>
+        Execute(connection, tx, "UPDATE wake_jobs SET read_at=NULL WHERE job_id=$id AND read_at IS NOT NULL AND EXISTS (SELECT 1 FROM jobs WHERE job_id=$id AND status='needs_reconciliation')",
+            ("$id", jobId));
+
+    /// <summary>The first session peer holding the fence, so a refusal can name the job to stop.</summary>
+    public (string JobId, string Status, string? ReasonCode)? FencingPeer(string jobId) => Read(connection =>
+    {
+        using var command = Command(connection, null,
+            $"SELECT job_id,status,reason_code FROM jobs WHERE session_fenced=1 AND job_id IN ({SessionPeers}) ORDER BY job_id LIMIT 1", ("$id", jobId));
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? (reader.GetString(0), reader.GetString(1), NullableText(reader, 2)) : ((string, string, string?)?)null;
+    });
+
     public bool IsSessionFenced(string jobId) => Read(connection => SessionFenced(connection, null, jobId));
 
     public void FenceSession(string jobId) => Write(connection =>
@@ -485,6 +499,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         if (Execute(connection, tx, "UPDATE native_claude_attempts SET state='settled' WHERE job_id=$id AND correlation=$corr AND state IN ('posting','posted','received')",
             ("$id", jobId), ("$corr", correlation)) != 1) { return false; }
         var now = Now();
+        RearmWake(connection, tx, jobId);
         Execute(connection, tx, "UPDATE runs SET state='completed',acked=1,acknowledged_at=coalesce(acknowledged_at,$now),finished_at=$now WHERE job_id=$id AND correlation=$corr",
             ("$id", jobId), ("$corr", correlation), ("$now", now));
         Execute(connection, tx, "UPDATE jobs SET status='completed',session_fenced=0,reason_code=NULL,result_text=$result,updated_at=$now WHERE job_id=$id",
@@ -560,6 +575,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     {
         using var tx = connection.BeginTransaction(deferred: false);
         var now = Now();
+        RearmWake(connection, tx, jobId);
         // An interrupt may have cancelled the job while the completion record was
         // being read. A quarantined native turn can still complete after restart.
         if (Execute(connection, tx, "UPDATE jobs SET status='completed',session_fenced=0,reason_code=NULL,result_text=$result,updated_at=$now WHERE job_id=$id AND status IN ('running','needs_reconciliation')",
@@ -996,6 +1012,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
               AND state='needs_reconciliation' AND reason_code='daemon_restart_uncertain'
             """, ("$run", run.RunId), ("$id", run.JobId), ("$gen", run.Generation), ("$corr", run.Correlation));
         if (updated != 1) { return false; }
+        RearmWake(connection, tx, run.JobId);
         updated = Execute(connection, tx, """
             UPDATE jobs SET status='running', session_fenced=0, reason_code=NULL, updated_at=$now
             WHERE job_id=$id AND status='needs_reconciliation' AND reason_code='daemon_restart_uncertain'
@@ -1146,14 +1163,16 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     /// work still grows with the caller's total jobs; only the returned rows are capped.
     /// </summary>
     public IReadOnlyList<JobSummaryRecord> ListJobs(string principal, string team, string? status, string? backend, string? since, string? beforeJobId, int take,
-        string? leadSessionId = null, string? workspace = null, bool orderByActivity = false, bool includeConnector = false) => Read(connection =>
+        string? leadSessionId = null, string? workspace = null, bool orderByActivity = false, bool includeConnector = false, bool unreadOnly = false) => Read(connection =>
     {
         using var command = Command(connection, null, """
             SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at, j.worktree_path, j.worktree_branch,
                    j.backend, j.session_id, j.parent_job_id, j.lead_session_id, j.target_agent, j.options,
                    (SELECT s.workspace FROM lead_sessions s WHERE s.session_id=j.lead_session_id AND s.closed_at IS NULL), j.cwd, j.principal='prfactory' AND j.team='connector',
                    (SELECT s.display_name FROM lead_sessions s WHERE s.session_id=j.lead_session_id AND s.closed_at IS NULL),
-                   (SELECT m.work_item_id FROM prfactory_members m WHERE m.job_id=j.job_id LIMIT 1)
+                   (SELECT m.work_item_id FROM prfactory_members m WHERE m.job_id=j.job_id LIMIT 1),
+                   j.status IN ('completed','failed','needs_reconciliation','cancelled')
+                       AND EXISTS (SELECT 1 FROM wake_jobs w WHERE w.job_id=j.job_id AND w.read_at IS NULL)
             FROM jobs j
             WHERE ((j.principal=$p AND j.team=$t) OR ($connector=1 AND j.principal='prfactory' AND j.team='connector'))
               -- A malformed pre-release row must not break this page or its cursor.
@@ -1165,13 +1184,15 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
               AND ($status IS NULL OR j.status=$status)
               AND ($backend IS NULL OR j.backend=$backend)
               AND ($since IS NULL OR j.accepted_at >= $since)
+              AND ($unread=0 OR (j.status IN ('completed','failed','needs_reconciliation','cancelled')
+                   AND EXISTS (SELECT 1 FROM wake_jobs w WHERE w.job_id=j.job_id AND w.read_at IS NULL)))
               AND ($before IS NULL OR ($activity=0 AND j.job_id < $before)
                 OR ($activity=1 AND (j.updated_at < (SELECT updated_at FROM jobs WHERE job_id=$before)
                   OR (j.updated_at = (SELECT updated_at FROM jobs WHERE job_id=$before) AND j.job_id < $before))))
             ORDER BY CASE WHEN $activity=1 THEN j.updated_at ELSE j.job_id END DESC, j.job_id DESC
             LIMIT $take
             """,
-            ("$p", principal), ("$t", team), ("$connector", includeConnector ? 1 : 0), ("$lead", leadSessionId), ("$workspace", workspace), ("$status", status), ("$backend", backend), ("$since", since), ("$before", beforeJobId), ("$activity", orderByActivity ? 1 : 0), ("$take", take));
+            ("$p", principal), ("$t", team), ("$connector", includeConnector ? 1 : 0), ("$lead", leadSessionId), ("$workspace", workspace), ("$status", status), ("$backend", backend), ("$since", since), ("$unread", unreadOnly ? 1 : 0), ("$before", beforeJobId), ("$activity", orderByActivity ? 1 : 0), ("$take", take));
         using var reader = command.ExecuteReader();
         var jobs = new List<JobSummaryRecord>();
         while (reader.Read())
@@ -1192,6 +1213,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 Connector = reader.GetBoolean(16),
                 LeadName = NullableText(reader, 17),
                 WorkItemId = NullableText(reader, 18),
+                Unread = reader.GetBoolean(19),
             });
         }
 

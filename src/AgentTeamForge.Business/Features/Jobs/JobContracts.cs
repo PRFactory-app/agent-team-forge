@@ -1,3 +1,4 @@
+using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 
 namespace AgentTeamForge.Business.Features.Jobs;
@@ -80,6 +81,16 @@ public static class JobErrors
     public const string NoWorktree = "no_worktree";
 
     public static string FromStorage(StorageException ex) => ex.Failure == StorageFailure.Busy ? StorageBusy : StorageUnavailable;
+
+    /// <summary>Names the job blocking a follow-up: the session's fencing peer if any, else the parent itself.</summary>
+    public static string ParentNotReadyDetail(JobStore store, string parentJobId)
+    {
+        if (store.FencingPeer(parentJobId) is { } peer)
+        {
+            return $"Session fenced by {peer.JobId} ({peer.Status}{(peer.ReasonCode is null ? "" : ": " + peer.ReasonCode)}); stop_job {peer.JobId}, then retry.";
+        }
+        return $"Parent {parentJobId} is not idle; wait for it to finish or stop_job {parentJobId}, then retry.";
+    }
 
     public static string StorageDetail(StorageException ex) => ex.Failure == StorageFailure.Busy ? "Database busy; retry." : "Job database unavailable.";
 }

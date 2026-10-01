@@ -288,7 +288,9 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 if (followed.Ok) { MarkParentWakeRead(request, request.JobId); }
                 return followed;
             case IpcProtocol.JobStop:
-                return Map(stop.Execute(request.JobId ?? string.Empty, request.Interrupt));
+                var stopped = stop.Execute(request.JobId ?? string.Empty, request.Interrupt);
+                if (stopped.Error is null && stopped.Job is not null) { MarkWakeRead(request, stopped.Job.JobId, stopped.Job.Status); }
+                return Map(stopped);
             case IpcProtocol.JobStopAgent:
                 if (stopAgent is null) { return new IpcResponse(false, JobErrors.BackendUnavailable, ErrorDetail: "stop_agent is not available in this daemon."); }
                 var stoppedAgent = stopAgent.Execute(request.JobId ?? string.Empty);
@@ -362,6 +364,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     Workspace = request.Workspace,
                     OrderByActivity = request.OrderByActivity,
                     IncludeConnector = request.IncludeConnector && request.LeadSessionId is null,
+                    Unread = request.Unread,
                 });
                 if (listed.Error is not null) { return new IpcResponse(false, listed.Error, ErrorDetail: listed.Detail); }
                 foreach (var job in listed.Page!.Jobs) { MarkWakeRead(request, job.JobId, job.Status); }
@@ -444,10 +447,9 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
 
     void MarkWakeRead(IpcRequest request, string jobId, string observedStatus)
     {
-        if (wakeStore is not null && LeadWake(request) is { Key: { } key, Generation: long generation })
-        {
-            wakeStore.MarkRead(jobId, observedStatus, key, generation);
-        }
+        if (wakeStore is null) { return; }
+        if (request.LeadSessionId is { } leadSessionId) { wakeStore.MarkReadForLead(jobId, observedStatus, leadSessionId); }
+        else if (LeadWake(request) is { Key: { } key, Generation: long generation }) { wakeStore.MarkRead(jobId, observedStatus, key, generation); }
     }
 
     // A follow-up chain consumes its parent: acknowledging the child also acknowledges a finished parent.

@@ -492,6 +492,25 @@ public sealed class ExternalTeamTests
         Assert.Equal("second", Assert.Single(team.ReadTeam(teamId, cursor, 50).Inbox!.Messages).Text);
     }
 
+    [Fact]
+    public void Empty_member_read_returns_the_current_cursor_not_zero()
+    {
+        using var f = new JobFixture();
+        var lead = new LeadSessionStore(f.Database).Start("/workspace/a", "lead-a");
+        var team = Team(f);
+        var ticket = team.CreateTicket(lead.SessionId, lead.Workspace, "reader", null).Ticket!;
+        var token = team.Join(lead.SessionId, ticket.Token).Member!.MemberToken;
+        Assert.True(team.SendFromLead(lead.SessionId, lead.Workspace, "reader", "work").Ok);
+        var first = team.Read(token, null, null).Inbox!;
+        Assert.Single(first.Messages);
+        Assert.True(first.NextSeq > 0);
+
+        var empty = team.Read(token, null, null).Inbox!;
+
+        Assert.Empty(empty.Messages);
+        Assert.Equal(first.NextSeq, empty.NextSeq);
+    }
+
     static ExternalTeam Team(JobFixture f, Func<DateTimeOffset>? clock = null) =>
         new(new ExternalMemberStore(f.Database), new WakeStore(f.Database), clock);
 
