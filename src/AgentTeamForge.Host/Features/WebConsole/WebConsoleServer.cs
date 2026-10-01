@@ -41,7 +41,7 @@ public sealed record WebDirectoryList(string Path, string? Parent, IReadOnlyList
 public sealed partial class WebConsoleJson : JsonSerializerContext;
 
 /// <summary>
-/// Text-only operator console: a thin HTTP client role over the daemon IPC.
+/// Operator console: a thin HTTP client role over the daemon IPC.
 /// Never opens the job database or starts the daemon; every job operation is
 /// forwarded to <c>send</c> (the <see cref="IpcClient"/> in production).
 /// </summary>
@@ -70,6 +70,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
     static readonly (string Path, string Resource, string ContentType)[] Assets =
     [
         ("/", "index.html", "text/html; charset=utf-8"),
+        ("/lib.js", "lib.js", "text/javascript; charset=utf-8"),
         ("/app.js", "app.js", "text/javascript; charset=utf-8"),
         ("/app.css", "app.css", "text/css; charset=utf-8"),
     ];

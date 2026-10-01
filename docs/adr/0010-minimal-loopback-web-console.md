@@ -1,4 +1,4 @@
-# 0010. Minimal text web console on authenticated loopback
+# 0010. Minimal web console on authenticated loopback
 
 Status: accepted
 
@@ -10,9 +10,11 @@ of scope.
 
 ## Decision
 
-- The daemon serves a small text-only console on numeric loopback
-  (`127.0.0.1`, default port 8765) with static HTML, CSS and one plain
-  JavaScript file. No front-end framework or build step.
+- The daemon serves a small console that renders agent text as safe markdown
+  and never HTML from agents on numeric loopback (`127.0.0.1`, default port
+  8765) with static HTML, CSS and plain JavaScript files. No front-end framework or build step.
+- Agent markdown is parsed by an own renderer into DOM nodes (no `innerHTML`,
+  http(s) links only, no images).
 - Every API call needs a random console bearer token, separate from the daemon
   IPC credential, stored owner-only in `web-console.key`. `atf web` prints a
   link with the token in the URL fragment; `--rotate-token` revokes old links.

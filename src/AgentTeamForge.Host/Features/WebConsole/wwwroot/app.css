@@ -225,6 +225,21 @@ main { padding-top: 23px; }
 .card-logs summary { cursor: pointer; color: var(--secondary); font-size: 12px; }
 .card-logs button { padding: 3px 7px; font-size: 11px; }
 .card-result pre { max-height: 220px; }
+.result-body { max-height: 320px; overflow: auto; }
+.md-view { position: relative; }
+.md-raw-toggle { float: right; margin: 0 0 4px 8px; padding: 2px 7px; font-size: 11px; }
+.md { min-width: 0; overflow-wrap: anywhere; font-size: 12.5px; line-height: 1.55; }
+.md > :first-child { margin-top: 0; }
+.md h3, .md h4, .md h5, .md h6 { margin: 12px 0 4px; color: var(--text); font-size: 13px; }
+.md p { margin: 6px 0; }
+.md ul, .md ol { margin: 6px 0; padding-left: 22px; }
+.md code { padding: 1px 4px; border-radius: 4px; background: var(--sunken); font: 11.5px var(--font-mono); }
+.md pre code { padding: 0; background: none; }
+.md a { color: var(--accent); }
+.md-scroll { max-width: 100%; margin: 8px 0; overflow-x: auto; }
+.md table { border-collapse: collapse; font-size: 12px; }
+.md th, .md td { padding: 4px 9px; text-align: left; border: 1px solid var(--border); }
+.md th { color: var(--text); background: var(--sunken); }
 .card-logs pre { max-height: 220px; }
 .pager { display: flex; align-items: center; gap: 10px; justify-content: end; color: var(--muted); font: 12px var(--font-mono); }
 pre { max-height: 50vh; margin: 7px 0; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--border); border-radius: 6px; background: var(--sunken); font: 12px/1.5 var(--font-mono); }

@@ -1,6 +1,6 @@
 # Web console
 
-The daemon serves a small text-only operator console in every launch mode:
+The daemon serves a small operator console (no HTML from agents) in every launch mode:
 live activity, results, follow-ups, stop, new agents, join tickets and model
 tiers. Decision record: [ADR 0010](adr/0010-minimal-loopback-web-console.md).
 

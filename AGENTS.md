@@ -40,8 +40,8 @@
   Linux, terminal tabs on Windows/macOS) or headless. Never silently fall back
   to headless. A log-tail tab is not an interactive agent.
 - Keep MCP bridges thin. No custom model loop, distributed scheduler or large
-  terminal UI. A small text-only operator web console (status, output,
-  follow-up, stop) on authenticated loopback is in scope.
+  terminal UI. A small operator web console (status, output,
+  follow-up, stop; no HTML from agents) on authenticated loopback is in scope.
 - Local use needs no external orchestrator; any connector is opt-in.
 
 ## Architecture
