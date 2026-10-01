@@ -295,7 +295,7 @@ public static class SetupCommand
         return null;
     }
 
-    public static async Task<int> StartAsync(IReadOnlyDictionary<string, string> options, string? executablePath = null, bool quiet = false)
+    public static async Task<int> StartAsync(IReadOnlyDictionary<string, string> options, string? executablePath = null, bool quiet = false, IReadOnlyList<string>? setsidSearch = null)
     {
         var state = StateDirectory.Open(ResolveStateDir(options));
         var profile = ProfileFile.Load(state);
@@ -351,7 +351,7 @@ public static class SetupCommand
         {
             return OperatingSystem.IsWindows()
                 ? await StartWindowsAsync(state, binary, quiet)
-                : await StartPosixAsync(state, binary, quiet, profile.TestProfile);
+                : await StartPosixAsync(state, binary, quiet, profile.TestProfile, setsidSearch);
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException or ArgumentException)
         {
@@ -360,7 +360,7 @@ public static class SetupCommand
         }
     }
 
-    static async Task<int> StartPosixAsync(StateDirectory state, string binary, bool quiet, bool testProfile)
+    static async Task<int> StartPosixAsync(StateDirectory state, string binary, bool quiet, bool testProfile, IReadOnlyList<string>? setsidSearch = null)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         if (OperatingSystem.IsLinux()
@@ -416,8 +416,75 @@ public static class SetupCommand
         info.ArgumentList.Add("daemon");
         info.ArgumentList.Add("--state-dir");
         info.ArgumentList.Add(state.Path);
+        // The scope leaves the cgroup but the daemon stays a child of this process, so a host that tree-kills
+        // by ppid (Claude Code does) would take it down. `setsid --fork` makes it a grandchild whose parent exits
+        // at once, so it is reparented to the subreaper. Without setsid the launch stays a direct child.
+        var detached = false;
+        string? detachWarning = null;
+        if (OperatingSystem.IsLinux())
+        {
+            if (ResolveSetsid(setsidSearch) is { } setsid)
+            {
+                detached = Detach(info, setsid);
+            }
+            else
+            {
+                const string warning = "warning: setsid (util-linux) not found; the daemon stays attached to its starter and can be killed with it";
+                Console.Error.WriteLine(warning);
+                detachWarning = warning;
+            }
+        }
+        var logOffset = log.Length;
         using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
-        return await WaitForReadyAsync(state, quiet, process);
+        var ready = detached
+            ? await WaitForReadyAsync(state, quiet, null, logOffset)
+            : await WaitForReadyAsync(state, quiet, process);
+        if (detachWarning is not null)
+        {
+            // After the launch: the daemon's inherited stdout shares this file's offset and would overwrite an earlier line.
+            File.AppendAllText(log.Name, $"[atf-daemon] {DateTime.UtcNow:O} {detachWarning}\n");
+        }
+        return ready;
+    }
+
+    /// <summary>PATH first, then the fixed util-linux locations; <paramref name="search"/> (tests) replaces both.</summary>
+    static string? ResolveSetsid(IReadOnlyList<string>? search) =>
+        search is null
+            ? FindExecutable("setsid") ?? new[] { "/usr/bin/setsid", "/bin/setsid" }.FirstOrDefault(File.Exists)
+            : search.FirstOrDefault(File.Exists);
+
+    static bool Detach(ProcessStartInfo info, string setsid)
+    {
+        var args = info.ArgumentList.ToList();
+        info.ArgumentList.Clear();
+        info.ArgumentList.Add("--fork");
+        info.ArgumentList.Add(info.FileName);
+        foreach (var arg in args) { info.ArgumentList.Add(arg); }
+        info.FileName = setsid;
+        return true;
+    }
+
+    /// <summary>With no process handle: the daemon this start launched logged "starting pid=N" after <paramref name="logOffset"/> and N is gone.</summary>
+    static bool DetachedDaemonGone(StateDirectory state, long logOffset)
+    {
+        try
+        {
+            var path = Path.Combine(state.Path, "daemon.log");
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            stream.Seek(Math.Min(logOffset, stream.Length), SeekOrigin.Begin);
+            using var reader = new StreamReader(stream);
+            int? started = null;
+            while (reader.ReadLine() is { } line)
+            {
+                if (line.Contains(" starting pid=", StringComparison.Ordinal)
+                    && int.TryParse(line[(line.LastIndexOf("pid=", StringComparison.Ordinal) + 4)..].Trim(), out var pid))
+                {
+                    started = pid;
+                }
+            }
+            return started is { } n && !Directory.Exists($"/proc/{n}");
+        }
+        catch (IOException) { return false; }
     }
 
     public static int Stop(IReadOnlyDictionary<string, string> options)
@@ -525,14 +592,14 @@ public static class SetupCommand
         return await WaitForReadyAsync(state, quiet, process);
     }
 
-    static async Task<int> WaitForReadyAsync(StateDirectory state, bool quiet, Process? launched = null)
+    static async Task<int> WaitForReadyAsync(StateDirectory state, bool quiet, Process? launched = null, long? detachedLogOffset = null)
     {
         for (var i = 0; i < 200; i++)
         {
             var pid = DaemonLock.ReadOwnerPid(state.LockFile);
             try
             {
-                if (pid is > 0 && (launched is null || pid != launched.Id || OperatingSystem.IsWindows() || ReadyLogged(state, pid.Value))
+                if (pid is > 0 && (launched is null && detachedLogOffset is null || launched is not null && pid != launched.Id || OperatingSystem.IsWindows() || ReadyLogged(state, pid.Value))
                     && await EndpointReadyAsync(state))
                 {
                     return PrintRunningPid(state, quiet);
@@ -542,6 +609,15 @@ public static class SetupCommand
             {
                 Console.Error.WriteLine($"error: {IpcProtocol.AccessDenied}: {IpcClient.AccessDeniedDetail}");
                 return 1;
+            }
+            if (detachedLogOffset is { } offset && DetachedDaemonGone(state, offset))
+            {
+                using var other = DaemonLock.TryAcquire(state.LockFile);
+                if (other is not null)
+                {
+                    Console.Error.WriteLine($"error: daemon exited; see {state.Path}/daemon.log");
+                    return 1;
+                }
             }
             if (launched?.HasExited == true)
             {

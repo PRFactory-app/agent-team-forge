@@ -546,6 +546,35 @@ public sealed class SetupCommandTests
         Assert.False(daemon.HasExited);
     }
 
+    [Fact]
+    public async Task StartedDaemonIsNotADescendantOfItsStarter()
+    {
+        if (!OperatingSystem.IsLinux()) { return; }
+
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        // The in-process starter is this test process, as an MCP bridge is for its autostarted daemon.
+        Assert.Equal(0, await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = rig.StateDir }, SpikeRig.Binary, quiet: true));
+
+        var pid = Assert.IsType<int>(DaemonLock.ReadOwnerPid(StateDirectory.Open(rig.StateDir).LockFile));
+        var stat = File.ReadAllText($"/proc/{pid}/stat");
+        var ppid = int.Parse(stat[(stat.LastIndexOf(')') + 2)..].Split(' ')[1]);
+        Assert.NotEqual(Environment.ProcessId, ppid);
+    }
+
+    [Fact]
+    public async Task StartWithoutSetsidStillStartsAndWarnsInDaemonLog()
+    {
+        if (!OperatingSystem.IsLinux()) { return; }
+
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        Assert.Equal(0, await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = rig.StateDir },
+            SpikeRig.Binary, quiet: true, setsidSearch: []));
+        Assert.Contains("util-linux", File.ReadAllText(Path.Combine(rig.StateDir, "daemon.log")));
+        Assert.NotNull(DaemonLock.ReadOwnerPid(StateDirectory.Open(rig.StateDir).LockFile));
+    }
+
     [Theory]
     [InlineData("profile.json")]
     [InlineData("launch-mode.json")]
