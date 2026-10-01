@@ -344,5 +344,34 @@
     return [...groups.values()].sort((a, b) => recent(latest(a), latest(b)));
   }
 
-  globalThis.AtfLib = { parseMarkdown, safeHref, isSettled, connectorParts, threadChain, groupAgents };
+  const SETTLED = ['completed', 'failed', 'cancelled'];
+  const ATTENTION = ['failed', 'needs_reconciliation'];
+
+  // Sound transitions between two polls. A null previous map is the first poll: it only seeds the map.
+  // A job counts only if the previous poll already knew it, so page load and history never sound.
+  function soundEvents(prev, jobs) {
+    const map = new Map();
+    let done = false;
+    let attention = false;
+    for (const j of jobs) {
+      map.set(j.job_id, { status: j.status, light: j.light, reason: j.reason_code });
+      const was = prev?.get(j.job_id);
+      if (!was) continue;
+      if (j.status === 'completed' && !SETTLED.includes(was.status)) done = true;
+      if ((ATTENTION.includes(j.status) && j.status !== was.status)
+        || (j.light === 'red' && was.light !== 'red')
+        || (j.reason_code === 'agent_login_required' && was.reason !== 'agent_login_required')) attention = true;
+    }
+    return { map, done, attention };
+  }
+
+  // At most one sound per kind per window; attention wins when both fire together.
+  function pickSound(gate, events, now, windowMs = 1500) {
+    const kind = events.attention ? 'attention' : events.done ? 'done' : null;
+    if (!kind || now - (gate[kind] ?? -Infinity) < windowMs) return null;
+    gate[kind] = now;
+    return kind;
+  }
+
+  globalThis.AtfLib = { parseMarkdown, safeHref, isSettled, connectorParts, threadChain, groupAgents, soundEvents, pickSound };
 })();

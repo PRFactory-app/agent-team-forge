@@ -16,6 +16,7 @@
     <span class="bar-stat">RUNNING <strong id="bar-running">0</strong></span>
     <span class="bar-stat hide-sm">TOKENS <strong id="bar-tokens">—</strong></span>
     <label class="bar-theme" for="theme-select">Theme<select id="theme-select"><option value="auto">Auto</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+    <button id="sound-toggle" type="button" aria-pressed="true" title="Sounds for finished and attention-needing agents">Sound on</button>
     <button id="settings-toggle" type="button" aria-controls="settings-view" aria-expanded="false">Settings</button>
   </span>
   <span id="status" role="status"></span></div>
@@ -44,6 +45,25 @@
       </header>
       <div class="thread" id="thread"><div class="thread-inner" id="thread-inner"></div></div>
       <button id="jump" type="button" hidden>↓ Jump to latest</button>
+      <form class="composer" id="composer" autocomplete="off" hidden>
+        <div class="composer-inner">
+          <div class="composer-tools">
+            <span class="target">To <strong id="target-name"></strong></span>
+            <button type="button" id="to-lead" hidden>↑ Message lead</button>
+            <label id="interrupt-label" title="Replace the running turn instead of queueing behind it"><input type="checkbox" id="interrupt"> Interrupt</label>
+            <span class="spacer"></span>
+            <button type="button" id="stop-job" class="danger-btn">Stop job</button>
+            <button type="button" id="stop-agent" class="danger-btn">Stop agent</button>
+          </div>
+          <div class="composer-box">
+            <textarea id="draft" rows="1" maxlength="65536" placeholder="Message…" aria-label="Message"></textarea>
+            <button id="send" type="submit">Send</button>
+            <button id="send-retry" type="button" hidden>Retry same message</button>
+            <button id="send-discard" type="button" hidden>Discard</button>
+          </div>
+          <div class="composer-status" id="composer-status" role="status">Enter sends · Shift+Enter newline · draft kept per session</div>
+        </div>
+      </form>
     </section>
   </div>
 
