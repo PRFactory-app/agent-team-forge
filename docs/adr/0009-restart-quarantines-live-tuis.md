@@ -21,6 +21,10 @@ destroyed live work.
   submitted, no ownership record, or its Herdr server or pane shell process is
   proven gone); any other rebind failure, such as a record from an older
   daemon, stays fenced. Its prompt is never replayed.
+- A terminal tab (Windows Terminal, Terminal.app, kitty) is recorded as idle,
+  and adopted as such after a restart, only once its turn settled; a tab whose
+  turn may still run is never idle-closed or reused, and a native Claude
+  follow-up in a surviving tab stays fenced while that tab lives.
 - Unattempted queued jobs are dispatched normally.
 - Explicit **Stop agent** (web console or API) uses the saved ownership proof
   (for Herdr: server PID and start time, session name and owner label) to
@@ -29,7 +33,9 @@ destroyed live work.
 - Missing, corrupt or foreign ownership records are never adopted, and a bare
   PID never authorizes a kill.
 - Headless runners are separate: a provably owned orphan (marker plus pidfd on
-  Linux) may be cleaned up.
+  Linux; on macOS a visibly marked process plus its descendant tree, pinned by
+  start time, because Apple platform binaries hide their environment) may be
+  cleaned up.
 
 ## Consequences
 

@@ -38,8 +38,17 @@ public class HerdrLaunchCharacterizationTests
         var hostile = "x\"; rm -rf ~; echo \"é🚀";
         var server = HerdrLaunchFixture.OwnedServerStartInfo(Sessions(), hostile, BaseEnv, null);
 
-        Assert.Equal("setsid", server.FileName);
-        Assert.Equal(["-f", "sh", "-c", HerdrLaunchFixture.ServerScript, hostile], server.ArgumentList);
+        // macOS has no setsid(1): sh backgrounds the server in its own process group and exits, so launchd adopts it.
+        if (OperatingSystem.IsMacOS())
+        {
+            Assert.Equal("/bin/sh", server.FileName);
+            Assert.Equal(["-c", HerdrLaunchFixture.MacServerScript, hostile], server.ArgumentList);
+        }
+        else
+        {
+            Assert.Equal("setsid", server.FileName);
+            Assert.Equal(["-f", "sh", "-c", HerdrLaunchFixture.ServerScript, hostile], server.ArgumentList);
+        }
         Assert.DoesNotContain(hostile, HerdrLaunchFixture.ServerScript, StringComparison.Ordinal);
     }
 

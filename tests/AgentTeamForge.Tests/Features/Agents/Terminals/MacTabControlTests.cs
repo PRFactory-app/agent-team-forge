@@ -151,6 +151,248 @@ public sealed class MacTabControlTests
         Assert.Equal("/usr/bin/kitty", kitty.FileName);
         Assert.Equal(["@", "--to", "unix:/tmp/kitty.sock", "launch", "--type=tab", "--tab-title", "atftest", "/bin/sh", "/tmp/run.sh"],
             kitty.ArgumentList);
+        // osascript prints the tab reference and kitty the window id; inherited stdout is the daemon log.
+        Assert.True(terminal.RedirectStandardOutput);
+        Assert.True(kitty.RedirectStandardOutput);
+    }
+
+    [Fact]
+    public void RefusedAppleEventIsACertainNotStartedWithRemedy()
+    {
+        var denied = MacTabControl.LauncherFailure(1, "43:69: execution error: Not authorized to send Apple events to Terminal. (-1743)\n");
+        var started = Assert.IsType<BackendNotStartedException>(denied);
+        Assert.Contains("Privacy & Security > Automation", started.Message);
+        Assert.IsType<BackendNotStartedException>(MacTabControl.LauncherFailure(1, "execution error: (-1744)"));
+        // Any other launcher failure may follow an opened tab, so it stays uncertain.
+        Assert.IsType<IOException>(MacTabControl.LauncherFailure(1, "execution error: Terminal got an error: AppleEvent timed out. (-1712)"));
+    }
+
+    [Fact]
+    public void KittyProbeWaitsForOutputThatOutlivesTheProcess()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var kitty = state.File("kitty");
+        // The child keeps stdout open after the probed process exits, as a large `kitty @ ls` reply can.
+        File.WriteAllText(kitty, "#!/bin/sh\n(sleep 1; printf '[]') &\nexit 0\n");
+        File.SetUnixFileMode(kitty, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        Assert.True(MacTabControl.KittyResponds(kitty, "unix:/tmp/kitty.sock"));
+    }
+
+    [Fact]
+    public void FailedTerminalTokenRecordsAStartErrorAndNeverRunsTheAgent()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var atf = state.File("atf");
+        File.WriteAllText(atf, "#!/bin/sh\nexit 150\n");
+        File.SetUnixFileMode(atf, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("atf.launch.sh"));
+        var wrapper = MacTabControl.WrapperText(launch, "task", state.File("atf.launch.pid"), atf, dotnetRoot: "/opt/dotnet root");
+        Assert.Contains("export DOTNET_ROOT='/opt/dotnet root'", wrapper);
+        File.WriteAllText(launch.BootstrapPath, wrapper.Replace("exec ", "touch " + MacTabControl.ShellQuote(state.File("agent-ran")) + "; exec ", StringComparison.Ordinal));
+
+        var info = new ProcessStartInfo("/bin/sh") { UseShellExecute = false };
+        info.ArgumentList.Add(launch.BootstrapPath);
+        using var shell = Process.Start(info)!;
+        Assert.True(shell.WaitForExit(5000));
+
+        Assert.False(File.Exists(state.File("agent-ran")));
+        Assert.Contains("terminal-token failed", new MacTabControl("terminal", null, null).StartFailure(launch));
+    }
+
+    [Fact]
+    public void StoppingANeverStartedLaunchRemovesItsWrapper()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("atf.launch.sh"));
+        File.WriteAllText(launch.BootstrapPath, "prompt");
+        File.WriteAllText(state.File("atf.launch.start-error"), "failed");
+
+        new MacTabControl("terminal", null, null).StopOwned(launch);
+
+        Assert.False(File.Exists(launch.BootstrapPath));
+        Assert.False(File.Exists(state.File("atf.launch.start-error")));
+    }
+
+    [Fact]
+    public void StopKillsAnAgentThatIgnoresSigtermAndWaitsForItToBeReaped()
+    {
+        if (!OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", state.Path, null, null, state.File("atf.launch.sh"));
+        var info = new ProcessStartInfo("/bin/sh") { UseShellExecute = false };
+        info.ArgumentList.Add("-c");
+        info.ArgumentList.Add("trap '' TERM; while :; do sleep 1; done");
+        using var agent = Process.Start(info)!;
+        try
+        {
+            var sidecar = state.File("atf.launch.pid");
+            File.WriteAllText(sidecar, $"{agent.Id} {DarwinProcess.CreationToken(agent.Id)}");
+            File.SetUnixFileMode(sidecar, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            new MacTabControl("terminal", null, null).StopOwned(launch);
+
+            Assert.True(agent.HasExited);
+            Assert.False(File.Exists(sidecar));
+        }
+        finally
+        {
+            if (!agent.HasExited) { agent.Kill(); }
+        }
+    }
+
+    [Fact]
+    public void StopAlsoKillsWhatTheAgentLeftRunningInItsTree()
+    {
+        if (!OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atf0123456789abcdef0123", state.Path, null, null, state.File("atf.launch.sh"));
+        // Like a Codex tool shell: a platform /bin/sleep that survives its agent and never shows the launch marker.
+        using var agent = Process.Start(new ProcessStartInfo("/bin/sh", ["-c", "sleep 300 & echo $!; wait"])
+        { UseShellExecute = false, RedirectStandardOutput = true })!;
+        var tool = int.Parse(agent.StandardOutput.ReadLine()!, System.Globalization.CultureInfo.InvariantCulture);
+        try
+        {
+            var sidecar = state.File("atf.launch.pid");
+            File.WriteAllText(sidecar, $"{agent.Id} {DarwinProcess.CreationToken(agent.Id)}");
+            File.SetUnixFileMode(sidecar, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            new MacTabControl("terminal", null, null).StopOwned(launch);
+
+            Assert.True(agent.HasExited);
+            Assert.True(SpinWait.SpinUntil(() => DarwinProcess.Info(tool) is not { IsZombie: false }, TimeSpan.FromSeconds(10)));
+        }
+        finally
+        {
+            if (!agent.HasExited) { agent.Kill(); }
+            if (DarwinProcess.CreationToken(tool) is { } token) { DarwinProcess.SignalIfSame(tool, token, 9); }
+        }
+    }
+
+    [Fact]
+    public void EveryInteractiveCodexLaunchPutsTheLaunchMarkerIntoToolShells()
+    {
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atf0123456789abcdef0123", Path.GetTempPath(), null, null, "/tmp/atf.launch.sh");
+        const string marker = "shell_environment_policy.set.ATF_RUN_CORRELATION=\"atf0123456789abcdef0123\"";
+        foreach (var args in new[]
+        {
+            HerdrAgentControl.AgentArguments(launch),
+            WtTabControl.AgentArguments(launch, "task", windowsCommandLine: false),
+            WtTabControl.AgentArguments(launch with { ResumeSessionId = "native-1" }, "task", windowsCommandLine: true),
+        })
+        {
+            var at = args.ToList().IndexOf(marker);
+            Assert.True(at > 0 && args[at - 1] == "-c", string.Join(' ', args));
+        }
+        Assert.Equal(["resume", "native-1"], HerdrAgentControl.AgentArguments(launch with { ResumeSessionId = "native-1" }).TakeLast(2));
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Contains(MacTabControl.ShellQuote(marker), MacTabControl.WrapperText(launch, "task", "/tmp/atf.launch.pid", "/bin/atf"));
+        }
+        Assert.DoesNotContain(HerdrAgentControl.AgentArguments(launch with { Kind = InteractiveAgentKind.Claude }),
+            arg => arg.StartsWith("shell_environment_policy", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("No models available. Use /login to log into a provider via OAuth or API key. See:\n  /opt/pi/docs/providers.md", true)]
+    [InlineData("provider  model\nanthropic claude-sonnet-4-5", false)]
+    public void PiLoginProbeRecordsPisOwnVerdictBesideTheTui(string listModelsOutput, bool signedOut)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        Directory.CreateDirectory(state.File("terminal"));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Pi, "atftest", state.Path, null, Path.Combine(state.Path, "pi"),
+            Path.Combine(state.Path, "terminal", "atftest.launch.sh"))
+        { Model = "anthropic/claude-sonnet-4-5" };
+        var argsFile = state.File("probe-args");
+        var fakePi = state.File("pi");
+        File.WriteAllText(fakePi, "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + MacTabControl.ShellQuote(argsFile) + "\nprintf '%s\\n' "
+            + MacTabControl.ShellQuote(listModelsOutput) + "\n");
+        File.SetUnixFileMode(fakePi, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var args = WtTabControl.AgentArguments(launch, "the prompt atf-corr:x", windowsCommandLine: false);
+        var probe = MacTabControl.PiLoginProbe(fakePi, args, Path.ChangeExtension(launch.BootstrapPath, ".pid"));
+        Assert.Contains(probe, MacTabControl.WrapperText(launch, "the prompt atf-corr:x", Path.ChangeExtension(launch.BootstrapPath, ".pid"), "/bin/atf")
+            .Replace(MacTabControl.ShellQuote(MacTabControl.FindExecutable("pi") ?? "pi"), MacTabControl.ShellQuote(fakePi), StringComparison.Ordinal));
+
+        using (var shell = Process.Start(new ProcessStartInfo("/bin/sh", ["-c", probe + "wait\n"]) { UseShellExecute = false })!)
+        {
+            Assert.True(shell.WaitForExit(10_000));
+        }
+        // Same model and approval as the TUI, never the prompt.
+        var probeArgs = File.ReadAllLines(argsFile);
+        Assert.Contains("anthropic/claude-sonnet-4-5", probeArgs);
+        Assert.Equal(["--offline", "--list-models"], probeArgs[^2..]);
+        Assert.DoesNotContain(probeArgs, arg => arg.Contains("atf-corr", StringComparison.Ordinal));
+        var check = Path.ChangeExtension(launch.BootstrapPath, ".login-check");
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(check));
+
+        var blocker = new MacTabControl("terminal", null, null).LoginBlocker(launch);
+        Assert.Equal(signedOut, blocker is not null);
+        if (signedOut)
+        {
+            Assert.Equal("agent_login_required", blocker!.Code);
+            Assert.Contains("run `pi` and /login", blocker.Details);
+        }
+        Assert.Null(new MacTabControl("terminal", null, null).LoginBlocker(launch with { Kind = InteractiveAgentKind.Claude }));
+        Assert.DoesNotContain("--list-models", MacTabControl.WrapperText(launch with { Kind = InteractiveAgentKind.Codex },
+            "p", Path.ChangeExtension(launch.BootstrapPath, ".pid"), "/bin/atf"));
+    }
+
+    [Fact]
+    public void LiveAgentIsAdoptedFromItsSidecarAndRetainedAcrossRestart()
+    {
+        if (!OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        Directory.CreateDirectory(state.File("terminal"));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Pi, "atftest", state.Path, null, null, Path.Combine(state.Path, "terminal", "atftest.launch.sh"));
+        File.WriteAllText(launch.BootstrapPath, "prompt");
+        using var agent = Process.Start(new ProcessStartInfo("/bin/sleep", "30") { UseShellExecute = false })!;
+        try
+        {
+            var sidecar = Path.ChangeExtension(launch.BootstrapPath, ".pid");
+            File.WriteAllText(sidecar, $"{agent.Id} {DarwinProcess.CreationToken(agent.Id)}");
+            File.SetUnixFileMode(sidecar, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            // The wrapper reported its PID after StartAsync stopped waiting.
+            var tabs = new MacTabControl("terminal", null, null);
+            Assert.True(tabs.IsAlive(launch));
+            Assert.Equal(agent.Id, tabs.ProcessId(launch));
+
+            tabs.Retained(launch, "session-1");
+            var (survivorSession, survivorLaunch) = Assert.Single(MacTabControl.Survivors(state.Path, InteractiveAgentKind.Pi));
+            Assert.Equal("session-1", survivorSession);
+            Assert.Equal("atftest", survivorLaunch.AgentName);
+            Assert.Empty(MacTabControl.Survivors(state.Path, InteractiveAgentKind.Codex));
+
+            new MacTabControl("terminal", null, null).StopOwned(survivorLaunch);
+            Assert.True(agent.WaitForExit(5000));
+            Assert.Empty(MacTabControl.Survivors(state.Path, InteractiveAgentKind.Pi));
+            Assert.False(File.Exists(launch.BootstrapPath));
+        }
+        finally
+        {
+            if (!agent.HasExited) { agent.Kill(); }
+        }
     }
 
     [Fact]

@@ -14,6 +14,8 @@ public static class HerdrLaunchFixture
 {
     public const string ServerScript = HerdrCommands.ServerScript;
 
+    public const string MacServerScript = HerdrCommands.MacServerScript;
+
     public static bool IsInheritedSessionContext(string name) => LaunchEnvironment.IsInheritedSessionContext(name);
 
     public static void ApplyEnvironment(IDictionary<string, string?> environment, string? extraAllowed) => LaunchEnvironment.Apply(environment, extraAllowed);

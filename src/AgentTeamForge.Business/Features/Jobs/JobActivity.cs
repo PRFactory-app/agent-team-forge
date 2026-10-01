@@ -21,6 +21,11 @@ public static class JobActivity
         {
             return [Entry("error", line)];
         }
+        if (stream == "status")
+        {
+            // Lines ATF itself wrote about the run (a recognised failure reason, an omitted line).
+            return [Entry("status", line)];
+        }
 
         JsonDocument document;
         try { document = JsonDocument.Parse(line); }

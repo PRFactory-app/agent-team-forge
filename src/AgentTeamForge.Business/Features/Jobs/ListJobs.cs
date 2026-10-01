@@ -19,13 +19,19 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
     public JobListResult Execute(ListJobsRequest request)
     {
         var limit = request.Limit ?? DefaultPageSize;
-        if (limit is < 1 or > MaxPageSize
-            || request.Status is not (null or JobStatus.Queued or JobStatus.Running or JobStatus.Completed or JobStatus.Failed or JobStatus.NeedsReconciliation or JobStatus.Cancelled)
-            || request.Backend is not (null or "fake" or "claude" or "codex" or "pi" or "cursor" or "droid")
-            || (request.Since is not null && !DateTimeOffset.TryParse(request.Since, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out _))
-            || (request.Cursor is not null && (request.Cursor.Length > 64 || !request.Cursor.StartsWith("job_", StringComparison.Ordinal))))
+        var invalid = limit is < 1 or > MaxPageSize ? $"Invalid limit: must be an integer from 1 to {MaxPageSize}."
+            : request.Status is not (null or JobStatus.Queued or JobStatus.Running or JobStatus.Completed or JobStatus.Failed or JobStatus.NeedsReconciliation or JobStatus.Cancelled)
+                ? "Invalid status: must be one of: queued, running, completed, failed, needs_reconciliation, cancelled."
+            : request.Backend is not (null or "fake" or "claude" or "codex" or "pi" or "cursor" or "droid")
+                ? "Invalid backend: must be one of: fake, claude, codex, pi, cursor, droid."
+            : request.Since is not null && !DateTimeOffset.TryParse(request.Since, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out _)
+                ? "Invalid since: must be an ISO 8601 time such as 2026-01-31T12:00:00Z."
+            : request.Cursor is not null && (request.Cursor.Length > 64 || !request.Cursor.StartsWith("job_", StringComparison.Ordinal))
+                ? "Invalid cursor: must be the next_cursor of a previous page."
+            : null;
+        if (invalid is not null)
         {
-            return new JobListResult(null, JobErrors.InvalidRequest);
+            return new JobListResult(null, JobErrors.InvalidRequest) { Detail = invalid };
         }
 
         IReadOnlyList<JobSummaryRecord> rows;
@@ -116,4 +122,7 @@ public sealed record JobSummary(string JobId, string Status, string? ReasonCode,
 /// <summary>One page in the requested order. `NextCursor` is set exactly when `HasMore` is true.</summary>
 public sealed record JobListPage(IReadOnlyList<JobSummary> Jobs, int Limit, bool HasMore, string? NextCursor);
 
-public sealed record JobListResult(JobListPage? Page, string? Error);
+public sealed record JobListResult(JobListPage? Page, string? Error)
+{
+    public string? Detail { get; init; }
+}

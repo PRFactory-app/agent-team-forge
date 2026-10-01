@@ -21,7 +21,14 @@ clients afterwards. See [launch modes](terminal-modes.md) for what each mode
 means.
 
 - The daemon starts on first use. `atf start` starts it explicitly (safe to
-  repeat); `atf stop` stops it.
+  repeat); `atf stop` stops it. Setup, `atf doctor` and uninstall never start
+  it: the `claude mcp get` health check they run answers without contacting
+  the daemon. A daemon that is already running keeps its launch settings until
+  it is restarted; setup says so.
+- The state directory must be 0700 and its private files (`operator.key`,
+  `profile.json`, `launch-mode.json`, `jobs.db` and its `-wal`/`-shm`) 0600;
+  every command refuses looser modes and prints the `chmod` that fixes them.
+  `atf stop` only warns, because it signals nothing but this state's own daemon.
 - Login autostart is off by default: `atf setup --autostart` /
   `--autostart=off`.
 - Setup refuses to register a temporary or worktree binary or state directory
@@ -86,8 +93,13 @@ Other `submit_job` options:
 - `model`: for Codex and Pi a capability tier (`cheapest`, `low`, `medium`,
   `high`, `xhigh`, `max`; Pi also `medium-fast`), mapped in
   [model tiers](web-console.md#model-tiers); for Claude `haiku`, `sonnet`,
-  `opus` (default) or `fable`. Raw model slugs pass through.
+  `opus` (default) or `fable`, or the aliases `fast` (haiku), `balanced`
+  (sonnet) and `powerful` (opus). Raw model slugs pass through.
 - `effort`: for Claude or a raw Codex/Pi model; a tier sets its own effort.
+  Claude takes `low` to `max`, Pi `off` to `max`. Codex takes the levels its
+  model catalog (`codex debug models`) reports for that model, or its full
+  list when the catalog is unknown. Any other value is rejected with the
+  supported list.
 - `timeout_s` (1–86400): cancel with reason `timeout` that long after the job
   starts. `queue_ttl_s`: cancel with reason `queue_ttl` if not started in time.
 - `name`: agent name for the web console card.
@@ -218,6 +230,16 @@ accepts `--worktree`; follow-ups reuse the parent's worktree.
 | `cancelled` | Stopped, timed out, expired in the queue or interrupted (see `reason_code`) |
 | `needs_reconciliation` | ATF cannot prove whether the prompt ran or how it ended |
 
+A headless agent whose CLI reports that it is signed out (Claude, Codex, Pi,
+Droid or Cursor) fails with `agent_login_required`; the job's details and
+latest activity name the command that logs it in. Interactive agents report it
+too: Claude's login screen or signed-out transcript, Codex's sign-in screen or
+a turn its transcript ends on a 401, and Pi's own signed-out message. Pi
+records nothing for a prompt it refuses, so ATF reads that message from the
+Herdr pane, or (in macOS terminal mode) from Pi's `--list-models` check run
+beside the tab; there a Pi that has some credential but none for the selected
+model still waits out the startup limit.
+
 `needs_reconciliation` is never replayed automatically. A follow-up waits
 until the session is verified idle or stopped. For a live idle Herdr agent (before automatic idle close),
 ATF settles an acknowledged but unobserved (interrupted) turn as `failed` and resumes the next
@@ -251,7 +273,10 @@ interactive agent, no dirty files, no ignored files beyond build output
 The daily prune also requires the commits to be merged into the default
 branch. Use the `remove_worktree` MCP tool (`job_id`, `force`, `dry_run`) or
 `atf worktrees prune [--job ID] [--dry-run] [--force]` (force needs `--job` and
-overrides only dirty/ignored files, never unpushed commits). The branch
+overrides only dirty/ignored files, never unpushed commits). An unknown job id
+or an already removed worktree fails `not_found`, a job submitted without a
+worktree fails `no_worktree`, and a removal git refuses (for example a locked
+worktree) is kept as `git_refused` with git's message in its details. The branch
 `atf/job-<id>` is deleted with the worktree; the job row is kept, so a later
 follow-up fails `worktree_unavailable`.
 Worktrees are left for manual cleanup.

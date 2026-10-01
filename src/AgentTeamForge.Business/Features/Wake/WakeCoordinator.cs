@@ -1,4 +1,5 @@
 using AgentTeamForge.DAL.Features.Wake;
+using AgentTeamForge.DAL.Sqlite;
 
 namespace AgentTeamForge.Business.Features.Wake;
 
@@ -42,7 +43,7 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                log($"wake scan failed: {ex.GetType().Name}");
+                log($"wake scan failed: {StorageException.Describe(ex)}");
             }
             try { await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken); }
             catch (OperationCanceledException) { return; }

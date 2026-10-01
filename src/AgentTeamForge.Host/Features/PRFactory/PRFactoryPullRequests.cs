@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using AgentTeamForge.DAL.Features.Jobs;
@@ -244,7 +245,7 @@ public sealed partial class PRFactoryPullRequests(
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromMinutes(2));
         try { await process.WaitForExitAsync(timeout.Token); }
-        catch (OperationCanceledException) { process.Kill(entireProcessTree: true); throw; }
+        catch (OperationCanceledException) { OwnedProcessTermination.Kill(process); throw; }
         return new(process.ExitCode, await output, await error);
     }
 

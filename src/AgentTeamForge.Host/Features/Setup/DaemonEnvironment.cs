@@ -24,6 +24,8 @@ internal static class DaemonEnvironment
         // An agent run by an earlier daemon carries its run marker; a daemon
         // that inherited it would be killed by its own orphan cleanup.
         "ATF_RUN_CORRELATION", "ATF_BOOTSTRAP_FILE", "ATF_DAEMON_LOG",
+        // Agents' own MCP bridges must reach the daemon, never answer as a setup health check.
+        "ATF_MCP_HEALTH_CHECK",
     ];
 
     internal static void Scrub(IDictionary<string, string?> environment)

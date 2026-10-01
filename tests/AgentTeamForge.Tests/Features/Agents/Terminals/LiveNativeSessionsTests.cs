@@ -1,10 +1,11 @@
 using System.Diagnostics;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Tests.Support;
 
 namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 
-/// <summary>The /proc probe of which native session runs under a pane shell, against real processes.</summary>
+/// <summary>The /proc (Linux) and kern.proc/libproc (macOS) probe of which native session runs under a pane shell, against real processes.</summary>
 public sealed class LiveNativeSessionsTests
 {
     static Process Start(string script, params string[] args)
@@ -14,16 +15,27 @@ public sealed class LiveNativeSessionsTests
         return Process.Start(start)!;
     }
 
-    static string StartTicks(int pid)
+    // What Claude records as procStart: /proc stat ticks on Linux, `ps -o lstart` in UTC on macOS.
+    static string RecordedStart(int pid)
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            var ps = new ProcessStartInfo("/bin/ps") { RedirectStandardOutput = true, Environment = { ["TZ"] = "UTC" }, ArgumentList = { "-o", "lstart=", "-p", pid.ToString() } };
+            using var process = Process.Start(ps)!;
+            var lstart = process.StandardOutput.ReadToEnd().Trim();
+            process.WaitForExit();
+            return lstart;
+        }
         var stat = File.ReadAllText($"/proc/{pid}/stat");
         return stat[(stat.LastIndexOf(')') + 2)..].Split(' ')[22 - 3];
     }
 
+    static bool Probed => OperatingSystem.IsLinux() || OperatingSystem.IsMacOS();
+
     [Fact]
     public async Task Claude_session_comes_from_the_registry_of_this_exact_process_under_the_shell()
     {
-        Assert.SkipUnless(OperatingSystem.IsLinux(), "reads /proc");
+        Assert.SkipUnless(Probed, "reads /proc or Darwin process info");
         using var state = new TempStateDir();
         var sessions = Directory.CreateDirectory(Path.Combine(state.Path, "sessions")).FullName;
         using var shell = Start("sleep 30 & wait");
@@ -31,10 +43,11 @@ public sealed class LiveNativeSessionsTests
         {
             await Bounded.Until(() => LiveChild(shell.Id) is not null, "agent child");
             var agent = LiveChild(shell.Id)!.Value;
-            File.WriteAllText(Path.Combine(sessions, agent + ".json"), $$"""{"pid":{{agent}},"sessionId":"sess-1","procStart":"{{StartTicks(agent)}}"}""");
+            File.WriteAllText(Path.Combine(sessions, agent + ".json"), $$"""{"pid":{{agent}},"sessionId":"sess-1","procStart":"{{RecordedStart(agent)}}"}""");
             Assert.Equal(["sess-1"], LiveNativeSessions.Read(InteractiveAgentKind.Claude, shell.Id, state.Path)!);
             // A stale registry entry of a reused PID does not count.
-            File.WriteAllText(Path.Combine(sessions, agent + ".json"), $$"""{"pid":{{agent}},"sessionId":"sess-1","procStart":"1"}""");
+            var stale = OperatingSystem.IsMacOS() ? "Thu Jan  1 00:00:01 1970" : "1";
+            File.WriteAllText(Path.Combine(sessions, agent + ".json"), $$"""{"pid":{{agent}},"sessionId":"sess-1","procStart":"{{stale}}"}""");
             Assert.Empty(LiveNativeSessions.Read(InteractiveAgentKind.Claude, shell.Id, state.Path)!);
             // An unreadable registry of a process under the shell makes the whole set unknown; only a
             // well-formed, different start time is stale.
@@ -45,13 +58,13 @@ public sealed class LiveNativeSessionsTests
             }
             Assert.Null(LiveNativeSessions.Read(InteractiveAgentKind.Pi, shell.Id, state.Path));
         }
-        finally { shell.Kill(entireProcessTree: true); }
+        finally { OwnedProcessTermination.Kill(shell); }
     }
 
     [Fact]
     public void Codex_session_is_the_rollout_its_process_keeps_open()
     {
-        Assert.SkipUnless(OperatingSystem.IsLinux(), "reads /proc");
+        Assert.SkipUnless(Probed, "reads /proc or Darwin process info");
         using var state = new TempStateDir();
         var rollout = Path.Combine(state.Path, "rollout-2026-10-01T00-00-00-thread-live.jsonl");
         using var shell = Start("exec 3>>\"$1\"; exec sleep 30", rollout);
@@ -66,13 +79,13 @@ public sealed class LiveNativeSessionsTests
             }
             Assert.Equal(["thread-live"], live!);
         }
-        finally { shell.Kill(entireProcessTree: true); }
+        finally { OwnedProcessTermination.Kill(shell); }
     }
 
     [Fact]
     public void Codex_process_holding_two_rollouts_reports_both_so_the_identity_is_ambiguous()
     {
-        Assert.SkipUnless(OperatingSystem.IsLinux(), "reads /proc");
+        Assert.SkipUnless(Probed, "reads /proc or Darwin process info");
         using var state = new TempStateDir();
         var owner = Path.Combine(state.Path, "rollout-2026-10-01T00-00-00-thread-owner.jsonl");
         var other = Path.Combine(state.Path, "rollout-2026-10-01T00-00-01-thread-other.jsonl");
@@ -88,11 +101,15 @@ public sealed class LiveNativeSessionsTests
             }
             Assert.Equal(["thread-other", "thread-owner"], live!.Order());
         }
-        finally { shell.Kill(entireProcessTree: true); }
+        finally { OwnedProcessTermination.Kill(shell); }
     }
 
     static int? LiveChild(int parent)
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            return DarwinProcess.Table().Where(entry => entry.ParentPid == parent && !entry.IsZombie).Select(entry => (int?)entry.Pid).FirstOrDefault();
+        }
         foreach (var dir in Directory.EnumerateDirectories("/proc"))
         {
             if (!int.TryParse(Path.GetFileName(dir), out var pid)) { continue; }

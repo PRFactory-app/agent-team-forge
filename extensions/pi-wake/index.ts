@@ -3,7 +3,7 @@
  * notice-only JSONL doorbell; this Pi session injects it through sendMessage.
  * The lifecycle and injection API follow the reference extension.
  */
-import { readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -18,9 +18,7 @@ export default function activate(pi: ExtensionAPI): void {
   let stateDir = process.env.ATF_STATE_DIR;
   if (!stateDir) {
     try {
-      const setting = JSON.parse(
-        requireStateSetting(),
-      ) as { stateDir?: string };
+      const setting = JSON.parse(requireStateSetting()) as { stateDir?: string };
       stateDir = setting.stateDir;
     } catch {
       /* No configured state directory yet. */
@@ -38,6 +36,15 @@ export default function activate(pi: ExtensionAPI): void {
       /* State evidence must not interrupt the agent. */
     }
   }
+  // The marker describes a live process; one left behind by an exited Pi would claim "running" forever.
+  function clearMark(): void {
+    try {
+      unlinkSync(marker);
+    } catch {
+      /* Already gone. */
+    }
+  }
+  process.once("exit", clearMark);
   let offset = 0;
   const lifecycle = createLifecycle({
     createController: () => new AbortController(),
@@ -94,6 +101,7 @@ export default function activate(pi: ExtensionAPI): void {
   pi.on("tool_call", () => mark("running", "tool_call"));
   pi.on("agent_settled", () => mark("waiting", "agent_settled"));
   pi.on("session_shutdown", async () => {
+    clearMark();
     await lifecycle.shutdown();
   });
 }

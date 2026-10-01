@@ -68,6 +68,17 @@ transaction. There are no repository ports or mediator layers.
   that only lets it message its lead (`send_message(to="team-lead")`).
 - A lost response returns `outcome_unknown`. The transport never replays a
   request; the caller retries with the same idempotency key.
+- The daemon handles 16 requests at a time. Further callers wait for a slot;
+  one still waiting after a second is answered `daemon_busy` before it sends
+  its request, and the client retries that itself with backoff within its
+  call budget. `daemon_unavailable` means no daemon answered at all.
+  Before authentication a hello may be at most 16 KiB and at most 64 are
+  awaited at once; a connection beyond that is answered `daemon_busy` too.
+- The MCP bridge answers a line that is not JSON with a JSON-RPC `-32700`
+  parse error, and text that is not valid Unicode (an unpaired surrogate
+  escape) with `-32602`. Tool arguments are checked against the advertised
+  schema; a missing, wrongly typed or out-of-range argument is rejected as
+  `invalid_request` with an `error_detail` naming the field.
 
 ## Job lifecycle
 
@@ -122,8 +133,20 @@ Rules that hold everywhere ([ADR 0008](adr/0008-never-replay-uncertain-prompts.m
 - An uncertain prompt is never resent. Only a proven pre-delivery failure is
   retried.
 - A PID alone never proves ownership. Linux uses a marker plus pidfd for
-  headless processes; interactive sessions use saved terminal ownership records
-  (for Herdr: server PID and start time, session name, owner label).
+  headless processes; macOS reads the same marker where the kernel shows it
+  (not for Apple platform binaries such as `/bin/sh`) and also stops the
+  marked process's descendants. Codex builds its tool shells' environment from
+  `shell_environment_policy`, so ATF passes the marker to them explicitly, in
+  headless and interactive launches alike (an interactive launch's marker is its
+  random agent name). Because a tool started in its own session outlives its
+  agent and, as a platform binary, never shows the marker on macOS, the daemon
+  there records each running run's descendants (PID and start time) under
+  `<state>/run-processes/` every 5 seconds, and stop or restart cleanup signals a
+  recorded process only while it still has that start time. Interactive
+  sessions use saved terminal ownership records
+  (for Herdr: server PID and start time, session name, owner label); a Herdr
+  pane's bootstrap files are removed when its ownership ends, and at startup
+  only when the pane is provably gone.
 - Database fencing stops stale status writes, not an old process writing
   files. A fenced session gets no new machine work until it is stopped or
   its exit is verified.

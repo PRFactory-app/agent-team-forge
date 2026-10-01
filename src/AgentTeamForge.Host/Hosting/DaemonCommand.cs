@@ -36,12 +36,11 @@ public static class DaemonCommand
             // daemon-created files even when the invoking client has a loose umask.
             _ = Native.umask(0x3F); // 077
         }
-        var logPath = Environment.GetEnvironmentVariable("ATF_DAEMON_LOG") ?? Path.Combine(state.Path, "daemon.log");
-        var log = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
-        {
-            AutoFlush = true,
-        };
-        Console.SetError(new DaemonLogWriter(Console.Error, log));
+        // A starter that names the log gives this daemon either that same file as stderr (POSIX lazy start)
+        // or no stderr at all (Windows), so the line is written to the log only, never twice.
+        var starterLog = Environment.GetEnvironmentVariable("ATF_DAEMON_LOG");
+        var log = AppendOnlyFile.Open(starterLog ?? Path.Combine(state.Path, "daemon.log"));
+        Console.SetError(new DaemonLogWriter(starterLog is null ? Console.Error : null, log));
         AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) => Log($"fatal: unhandled exception: {eventArgs.ExceptionObject}");
         TaskScheduler.UnobservedTaskException += (_, eventArgs) => Log($"error: unobserved task exception: {eventArgs.Exception}");
         Log($"starting pid={Environment.ProcessId}");
@@ -92,6 +91,10 @@ public static class DaemonCommand
             {
                 Log($"test crash at {point}");
                 Process.GetCurrentProcess().Kill();
+                // SIGKILL to self can be delivered after kill() returns (macOS kills a
+                // multithreaded process asynchronously). Never pass the boundary: a
+                // returning checkpoint would commit, respond or launch before death.
+                Thread.Sleep(Timeout.Infinite);
             }
 
             if (point == failAt)
@@ -103,12 +106,19 @@ public static class DaemonCommand
         JobDatabase database;
         try
         {
+            // Verify before the backup: a damaged database must neither serve jobs nor rotate out a good backup.
+            JobDatabase.Verify(state.Database, limits.BusyTimeout);
             StartupBackup.Run(state, limits.BusyTimeout, Log);
             database = JobDatabase.Open(state.Database, limits.BusyTimeout);
         }
+        catch (StorageException ex) when (ex.Failure == StorageFailure.Corrupt)
+        {
+            LogCorruptDatabase(state, ex.Message);
+            return 70;
+        }
         catch (StorageException ex)
         {
-            Log($"error: storage_{ex.Failure}");
+            Log($"error: storage_{ex.Failure}: {ex.Message}");
             return 70;
         }
 
@@ -124,7 +134,9 @@ public static class DaemonCommand
                 return;
             }
             HerdrOwnedSessions.Recover(state.Path, store.FenceSession, Log);
+            HerdrOwnedSessions.SweepStaleBootstraps(state.Path, Log);
         }
+        RunProcessSnapshots.Configure(state.Path);
         var quarantined = new RecoverOnStartup(store, () =>
         {
             RecoverHerdr();
@@ -134,6 +146,7 @@ public static class DaemonCommand
             }
         }).Execute();
         Log($"recovery: quarantined {quarantined.Count} uncertain attempt(s)");
+        RunProcessSnapshots.PruneExited();
         var backendEnv = new Dictionary<string, string>();
         if (profile.TestProfile)
         {
@@ -237,7 +250,14 @@ public static class DaemonCommand
             }, retentionSettings, dispatcher.ReleaseNativeTurn, new AgentTeamForge.Business.Features.Usage.SessionTokenUsage());
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
-        using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, endpoint.Handle, Log, endpoint.AfterReply,
+        // The socket serves before dispatch resolves restart candidates; a request must not
+        // observe a quarantined job that recovery is about to fail or reattach.
+        IpcResponse Handle(IpcRequest request)
+        {
+            dispatcher.RestartResolved.Wait();
+            return endpoint.Handle(request);
+        }
+        using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, Handle, Log, endpoint.AfterReply,
             request => request.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp or IpcProtocol.JobStop ? dispatcher.PauseClaims() : null);
 
         using var lifetime = new CancellationTokenSource();
@@ -424,26 +444,48 @@ public static class DaemonCommand
 
     static readonly string[] CatalogBackends = ["codex", "pi", "cursor"];
 
+    static void LogCorruptDatabase(StateDirectory state, string report)
+    {
+        Log($"error: storage_corrupt: {state.Database} failed SQLite's integrity check: {report}");
+        var backups = StartupBackup.List(state);
+        Log(backups.Length == 0
+            ? $"the daemon will not start on a damaged database; no backups found in {StartupBackup.BackupDirectory(state)}"
+            : $"the daemon will not start on a damaged database; backups, newest first: {string.Join(", ", backups)}");
+        Log($"to restore: with the daemon stopped, move {state.Database} and any {state.Database}-wal and {state.Database}-shm out of "
+            + $"{state.Path}, copy a backup to {state.Database}{(OperatingSystem.IsWindows() ? "" : ", chmod 600 it")}, then run atf start");
+    }
+
     static void Log(string message) => Console.Error.WriteLine($"[atf-daemon] {DateTime.UtcNow:yyyy-MM-dd'T'HH:mm:ss.fff'Z'} {message}");
 
-    sealed class DaemonLogWriter(TextWriter stderr, TextWriter file) : TextWriter
+    /// <summary>Copies stderr to the log one whole line per append, so concurrent writers never split a line.</summary>
+    sealed class DaemonLogWriter(TextWriter? stderr, AppendOnlyFile file) : TextWriter
     {
         readonly Lock _gate = new();
-        public override Encoding Encoding => stderr.Encoding;
+        readonly StringBuilder _pending = new();
+        public override Encoding Encoding => Encoding.UTF8;
         public override void WriteLine(string? value)
         {
             lock (_gate)
             {
-                stderr.WriteLine(value);
-                file.WriteLine(value);
+                stderr?.WriteLine(value);
+                file.WriteLine(_pending.Append(value).ToString());
+                _pending.Clear();
             }
         }
         public override void Write(char value)
         {
             lock (_gate)
             {
-                stderr.Write(value);
-                file.Write(value);
+                stderr?.Write(value);
+                if (value == '\n')
+                {
+                    file.WriteLine(_pending.ToString().TrimEnd('\r'));
+                    _pending.Clear();
+                }
+                else
+                {
+                    _pending.Append(value);
+                }
             }
         }
     }
@@ -480,9 +522,11 @@ public static class DaemonCommand
                 }
                 if (removed + kept > 0) { Log($"worktrees: removed {removed}, kept {kept}"); }
             }
+            // Shutdown (requested or after a dispatcher halt) cancels a Git call in flight; that is a stop, not a fault.
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
             catch (Exception ex) when (ex is not OutOfMemoryException and not OperationCanceledException)
             {
-                Log($"worktree cleanup failed: {ex.GetType().Name}");
+                Log($"worktree cleanup failed: {StorageException.Describe(ex)}");
             }
 
             try
@@ -495,7 +539,7 @@ public static class DaemonCommand
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
-                Log($"prune failed: {ex.GetType().Name}");
+                Log($"prune failed: {StorageException.Describe(ex)}");
             }
 
             try { await Task.Delay(TimeSpan.FromDays(1), cancellationToken); }

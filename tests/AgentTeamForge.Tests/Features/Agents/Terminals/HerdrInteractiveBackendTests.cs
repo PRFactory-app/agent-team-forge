@@ -731,7 +731,9 @@ public sealed class HerdrInteractiveBackendTests
 
         var args = HerdrAgentControl.AgentArguments(launch);
 
-        Assert.Equal(["-c", "projects={\"" + cwd.Replace("\"", "\\\"") + "\"={trust_level='trusted'}}"],
+        // Codex keys trust by the physical directory (macOS /tmp is /private/tmp).
+        var key = PhysicalPath.Resolve(cwd)!;
+        Assert.Equal(["-c", "projects={\"" + key.Replace("\"", "\\\"") + "\"={trust_level='trusted'}}"],
             args.SkipWhile(arg => arg != "-c").Take(2));
     }
 

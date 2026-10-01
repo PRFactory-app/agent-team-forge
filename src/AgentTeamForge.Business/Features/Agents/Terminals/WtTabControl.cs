@@ -5,6 +5,7 @@ using System.Reflection.PortableExecutable;
 using System.Runtime.InteropServices;
 using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.DAL.Files;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
@@ -232,7 +233,56 @@ internal sealed class WtTabControl : IWtTabControl
         try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".hook.ps1")); } catch (IOException) { }
         try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".hook.cmd")); } catch (IOException) { }
         try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".start-error")); } catch (IOException) { }
+        try { File.Delete(Path.ChangeExtension(tab.Wrapper, ".session")); } catch (IOException) { }
         return true;
+    }
+
+    public bool ProvenGone(InteractiveLaunch launch) => WrapperExited(launch);
+
+    public void Busy(InteractiveLaunch launch)
+    {
+        try { File.Delete(Path.ChangeExtension(launch.BootstrapPath, ".session")); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
+    public void Retained(InteractiveLaunch launch, string sessionId)
+    {
+        // Best effort: without the record a restarted daemon only loses the ability to reuse this agent.
+        try
+        {
+            using var file = new FileStream(Path.ChangeExtension(launch.BootstrapPath, ".session"), PrivateFiles.Options(FileMode.Create, FileAccess.Write));
+            file.Write(Encoding.UTF8.GetBytes(launch.Kind + "\n" + sessionId));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
+    /// <summary>
+    /// Idle agents of <paramref name="kind"/> whose wrapper still runs from before a daemon restart, by native session.
+    /// Ownership is the wrapper's PID and creation time, which a restarted daemon re-proves the same way.
+    /// </summary>
+    internal static IEnumerable<(string SessionId, InteractiveLaunch Launch)> Survivors(string stateRoot, InteractiveAgentKind kind)
+    {
+        var directory = Path.Combine(stateRoot, "wt");
+        if (!Directory.Exists(directory)) { yield break; }
+        foreach (var path in Directory.EnumerateFiles(directory, "*.launch.session"))
+        {
+            string[] fields;
+            try
+            {
+                var file = new FileInfo(path);
+                if (file.LinkTarget is not null || file.Length > 512) { continue; }
+                fields = File.ReadAllText(path).Split('\n');
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
+            var wrapper = Path.ChangeExtension(path, ".ps1");
+            if (fields is not [var recordedKind, { Length: > 0 } sessionId] || recordedKind != kind.ToString()
+                || TryReadOwned(Path.ChangeExtension(path, ".pid"), wrapper) is not { } tab || !MayBeLive(tab))
+            {
+                continue;
+            }
+            var agentName = Path.GetFileName(path)[..^".launch.session".Length];
+            yield return (sessionId, new InteractiveLaunch(kind, agentName, stateRoot, sessionId, null, wrapper));
+        }
     }
 
     internal static byte[] WrapperBytes(InteractiveLaunch launch, string prompt, string sidecar, string? codexHome = null)
@@ -606,7 +656,8 @@ internal sealed class WtTabControl : IWtTabControl
 
     static void WaitForExit(OwnedTab tab)
     {
-        for (var i = 0; i < 50 && TryIdentity(tab.Pid) == tab.Created; i++)
+        // A killed process can linger briefly with an unreadable start time (a Unix zombie until reaped).
+        for (var i = 0; i < 50 && MayBeLive(tab); i++)
         {
             Thread.Sleep(100);
         }

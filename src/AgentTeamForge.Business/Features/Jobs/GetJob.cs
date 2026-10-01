@@ -10,7 +10,7 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal, bool intera
     {
         if (string.IsNullOrWhiteSpace(jobId) || jobId.Length > 64)
         {
-            return JobResult.Fail(JobErrors.InvalidRequest);
+            return JobResult.Fail(JobErrors.InvalidRequest, "Invalid job_id: must be 1 to 64 characters.");
         }
 
         JobRecord? job;
@@ -74,7 +74,7 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal, bool intera
         HerdrPlacement = JobOptions.Read(job.Options, "herdr_placement"),
         SessionId = job.SessionId,
         ParentJobId = job.ParentJobId,
-        Cwd = job.WorktreePath ?? job.Cwd,
+        Cwd = JobWorktree.WorkingDirectory(job),
         WorktreePath = job.WorktreePath,
         WorktreeBranch = job.WorktreeBranch,
     };

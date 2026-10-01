@@ -484,6 +484,37 @@ public sealed class SetupCommandTests
     }
 
     [Fact]
+    public void CheckReportsAGroupReadableDatabaseWithTheFix()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        using var temp = new TempStateDir();
+        var state = temp.File("state");
+        Assert.Equal(0, InitCommand.Run(state, testProfile: true, queueLimit: null, maxRuntimeSeconds: null));
+        var database = Path.Combine(state, "jobs.db");
+        File.SetUnixFileMode(database, StateDirectory.PrivateFile | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        var originalError = Console.Error;
+        using var error = new StringWriter();
+        Console.SetError(error);
+        int result;
+        try
+        {
+            result = SetupCommand.Run(new Dictionary<string, string> { ["check"] = "true", ["state-dir"] = state },
+                NoClient, "/tmp/atf", homePath: temp.File("home"));
+        }
+        finally
+        {
+            Console.SetError(originalError);
+        }
+
+        Assert.Equal(1, result);
+        Assert.Contains("private_file_unsafe", error.ToString());
+        Assert.Contains($"chmod 600 \"{database}\"", error.ToString());
+    }
+
+    [Fact]
     public void CheckRequiresClaudeInboundWithoutChangingSettings()
     {
         using var temp = new TempStateDir();
@@ -720,14 +751,14 @@ public sealed class SetupCommandTests
         using var temp = new TempStateDir();
         var home = temp.File("home");
         var calls = new List<string>();
+        var binary = "/tmp/atf binary";
+        var state = "/tmp/atf state";
         (int, string) Runner(string tool, IReadOnlyList<string> args)
         {
             calls.Add(tool + " " + string.Join(' ', args));
-            return (0, "");
+            return (0, tool == "id" ? "501\n" : args[0] == "print" ? LaunchdOwnershipTests.Print(binary, state) : "");
         }
 
-        var binary = "/tmp/atf binary";
-        var state = "/tmp/atf state";
         Assert.Equal(0, LoginAutostart.Apply(home, binary, state, true, Runner, "linux"));
         var unit = File.ReadAllText(LoginAutostart.FilePath(home, "linux"));
         Assert.Contains("ExecStart=\"/tmp/atf binary\" daemon --state-dir \"/tmp/atf state\"", unit);
@@ -743,8 +774,68 @@ public sealed class SetupCommandTests
         Assert.Contains("<string>/tmp/atf binary</string>", plist);
         Assert.Contains("<key>RunAtLoad</key><true/>", plist);
         Assert.Contains("<key>PATH</key>", plist);
+        Assert.Contains($"launchctl bootstrap gui/501 {LoginAutostart.FilePath(home, "macos")}", calls);
         Assert.Equal(0, LoginAutostart.Apply(home, binary, state, false, Runner, "macos"));
         Assert.False(LoginAutostart.IsInstalled(home, "macos"));
+        Assert.Contains("launchctl bootout gui/501/com.agentteamforge.daemon", calls);
+    }
+
+    [Fact]
+    public void LaunchAgentIsLoadedOnEnableUnloadedOnDisableAndRestoredOnFailure()
+    {
+        using var temp = new TempStateDir();
+        var home = temp.File("home");
+        var path = LoginAutostart.FilePath(home, "macos");
+        string? loaded = null;
+        var failBootstrap = false;
+        var calls = new List<string>();
+        (int, string) Launchd(string tool, IReadOnlyList<string> args)
+        {
+            calls.Add(tool + " " + string.Join(' ', args));
+            switch (tool, args[0])
+            {
+                case ("id", _): return (0, "501\n");
+                case ("launchctl", "print"): return loaded is null ? (113, "Could not find service") : (0, loaded);
+                case ("launchctl", "bootstrap") when failBootstrap:
+                    failBootstrap = false;
+                    return (5, "Bootstrap failed: 5: Input/output error");
+                case ("launchctl", "bootstrap"):
+                    loaded = LaunchdOwnershipTests.PrintPlist(args[2]);
+                    return (0, "");
+                case ("launchctl", "bootout"):
+                    loaded = null;
+                    return (0, "");
+                default: return (1, "unexpected");
+            }
+        }
+
+        Assert.Equal(0, LoginAutostart.Apply(home, "/tmp/atf", "/tmp/state", true, Launchd, "macos"));
+        Assert.NotNull(loaded);
+        Assert.DoesNotContain(calls, call => call.StartsWith("launchctl bootout", StringComparison.Ordinal));
+
+        // Re-enabling unchanged content leaves the running job alone; changed content reloads it.
+        calls.Clear();
+        Assert.Equal(0, LoginAutostart.Apply(home, "/tmp/atf", "/tmp/state", true, Launchd, "macos"));
+        Assert.DoesNotContain(calls, call => call.StartsWith("launchctl boot", StringComparison.Ordinal));
+        Assert.Equal(0, LoginAutostart.Apply(home, "/tmp/atf2", "/tmp/state", true, Launchd, "macos"));
+        Assert.Contains("launchctl bootout gui/501/com.agentteamforge.daemon", calls);
+        Assert.Contains($"launchctl bootstrap gui/501 {path}", calls);
+
+        var current = File.ReadAllText(path);
+        failBootstrap = true;
+        Assert.Equal(1, LoginAutostart.Apply(home, "/tmp/atf3", "/tmp/state", true, Launchd, "macos"));
+        Assert.Equal(current, File.ReadAllText(path));
+        Assert.NotNull(loaded);
+
+        // A job of this binary and state left loaded without its plist is still unloaded by "off".
+        File.Delete(path);
+        loaded = LaunchdOwnershipTests.Print("/tmp/atf", "/tmp/state");
+        Assert.Equal(0, LoginAutostart.Apply(home, "/tmp/atf", "/tmp/state", false, Launchd, "macos"));
+        Assert.Null(loaded);
+
+        static (int, string) NoUid(string tool, IReadOnlyList<string> args) => tool == "id" ? (1, "") : (0, "");
+        Assert.Equal(1, LoginAutostart.Apply(home, "/tmp/atf", "/tmp/state", true, NoUid, "macos"));
+        Assert.False(File.Exists(path));
     }
 
     [Theory]
@@ -795,6 +886,7 @@ public sealed class SetupCommandTests
         {
             "CLAUDECODE", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT",
             "HERDR_PANE_ID", "CODEX_THREAD_ID", "AGENT_NAME", "WIN_AGENT_TEAMS_PARENT_ID", "ATF_RUN_CORRELATION",
+            "ATF_MCP_HEALTH_CHECK",
         };
         var environment = kept.Concat(dropped).ToDictionary(key => key, key => (string?)"value");
 
@@ -824,5 +916,14 @@ public sealed class SetupCommandTests
         Assert.True(LoginAutostart.UseSystemdUserUnit(home, "/tmp/atf", "/tmp/state"));
         Assert.False(LoginAutostart.UseSystemdUserUnit(home, "/tmp/other/atf", "/tmp/state"));
         Assert.False(LoginAutostart.UseSystemdUserUnit(home, "/tmp/atf", "/tmp/other-state"));
+
+        // The unit may spell the binary and state through a symlink; ownership is decided link-resolved.
+        var real = temp.File("real");
+        Directory.CreateDirectory(real);
+        var linked = temp.File("linked");
+        Directory.CreateSymbolicLink(linked, real);
+        File.WriteAllText(path, LoginAutostart.LinuxUnit(Path.Combine(linked, "a \"$b%"), Path.Combine(linked, "state"), "/usr/bin"));
+        Assert.True(LoginAutostart.UseSystemdUserUnit(home, Path.Combine(real, "a \"$b%"), Path.Combine(real, "state")));
+        Assert.False(LoginAutostart.UseSystemdUserUnit(home, Path.Combine(real, "a \"$b"), Path.Combine(real, "state")));
     }
 }

@@ -26,8 +26,36 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) rid=osx-arm64; hash_tool=shasum; sums=SHA256SUMS-osx-arm64;;
   *) fail "unsupported platform $(uname -s)-$(uname -m); available Unix bundles: linux-x64, osx-arm64";;
 esac
-for tool in tar "$hash_tool" mktemp readlink; do command -v "$tool" >/dev/null 2>&1 || fail "missing $tool"; done
+platform_tools=
+[ "$rid" = osx-arm64 ] && platform_tools=xattr
+for tool in tar "$hash_tool" mktemp readlink $platform_tools; do command -v "$tool" >/dev/null 2>&1 || fail "missing $tool"; done
 sha_file() { if [ "$hash_tool" = shasum ]; then shasum -a 256 "$@"; else sha256sum "$@"; fi; }
+# SemVer precedence: true when $1 sorts before $2 (build metadata ignored).
+version_older() {
+  awk -v a="$1" -v b="$2" '
+    function cmp_id(x, y,   px, py) {
+      if (x ~ /^[0-9]+$/ && y ~ /^[0-9]+$/) return (x + 0 < y + 0) ? -1 : (x + 0 > y + 0)
+      if (x ~ /^[0-9]+$/) return -1
+      if (y ~ /^[0-9]+$/) return 1
+      # Tags are named rc1..rcN, so compare a shared prefix numerically (rc10 after rc9).
+      px = x; sub(/[0-9]+$/, "", px); py = y; sub(/[0-9]+$/, "", py)
+      if (px == py && px != x && py != y) return cmp_id(substr(x, length(px) + 1), substr(y, length(py) + 1))
+      return (x < y) ? -1 : (x > y)
+    }
+    function cmp_list(x, y, sep,   n, m, xs, ys, i, c) {
+      n = split(x, xs, sep); m = split(y, ys, sep)
+      for (i = 1; i <= n && i <= m; i++) if ((c = cmp_id(xs[i], ys[i])) != 0) return c
+      return (n < m) ? -1 : (n > m)
+    }
+    BEGIN {
+      sub(/[+].*/, "", a); sub(/[+].*/, "", b)
+      ac = a; ap = ""; if ((i = index(a, "-")) > 0) { ac = substr(a, 1, i - 1); ap = substr(a, i + 1) }
+      bc = b; bp = ""; if ((i = index(b, "-")) > 0) { bc = substr(b, 1, i - 1); bp = substr(b, i + 1) }
+      c = cmp_list(ac, bc, "[.]")
+      if (c == 0) c = (ap == "" && bp == "") ? 0 : (ap == "") ? 1 : (bp == "") ? -1 : cmp_list(ap, bp, "[.]")
+      exit (c < 0) ? 0 : 1
+    }'
+}
 [ -n "${HOME:-}" ] || fail 'HOME is required'
 root=$HOME/.local/share/agentteamforge
 releases=$root/releases
@@ -69,6 +97,10 @@ if [ -n "$uninstall" ]; then
     else
       "$root/current/atf" uninstall --teardown-only --state-dir "$state" || fail 'client teardown failed; installation left unchanged'
     fi
+    # Teardown asks claude for its registration; that health check runs `atf mcp`, which starts the daemon again.
+    if [ -d "$state" ]; then
+      "$root/current/atf" stop --state-dir "$state" >/dev/null || fail 'daemon restarted during client teardown and did not stop; binaries left in place'
+    fi
   fi
   if [ -L "$bin" ]; then rm -- "$bin"; fi
   if [ -L "$root/current" ]; then rm -- "$root/current"; fi
@@ -78,7 +110,7 @@ if [ -n "$uninstall" ]; then
       while read -r expected path; do
         case "$path" in ./*) ;; *) fail "invalid manifest path in $dir";; esac
         case "$path" in *'/../'*|*'/./'*|*/..|*/.) fail "invalid manifest path in $dir";; esac
-        file=$dir/$path
+        file=$dir/${path#./}
         if [ -f "$file" ] && [ ! -L "$file" ] && [ "$(sha_file "$file" | cut -d ' ' -f 1)" = "$expected" ]; then
           rm -- "$file"
         else
@@ -100,6 +132,7 @@ if [ -n "$uninstall" ]; then
   exit 0
 fi
 [ -z "$purge$force" ] || usage
+requested=$version$archive
 version=${version#v}
 case "$version" in ''|*[!0-9A-Za-z.+-]*) [ -z "$version" ] || fail 'invalid version';; esac
 if [ -n "$archive" ]; then
@@ -150,28 +183,42 @@ fi
 check_current
 upgrade=
 [ -L "$root/current" ] && upgrade=1
+# Rerunning the one-liner resolves "latest", which can be older than an installed prerelease.
+if [ -n "$upgrade" ] && [ -z "$requested" ] && [ "$current_version" != "$version" ] && version_older "$version" "$current_version"; then
+  echo "atf $current_version is active and newer than the latest release $version; nothing changed."
+  echo "To switch to $version anyway, rerun with --version $version."
+  exit 0
+fi
 mkdir -p "$releases" "$HOME/.local/bin"
 target=$releases/$version
 if [ -e "$target" ] || [ -L "$target" ]; then
-  [ -L "$root/current" ] && [ "$current_version" = "$version" ] && [ -d "$target" ] && [ ! -L "$target" ] && [ -f "$target/.atf-files" ] || fail "version already installed but not active: $version"
+  [ -d "$target" ] && [ ! -L "$target" ] && [ -f "$target/.atf-files" ] || fail "unmanaged version directory: $target"
   [ -x "$target/atf" ] && [ "$("$target/atf" --version)" = "atf $version" ] || fail 'installed version failed verification'
   (cd "$target" && sha_file -c .atf-files >/dev/null) || fail 'installed files failed verification'
-  [ -L "$bin" ] && [ "$(readlink "$bin")" = "$owned_bin" ] || fail 'stable atf link is missing'
-  echo "atf $version already installed and verified: $bin"
-  exit 0
-fi
-stage=$(mktemp -d "$releases/.stage.XXXXXX")
-if [ "$rid" = linux-x64 ]; then
-  tar -xzf "$archive" -C "$stage" --no-same-owner --no-same-permissions
+  if [ -n "$upgrade" ] && [ "$current_version" = "$version" ]; then
+    [ -L "$bin" ] && [ "$(readlink "$bin")" = "$owned_bin" ] || fail 'stable atf link is missing'
+    echo "atf $version already installed and verified: $bin"
+    exit 0
+  fi
+  # A previously installed release is reactivated in place (rollback or switching between kept versions).
+  stop_current
 else
-  tar -xzf "$archive" -C "$stage"
+  stage=$(mktemp -d "$releases/.stage.XXXXXX")
+  if [ "$rid" = linux-x64 ]; then
+    tar -xzf "$archive" -C "$stage" --no-same-owner --no-same-permissions
+  else
+    tar -xzf "$archive" -C "$stage"
+    # bsdtar copies a browser download's quarantine onto every extracted file, and Gatekeeper
+    # then blocks the ad-hoc signed atf with a dialog. The archive checksum was verified above.
+    xattr -dr com.apple.quarantine "$stage" || fail 'could not clear the download quarantine from extracted files'
+  fi
+  [ -x "$stage/atf" ] && [ -f "$stage/install.sh" ] || fail 'archive missing atf or install.sh'
+  [ "$("$stage/atf" --version)" = "atf $version" ] || fail 'archive version mismatch'
+  (cd "$stage" && find . -type f ! -name .atf-files | sort | while IFS= read -r path; do sha_file "$path"; done) > "$stage/.atf-files"
+  stop_current
+  mv "$stage" "$target"
+  stage=
 fi
-[ -x "$stage/atf" ] && [ -f "$stage/install.sh" ] || fail 'archive missing atf or install.sh'
-[ "$("$stage/atf" --version)" = "atf $version" ] || fail 'archive version mismatch'
-(cd "$stage" && find . -type f ! -name .atf-files | sort | while IFS= read -r path; do sha_file "$path"; done) > "$stage/.atf-files"
-stop_current
-mv "$stage" "$target"
-stage=
 ln -s "releases/$version" "$root/.current.$$"
 if [ "$rid" = linux-x64 ]; then
   mv -Tf "$root/.current.$$" "$root/current"
@@ -184,6 +231,9 @@ if [ ! -L "$bin" ]; then
   mv -f "$HOME/.local/bin/.atf.$$" "$bin"
 fi
 echo "installed atf $version: $bin"
+if [ -n "$upgrade" ] && [ "$current_version" != "$version" ] && version_older "$version" "$current_version"; then
+  echo "downgraded from atf $current_version; if $current_version migrated the database, $version refuses to open it"
+fi
 if [ -n "$upgrade" ]; then
   echo 'previous versions kept; existing mode and client registrations are preserved; restart clients to use the new version'
 else

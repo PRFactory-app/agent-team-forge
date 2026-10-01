@@ -166,13 +166,19 @@ public sealed class AcceptJobTests
     }
 
     [Theory]
-    [InlineData("", "x", null, false)]
-    [InlineData("k", "", null, false)]
-    [InlineData("k", "x", "unknown_behavior", false)]
-    public void Invalid_requests_are_rejected_before_any_write(string key, string instruction, string? behavior, bool hold)
+    [InlineData("", "x", null, false, "idempotency_key")]
+    [InlineData("k", "", null, false, "instruction")]
+    [InlineData("k", "x", "unknown_behavior", false, "behavior")]
+    public void Invalid_requests_are_rejected_before_any_write(string key, string instruction, string? behavior, bool hold, string field)
     {
         using var f = new JobFixture();
-        Assert.Equal(JobErrors.InvalidRequest, f.Accept().Execute(new SubmitJobRequest(key, instruction, behavior, hold)).Error);
+        var rejected = f.Accept().Execute(new SubmitJobRequest(key, instruction, behavior, hold));
+        Assert.Equal(JobErrors.InvalidRequest, rejected.Error);
+        Assert.StartsWith($"Invalid {field}: ", rejected.Detail);
+        var longKey = f.Accept().Execute(new SubmitJobRequest(new string('k', f.Limits.MaxIdempotencyKeyChars + 1), "x", null, false));
+        Assert.Equal((JobErrors.InvalidRequest, $"Invalid idempotency_key: must be 1 to {f.Limits.MaxIdempotencyKeyChars} characters and not blank."),
+            (longKey.Error, longKey.Detail));
+        Assert.StartsWith("Invalid cwd: ", f.Accept().Execute(new SubmitJobRequest("k", "x", null, false) { Cwd = "relative/dir" }).Detail);
         Assert.Equal(JobErrors.InstructionTooLong, f.Accept().Execute(new SubmitJobRequest("k", new string('x', f.Limits.MaxInstructionChars + 1), null, false)).Error);
         Assert.Equal(0, f.Store.CountUnattemptedIntents());
     }
@@ -187,8 +193,12 @@ public sealed class AcceptJobTests
     public void Unsafe_model_and_effort_values_are_rejected_before_acceptance(string value)
     {
         using var f = new JobFixture();
-        Assert.Equal(JobErrors.InvalidRequest, f.Accept().Execute(new SubmitJobRequest("model", "x", null, false) { Model = value }).Error);
-        Assert.Equal(JobErrors.InvalidRequest, f.Accept().Execute(new SubmitJobRequest("effort", "x", null, false) { Effort = value }).Error);
+        var model = f.Accept().Execute(new SubmitJobRequest("model", "x", null, false) { Model = value });
+        var effort = f.Accept().Execute(new SubmitJobRequest("effort", "x", null, false) { Effort = value });
+        Assert.Equal(JobErrors.InvalidRequest, model.Error);
+        Assert.Equal(JobErrors.InvalidRequest, effort.Error);
+        Assert.StartsWith("Invalid model: ", model.Detail);
+        Assert.StartsWith("Invalid effort: ", effort.Detail);
         Assert.Equal(0, f.Store.CountUnattemptedIntents());
     }
 

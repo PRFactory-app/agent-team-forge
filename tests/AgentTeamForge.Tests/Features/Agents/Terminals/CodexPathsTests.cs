@@ -37,7 +37,9 @@ public sealed class CodexPathsTests
     {
         if (OperatingSystem.IsWindows()) { return; }
         using var state = new TempStateDir();
-        var real = Directory.CreateDirectory(Path.Combine(state.Path, "Real", "Child")).FullName;
+        // The temp root may itself sit behind a link (macOS /tmp -> /private/tmp).
+        var root = CodexPaths.TrustKey(state.Path);
+        var real = Directory.CreateDirectory(Path.Combine(root, "Real", "Child")).FullName;
         var alias = Path.Combine(state.Path, "alias");
         Directory.CreateSymbolicLink(alias, Path.Combine(state.Path, "Real"));
         var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "agent", Path.Combine(alias, "Child") + "/", null, null,

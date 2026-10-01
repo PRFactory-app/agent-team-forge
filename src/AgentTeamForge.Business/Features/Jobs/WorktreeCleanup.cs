@@ -23,15 +23,30 @@ public sealed class WorktreeCleanup(JobStore store, BackendCatalog backends)
         ? Directory.GetDirectories(Root).Where(d => Path.GetFileName(d).StartsWith("job_", StringComparison.Ordinal)).Order(StringComparer.Ordinal).ToArray()
         : [];
 
+    /// <summary>One job's worktree by id; a directory under the root with no job row is still checked like any other.</summary>
+    public async Task<(WorktreeCleanupResult? Result, string? Error)> RemoveJobAsync(string jobId, bool force, bool dryRun, CancellationToken ct)
+    {
+        var job = jobId.Length is 0 or > 64 ? null : store.GetJob(jobId);
+        return job is { WorktreePath: null } ? (null, JobErrors.NoWorktree)
+            : await RemoveExistingAsync(job?.WorktreePath ?? Path.Combine(Root, jobId), force, dryRun, ct);
+    }
+
+    /// <summary>not_found for a worktree that is gone (or never existed), rather than reporting it as not owned.</summary>
+    internal async Task<(WorktreeCleanupResult? Result, string? Error)> RemoveExistingAsync(string path, bool force, bool dryRun, CancellationToken ct) =>
+        Directory.Exists(path) ? (await RemoveAsync(path, force, dryRun, auto: false, ct), null) : (null, JobErrors.NotFound);
+
     public async Task<WorktreeCleanupResult> RemoveAsync(string path, bool force, bool dryRun, bool auto, CancellationToken ct)
     {
         path = Path.GetFullPath(path);
         var id = Path.GetFileName(path);
         WorktreeCleanupResult Kept(string reason, IReadOnlyList<string>? details = null) => new(path, id, "kept", reason, details);
 
+        // Containment is lexical on the unresolved path and the final component must not be a link.
+        // Git reports the physical toplevel (macOS /tmp is /private/tmp), so compare it physically.
         if (Path.GetDirectoryName(path) != Path.GetFullPath(Root) || !id.StartsWith("job_", StringComparison.Ordinal)
             || !Directory.Exists(path) || new DirectoryInfo(path).LinkTarget is not null
-            || await JobWorktree.GitAsync(path, Timeout, ct, "rev-parse", "--show-toplevel") != path)
+            || await JobWorktree.GitAsync(path, Timeout, ct, "rev-parse", "--show-toplevel") is not { Length: > 0 } toplevel
+            || PhysicalPath.Resolve(path) is not { } physical || Path.GetFullPath(toplevel) != physical)
         {
             return Kept("not_owned_path");
         }
@@ -73,7 +88,11 @@ public sealed class WorktreeCleanup(JobStore store, BackendCatalog backends)
         if (dryRun) { return new(path, id, "would_remove"); }
 
         var args = force ? new[] { "worktree", "remove", "--force", "--", path } : ["worktree", "remove", "--", path];
-        if (await JobWorktree.GitAsync(repo, TimeSpan.FromMinutes(5), ct, args) is null) { return Kept("git_refused"); }
+        var removal = await JobWorktree.RunAsync(repo, TimeSpan.FromMinutes(5), ct, args);
+        if (removal is not { ExitCode: 0 })
+        {
+            return Kept("git_refused", removal is not null && JobWorktree.ErrorText(removal) is { } error ? [.. Lines(error).Take(20)] : null);
+        }
 
         if (!string.IsNullOrEmpty(tip))
         {
@@ -151,10 +170,10 @@ public sealed class WorktreeCleanup(JobStore store, BackendCatalog backends)
 /// <summary>Owned-job entry point for the remove_worktree tool.</summary>
 public sealed class RemoveWorktree(JobStore store, BoundPrincipal principal, WorktreeCleanup cleanup)
 {
-    public async Task<WorktreeCleanupResult?> ExecuteAsync(string jobId, bool force, bool dryRun, CancellationToken ct)
+    public async Task<(WorktreeCleanupResult? Result, string? Error)> ExecuteAsync(string jobId, bool force, bool dryRun, CancellationToken ct)
     {
         var job = string.IsNullOrWhiteSpace(jobId) || jobId.Length > 64 ? null : store.GetJob(jobId);
-        if (job is null || job.Principal != principal.Principal || job.Team != principal.Team || job.WorktreePath is null) { return null; }
-        return await cleanup.RemoveAsync(job.WorktreePath, force, dryRun, auto: false, ct);
+        if (job is null || job.Principal != principal.Principal || job.Team != principal.Team) { return (null, JobErrors.NotFound); }
+        return job.WorktreePath is null ? (null, JobErrors.NoWorktree) : await cleanup.RemoveExistingAsync(job.WorktreePath, force, dryRun, ct);
     }
 }

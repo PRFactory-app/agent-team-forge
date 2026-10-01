@@ -22,12 +22,14 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
         {
             return JobResult.Fail(instructionError);
         }
-        if (!accept.IsValid(request.IdempotencyKey, request.Instruction)
-            || !AcceptJob.ValidLimits(request.TimeoutSeconds, request.QueueTtlSeconds)
-            || !AcceptJob.ValidOption(request.Model) || !AcceptJob.ValidOption(request.Effort)
-            || string.IsNullOrWhiteSpace(request.ParentJobId) || request.ParentJobId.Length > 64)
+        var invalid = (string.IsNullOrWhiteSpace(request.ParentJobId) || request.ParentJobId.Length > 64
+                ? "Invalid job_id: must be 1 to 64 characters." : null)
+            ?? accept.KeyOrInstructionError(request.IdempotencyKey, request.Instruction)
+            ?? AcceptJob.LimitsError(request.TimeoutSeconds, request.QueueTtlSeconds)
+            ?? AcceptJob.OptionError("model", request.Model) ?? AcceptJob.OptionError("effort", request.Effort);
+        if (invalid is not null)
         {
-            return JobResult.Fail(JobErrors.InvalidRequest);
+            return JobResult.Fail(JobErrors.InvalidRequest, invalid);
         }
 
         JobRecord? parent;

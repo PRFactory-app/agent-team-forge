@@ -1,3 +1,4 @@
+using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Host.Hosting;
 
 namespace AgentTeamForge.Host.Features.PRFactory;
@@ -134,7 +135,7 @@ public static class PRFactoryHeartbeat
                     }
                     catch (Exception ex) when (ex is not OutOfMemoryException && !(ex is OperationCanceledException && ct.IsCancellationRequested))
                     {
-                        log($"PRFactory token-rejection fencing deferred ({ex.GetType().Name})");
+                        log($"PRFactory token-rejection fencing deferred ({StorageException.Describe(ex)})");
                     }
                     try { await delay(TimeSpan.FromSeconds(5), ct); }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }

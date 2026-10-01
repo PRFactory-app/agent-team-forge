@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json.Nodes;
 using AgentTeamForge.Business.Features.Agents.Backends;
@@ -161,26 +162,116 @@ public sealed class WtInteractiveBackendTests
         Assert.True(tabs.UnverifiedChecks >= 2);
     }
 
-    [Fact]
-    public async Task WrapperStartFailureFailsJobWithoutFence()
+    [Theory]
+    [InlineData(false, "launch_failed", "not a valid application")]
+    [InlineData(true, "backend_not_started", "terminal launcher is unavailable")]
+    public async Task WrapperStartFailureFailsJobWithoutFence(bool notStarted, string reason, string details)
     {
         using var f = new JobFixture();
         var job = f.Submit("wt-failed-start");
         var claim = f.Store.BeginNextAttempt()!;
-        var tabs = new FakeTabs { Failure = "The specified executable is not a valid application" };
+        var tabs = notStarted ? new FakeTabs { NotStarted = "terminal launcher is unavailable" }
+            : new FakeTabs { Failure = "The specified executable is not a valid application" };
         var backend = new WtInteractiveBackend(tabs, new FakeReader(null), InteractiveAgentKind.Claude,
             Path.GetTempPath(), "wt", TimeSpan.FromSeconds(2));
         var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
-        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        var log = new List<string>();
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, log.Add);
 
         await dispatcher.RunAttemptAsync(claim, CancellationToken.None);
 
         var record = f.Store.GetJob(job.JobId)!;
         Assert.Equal(JobStatus.Failed, record.Status);
-        Assert.Equal("launch_failed", record.ReasonCode);
-        Assert.Contains("not a valid application", record.ResultText);
+        Assert.Equal(reason, record.ReasonCode);
+        Assert.Contains(details, record.ResultText);
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+        Assert.Equal(!notStarted, tabs.Stopped);
+        // Like a failed preflight, the daemon log names the job and why it never started, once.
+        var line = Assert.Single(log, l => l.Contains(job.JobId, StringComparison.Ordinal));
+        Assert.Contains(reason + ": ", line);
+        Assert.Contains(details, line);
+    }
+
+    [Fact]
+    public async Task Agent_sign_in_refusal_before_acknowledgement_fails_fast_and_closes_the_tab()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("wt-signed-out");
+        var claim = f.Store.BeginNextAttempt()!;
+        var tabs = new FakeTabs { Login = BackendLoginErrors.Inspect("pi", "No models available. Use /login to log into a provider via OAuth or API key.") };
+        var backend = new WtInteractiveBackend(tabs, new FakeReader(null), InteractiveAgentKind.Pi,
+            Path.GetTempPath(), "terminal", TimeSpan.FromMinutes(3));
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        await dispatcher.RunAttemptAsync(claim, deadline.Token);
+
+        var record = f.Store.GetJob(job.JobId)!;
+        Assert.Equal(JobStatus.Failed, record.Status);
+        Assert.Equal("agent_login_required", record.ReasonCode);
+        Assert.Contains("run `pi` and /login", record.ResultText);
         Assert.False(f.Store.IsSessionFenced(job.JobId));
         Assert.True(tabs.Stopped);
+    }
+
+    [Fact]
+    public void Retained_agent_outlives_a_daemon_restart_and_is_stopped_through_its_wrapper_identity()
+    {
+        // Windows ownership (wrapper PID + creation time) with a real process, so it runs on every OS.
+        using var state = new TempStateDir();
+        Directory.CreateDirectory(state.File("wt"));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Pi, "atftest", state.Path, null, null, Path.Combine(state.Path, "wt", "atftest.launch.ps1"));
+        File.WriteAllText(launch.BootstrapPath, "wrapper");
+        // Off Windows the stand-in is reparented away from the test host, so its exit is reaped at once (no zombie).
+        using var wrapper = OperatingSystem.IsWindows()
+            ? Process.Start(new ProcessStartInfo("ping", "-n 60 127.0.0.1") { UseShellExecute = false, RedirectStandardOutput = true })!
+            : Detached("/bin/sleep 60");
+        try
+        {
+            File.WriteAllText(Path.ChangeExtension(launch.BootstrapPath, ".pid"), $"{wrapper.Id}|{wrapper.StartTime.ToUniversalTime().Ticks}");
+            var tabs = new WtTabControl();
+            Assert.True(tabs.IsAlive(launch));
+            tabs.Retained(launch, "session-1");
+            var (sessionId, survivor) = Assert.Single(WtTabControl.Survivors(state.Path, InteractiveAgentKind.Pi));
+            Assert.Equal("session-1", sessionId);
+            Assert.Equal(launch.BootstrapPath, survivor.BootstrapPath);
+            Assert.Empty(WtTabControl.Survivors(state.Path, InteractiveAgentKind.Codex));
+
+            // A restarted daemon adopts it: follow-up, Stop agent and idle close reach the live agent.
+            using var restarted = new WtInteractiveBackend(InteractiveAgentKind.Pi, state.Path);
+            Assert.True(restarted.HasIdleSession("session-1"));
+            Assert.True(restarted.StopIdleSession("session-1"));
+            Assert.True(wrapper.WaitForExit(5000));
+            Assert.Empty(WtTabControl.Survivors(state.Path, InteractiveAgentKind.Pi));
+            Assert.False(File.Exists(Path.ChangeExtension(launch.BootstrapPath, ".session")));
+            Assert.False(File.Exists(launch.BootstrapPath));
+        }
+        finally
+        {
+            if (!wrapper.HasExited) { wrapper.Kill(); }
+        }
+    }
+
+    static Process Detached(string command)
+    {
+        using var shell = Process.Start(new ProcessStartInfo("/bin/sh", ["-c", command + " >/dev/null 2>&1 & echo $!"])
+        { UseShellExecute = false, RedirectStandardOutput = true })!;
+        var pid = int.Parse(shell.StandardOutput.ReadLine()!, System.Globalization.CultureInfo.InvariantCulture);
+        shell.WaitForExit();
+        return Process.GetProcessById(pid);
+    }
+
+    [Fact]
+    public void Gone_wrapper_is_never_adopted()
+    {
+        using var state = new TempStateDir();
+        Directory.CreateDirectory(state.File("wt"));
+        var wrapper = Path.Combine(state.Path, "wt", "atftest.launch.ps1");
+        File.WriteAllText(Path.ChangeExtension(wrapper, ".pid"), $"{int.MaxValue}|{DateTime.UtcNow.Ticks}");
+        File.WriteAllText(Path.ChangeExtension(wrapper, ".session"), "Pi\nsession-1");
+        Assert.Empty(WtTabControl.Survivors(state.Path, InteractiveAgentKind.Pi));
+        using var restarted = new WtInteractiveBackend(InteractiveAgentKind.Pi, state.Path);
+        Assert.False(restarted.HasIdleSession("session-1"));
     }
 
     [Fact]
@@ -844,6 +935,9 @@ public sealed class WtInteractiveBackendTests
         public int UnverifiedChecks { get; private set; }
         public bool FailPreflight { get; init; }
         public string? Failure { get; init; }
+        public string? NotStarted { get; init; }
+        public BackendEvidence.AgentError? Login { get; init; }
+        public BackendEvidence.AgentError? LoginBlocker(InteractiveLaunch launch) => Login;
         public bool Stopped { get; private set; }
         public string Prompt { get; private set; } = "";
         public InteractiveLaunch? Launch { get; private set; }
@@ -857,6 +951,10 @@ public sealed class WtInteractiveBackendTests
             if (FailLaunch)
             {
                 throw new IOException("tab failed");
+            }
+            if (NotStarted is { } notStarted)
+            {
+                throw new BackendNotStartedException(notStarted);
             }
 
             Prompt = prompt;

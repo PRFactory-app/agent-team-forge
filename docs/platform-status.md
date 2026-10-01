@@ -9,25 +9,26 @@ those machines).
 | --- | --- |
 | **Linux x64** (glibc) | Tested end to end with real Claude Code, Codex and Pi agents, in Herdr and headless modes. v0.0.2 was tagged after a full Linux run. |
 | **Windows x64** | Supported as of v0.1.0. Tested on Windows 11 with real Claude Code and Codex agents in Windows Terminal tabs, including native wake. Pi, `install.ps1` upgrade/uninstall and headless Claude are not yet verified; see open items. |
-| **macOS arm64** | Release built; untested. Testers welcome. |
+| **macOS arm64** | Tested on macOS 26.7 (Apple silicon) with real Claude Code, Codex and Pi agents: headless, kitty, Terminal.app and Herdr, install, upgrade, uninstall and login autostart, from a local Native AOT release bundle. Native wake and external members are untested. |
+| macOS x64 (Intel) | No release bundle. A local osx-x64 build ran under Rosetta (private state files, a fake-backend job); real agents untested. |
 | Linux arm64, musl | Not supported. |
 
 ## Feature matrix
 
 | Feature | Linux | Windows | macOS |
 | --- | --- | --- | --- |
-| Install, setup, doctor, uninstall | Tested (`install.sh`) | `install.ps1` in use on Windows (v0.0.9 installed, then local builds); upgrade/uninstall not yet verified end to end | Untested (`install.sh`) |
-| Headless Claude Code / Codex | Tested | Codex tested (v0.1.0 wake smoke); Claude untested | Untested |
-| Headless Pi | Tested | Untested (Pi not installed on the test VM) | Untested |
-| Interactive agents | Herdr: tested | Windows Terminal (`wt`): Claude and Codex tested; see open items | Terminal.app / kitty: untested |
-| Daemon restart keeps live TUIs | Tested (Herdr) | Tested (v0.0.3) | Untested |
+| Install, setup, doctor, uninstall | Tested (`install.sh`) | `install.ps1` in use on Windows (v0.0.9 installed, then local builds); upgrade/uninstall not yet verified end to end | Tested (`install.sh`): README one-liner, archive with quarantine, upgrade, rerun, downgrade refusal, uninstall and purge |
+| Headless Claude Code / Codex | Tested | Codex tested (v0.1.0 wake smoke); Claude untested | Tested, including follow-up, stop, timeout, worktrees and restart cleanup |
+| Headless Pi | Tested | Untested (Pi not installed on the test VM) | Tested (submit and follow-up) |
+| Interactive agents | Herdr: tested | Windows Terminal (`wt`): Claude and Codex tested; see open items | kitty: Claude, Codex and Pi tested (submit, follow-up, Stop agent, hand-closed tab, idle close, working directory with a space and a quote; a signed-out Pi and a Codex 401 fail with `agent_login_required`). Terminal.app: Claude and Codex submit and follow-up tested, and the denied-Automation failure. Herdr: Claude and Codex launch, follow-up, Stop agent and restart reattach tested |
+| Daemon restart keeps live TUIs | Tested (Herdr) | Tested (v0.0.3) | Tested (kitty): follow-up, Stop agent and idle close reach the surviving agent; a Codex turn still running at the restart outlived a 1-minute idle close, stayed fenced, and `stop_job` closed its tab |
 | Native wake: Claude lead/member | Host-local relay live-tested with an external member | Tested (v0.1.0): session-local pipe accepted, automatic wake starts a new idle turn | Unix-socket transport implemented; runtime untested |
 | Native wake: Codex lead | Tested | Tested (v0.1.0): explicit registration, queue receipt and automatic lead receipt | Untested |
 | Native wake: Pi lead | Tested | Untested | Untested |
 | External members (Codex Desktop) | Tested | Untested | Untested |
-| Web console | Tested | Tested (v0.0.3) | Untested |
-| Login autostart | systemd user unit | Run key + hidden launcher; untested | LaunchAgent; untested |
-| Native AOT release build | CI + local | CI (`windows-latest`) | Local build script |
+| Web console | Tested | Tested (v0.0.3) | Tested (follow-up, stop, new agent, settings, token rotation) |
+| Login autostart | systemd user unit | Run key + hidden launcher; untested | LaunchAgent: load, unload, `launchctl kickstart` lazy start; tested in an isolated HOME |
+| Native AOT release build | CI + local | CI (`windows-latest`) | Local build script, including the published-binary smoke run |
 
 ## Linux daemon lifetime
 
@@ -37,6 +38,37 @@ terminal or app does not kill it or its Herdr sessions. In Herdr mode a missing
 `WAYLAND_DISPLAY`/`DISPLAY` is filled in from `systemctl --user show-environment`
 when a session starts; without one there, the launch still fails clearly.
 Re-run `atf setup --autostart` to add `KillMode=process` to an existing login unit.
+
+## macOS results (2026-10-01)
+
+macOS 26.7 on Apple silicon, Claude Code 2.1, Codex 0.159, Pi 0.99, Herdr 0.9.3
+and kitty. The full suite (1478 tests) and the published-binary smoke run pass
+on that machine. Defects found and fixed in that pass:
+
+- **Process control.** .NET's `Kill(entireProcessTree: true)` SIGSTOPs its
+  direct child, and Darwin's `waitid` reports the stopped child, so the
+  runtime's SIGCHLD thread spun and every later `Process` call hung (the test
+  suite hung after about 370 tests). Owned process trees are now killed without
+  stopping a direct child.
+- **Orphan cleanup.** Apple's own binaries (`/bin/sh`, `/bin/zsh`, `sleep`)
+  hide their environment from `kern.procargs2`, so run markers were invisible
+  and agents' tool shells survived a daemon crash. Cleanup now walks the
+  process tree from visible roots, and Codex gets the marker through
+  `shell_environment_policy.set` even when the user's config inherits only
+  core variables.
+- **Symlinked paths.** `/tmp` and `/var` resolve to `/private/...`. Claude's
+  transcript folder, worktree ownership, setup registrations, uninstall and
+  `atf stop` compared unresolved paths and failed; they now compare resolved
+  paths.
+- **Terminal and Herdr modes.** AppleScript output leaked into `daemon.log`; a
+  denied Automation permission hung instead of failing; the kitty probe raced;
+  a restart orphaned live tabs; Herdr's lock file got a garbage mode from a
+  variadic `open()` call; idle panes stayed fenced after a restart.
+- **Install.** The quarantine attribute survived extraction and Gatekeeper
+  blocked `atf`; the LaunchAgent was written but never loaded; uninstall
+  restarted the daemon through the client health check.
+- **Intel.** The private-file check only knew the arm64 `stat` layout and
+  refused every state file on x86_64.
 
 ## Windows results (v0.1.0, 2026-09-30)
 
@@ -116,7 +148,7 @@ locked; `atf stop` printed raw `taskkill` output.
 - Windows: custom-home client restart and lead resume for Codex wake; pipe ACLs, server PID proof and stalled-reader cancellation for Claude wake.
 - Windows: fix the unit tests that fail there on Unix-only assumptions.
 - Validate specific Claude Desktop channel exports; sessions without an exported channel or recognizable host retain manual `external_read`.
-- First macOS run by a volunteer, including Terminal.app tab placement and macOS wake.
+- macOS: native wake (Claude, Codex and Pi leads), external members, and a release built by CI rather than locally.
 - win-agent-teams parity gaps: see the
   [migration guide](migrating-from-win-agent-teams.md).
 

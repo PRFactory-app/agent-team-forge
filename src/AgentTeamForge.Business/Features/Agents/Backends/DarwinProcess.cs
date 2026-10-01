@@ -1,7 +1,4 @@
 using System.Buffers.Binary;
-using System.Diagnostics;
-using AgentTeamForge.Business.Features.Processes;
-using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -10,7 +7,15 @@ namespace AgentTeamForge.Business.Features.Agents.Backends;
 /// <summary>Darwin process facts. An unreadable start time never proves ownership.</summary>
 public static partial class DarwinProcess
 {
-    const int CtlKern = 1, KernProc = 14, KernProcPid = 1, KernProcArgs2 = 49;
+    const int CtlKern = 1, KernProc = 14, KernProcAll = 0, KernProcPid = 1, KernProcArgs2 = 49;
+
+    // LP64 struct kinfo_proc (identical on arm64 and x86_64): kp_proc.p_starttime at 0,
+    // kp_proc.p_stat at 36, kp_proc.p_pid at 40, kp_eproc.e_ppid at 560.
+    const int KinfoSize = 648, StatOffset = 36, PidOffset = 40, ParentOffset = 560;
+    const byte Zombie = 5; // SZOMB
+
+    /// <summary>One process-table row; <see cref="Token"/> is null when the start time is unreadable.</summary>
+    public readonly record struct Entry(int Pid, int ParentPid, ulong? Token, bool IsZombie);
 
     // Ported from win-agent-teams process_manager.py's Darwin creation token:
     // kp_proc.p_starttime is the first timeval in the LP64 little-endian kinfo_proc.
@@ -27,16 +32,42 @@ public static partial class DarwinProcess
             ? ((ulong)seconds << 20) | (uint)microseconds : null;
     }
 
-    public static ulong? CreationToken(int pid)
+    internal static Entry? ParseKinfo(ReadOnlySpan<byte> raw)
     {
-        if (!OperatingSystem.IsMacOS() || pid <= 0)
+        if (raw.Length < KinfoSize)
         {
             return null;
         }
 
-        var raw = ReadSysctl([CtlKern, KernProc, KernProcPid, pid]);
-        return raw is null ? null : ParseKinfoStartTime(raw);
+        var pid = BinaryPrimitives.ReadInt32LittleEndian(raw[PidOffset..]);
+        return pid <= 0 ? null : new Entry(pid, BinaryPrimitives.ReadInt32LittleEndian(raw[ParentOffset..]),
+            ParseKinfoStartTime(raw), raw[StatOffset] == Zombie);
     }
+
+    /// <summary>The process table from one kern.proc.all read; empty when it cannot be read.</summary>
+    public static IReadOnlyList<Entry> Table()
+    {
+        if (!OperatingSystem.IsMacOS() || ReadSysctl([CtlKern, KernProc, KernProcAll, 0]) is not { } raw)
+        {
+            return [];
+        }
+
+        var entries = new List<Entry>(raw.Length / KinfoSize);
+        for (var offset = 0; offset + KinfoSize <= raw.Length; offset += KinfoSize)
+        {
+            if (ParseKinfo(raw.AsSpan(offset, KinfoSize)) is { } entry)
+            {
+                entries.Add(entry);
+            }
+        }
+        return entries;
+    }
+
+    public static Entry? Info(int pid) =>
+        OperatingSystem.IsMacOS() && pid > 0 && ReadSysctl([CtlKern, KernProc, KernProcPid, pid]) is { } raw
+            && ParseKinfo(raw) is { } entry && entry.Pid == pid ? entry : null;
+
+    public static ulong? CreationToken(int pid) => Info(pid)?.Token;
 
     public static bool PidAlive(int pid) => pid > 0 && (Kill(pid, 0) == 0 || Marshal.GetLastPInvokeError() == 1); // EPERM still proves the PID exists.
 
@@ -92,62 +123,32 @@ public static partial class DarwinProcess
         return (args, [.. environment]);
     }
 
-    public static IReadOnlyList<int> Pids()
+    // struct proc_vnodepathinfo (PROC_PIDVNODEPATHINFO): the cwd's vnode_info (152 bytes) and
+    // MAXPATHLEN path, then the same pair for the root directory.
+    const int ProcPidVnodePathInfo = 9, VnodeInfoSize = 152, MaxPathLength = 1024;
+
+    /// <summary>A process's current directory (Darwin has no /proc/PID/cwd); null when it cannot be read.</summary>
+    public static string? WorkingDirectory(int pid)
     {
-        if (!OperatingSystem.IsMacOS())
-        {
-            return [];
-        }
-
-        try
-        {
-            var info = new ProcessStartInfo("/bin/ps") { UseShellExecute = false, RedirectStandardOutput = true };
-            info.ArgumentList.Add("-axo");
-            info.ArgumentList.Add("pid=");
-            using var process = NonInteractiveProcess.Start(info);
-            if (process is null)
-            {
-                return [];
-            }
-
-            var output = process.StandardOutput.ReadToEnd();
-            if (!process.WaitForExit(5000) || process.ExitCode != 0)
-            {
-                return [];
-            }
-
-            return [.. output.Split('\n').Select(s => int.TryParse(s.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var pid) ? pid : 0)
-                .Where(pid => pid > 0)];
-        }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception) { return []; }
-    }
-
-    public static int? ParentPid(int pid)
-    {
-        if (!OperatingSystem.IsMacOS())
+        if (!OperatingSystem.IsMacOS() || pid <= 0)
         {
             return null;
         }
 
-        try
+        var raw = new byte[2 * (VnodeInfoSize + MaxPathLength)];
+        if (ProcPidInfo(pid, ProcPidVnodePathInfo, 0, raw, raw.Length) != raw.Length)
         {
-            var info = new ProcessStartInfo("/bin/ps") { UseShellExecute = false, RedirectStandardOutput = true };
-            foreach (var arg in new[] { "-p", pid.ToString(CultureInfo.InvariantCulture), "-o", "ppid=" })
-            {
-                info.ArgumentList.Add(arg);
-            }
-
-            using var process = NonInteractiveProcess.Start(info);
-            if (process is null)
-            {
-                return null;
-            }
-
-            var output = process.StandardOutput.ReadToEnd();
-            return process.WaitForExit(5000) && process.ExitCode == 0 && int.TryParse(output.Trim(), out var parent) ? parent : null;
+            return null;
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception) { return null; }
+
+        var path = raw.AsSpan(VnodeInfoSize, MaxPathLength);
+        var end = path.IndexOf((byte)0);
+        return end > 0 ? Encoding.UTF8.GetString(path[..end]) : null;
     }
+
+    public static IReadOnlyList<int> Pids() => [.. Table().Select(e => e.Pid)];
+
+    public static int? ParentPid(int pid) => Info(pid)?.ParentPid;
 
     public static bool SignalIfSame(int pid, ulong token, int signal)
     {
@@ -180,11 +181,13 @@ public static partial class DarwinProcess
     static byte[]? ReadSysctl(int[] mib)
     {
         nuint size = 0;
-        if (Sysctl(mib, (uint)mib.Length, null, ref size, 0, 0) != 0 || size is 0 or > 4_194_304)
+        if (Sysctl(mib, (uint)mib.Length, null, ref size, 0, 0) != 0 || size is 0 or > 16_777_216)
         {
             return null;
         }
 
+        // Headroom for a process table that grows between the size probe and the read.
+        size += size / 8;
         var raw = new byte[(int)size];
         var capacity = size;
         return Sysctl(mib, (uint)mib.Length, raw, ref size, 0, 0) == 0 && size <= capacity ? raw[..(int)size] : null;
@@ -192,6 +195,9 @@ public static partial class DarwinProcess
 
     [LibraryImport("libc", EntryPoint = "sysctl", SetLastError = true)]
     private static partial int Sysctl([In] int[] mib, uint count, [Out] byte[]? value, ref nuint size, nint replacement, nuint replacementSize);
+
+    [LibraryImport("libc", EntryPoint = "proc_pidinfo", SetLastError = true)]
+    private static partial int ProcPidInfo(int pid, int flavor, ulong argument, [Out] byte[] buffer, int size);
 
     [LibraryImport("libc", EntryPoint = "kill", SetLastError = true)]
     private static partial int Kill(int pid, int signal);

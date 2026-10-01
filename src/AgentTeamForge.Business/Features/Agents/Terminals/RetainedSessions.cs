@@ -17,10 +17,17 @@ internal sealed class RetainedSessions : IDisposable
     readonly TimeSpan _timeout;
     readonly ITimer _timer;
     readonly Func<InteractiveRetentionSettings>? _settings;
+    readonly Action<InteractiveLaunch, string>? _idle;
+    readonly Action<InteractiveLaunch>? _busy;
 
-    public RetainedSessions(Action<InteractiveLaunch> stop, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null, Func<InteractiveRetentionSettings>? settings = null)
+    // idle records that a launch now waits idle for its session, so a restarted daemon may adopt it; busy
+    // withdraws that record while a turn runs in the launch, so a restart never adopts a working agent as idle.
+    public RetainedSessions(Action<InteractiveLaunch> stop, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null, Func<InteractiveRetentionSettings>? settings = null,
+        Action<InteractiveLaunch, string>? idle = null, Action<InteractiveLaunch>? busy = null)
     {
         _stop = stop;
+        _idle = idle;
+        _busy = busy;
         _clock = timeProvider ?? TimeProvider.System;
         _timeout = idleTimeout ?? TimeSpan.FromMinutes(5);
         _settings = settings;
@@ -94,7 +101,23 @@ internal sealed class RetainedSessions : IDisposable
             var retained = _sessions.Remove(sessionId, out var entry);
             if (!retained && !running) { return false; }
             _reserved.Add(sessionId, retained ? entry.Launch : null);
+            if (retained) { _busy?.Invoke(entry.Launch); }
             return true;
+        }
+    }
+
+    /// <summary>
+    /// A turn from before a daemon restart may still run in <paramref name="launch"/>: protect it like a native
+    /// turn reservation (never swept, taken or closed as idle) until that turn settles or is released.
+    /// </summary>
+    internal void Hold(string sessionId, InteractiveLaunch launch)
+    {
+        lock (_gate)
+        {
+            if (_sessions.Remove(sessionId, out var adopted)) { launch = adopted.Launch; }
+            _reserved[sessionId] = launch;
+            Track(sessionId, launch);
+            _busy?.Invoke(launch);
         }
     }
 
@@ -166,6 +189,7 @@ internal sealed class RetainedSessions : IDisposable
                 evicted.Add((sessionId, replaced.Launch));
             }
             _sessions[sessionId] = (launch, _next++, _clock.GetTimestamp());
+            _idle?.Invoke(launch, sessionId);
             while (true)
             {
                 var idle = _sessions.Where(pair => !_reserved.ContainsKey(pair.Key)).ToArray();

@@ -33,9 +33,14 @@ public sealed class CodexExecBackendTests : IDisposable
                 new BackendEvidence.EndOfOutput(),
             ],
             evidence);
-        Assert.Equal(["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "-"], Argv());
+        // Codex's shell_environment_policy can drop the inherited run marker; the override puts it back in tool shells.
+        Assert.Equal(["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check",
+            "-c", "shell_environment_policy.set.ATF_RUN_CORRELATION=\"corr-1\"", "-"], Argv());
         Assert.Equal("do the thing", File.ReadAllText(_dir.File("stdin")));
-        Assert.Equal(_dir.Path, File.ReadAllText(_dir.File("cwd")).Trim());
+        // `pwd` reports the physical path; on macOS /tmp is a symlink to /private/tmp.
+        var cwd = File.ReadAllText(_dir.File("cwd")).Trim();
+        Assert.EndsWith(Path.GetFileName(_dir.Path), cwd, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(cwd, "cwd")));
     }
 
     [Fact]
@@ -51,7 +56,8 @@ public sealed class CodexExecBackendTests : IDisposable
 
         Assert.Contains(new BackendEvidence.Result("corr-2", "again"), evidence);
         Assert.Equal(
-            ["exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "-m", "gpt-x", ThreadId, "-"],
+            ["exec", "resume", "--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check",
+                "-m", "gpt-x", "-c", "shell_environment_policy.set.ATF_RUN_CORRELATION=\"corr-2\"", ThreadId, "-"],
             Argv());
     }
 
@@ -181,6 +187,20 @@ public sealed class CodexExecBackendTests : IDisposable
 
     static bool GrandchildExited(int pid)
     {
+        if (!OperatingSystem.IsLinux())
+        {
+            // No /proc: a missing stat file would pass without proving anything.
+            try
+            {
+                using var process = System.Diagnostics.Process.GetProcessById(pid);
+                return process.HasExited;
+            }
+            catch (ArgumentException)
+            {
+                return true;
+            }
+        }
+
         var stat = $"/proc/{pid}/stat";
         try
         {
@@ -205,6 +225,78 @@ public sealed class CodexExecBackendTests : IDisposable
 
         var second = await RunAsync(backend, new BackendRequest("real-2", "c2", "What word did you just reply with? Answer with that word only.", "") { ResumeSessionId = session.SessionId, WorkingDirectory = _dir.Path }, TimeSpan.FromMinutes(5));
         Assert.Contains("PONG", Assert.Single(second.OfType<BackendEvidence.Result>()).Output, StringComparison.Ordinal);
+    }
+
+    // Captured from a signed-out `codex exec --json` (HOME without credentials).
+    const string MissingCredential = "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, url: https://api.openai.com/v1/responses, cf-ray: a43bd43bdcb72d94-PRG";
+
+    [Fact]
+    public async Task Missing_credential_ends_the_turn_as_login_required_without_waiting_for_retries()
+    {
+        File.WriteAllLines(_dir.File("out.jsonl"),
+        [
+            $$"""{"type":"thread.started","thread_id":"{{ThreadId}}"}""",
+            """{"type":"turn.started"}""",
+            $$"""{"type":"error","message":"Reconnecting... 2/5 ({{MissingCredential}})"}""",
+        ]);
+        var script = _dir.File("codex-signed-out");
+        File.WriteAllText(script, $"""
+            #!/usr/bin/env bash
+            input="$(cat)"
+            cat '{_dir.File("out.jsonl")}'
+            # Signed-out codex keeps retrying; the executable probe sends no input and exits.
+            [ -n "$input" ] && exec sleep 300
+
+            """);
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        WaitUntilExecutable(script);
+        List<string> log = [];
+        var request = new BackendRequest("job-login", "corr-login", "x", "")
+        {
+            WorkingDirectory = _dir.Path,
+            Output = (stream, bytes) => { lock (log) { log.Add(stream + ":" + System.Text.Encoding.UTF8.GetString(bytes.Span)); } },
+        };
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        var evidence = await RunAsync(new CodexExecBackend(script), request, TimeSpan.FromSeconds(30));
+
+        // Disposal waits 5 s for a child that was not terminated.
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(4), $"took {clock.Elapsed}");
+        Assert.Equal(new BackendEvidence.Session("corr-login", ThreadId), evidence[1]);
+        var login = Assert.IsType<BackendEvidence.AgentError>(evidence[^1]);
+        Assert.Equal("agent_login_required", login.Code);
+        Assert.Contains("codex login", login.Details, StringComparison.Ordinal);
+        Assert.Contains(log, line => line.StartsWith("status:Codex is not logged in", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Failed_turn_with_401_is_login_required()
+    {
+        var codex = FakeCodex(
+            $$"""{"type":"thread.started","thread_id":"{{ThreadId}}"}""",
+            """{"type":"error","message":"unexpected status 401 Unauthorized: token expired"}""",
+            """{"type":"turn.failed","error":{"message":"unexpected status 401 Unauthorized: token expired"}}""");
+
+        var evidence = await RunAsync(new CodexExecBackend(codex), new BackendRequest("job-401", "corr-401", "x", "") { WorkingDirectory = _dir.Path });
+
+        Assert.Equal("agent_login_required", Assert.IsType<BackendEvidence.AgentError>(evidence[^1]).Code);
+        Assert.Equal("agent_login_required", Assert.IsType<BackendEvidence.AgentError>(
+            Assert.Single(new CodexEventParser("c").Parse(System.Text.Encoding.UTF8.GetBytes(
+                $$$"""{"type":"turn.failed","error":{"message":"{{{MissingCredential}}}"}}""")))).Code);
+    }
+
+    [Fact]
+    public async Task Reply_that_quotes_a_401_still_completes()
+    {
+        var codex = FakeCodex(
+            $$"""{"type":"thread.started","thread_id":"{{ThreadId}}"}""",
+            $$$"""{"type":"item.completed","item":{"type":"agent_message","text":"The log said: {{{MissingCredential}}}. Run codex login."}}""",
+            """{"type":"turn.completed"}""");
+
+        var evidence = await RunAsync(new CodexExecBackend(codex), new BackendRequest("job-quote", "corr-quote", "x", "") { WorkingDirectory = _dir.Path });
+
+        Assert.Contains(evidence, e => e is BackendEvidence.Result { Output: var text } && text.Contains("401", StringComparison.Ordinal));
+        Assert.DoesNotContain(evidence, e => e is BackendEvidence.AgentError);
     }
 
     string FakeCodex(params string[] lines)

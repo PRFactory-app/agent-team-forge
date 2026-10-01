@@ -51,8 +51,13 @@ static partial class Native
     [LibraryImport("libc", EntryPoint = "statx", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int Statx(int dirfd, string path, int flags, uint mask, out StatxBuffer buffer);
 
+    // Darwin fstat with the 64-bit-inode struct stat: arm64 exports it as plain fstat, while plain
+    // fstat on x86_64 is the legacy 32-bit-inode layout and the compiler binds fstat$INODE64 instead.
     [LibraryImport("libc", EntryPoint = "fstat", SetLastError = true)]
-    private static partial int Fstat(nint fd, [Out] byte[] buffer);
+    private static partial int FstatArm64(nint fd, [Out] byte[] buffer);
+
+    [LibraryImport("libc", EntryPoint = "fstat$INODE64", SetLastError = true)]
+    private static partial int FstatX64(nint fd, [Out] byte[] buffer);
 
     [LibraryImport("libc", EntryPoint = "getpeereid", SetLastError = true)]
     public static partial int GetPeerEid(nint fd, out uint uid, out uint gid);
@@ -73,18 +78,27 @@ static partial class Native
             ? BinaryPrimitives.ReadInt64LittleEndian(bytes) : null;
     }
 
-    public static bool DarwinPrivateFile(SafeFileHandle handle, int maxBytes)
+    // The 64-bit-inode Darwin struct stat is identical on arm64 and x86_64 (offsetof-verified):
+    // 144 bytes, st_mode at 4, st_uid at 16, st_size at 96.
+    const int DarwinStatSize = 144, DarwinStatMode = 4, DarwinStatUid = 16, DarwinStatSizeField = 96;
+
+    public static bool DarwinPrivateFile(SafeFileHandle handle, long maxBytes)
     {
-        var buffer = new byte[256];
-        // x64 fstat is the legacy 32-bit-inode layout; only arm64 is laid out below.
-        if (RuntimeInformation.ProcessArchitecture != Architecture.Arm64 || Fstat(handle.DangerousGetHandle(), buffer) != 0)
+        var buffer = new byte[DarwinStatSize];
+        var fd = handle.DangerousGetHandle();
+        var result = RuntimeInformation.ProcessArchitecture switch
+        {
+            Architecture.Arm64 => FstatArm64(fd, buffer),
+            Architecture.X64 => FstatX64(fd, buffer),
+            _ => -1,
+        };
+        if (result != 0)
         {
             return false;
         }
-        // Darwin arm64 struct stat: mode at byte 4, UID at 16, size at 96.
-        var mode = BinaryPrimitives.ReadUInt16LittleEndian(buffer.AsSpan(4));
-        var uid = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(16));
-        var size = BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(96));
+        var mode = BinaryPrimitives.ReadUInt16LittleEndian(buffer.AsSpan(DarwinStatMode));
+        var uid = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(DarwinStatUid));
+        var size = BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(DarwinStatSizeField));
         return (mode & FileTypeMask) == RegularFile && uid == geteuid()
             && ((UnixFileMode)(mode & ~FileTypeMask) & ~StateDirectory.PrivateFile) == 0
             && size is >= 0 && size <= maxBytes;

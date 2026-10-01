@@ -31,6 +31,12 @@ interface IHerdrProcessRunner
     int? ParentOf(int pid);
 
     string? EnvironmentValue(int pid, string name);
+
+    /// <summary>
+    /// True where a live process of this user can still hide its environment: macOS returns none for platform
+    /// binaries such as /bin/zsh. On Linux /proc/PID/environ of an own process is always readable.
+    /// </summary>
+    bool EnvironmentMayBeHidden => OperatingSystem.IsMacOS();
 }
 
 /// <summary>

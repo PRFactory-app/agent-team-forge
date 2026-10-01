@@ -94,6 +94,33 @@ public sealed class StartupProgressTests
         Assert.Null(f.Store.GetRuns(job.JobId).Single().SubmittedAt);
     }
 
+    [Theory]
+    [InlineData("claude", "agent_login_required", "run `claude` and /login")]
+    [InlineData("codex", "agent_login_required", "run `codex login`")]
+    [InlineData("pi", "agent_login_required", "run `pi` and /login, or set the API key")]
+    [InlineData("claude", "agent_first_run_required", "run `claude` once in a terminal")]
+    [InlineData("codex", "agent_workspace_trust_required", "run `codex` in this workspace")]
+    [InlineData("pi", "agent_first_run_required", null)]
+    [InlineData("pi", "agent_workspace_trust_required", null)]
+    [InlineData("fake", "agent_login_required", null)]
+    public void Blocker_hint_names_the_backends_own_step(string backend, string reason, string? hint)
+    {
+        using var f = new JobFixture();
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, [backend]);
+        var job = accept.Execute(new SubmitJobRequest("blocked", "hello", null, false) { Backend = backend }).Job!;
+        f.Store.BeginNextAttempt();
+        var progress = StartupProgress.Read(f.Store, job.JobId, JobStatus.Running, backend, reason, interactive: true)!;
+        if (hint is null)
+        {
+            Assert.Null(progress.Hint);
+        }
+        else
+        {
+            Assert.Contains(hint, progress.Hint);
+            Assert.DoesNotContain("``", progress.Hint);
+        }
+    }
+
     sealed class ProgressBackend(Action<string?> check) : IJobBackend
     {
         public IBackendRun Start(BackendRequest request)

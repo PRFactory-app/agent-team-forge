@@ -271,4 +271,47 @@ public sealed class DispatchJobTests
         lifetime.Cancel();
         await loop;
     }
+
+    [Fact]
+    public async Task Session_record_failure_logs_the_storage_kind_and_sqlite_detail()
+    {
+        using var f = new JobFixture();
+        Sql(f, "CREATE TRIGGER refuse_session BEFORE UPDATE OF session_id ON jobs BEGIN SELECT RAISE(ABORT, 'session write refused'); END");
+        var lines = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var backend = new ScriptedBackend(r => [new BackendEvidence.Session(r.Correlation, "s1"), new BackendEvidence.Result(r.Correlation, "ok")]);
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), lines.Enqueue);
+
+        await DispatchOne(f, backend, dispatcher);
+
+        var line = Assert.Single(lines, l => l.StartsWith("session record failed", StringComparison.Ordinal));
+        Assert.Contains("Unavailable: ", line);
+        Assert.Contains("session write refused", line);
+    }
+
+    [Fact]
+    public async Task Queue_sweep_failure_logs_the_storage_kind_and_sqlite_detail()
+    {
+        using var f = new JobFixture();
+        Sql(f, "ALTER TABLE native_codex_attempts RENAME TO hidden_native_codex_attempts");
+        var lines = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        using var dispatcher = new DispatchJob(f.Store, new ScriptedBackend(_ => []), f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), lines.Enqueue);
+        using var lifetime = new CancellationTokenSource();
+        var loop = dispatcher.RunAsync(lifetime.Token);
+
+        await Bounded.Until(() => lines.Any(l => l.StartsWith("queue sweep failed", StringComparison.Ordinal)), "queue sweep failure logged");
+        lifetime.Cancel();
+        await loop;
+
+        var line = lines.First(l => l.StartsWith("queue sweep failed", StringComparison.Ordinal));
+        Assert.Contains("Unavailable: ", line);
+        Assert.Contains("no such table: native_codex_attempts", line);
+    }
+
+    static void Sql(JobFixture f, string sql)
+    {
+        using var connection = f.Database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.ExecuteNonQuery();
+    }
 }

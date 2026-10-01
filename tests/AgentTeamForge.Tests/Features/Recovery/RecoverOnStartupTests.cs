@@ -1,5 +1,7 @@
+using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Business.Features.Recovery;
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Tests.Support;
 
 namespace AgentTeamForge.Tests.Features.Recovery;
@@ -83,5 +85,27 @@ public sealed class RecoverOnStartupTests
         Assert.Equal((JobStatus.Failed, "daemon_restart_agent_gone"),
             (f.Store.GetJob(lost.JobId)!.Status, f.Store.GetJob(lost.JobId)!.ReasonCode));
         Assert.False(f.Store.IsSessionFenced(lost.JobId));
+    }
+
+    [Fact]
+    public async Task Restart_resolution_completes_only_after_unattached_runs_are_failed()
+    {
+        using var f = new JobFixture();
+        var lost = f.Submit("lost");
+        f.Store.BeginNextAttempt();
+        Assert.Equal([lost.JobId], new RecoverOnStartup(f.Store).Execute());
+        using var dispatcher = new DispatchJob(f.Store, new ScriptedBackend(_ => []), f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        dispatcher.RestoreAfterRestart(f.Store.RestartCandidates());
+        Assert.False(dispatcher.RestartResolved.IsCompleted);
+
+        using var lifetime = new CancellationTokenSource();
+        var loop = dispatcher.RunAsync(lifetime.Token);
+        await dispatcher.RestartResolved.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+
+        // The daemon serves requests only after this: none may observe the stale quarantine.
+        Assert.Equal((JobStatus.Failed, "daemon_restart_agent_gone"),
+            (f.Store.GetJob(lost.JobId)!.Status, f.Store.GetJob(lost.JobId)!.ReasonCode));
+        await lifetime.CancelAsync();
+        await loop;
     }
 }

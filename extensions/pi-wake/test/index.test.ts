@@ -1,4 +1,5 @@
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -58,18 +59,28 @@ describe("AgentTeamForge Pi adapter", () => {
     const dir = path.join(home, "state");
     await mkdir(path.join(home, ".pi", "agent"), { recursive: true });
     await mkdir(dir);
-    await writeFile(path.join(home, ".pi", "agent", "agentteamforge.json"), JSON.stringify({ stateDir: dir }));
+    await writeFile(
+      path.join(home, ".pi", "agent", "agentteamforge.json"),
+      JSON.stringify({ stateDir: dir }),
+    );
     process.env.HOME = home;
     delete process.env.ATF_STATE_DIR;
     const handlers: Record<string, () => Promise<void> | void> = {};
     const sends: string[] = [];
     activate({
-      on: (name: string, handler: () => Promise<void> | void) => { handlers[name] = handler; },
-      sendMessage: (message: { content: string }) => { sends.push(message.content); },
+      on: (name: string, handler: () => Promise<void> | void) => {
+        handlers[name] = handler;
+      },
+      sendMessage: (message: { content: string }) => {
+        sends.push(message.content);
+      },
     } as never);
     try {
       await handlers.session_start();
-      await appendFile(path.join(dir, `pi-wake-${process.pid}.jsonl`), JSON.stringify({ notice: "wake" }) + "\n");
+      await appendFile(
+        path.join(dir, `pi-wake-${process.pid}.jsonl`),
+        JSON.stringify({ notice: "wake" }) + "\n",
+      );
       await vi.waitFor(() => expect(sends).toEqual(["wake"]), { timeout: 3000 });
     } finally {
       await handlers.session_shutdown();
@@ -82,7 +93,9 @@ describe("AgentTeamForge Pi adapter", () => {
     process.env.ATF_STATE_DIR = dir;
     const handlers: Record<string, () => Promise<void> | void> = {};
     activate({
-      on: (name: string, handler: () => Promise<void> | void) => { handlers[name] = handler; },
+      on: (name: string, handler: () => Promise<void> | void) => {
+        handlers[name] = handler;
+      },
     } as never);
     const marker = path.join(dir, `pi-state-${process.pid}.json`);
     try {
@@ -90,6 +103,9 @@ describe("AgentTeamForge Pi adapter", () => {
       expect(JSON.parse(await readFile(marker, "utf8")).state).toBe("running");
       handlers.agent_settled();
       expect(JSON.parse(await readFile(marker, "utf8")).state).toBe("waiting");
+      handlers.turn_start();
+      await handlers.session_shutdown();
+      expect(existsSync(marker)).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

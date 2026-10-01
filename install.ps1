@@ -12,6 +12,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$explicitVersion = [bool]($Version -or $Archive)
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 function Fail([string]$Message) { throw "atf installer: $Message" }
@@ -22,6 +23,48 @@ function Invoke-Atf([string]$Executable, [string[]]$Arguments) {
     } catch {
         Fail "could not start '$Executable': $($_.Exception.Message). Windows security may have blocked it. For Defender ASR, allow the install folder '$root\' (%USERPROFILE%\.local\share\agentteamforge\) in Windows Security and rerun. Smart App Control has no path allow: it must be off or the binary signed; retrying alone will not fix a SAC block."
     }
+}
+function Compare-VersionPart([string]$Left, [string]$Right) {
+    $leftNumber = $Left -match '^[0-9]+$'
+    $rightNumber = $Right -match '^[0-9]+$'
+    if ($leftNumber -and $rightNumber) { return ([decimal]$Left).CompareTo([decimal]$Right) }
+    if ($leftNumber) { return -1 }
+    if ($rightNumber) { return 1 }
+    # Tags are named rc1..rcN, so compare a shared prefix numerically (rc10 after rc9).
+    $leftParts = [regex]::Match($Left, '^(.*[^0-9])([0-9]+)$')
+    $rightParts = [regex]::Match($Right, '^(.*[^0-9])([0-9]+)$')
+    if ($leftParts.Success -and $rightParts.Success -and $leftParts.Groups[1].Value -ceq $rightParts.Groups[1].Value) {
+        return ([decimal]$leftParts.Groups[2].Value).CompareTo([decimal]$rightParts.Groups[2].Value)
+    }
+    return [Math]::Sign([string]::CompareOrdinal($Left, $Right))
+}
+function Compare-VersionList([string]$Left, [string]$Right) {
+    $leftItems = $Left.Split('.')
+    $rightItems = $Right.Split('.')
+    for ($index = 0; $index -lt [Math]::Min($leftItems.Length, $rightItems.Length); $index++) {
+        $result = Compare-VersionPart $leftItems[$index] $rightItems[$index]
+        if ($result -ne 0) { return $result }
+    }
+    return [Math]::Sign($leftItems.Length - $rightItems.Length)
+}
+# SemVer precedence: true when $Older sorts before $Newer (build metadata ignored).
+function Test-VersionOlder([string]$Older, [string]$Newer) {
+    $first = $Older.Split('+')[0]
+    $second = $Newer.Split('+')[0]
+    $firstCore = $first; $firstPre = ''
+    $dash = $first.IndexOf('-')
+    if ($dash -ge 0) { $firstCore = $first.Substring(0, $dash); $firstPre = $first.Substring($dash + 1) }
+    $secondCore = $second; $secondPre = ''
+    $dash = $second.IndexOf('-')
+    if ($dash -ge 0) { $secondCore = $second.Substring(0, $dash); $secondPre = $second.Substring($dash + 1) }
+    $result = Compare-VersionList $firstCore $secondCore
+    if ($result -eq 0) {
+        if ($firstPre -eq '' -and $secondPre -eq '') { $result = 0 }
+        elseif ($firstPre -eq '') { $result = 1 }
+        elseif ($secondPre -eq '') { $result = -1 }
+        else { $result = Compare-VersionList $firstPre $secondPre }
+    }
+    return $result -lt 0
 }
 function Download([string]$Url, [string]$Destination, [string]$Name) {
     try { Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Destination | Out-Null }
@@ -73,6 +116,11 @@ if ($Uninstall) {
         if ($Force) { Invoke-Atf $binary @('uninstall', '--teardown-only', '--state-dir', $StateDir, '--force') }
         else { Invoke-Atf $binary @('uninstall', '--teardown-only', '--state-dir', $StateDir) }
         if ($LASTEXITCODE -ne 0) { Fail 'client teardown failed; installation left unchanged' }
+        # Teardown asks claude for its registration; that health check runs `atf mcp`, which starts the daemon again.
+        if (Test-Path $StateDir -PathType Container) {
+            Invoke-Atf $binary @('stop', '--state-dir', $StateDir) | Out-Null
+            if ($LASTEXITCODE -ne 0) { Fail 'daemon restarted during client teardown and did not stop; binaries left in place' }
+        }
     }
     if ($ParentPid -gt 0) {
         if (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {
@@ -134,6 +182,16 @@ if ($Archive) {
     if (-not $ReleaseUrl) { $ReleaseUrl = "$repo/download/v$Version" }
 }
 if ($Version -notmatch '^[0-9][0-9A-Za-z.+-]*$') { Fail 'invalid version' }
+# Rerunning the one-liner resolves "latest", which can be older than an installed prerelease.
+$activeVersionFile = Join-Path $bin '.atf-version'
+if (-not $explicitVersion -and (Test-Path $activeVersionFile -PathType Leaf)) {
+    $activeVersion = (Get-Content $activeVersionFile -Raw).Trim()
+    if ($activeVersion -ne $Version -and (Test-VersionOlder $Version $activeVersion)) {
+        Write-Output "atf $activeVersion is active and newer than the latest release $Version; nothing changed."
+        Write-Output "To switch to $Version anyway, rerun with -Version $Version."
+        return
+    }
+}
 $name = "atf-$Version-$rid.zip"
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Path $scratch | Out-Null

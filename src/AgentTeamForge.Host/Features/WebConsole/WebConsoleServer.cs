@@ -254,7 +254,32 @@ public sealed class WebConsoleServer : IAsyncDisposable
             _calls.Release();
         }
 
+        if (isMutation && !response.Ok && response.Error == JobErrors.InvalidRequest)
+        {
+            await WriteAsync(ctx, StatusCodes.Status400BadRequest, response, FieldOf(response.ErrorDetail));
+            return;
+        }
+
         await WriteAsync(ctx, StatusCodes.Status200OK, response);
+    }
+
+    // Daemon validation details read "Invalid <field>: reason".
+    static string? FieldOf(string? detail)
+    {
+        if (detail is null || !detail.StartsWith("Invalid ", StringComparison.Ordinal))
+        {
+            return null;
+        }
+        var end = detail.IndexOf(':', "Invalid ".Length);
+        var field = end < 0 ? string.Empty : detail["Invalid ".Length..end];
+        return field.Length > 0 && field.All(c => char.IsAsciiLetterLower(c) || c == '_') ? field : null;
+    }
+
+    /// <summary>Writes a 400 naming the request field at fault; the reader then returns null.</summary>
+    static async Task<IpcRequest?> Invalid(HttpContext ctx, string? field, string detail)
+    {
+        await WriteAsync(ctx, StatusCodes.Status400BadRequest, new IpcResponse(false, BadRequest, ErrorDetail: detail), field);
+        return null;
     }
 
     static async Task ListDirectoriesAsync(HttpContext ctx)
@@ -289,13 +314,20 @@ public sealed class WebConsoleServer : IAsyncDisposable
     static async Task<IpcRequest?> ReadFollowUpAsync(HttpContext ctx, string jobId)
     {
         var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebFollowUpBody);
-
-        if (body is not { Instruction: { Length: > 0 and <= MaxInstructionChars } instruction, IdempotencyKey: { Length: > 0 and <= MaxKeyChars } key }
-            || string.IsNullOrWhiteSpace(instruction))
+        if (body is null)
         {
             return null;
         }
+        if (body.Instruction is not { Length: > 0 and <= MaxInstructionChars } instruction || string.IsNullOrWhiteSpace(instruction))
+        {
+            return await Invalid(ctx, "instruction", $"Write a message of 1 to {MaxInstructionChars} characters.");
+        }
+        if (body.IdempotencyKey is not { Length: > 0 and <= MaxKeyChars } key)
+        {
+            return await Invalid(ctx, "idempotency_key", $"Send an idempotency key of 1 to {MaxKeyChars} characters.");
+        }
 
+        // Like the CLI and MCP follow_up: a busy parent queues the turn behind it instead of refusing it.
         return new IpcRequest
         {
             Op = IpcProtocol.JobFollowUp,
@@ -303,6 +335,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
             Instruction = instruction,
             IdempotencyKey = key,
             Interrupt = body.Interrupt,
+            Defer = true,
             Model = body.Model,
             Effort = body.Effort,
         };
@@ -311,11 +344,18 @@ public sealed class WebConsoleServer : IAsyncDisposable
     static async Task<IpcRequest?> ReadRetentionAsync(HttpContext ctx)
     {
         var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebRetentionBody);
-        if (body?.MaxRetainedSessions is not (>= 0 and <= 64)) { return null; }
+        if (body is null) { return null; }
+        if (body.MaxRetainedSessions is not (>= 0 and <= 64))
+        {
+            return await Invalid(ctx, "max_retained_sessions", "Use a whole number from 0 to 64.");
+        }
         int minutes;
         if (body.IdleCloseMinutes.ValueKind == JsonValueKind.String && body.IdleCloseMinutes.GetString() == "off") { minutes = -1; }
         else if (body.IdleCloseMinutes.ValueKind != JsonValueKind.Number || !body.IdleCloseMinutes.TryGetInt32(out minutes)
-            || minutes is < 0 or > 1440) { return null; }
+            || minutes is < 0 or > 1440)
+        {
+            return await Invalid(ctx, "idle_close_minutes", "Use a whole number of minutes from 0 to 1440, or off.");
+        }
         return new IpcRequest { Op = IpcProtocol.RetentionSettingsPut, MaxRetainedSessions = body.MaxRetainedSessions, IdleCloseMinutes = minutes };
     }
 
@@ -341,26 +381,43 @@ public sealed class WebConsoleServer : IAsyncDisposable
     static async Task<IpcRequest?> ReadHerdrPlacementAsync(HttpContext ctx)
     {
         var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebHerdrPlacementBody);
-        return body?.HerdrPlacement is null ? null : new IpcRequest
-        { Op = IpcProtocol.HerdrPlacementPut, HerdrPlacement = body.HerdrPlacement };
+        if (body is null) { return null; }
+        return body.HerdrPlacement is null ? await Invalid(ctx, "herdr_placement", "Choose a Herdr session.")
+            : new IpcRequest { Op = IpcProtocol.HerdrPlacementPut, HerdrPlacement = body.HerdrPlacement };
     }
 
     static async Task<IpcRequest?> ReadSubmitAsync(HttpContext ctx)
     {
         var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebSubmitBody);
-        if (body is not
-            {
-                Backend: "claude" or "codex" or "pi" or "cursor" or "droid", Instruction: { Length: > 0 and <= MaxInstructionChars } instruction,
-                IdempotencyKey: { Length: > 0 and <= MaxKeyChars } key, Cwd: { Length: > 0 and <= 4096 } cwd
-            }
-            || string.IsNullOrWhiteSpace(instruction) || !Path.IsPathFullyQualified(cwd) || !Directory.Exists(cwd)
-            || !ModelSelection.ValidConsoleSelection(body.Backend, body.Model, body.Effort)
-            || body.Name is not null && (!AcceptJob.ValidAgentName(body.Name) || body.Name == "fake-agent")
-            || (body.LeadSessionId is null) != (body.Workspace is null)
+        if (body is null)
+        {
+            return null;
+        }
+        if (ModelSelection.ConsoleSelectionError(body.Backend ?? string.Empty, body.Model, body.Effort) is { } selection)
+        {
+            return await Invalid(ctx, selection.Field, selection.Message);
+        }
+        if (body.Instruction is not { Length: > 0 and <= MaxInstructionChars } instruction || string.IsNullOrWhiteSpace(instruction))
+        {
+            return await Invalid(ctx, "instruction", $"Write a prompt of 1 to {MaxInstructionChars} characters.");
+        }
+        if (body.IdempotencyKey is not { Length: > 0 and <= MaxKeyChars } key)
+        {
+            return await Invalid(ctx, "idempotency_key", $"Send an idempotency key of 1 to {MaxKeyChars} characters.");
+        }
+        if (body.Cwd is not { Length: > 0 and <= 4096 } cwd || !Path.IsPathFullyQualified(cwd) || !Directory.Exists(cwd))
+        {
+            return await Invalid(ctx, "cwd", "Use an existing absolute directory.");
+        }
+        if (body.Name is not null && (!AcceptJob.ValidAgentName(body.Name) || body.Name == "fake-agent"))
+        {
+            return await Invalid(ctx, "name", "Use up to 64 letters, digits, - or _, starting with a letter or digit.");
+        }
+        if ((body.LeadSessionId is null) != (body.Workspace is null)
             || body.LeadSessionId is not null && (!Guid.TryParseExact(body.LeadSessionId, "D", out _)
                 || !Path.IsPathFullyQualified(body.Workspace!)))
         {
-            return null;
+            return await Invalid(ctx, "lead_session_id", "Choose a lead session from the list.");
         }
         return new IpcRequest
         {
@@ -471,10 +528,20 @@ public sealed class WebConsoleServer : IAsyncDisposable
 
     static Task Reject(HttpContext ctx, int status, string code) => WriteAsync(ctx, status, new IpcResponse(false, code));
 
-    static async Task WriteAsync(HttpContext ctx, int status, IpcResponse response)
+    static async Task WriteAsync(HttpContext ctx, int status, IpcResponse response, string? field = null)
     {
         ctx.Response.StatusCode = status;
         ctx.Response.ContentType = "application/json; charset=utf-8";
+        if (field is not null)
+        {
+            // The browser marks this control; IPC replies have no field slot.
+            var error = JsonSerializer.SerializeToNode(response, IpcJson.Default.IpcResponse)!;
+            error["field"] = field;
+            await using var errorWriter = new Utf8JsonWriter(ctx.Response.Body);
+            error.WriteTo(errorWriter);
+            await errorWriter.FlushAsync();
+            return;
+        }
         if (response.LeadTokens is not null && response.Page is not null)
         {
             // Web usage has explicit unknowns; ordinary IPC/MCP keeps its existing shape.

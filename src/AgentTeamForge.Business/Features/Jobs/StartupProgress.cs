@@ -1,3 +1,4 @@
+using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 
@@ -27,11 +28,13 @@ public sealed record StartupProgress(string Phase, string StartedAt, string? Rea
         var noMarker = interactive && command is not null && elapsed >= 45 && run.AcknowledgedAt is null && !run.Acked;
         var hint = noMarker
             ? $"No state marker since launch {elapsed}s ago. The agent may be waiting for setup, login or workspace trust; inspect its terminal. Missing evidence does not confirm delivery or failure."
-            : reason switch
+            : (reason, command) switch
             {
-                "agent_login_required" => $"Login may be required; run `{command}` once in a terminal to log in.",
-                "agent_first_run_required" => $"First-run setup may be required; run `{command}` once in a terminal to finish setup.",
-                "agent_workspace_trust_required" => $"Workspace trust may require attention; run `{command}` in this workspace.",
+                (BackendLoginErrors.Code, not null) => $"Login may be required; {BackendLoginErrors.LoginStep(command)}.",
+                // Only Claude has a first-run screen; Claude and Codex ask for workspace trust.
+                ("agent_first_run_required", "claude") => "First-run setup may be required; run `claude` once in a terminal to finish setup.",
+                ("agent_workspace_trust_required", "claude" or "codex") =>
+                    $"Workspace trust may require attention; run `{command}` in this workspace and trust it.",
                 _ => null,
             };
         return new(phase, started, run.ReadyAt, run.SubmittedAt, run.AcknowledgedAt, elapsed, hint)

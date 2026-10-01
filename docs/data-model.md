@@ -15,8 +15,13 @@ authoritative.
 - On open, the stored version is read from `schema_migrations`. A newer
   version than the build knows is refused without touching the file. An older
   version is migrated to the current one in a single transaction.
+- Every daemon start runs `PRAGMA quick_check` first (`JobDatabase.Verify`) and
+  refuses a damaged database before backing it up or reporting ready.
 - The daemon copies `jobs.db` to `backups/jobs-*.db` on its first start per
-  boot and keeps the two newest copies (`Host/Hosting/StartupBackup.cs`).
+  boot and keeps the two newest copies (`Host/Hosting/StartupBackup.cs`). A copy
+  that fails `quick_check` is discarded, so it never rotates out a good backup.
+- `jobs.db` and its `-wal`/`-shm` files are owner-only (0600) like the other
+  private state files; every role refuses them otherwise, naming the `chmod` fix.
 
 ## Jobs and runs
 
@@ -90,7 +95,10 @@ These are the atomic operations in `DAL/Features/Jobs/JobStore.cs`:
    `needs_reconciliation` also sets `session_fenced`.
 4. **Recover** (`QuarantineUncertainAttempts`, at daemon start): every
    `started` run becomes `needs_reconciliation` with reason
-   `daemon_restart_uncertain`, and its job is fenced. Nothing is re-queued.
+   `daemon_restart_uncertain`, and its job is fenced. Nothing is re-queued. The
+   daemon answers requests only after the dispatcher has failed each such job
+   with no verified live run or reattached it, so no client reads a quarantine
+   that recovery is about to resolve.
 5. **Cancel / expire**: queued jobs are cancelled by marking their intent
    `attempted` so they are never claimed. A running job's cancellation is
    committed before ATF asks the dispatcher to stop the owned backend run;

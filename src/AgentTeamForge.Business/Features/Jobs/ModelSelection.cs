@@ -67,7 +67,44 @@ public static class ModelSelection
         ["powerful"] = "opus",
     };
     static readonly string[] ClaudeModels = [.. ClaudeModelMap.Keys];
+
+    // The levels each CLI's help lists; codex narrows them per model when discovery reports levels.
     static readonly string[] ClaudeEfforts = ["low", "medium", "high", "xhigh", "max"];
+    static readonly string[] CodexEfforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+    static readonly string[] PiEfforts = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    static readonly string[] DroidSettingEfforts = ["none", "dynamic", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    static readonly string[] CursorEfforts = ["none"];
+
+    /// <summary>The one list of effort values a backend accepts when its catalog has no per-model levels.</summary>
+    public static IReadOnlyList<string> Efforts(string backend) => backend switch
+    {
+        "claude" => ClaudeEfforts,
+        "codex" => CodexEfforts,
+        "pi" => PiEfforts,
+        "droid" => DroidSettingEfforts,
+        "cursor" => CursorEfforts,
+        _ => [],
+    };
+
+    /// <summary>Effort values accepted for <paramref name="model"/>: its discovered levels, else the backend list.</summary>
+    public static IReadOnlyList<string> Efforts(string backend, string? model, IReadOnlyCollection<string> catalog) =>
+        model is not null && catalog is DiscoveredModelCollection known && known.EffortsFor(model) is { } reported ? reported : Efforts(backend);
+
+    /// <summary>Null when the backend accepts <paramref name="effort"/> for <paramref name="model"/>; otherwise the reason.</summary>
+    public static string? EffortError(string backend, string? model, string effort, IReadOnlyCollection<string> catalog)
+    {
+        var allowed = Efforts(backend, model, catalog);
+        if (allowed.Count == 0 || allowed.Contains(effort, StringComparer.Ordinal))
+        {
+            return null;
+        }
+
+        var target = model is null ? backend : $"{backend} model '{model}'";
+        return $"Unsupported effort '{effort}' for {target}. Supported: {string.Join(", ", allowed)}";
+    }
+
+    static string? Checked(string backend, string? model, string? effort, IReadOnlyCollection<string> catalog) =>
+        effort is not null && EffortError(backend, model, effort, catalog) is { } error ? throw new ArgumentException(error) : effort;
 
     public static IReadOnlyDictionary<string, AgentModelOptions> ConsoleOptions { get; } =
         new Dictionary<string, AgentModelOptions>
@@ -80,9 +117,27 @@ public static class ModelSelection
         };
 
     public static bool ValidConsoleSelection(string backend, string? model, string? effort) =>
-        ConsoleOptions.TryGetValue(backend, out var options)
-        && model is not null && options.Models.Contains(model, StringComparer.Ordinal)
-        && (effort is null || options.Efforts.Contains(effort, StringComparer.Ordinal));
+        ConsoleSelectionError(backend, model, effort) is null;
+
+    /// <summary>Null for a choice the console offers; otherwise the field at fault and why.</summary>
+    public static (string Field, string Message)? ConsoleSelectionError(string backend, string? model, string? effort)
+    {
+        if (!ConsoleOptions.TryGetValue(backend, out var options))
+        {
+            return ("backend", $"Unknown backend '{backend}'. Supported: {string.Join(", ", ConsoleOptions.Keys)}");
+        }
+        if (model is null || !options.Models.Contains(model, StringComparer.Ordinal))
+        {
+            return ("model", $"Unsupported model '{model}' for {backend}. Supported: {string.Join(", ", options.Models)}");
+        }
+        if (effort is null || options.Efforts.Contains(effort, StringComparer.Ordinal))
+        {
+            return null;
+        }
+        return ("effort", options.Efforts.Count == 0
+            ? $"The {backend} tier sets the effort; leave effort empty or change the tier in Settings."
+            : $"Unsupported effort '{effort}' for {backend}. Supported: {string.Join(", ", options.Efforts)}");
+    }
 
     static readonly BackendModelDiscovery DefaultDiscovery = new();
 
@@ -92,24 +147,22 @@ public static class ModelSelection
         var key = model?.Trim();
         if (backend == "claude")
         {
-            if (string.IsNullOrEmpty(key))
-            {
-                return ("opus", effort);
-            }
-
-            return ClaudeModelMap.TryGetValue(key, out var claudeModel) ? (claudeModel, effort)
-                : throw new ArgumentException($"Unsupported model '{key}' for claude-code. Supported: haiku, sonnet, opus, fable");
+            var claudeModel = string.IsNullOrEmpty(key) ? "opus"
+                : ClaudeModelMap.GetValueOrDefault(key)
+                    ?? throw new ArgumentException($"Unsupported model '{key}' for claude-code. Supported: {string.Join(", ", ClaudeModels)}");
+            return (claudeModel, Checked(backend, null, effort, []));
         }
 
-        if (backend == "droid" && effort is not null && effort != "ultra" && !TierMap.Efforts("droid").Contains(effort))
+        // Droid also takes "ultra", which its backend passes as max.
+        if (backend == "droid" && effort != "ultra")
         {
-            throw new ArgumentException($"Unsupported Droid reasoning effort '{effort}'");
+            Checked(backend, null, effort, []);
         }
         if (backend == "cursor" && string.IsNullOrEmpty(key)) { return (key, null); }
 
         if (backend is not ("codex" or "pi" or "cursor" or "droid") || string.IsNullOrEmpty(key))
         {
-            return (key, effort);
+            return (key, backend is "codex" or "pi" ? Checked(backend, null, effort, []) : effort);
         }
 
         if (backend == "pi" && key.Equals("high-fast", StringComparison.OrdinalIgnoreCase))
@@ -129,7 +182,7 @@ public static class ModelSelection
         {
             if (backend == "pi" && tier is null)
             {
-                return (null, effort); // Reference pi raw-slug soft fallback.
+                return (null, Checked(backend, null, effort, [])); // Reference pi raw-slug soft fallback.
             }
 
             var hint = backend == "codex" ? "npm install -g @openai/codex@latest"
@@ -139,7 +192,7 @@ public static class ModelSelection
         }
 
         return tier is { } resolved ? (resolved.Model, backend == "cursor" ? null : resolved.Effort)
-            : (key, backend == "cursor" ? null : effort);
+            : (key, backend == "cursor" ? null : backend == "droid" ? effort : Checked(backend, key, effort, available));
     }
 
 }

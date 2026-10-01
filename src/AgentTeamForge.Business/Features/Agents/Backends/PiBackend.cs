@@ -155,6 +155,14 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
                 yield break;
             }
 
+            // Pi exits before its turn starts when the selected model has no credential.
+            if (!turn.Finished && await BackendLoginErrors.InspectStderrAsync("pi", _stderrDrain, cancellationToken) is { } login)
+            {
+                BackendLoginErrors.Report(output, login);
+                yield return login;
+                yield break;
+            }
+
             if (turn.FinishAtEndOfOutput() is { } final)
             {
                 yield return final;
@@ -212,13 +220,14 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
     /// <summary>Maps Pi JSON events to evidence; the final answer is the last assistant message.</summary>
     internal sealed class TurnState
     {
-        bool _finished;
         string? _text;
         string? _stopReason;
         string? _errorMessage;
         bool _skippedLine;
 
         public bool Started { get; private set; }
+
+        public bool Finished { get; private set; }
 
         public void MarkSkippedLine() => _skippedLine = true;
 
@@ -267,12 +276,12 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
 
         public BackendEvidence? Finish(string correlation)
         {
-            if (_finished)
+            if (Finished)
             {
                 return null;
             }
 
-            _finished = true;
+            Finished = true;
             return (_text, _stopReason) switch
             {
                 (null, _) when _skippedLine => new BackendEvidence.ProtocolError("backend_malformed_output"),
@@ -287,12 +296,12 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
 
         public BackendEvidence? FinishAtEndOfOutput()
         {
-            if (_finished)
+            if (Finished)
             {
                 return null;
             }
 
-            _finished = true;
+            Finished = true;
             // A message_end is only one low-level response. Pi may still retry
             // or recover; only agent_settled confirms the session-level turn.
             return new BackendEvidence.ProtocolError("pi_not_settled");

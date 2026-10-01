@@ -1,12 +1,20 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using AgentTeamForge.Business.Features.Agents.Backends;
 
 namespace AgentTeamForge.Business.Features.Jobs;
 
 public sealed record TierOverride(string Backend, string Tier, string Model, string Effort);
 public sealed record TierSetting(string Backend, string Tier, string Model, string Effort,
-    string DefaultModel, string DefaultEffort, bool Custom);
+    string DefaultModel, string DefaultEffort, bool Custom, IReadOnlyList<string> Efforts);
+
+/// <summary>A rejected tier change; <see cref="Field"/> names the request field at fault.</summary>
+public sealed class TierSettingException(string field, string message) : ArgumentException(message)
+{
+    public string Field { get; } = field;
+
+    /// <summary>The "Invalid &lt;field&gt;: reason" detail shape other validation errors use.</summary>
+    public string Detail => $"Invalid {Field}: {Message}";
+}
 
 /// <summary>Private, per-state-directory capability tier overrides.</summary>
 public sealed class TierMap
@@ -68,35 +76,44 @@ public sealed class TierMap
             {
                 var (defaultModel, defaultEffort) = ModelSelection.DefaultTier(backend, tier);
                 var row = _overrides.Find(item => item.Backend == backend && item.Tier == tier);
-                var (activeModel, _) = ModelSelection.DefaultTier(backend, tier, _catalog(backend));
-                return new TierSetting(backend, tier, row?.Model ?? activeModel, row?.Effort ?? defaultEffort,
-                    defaultModel, defaultEffort, row is not null);
+                var catalog = _catalog(backend);
+                var (activeModel, _) = ModelSelection.DefaultTier(backend, tier, catalog);
+                var model = row?.Model ?? activeModel;
+                return new TierSetting(backend, tier, model, row?.Effort ?? defaultEffort,
+                    defaultModel, defaultEffort, row is not null, ModelSelection.Efforts(backend, model, catalog));
             }))];
         }
     }
 
-    public static IReadOnlyList<string> Efforts(string backend) => backend == "pi"
-        ? ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
-        : backend == "codex" ? ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
-        : backend == "droid" ? ["none", "dynamic", "off", "minimal", "low", "medium", "high", "xhigh", "max"]
-        : backend == "cursor" ? ["none"] : [];
+    /// <summary>Per backend, the efforts each catalog model accepts, so choosing another model can offer its levels.</summary>
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<string>>> ModelEfforts() =>
+        Backends.ToDictionary(backend => backend, IReadOnlyDictionary<string, IReadOnlyList<string>> (backend) =>
+        {
+            var catalog = _catalog(backend);
+            return catalog.Distinct(StringComparer.Ordinal)
+                .ToDictionary(model => model, model => ModelSelection.Efforts(backend, model, catalog), StringComparer.Ordinal);
+        }, StringComparer.Ordinal);
 
     static bool ValidNames(string backend, string tier) => ModelSelection.TierNames(backend).Contains(tier, StringComparer.Ordinal);
-    static bool ValidEffort(string backend, string effort) => backend == "pi"
-        ? PiThinking.Valid(effort) : Efforts(backend).Contains(effort);
+    static bool ValidEffort(string backend, string effort) => ModelSelection.Efforts(backend).Contains(effort);
 
     public void Change(string? backend, string? tier, string? model, string? effort, bool resetAll = false)
     {
-        if (!resetAll && (backend is null || tier is null || !ValidNames(backend, tier)))
+        if (!resetAll && (backend is null || !Backends.Contains(backend)))
         {
-            throw new ArgumentException("Unknown backend or tier");
+            throw new TierSettingException("backend", $"Unknown backend '{backend}'. Supported: {string.Join(", ", Backends)}");
+        }
+
+        if (!resetAll && (tier is null || !ValidNames(backend!, tier)))
+        {
+            throw new TierSettingException("tier", $"Unknown tier '{tier}' for {backend}. Supported: {string.Join(", ", ModelSelection.TierNames(backend!))}");
         }
 
         if (!resetAll && model is not null)
         {
-            if (effort is null || !ValidEffort(backend!, effort) || !AcceptJob.ValidOption(model))
+            if (!AcceptJob.ValidOption(model) || model.Length == 0)
             {
-                throw new ArgumentException("Invalid model or effort");
+                throw new TierSettingException("model", "Use a model name of at most 128 characters without shell metacharacters.");
             }
             var known = _catalog(backend!);
             if (known.Count > 0 && !(backend == "cursor" && model == "auto") && !(backend == "pi"
@@ -106,7 +123,15 @@ public sealed class TierMap
                 var hint = backend == "codex" ? "npm install -g @openai/codex@latest"
                     : backend == "cursor" ? "run cursor-agent --list-models or check account access"
                     : "npm install -g @earendil-works/pi-coding-agent@latest";
-                throw new ArgumentException($"Model '{model}' is not available for {backend} on this machine. Upgrade {backend}: {hint}");
+                throw new TierSettingException("model", $"Model '{model}' is not available for {backend} on this machine. Upgrade {backend}: {hint}");
+            }
+            if (effort is null)
+            {
+                throw new TierSettingException("effort", $"Choose an effort. Supported: {string.Join(", ", ModelSelection.Efforts(backend!, model, known))}");
+            }
+            if (ModelSelection.EffortError(backend!, model, effort, known) is { } effortError)
+            {
+                throw new TierSettingException("effort", effortError);
             }
         }
         lock (_gate)

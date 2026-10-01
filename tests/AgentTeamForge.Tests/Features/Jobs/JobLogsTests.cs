@@ -63,6 +63,20 @@ public sealed class JobLogsTests
     }
 
     [Fact]
+    public void Last_activity_is_the_reported_reason_not_the_trailing_stderr_line()
+    {
+        using var f = new JobFixture();
+        var logs = new JobLogs(Path.GetDirectoryName(f.DatabasePath)!);
+        var write = logs.BeginRun("job", "run", "pi");
+        write("stderr", "No API key found for the selected model.\nUse /login. See:\n  /opt/pi/docs/models.md\n"u8.ToArray());
+        Assert.Equal("/opt/pi/docs/models.md", logs.LastActivity("job", "pi"));
+
+        write("status", "Pi has no login or API key for the selected model; run `pi` and /login.\n"u8.ToArray());
+
+        Assert.StartsWith("Pi has no login", logs.LastActivity("job", "pi"), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Cap_trims_to_a_bounded_tail_and_keeps_absolute_offsets()
     {
         using var f = new JobFixture();

@@ -31,6 +31,14 @@ public sealed class JobActivityTests
         Assert.Equal(JobActivity.MaxTextChars + 1, Assert.Single(JobActivity.Normalize("plain", new string('x', 1000))).Text.Length);
     }
 
+    [Fact]
+    public void Status_lines_written_by_atf_are_activity_for_every_backend()
+    {
+        var entry = Assert.Single(JobActivity.Normalize("pi", "Pi has no login or API key for the selected model; run `pi` and /login.", "status"));
+        Assert.Equal("status", entry.Kind);
+        Assert.StartsWith("Pi has no login", entry.Text, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("claude", """{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm"}]}}""")]
     [InlineData("pi", """{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"}]}}""")]

@@ -5,7 +5,11 @@ using AgentTeamForge.DAL.Sqlite;
 
 namespace AgentTeamForge.Host.Hosting;
 
-/// <summary>Best-effort, once-per-boot backup before the daemon opens the database.</summary>
+/// <summary>
+/// Best-effort, once-per-boot backup before the daemon opens the database. The daemon verifies
+/// the live database first; the copy is verified again before any older backup is rotated out,
+/// so a damaged copy never replaces a good one.
+/// </summary>
 internal static class StartupBackup
 {
     internal static void Run(StateDirectory state, TimeSpan busyTimeout, Action<string> log, Func<string>? bootId = null)
@@ -18,12 +22,12 @@ internal static class StartupBackup
             }
 
             var currentBoot = (bootId ?? CurrentBootId)();
-            var backups = Path.Combine(state.Path, "backups");
+            var backups = BackupDirectory(state);
             StateDirectory.CreatePrivateDirectory(backups);
             var info = new DirectoryInfo(backups);
             if (info.LinkTarget is not null || !OperatingSystem.IsWindows() && info.UnixFileMode != StateDirectory.PrivateDir)
             {
-                throw new IOException("backup directory is not private");
+                throw new IOException($"backup directory {backups} is not private; it must be a real directory with mode 0700 (chmod 700 \"{backups}\")");
             }
             if (OperatingSystem.IsWindows())
             {
@@ -41,10 +45,13 @@ internal static class StartupBackup
             try
             {
                 JobDatabase.Backup(state.Database, backup, busyTimeout);
+                JobDatabase.Verify(backup, busyTimeout);
             }
             catch
             {
                 File.Delete(backup);
+                File.Delete(backup + "-wal");
+                File.Delete(backup + "-shm");
                 throw;
             }
 
@@ -75,6 +82,17 @@ internal static class StartupBackup
         {
             log($"backup failed: {ex.GetType().Name}: {ex.Message}");
         }
+    }
+
+    internal static string BackupDirectory(StateDirectory state) => Path.Combine(state.Path, "backups");
+
+    /// <summary>Newest first; the names sort by creation time.</summary>
+    internal static string[] List(StateDirectory state)
+    {
+        var backups = BackupDirectory(state);
+        return Directory.Exists(backups)
+            ? [.. Directory.GetFiles(backups, "jobs-*.db").OrderByDescending(Path.GetFileName, StringComparer.Ordinal)]
+            : [];
     }
 
     static string CurrentBootId()

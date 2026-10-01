@@ -17,15 +17,15 @@ public sealed class JobTimeoutTests
     }
 
     [Theory]
-    [InlineData(0, null)]
-    [InlineData(86_401, null)]
-    [InlineData(null, 0)]
-    [InlineData(null, -5)]
-    public void Out_of_range_limits_are_rejected(int? timeout, int? queueTtl)
+    [InlineData(0, null, "timeout_s")]
+    [InlineData(86_401, null, "timeout_s")]
+    [InlineData(null, 0, "queue_ttl_s")]
+    [InlineData(null, -5, "queue_ttl_s")]
+    public void Out_of_range_limits_are_rejected(int? timeout, int? queueTtl, string field)
     {
         using var f = new JobFixture();
         var result = f.Accept().Execute(new SubmitJobRequest("k", "work", null, false) { TimeoutSeconds = timeout, QueueTtlSeconds = queueTtl });
-        Assert.Equal(JobErrors.InvalidRequest, result.Error);
+        Assert.Equal((JobErrors.InvalidRequest, $"Invalid {field}: must be an integer from 1 to 86400."), (result.Error, result.Detail));
     }
 
     [Fact]

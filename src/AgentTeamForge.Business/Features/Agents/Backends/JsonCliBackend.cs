@@ -78,6 +78,15 @@ internal static class JsonCliBackend
             }
             await process.WaitForExitAsync(cancellationToken);
             var stderr = await _stderr.WaitAsync(cancellationToken);
+            // Only a failed run is inspected: stderr of a non-zero exit, or the CLI's own is_error record.
+            var login = (process.ExitCode != 0 ? BackendLoginErrors.Inspect(name, stderr) : null)
+                ?? (oversized ? null : BackendLoginErrors.Inspect(name, ErrorResult(buffer.ToArray())));
+            if (login is not null)
+            {
+                BackendLoginErrors.Report(request.Output, login);
+                yield return login;
+                yield break;
+            }
             if (process.ExitCode != 0)
             {
                 if (request.ResumeSessionId is not null && BackendSessionErrors.IsExpired(stderr))
@@ -104,6 +113,24 @@ internal static class JsonCliBackend
             try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)); }
             catch (TimeoutException) { TerminateOwnedChild(); }
             process.Dispose();
+        }
+    }
+
+    /// <summary>The CLI's own error text from an <c>is_error</c> result record; a successful reply is never inspected.</summary>
+    static string? ErrorResult(byte[] output)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(output);
+            var root = document.RootElement;
+            return root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("is_error", out var error) && error.ValueKind == JsonValueKind.True
+                && root.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.String
+                ? result.GetString() : null;
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 

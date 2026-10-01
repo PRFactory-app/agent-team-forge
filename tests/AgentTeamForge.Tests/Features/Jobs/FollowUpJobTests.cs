@@ -198,7 +198,7 @@ public sealed class FollowUpJobTests
         var claim = f.Store.BeginNextAttempt()!;
         var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
         Assert.True(f.Store.RecordSession(run, "sess-uncertain"));
-        var info = new ProcessStartInfo("sleep") { UseShellExecute = false };
+        var info = new ProcessStartInfo(MarkerVisibleExecutable.Sleep) { UseShellExecute = false };
         info.ArgumentList.Add("300");
         OrphanedBackendProcess.Mark(info, claim.Correlation);
         using var process = Process.Start(info)!;
@@ -210,6 +210,40 @@ public sealed class FollowUpJobTests
             Assert.Equal(JobErrors.ParentNotReady, followUp.Execute(new FollowUpRequest(parent.JobId, "next", "c")).Error);
 
             new RecoverOnStartup(f.Store).Execute();
+            Assert.True(process.WaitForExit(5000));
+            Assert.Equal("accepted", followUp.Execute(new FollowUpRequest(parent.JobId, "next", "c")).Outcome);
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill();
+            }
+        }
+    }
+
+    [Fact]
+    public void Owned_marked_system_process_keeps_the_parent_fenced_until_it_exits()
+    {
+        // macOS hides a system tool's environment, so its marker is unreadable: the owned PID alone must fence.
+        using var f = new JobFixture();
+        var accept = f.Accept();
+        var parent = f.Submit("p");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(f.Store.RecordSession(run, "sess-hidden"));
+        var info = new ProcessStartInfo("sleep") { UseShellExecute = false };
+        info.ArgumentList.Add("300");
+        OrphanedBackendProcess.Mark(info, claim.Correlation);
+        using var process = Process.Start(info)!;
+        try
+        {
+            f.Store.RecordBackendEvidence(run, process.Id, acked: false);
+            Assert.True(f.Store.EndUnsuccessfully(run, JobStatus.NeedsReconciliation, "daemon_restart_uncertain"));
+            var followUp = new FollowUpJob(f.Store, JobFixture.Operator, accept);
+            Assert.Equal(JobErrors.ParentNotReady, followUp.Execute(new FollowUpRequest(parent.JobId, "next", "c")).Error);
+
+            process.Kill();
             Assert.True(process.WaitForExit(5000));
             Assert.Equal("accepted", followUp.Execute(new FollowUpRequest(parent.JobId, "next", "c")).Outcome);
         }
@@ -369,7 +403,7 @@ public sealed class FollowUpJobTests
 
             public void TerminateOwnedChild()
             {
-                process.Kill(entireProcessTree: true);
+                OwnedProcessTermination.Kill(process);
                 // Hold the interrupter until the attempt has fully ended, as a slow kill would.
                 _disposed.Wait(TimeSpan.FromSeconds(5));
             }

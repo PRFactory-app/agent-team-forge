@@ -17,6 +17,11 @@ public static class WorktreesCommand
             return 64;
         }
 
+        if (!await ClientCommand.EnsureDaemonAsync(state))
+        {
+            return 1;
+        }
+
         var response = await new IpcClient(state, new SpikeLimits()).SendAsync(new IpcRequest
         {
             Op = IpcProtocol.JobPruneWorktrees,

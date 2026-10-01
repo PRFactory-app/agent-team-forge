@@ -20,7 +20,14 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
     readonly Action<InteractiveAgentKind, string>? _configPreflight;
 
     public WtInteractiveBackend(InteractiveAgentKind kind, string stateRoot, TimeSpan? idleTimeout = null, Func<InteractiveRetentionSettings>? retentionSettings = null)
-        : this(new WtTabControl(), new InteractiveTranscriptReader(), kind, stateRoot, "wt", configPreflight: InteractiveAgentPreflight.CheckCurrent, idleTimeout: idleTimeout, retentionSettings: retentionSettings) { }
+        : this(new WtTabControl(), new InteractiveTranscriptReader(), kind, stateRoot, "wt", configPreflight: InteractiveAgentPreflight.CheckCurrent, idleTimeout: idleTimeout, retentionSettings: retentionSettings)
+    {
+        // Idle agents outlive a daemon restart; without adoption follow-up, Stop agent and idle close never reach them.
+        foreach (var (sessionId, launch) in WtTabControl.Survivors(stateRoot, kind))
+        {
+            AdoptRetained(sessionId, launch);
+        }
+    }
 
     internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot, TimeSpan? idleTimeout = null, Func<InteractiveRetentionSettings>? retentionSettings = null)
         : this(tabs, transcripts, kind, stateRoot, "wt", idleTimeout: idleTimeout, retentionSettings: retentionSettings) { }
@@ -33,7 +40,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
         _kind = kind;
         _stateRoot = stateRoot;
         _tabDirectory = tabDirectory;
-        _liveSessions = new RetainedSessions(tabs.StopOwned, idleTimeout, timeProvider, retentionSettings);
+        _liveSessions = new RetainedSessions(tabs.StopOwned, idleTimeout, timeProvider, retentionSettings, tabs.Retained, tabs.Busy);
         _startupTimeout = startupTimeout ?? InteractiveStartup.Timeout;
         _configPreflight = configPreflight;
     }
@@ -69,32 +76,67 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
             _ = WtTabControl.AgentArguments(launch, "");
         }
         _jobs[request.JobId] = launch;
-        return new Run(_tabs, _transcripts, request, launch, DateTimeOffset.UtcNow, _startupTimeout, RememberSession, BindNativeSession, StopLaunch);
+        return new Run(_tabs, _transcripts, request, launch, DateTimeOffset.UtcNow, _startupTimeout, _liveSessions.Remember, BindNativeSession, StopLaunch);
     }
 
+    /// <summary>
+    /// Stops the job's owned tab. True once nothing owned can run: the tab was stopped, or its agent is proven
+    /// gone. An identity that cannot be verified either way keeps the tab owned and returns false.
+    /// </summary>
     public bool StopOwnedJob(string jobId)
     {
         if (!_jobs.TryGetValue(jobId, out var launch) && !TryRecoverLaunch(jobId, out launch)) { return false; }
-        if (!_tabs.IsAlive(launch)) { return false; }
-        StopLaunch(launch);
-        if (_tabs.IsAlive(launch)) { return false; }
+        if (_tabs.IsAlive(launch))
+        {
+            StopLaunch(launch);
+            if (_tabs.IsAlive(launch)) { return false; }
+        }
+        else
+        {
+            var gone = _tabs.ProvenGone(launch);
+            // Also removes the records of an exited agent, or makes a wrapper that never reported fail to start.
+            StopLaunch(launch);
+            if (!gone && !_tabs.ProvenGone(launch)) { return false; }
+        }
         _jobs.TryRemove(jobId, out _);
         return true;
     }
 
+    /// <summary>
+    /// After a restart, a native turn of <paramref name="sessionId"/> may still run in the tab one of
+    /// <paramref name="ownerJobIds"/> launched. While that tab lives it is held busy, never swept or reused
+    /// as idle, until the turn settles or is released; false when no such tab is live.
+    /// </summary>
+    internal bool HoldNativeTurn(string sessionId, IEnumerable<string> ownerJobIds)
+    {
+        foreach (var jobId in ownerJobIds)
+        {
+            if ((_jobs.TryGetValue(jobId, out var launch) || TryRecoverLaunch(jobId, out launch)) && _tabs.IsAlive(launch))
+            {
+                _liveSessions.Hold(sessionId, launch);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>The tab this daemon, or the one before a restart, launched for the job still runs its agent.</summary>
+    public bool OwnsLiveJob(string jobId) =>
+        (_jobs.TryGetValue(jobId, out var launch) || TryRecoverLaunch(jobId, out launch)) && _tabs.IsAlive(launch);
+
     bool TryRecoverLaunch(string jobId, out InteractiveLaunch launch)
     {
         launch = null!;
-        if (_tabs is not WtTabControl || _tabDirectory != "wt" ||
-            FindRecoveredLaunch(_stateRoot, _kind, jobId) is not { } found) { return false; }
+        if (_tabs is not (WtTabControl or MacTabControl) ||
+            FindRecoveredLaunch(_stateRoot, _kind, jobId, _tabDirectory) is not { } found) { return false; }
         launch = found;
         _jobs[jobId] = launch;
         return true;
     }
 
-    internal static InteractiveLaunch? FindRecoveredLaunch(string stateRoot, InteractiveAgentKind kind, string jobId)
+    internal static InteractiveLaunch? FindRecoveredLaunch(string stateRoot, InteractiveAgentKind kind, string jobId, string tabDirectory = "wt")
     {
-        var directory = Path.Combine(stateRoot, "wt");
+        var directory = Path.Combine(stateRoot, tabDirectory);
         if (!Directory.Exists(directory)) { return null; }
         foreach (var path in Directory.EnumerateFiles(directory, "atf*.launch.job"))
         {
@@ -109,7 +151,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
             if (!name.EndsWith(".launch.job", StringComparison.Ordinal)) { continue; }
             var agentName = name[..^".launch.job".Length];
             return new InteractiveLaunch(kind, agentName, stateRoot, null, null,
-                Path.ChangeExtension(path, ".ps1"))
+                Path.ChangeExtension(path, tabDirectory == "wt" ? ".ps1" : ".sh"))
             { JobId = jobId };
         }
         return null;
@@ -122,7 +164,8 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
     void BindNativeSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Track(sessionId, launch);
     void StopLaunch(InteractiveLaunch launch) { _tabs.StopOwned(launch); _liveSessions.Closed(launch); }
 
-    void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
+    /// <summary>Retain an idle agent that outlived a daemon restart, so follow-up, Stop agent and idle close reach it.</summary>
+    internal void AdoptRetained(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
 
     public bool? HasLiveSession(string sessionId) => _liveSessions.Liveness(sessionId);
 
@@ -154,6 +197,8 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
         Action<string, InteractiveLaunch> bindNativeSession, Action<InteractiveLaunch> stopLaunch) : IBackendRun
     {
         bool _stopped;
+        // Only a turn the evidence loop saw settle leaves its tab idle; any other live tab may still be working.
+        volatile bool _settled;
         readonly Lock _lifetime = new();
         string? _sessionId = request.ResumeSessionId;
         string? _notStartedError;
@@ -163,6 +208,8 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
         string? _reportedLimitDetails;
         int _apiErrorProgressCount;
         public int? ProcessId => tabs.ProcessId(launch);
+        // The tab's agent carries the launch's marker, which outlives this turn (see MacTabControl.WrapperText).
+        public ProcessSnapshotRoot? SnapshotRoot => ProcessId is int pid ? new(pid, launch.AgentName) : null;
 
         public async Task DeliverAsync(CancellationToken cancellationToken)
         {
@@ -243,6 +290,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
                         }
                         if (DateTimeOffset.UtcNow - _apiErrorSince >= apiError.QuietWindow)
                         {
+                            _settled = true;
                             yield return new BackendEvidence.AgentError(apiError.Code, apiError.Message);
                             yield break;
                         }
@@ -251,6 +299,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
                 else { _apiErrorSince = null; _observedApiError = null; _reportedLimitDetails = null; }
                 if (output is { Completed: true, ApiError: null, Message: { Length: > 0 } message } && session is not null)
                 {
+                    _settled = true;
                     yield return new BackendEvidence.Result(request.Correlation, message);
                     yield return new BackendEvidence.EndOfOutput();
                     yield break;
@@ -265,6 +314,13 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
                     {
                         stopLaunch(launch);
                         yield return new BackendEvidence.LaunchFailed(failure);
+                        yield break;
+                    }
+                    if (tabs.LoginBlocker(launch) is { } login)
+                    {
+                        // The agent cannot have run the prompt; close its tab like a failed start.
+                        stopLaunch(launch);
+                        yield return login;
                         yield break;
                     }
                     if (exited && transcripts.Read(launch, "atf-corr:" + request.Correlation, started) is null)
@@ -313,9 +369,10 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
                 _stopped = true;
                 if (tabs.IsAlive(launch))
                 {
-                    if (_sessionId is { } sessionId) { rememberSession(sessionId, launch); }
-                    // An uncertain turn may have no native session ID yet. Keep its
-                    // verified tab for explicit stop; never abandon a live agent.
+                    // Only a settled turn's tab is idle and may be retained (and recorded for a restarted
+                    // daemon), where idle close or a follow-up can reach it. An unsettled turn may still be
+                    // working, so its tab stays with the fenced job for explicit stop; never abandon or idle-close it.
+                    if (_settled && _sessionId is { } sessionId) { rememberSession(sessionId, launch); }
                 }
                 else { stopLaunch(launch); }
             }
@@ -334,4 +391,12 @@ internal interface IWtTabControl
     bool WrapperExited(InteractiveLaunch launch);
     int? ProcessId(InteractiveLaunch launch);
     void StopOwned(InteractiveLaunch launch);
+    /// <summary>The settled turn left this launch idle for <paramref name="sessionId"/>.</summary>
+    void Retained(InteractiveLaunch launch, string sessionId) { }
+    /// <summary>A turn runs in this launch again: withdraw its idle record.</summary>
+    void Busy(InteractiveLaunch launch) { }
+    /// <summary>Process proof that the launch's agent exited or can never start; false while that is unverified.</summary>
+    bool ProvenGone(InteractiveLaunch launch) => false;
+    /// <summary>The agent's own proof that it cannot run any prompt without signing in; null when there is none.</summary>
+    BackendEvidence.AgentError? LoginBlocker(InteractiveLaunch launch) => null;
 }

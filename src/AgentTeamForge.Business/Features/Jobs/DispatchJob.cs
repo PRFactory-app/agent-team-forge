@@ -27,6 +27,7 @@ public sealed class DispatchJob : IDisposable
     readonly ConcurrentDictionary<string, ActiveRun> _running = new();
     readonly ConcurrentDictionary<string, IBackendRun> _reconciledWindows = new();
     IReadOnlyList<string> _restartJobs = [];
+    readonly TaskCompletionSource _restartResolved = new(TaskCreationOptions.RunContinuationsAsynchronously);
     readonly Lock _reapGate = new();
     readonly List<HeadlessRun> _headless = [];
     readonly SemaphoreSlim _claimGate = new(1, 1);
@@ -88,6 +89,12 @@ public sealed class DispatchJob : IDisposable
 
     public void RestoreAfterRestart(IReadOnlyList<string> jobIds) => _restartJobs = jobIds;
 
+    /// <summary>
+    /// Completes once <see cref="RunAsync"/> has failed, fenced or reattached every restart candidate
+    /// and recovered pane owners. Until then a read would report the pre-recovery quarantine state.
+    /// </summary>
+    public Task RestartResolved => _restartResolved.Task;
+
     /// <summary>Optional owner admission (PRFactory authority, account windows); false leaves the job queued.</summary>
     public Func<string, bool>? LaunchGate { get; set; }
 
@@ -105,7 +112,7 @@ public sealed class DispatchJob : IDisposable
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            log($"agent error observer failed for {jobId}: {ex.GetType().Name}");
+            log($"agent error observer failed for {jobId}: {StorageException.Describe(ex)}");
         }
     }
 
@@ -114,7 +121,7 @@ public sealed class DispatchJob : IDisposable
         try { return LaunchGate?.Invoke(jobId) ?? true; }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            log($"dispatch launch gate failed for {jobId}: {ex.GetType().Name}");
+            log($"dispatch launch gate failed for {jobId}: {StorageException.Describe(ex)}");
             return false; // Fail closed; the claim loop retries.
         }
     }
@@ -185,6 +192,17 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
+    // macOS terminal tabs run the Windows tab backend with another tab host, wrapped rather than subclassed.
+    static WtInteractiveBackend? TabBackend(IJobBackend? backend) => backend switch
+    {
+        WtInteractiveBackend wt => wt,
+        MacInteractiveBackend mac => mac.Tabs,
+        _ => null,
+    };
+
+    /// <summary>Interactive terminal sessions: a longer start bound, kept across daemon shutdown, never reaped as headless.</summary>
+    static bool Interactive(IJobBackend? backend) => backend is HerdrInteractiveBackend || TabBackend(backend) is not null;
+
     /// <summary>Stops a quarantined agent only through verified backend ownership.</summary>
     public ReconcileStop StopReconciled(JobRecord job)
     {
@@ -208,7 +226,7 @@ public sealed class DispatchJob : IDisposable
                 return herdr.StopOwnedJobs(peers);
             }
         }
-        if (backend is WtInteractiveBackend wt) { return wt.StopOwnedJob(job.JobId); }
+        if (TabBackend(backend) is { } wt) { return wt.StopOwnedJob(job.JobId); }
         // While the attempt is still unwinding, its held Process is the only
         // trustworthy Windows ownership proof. Never reconstruct a handle from a PID.
         if (_running.TryGetValue(job.JobId, out var active) && active.BackendRun is { OwnedChildAlive: true }
@@ -342,7 +360,7 @@ public sealed class DispatchJob : IDisposable
         catch (StorageException ex)
         {
             // Left running; the runtime deadline still bounds the attempt.
-            log($"{reason} cancel failed for {jobId}: {ex.Failure}");
+            log($"{reason} cancel failed for {jobId}: {ex.Failure}: {ex.Message}");
         }
     }
 
@@ -371,41 +389,54 @@ public sealed class DispatchJob : IDisposable
         using var stopping = CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, _halted.Token);
         using var slots = new SemaphoreSlim(limits.MaxConcurrentJobs);
         var inFlight = new List<Task>();
-        foreach (var jobId in _restartJobs)
+        try
         {
-            var job = store.GetJob(jobId);
-            var runs = store.GetRuns(jobId);
-            var run = runs.Count == 0 ? null : runs[^1];
-            if (job is null || run is null || job.Status != JobStatus.NeedsReconciliation) { continue; }
-            var herdr = backends.Resolve(job.Backend) as HerdrInteractiveBackend;
-            var gone = false;
-            if (herdr is not null && RecoverNativeTurn(herdr, job, run)) { continue; }
-            var backendRun = herdr?.Reattach(job, run, out gone);
-            if (backendRun is null)
+            foreach (var jobId in _restartJobs)
             {
-                if (herdr is not null && !gone)
+                var job = store.GetJob(jobId);
+                var runs = store.GetRuns(jobId);
+                var run = runs.Count == 0 ? null : runs[^1];
+                if (job is null || run is null || job.Status != JobStatus.NeedsReconciliation) { continue; }
+                var herdr = backends.Resolve(job.Backend) as HerdrInteractiveBackend;
+                var gone = false;
+                if (herdr is not null && RecoverNativeTurn(herdr, job, run)) { continue; }
+                var backendRun = herdr?.Reattach(job, run, out gone);
+                if (backendRun is null)
                 {
-                    log($"recovery: {jobId} remains fenced; its Herdr pane could not be rebound or proven gone");
+                    if (herdr is not null && !gone)
+                    {
+                        log($"recovery: {jobId} remains fenced; its Herdr pane could not be rebound or proven gone");
+                        continue;
+                    }
+                    if (herdr is null && TabBackend(backends.Resolve(job.Backend)) is { } nativeTabs && RecoverTabNativeTurn(nativeTabs, job)) { continue; }
+                    if (herdr is null && TabBackend(backends.Resolve(job.Backend)) is { } tabs && tabs.OwnsLiveJob(jobId))
+                    {
+                        log($"recovery: {jobId} remains fenced; its terminal tab is still live");
+                        continue;
+                    }
+                    if (herdr is null && OrphanedBackendProcess.HasMarkedProcess([run.Correlation],
+                            run.BackendPid is int pid ? [pid] : []))
+                    {
+                        log($"recovery: {jobId} remains fenced; marked process exit is unverified");
+                        continue;
+                    }
+                    store.FailUnattached(jobId);
+                    log($"recovery: {jobId} failed; no verified live run");
                     continue;
                 }
-                if (herdr is null && OrphanedBackendProcess.HasMarkedProcess([run.Correlation],
-                        run.BackendPid is int pid ? [pid] : []))
-                {
-                    log($"recovery: {jobId} remains fenced; marked process exit is unverified");
-                    continue;
-                }
-                store.FailUnattached(jobId);
-                log($"recovery: {jobId} failed; no verified live run");
-                continue;
+                var reference = new RunRef(jobId, run.RunId, run.Generation, run.Correlation);
+                if (!store.ReattachQuarantined(reference)) { await backendRun.DisposeAsync(); continue; }
+                log($"recovery: reattached {jobId} to its live Herdr pane");
+                inFlight.Add(Task.Run(() => RunAttemptAsync(new AttemptClaim(job, run.RunId, run.Generation, run.Correlation),
+                    stopping.Token, backendRun), CancellationToken.None));
             }
-            var reference = new RunRef(jobId, run.RunId, run.Generation, run.Correlation);
-            if (!store.ReattachQuarantined(reference)) { await backendRun.DisposeAsync(); continue; }
-            log($"recovery: reattached {jobId} to its live Herdr pane");
-            inFlight.Add(Task.Run(() => RunAttemptAsync(new AttemptClaim(job, run.RunId, run.Generation, run.Correlation),
-                stopping.Token, backendRun), CancellationToken.None));
+            // After native turns: their settlement or proven loss resolves the owner's session first.
+            RecoverTerminalPaneOwners();
         }
-        // After native turns: their settlement or proven loss resolves the owner's session first.
-        RecoverTerminalPaneOwners();
+        finally
+        {
+            _restartResolved.TrySetResult();
+        }
         var sweeping = SweepQueueAsync(stopping.Token);
         try
         {
@@ -466,6 +497,32 @@ public sealed class DispatchJob : IDisposable
     }
 
     /// <summary>
+    /// A native Claude follow-up runs in the terminal tab its session's launching job opened, so it has no tab
+    /// record of its own (and on macOS the tab's agent carries that launch's marker, not this turn's). While a tab
+    /// of the session is live (or unverifiable) the turn may still be executing: it stays fenced and the tab is
+    /// held busy until the turn settles from its transcript or is released. Only with no live tab does it fail.
+    /// </summary>
+    bool RecoverTabNativeTurn(WtInteractiveBackend tabs, JobRecord job)
+    {
+        if (store.NativeClaudeAttempt(job.JobId) is not { State: "posting" or "posted" or "received" } attempt) { return false; }
+        // Held first, so a settlement found now returns the live tab to idle retention.
+        var held = tabs.HoldNativeTurn(attempt.SessionId, store.GetSessionJobs(job.JobId).Where(id => id != job.JobId));
+        if (TrySettleNativeClaude(attempt))
+        {
+            log($"recovery: {job.JobId} completed from its native transcript");
+            return true;
+        }
+        if (held)
+        {
+            log($"recovery: {job.JobId} remains fenced; its native turn's terminal tab is still live");
+            return true;
+        }
+        store.FailUnattached(job.JobId, releaseNative: true);
+        log($"recovery: {job.JobId} failed; no verified live run");
+        return true;
+    }
+
+    /// <summary>
     /// Restart fences every job with a Herdr ownership record. A terminal owner's verified idle pane
     /// is retained again so follow-ups reach it; a proven-gone pane only releases its fence.
     /// Unverified or busy panes, and sessions with an unresolved turn, stay fenced.
@@ -475,7 +532,7 @@ public sealed class DispatchJob : IDisposable
         IReadOnlyList<string> owners;
         // Best effort: an unavailable store halts the claim loop that follows.
         try { owners = store.FencedTerminalJobs(); }
-        catch (StorageException ex) { log($"recovery: pane owner recovery skipped: {ex.Failure}"); return; }
+        catch (StorageException ex) { log($"recovery: pane owner recovery skipped: {ex.Failure}: {ex.Message}"); return; }
         foreach (var jobId in owners)
         {
             try
@@ -505,6 +562,7 @@ public sealed class DispatchJob : IDisposable
         {
             while (!stopping.IsCancellationRequested)
             {
+                SnapshotRunningProcesses();
                 try
                 {
                     SweepExpiredQueued();
@@ -528,7 +586,7 @@ public sealed class DispatchJob : IDisposable
                             nativeTasks.Add(Task.Run(async () =>
                             {
                                 try { await RunAttemptAsync(native, stopping); }
-                                catch (Exception ex) { log($"native dispatch fault: {ex.GetType().Name}"); Halt("dispatcher_fault"); }
+                                catch (Exception ex) { log($"native dispatch fault: {StorageException.Describe(ex)}"); Halt("dispatcher_fault"); }
                                 finally { Signal(); }
                             }, CancellationToken.None));
                         }
@@ -536,7 +594,7 @@ public sealed class DispatchJob : IDisposable
                 }
                 catch (StorageException ex)
                 {
-                    log($"queue sweep failed: {ex.Failure}");
+                    log($"queue sweep failed: {ex.Failure}: {ex.Message}");
                     if (ex.Failure != StorageFailure.Busy) { Halt("dispatcher_fault"); }
                 }
                 catch (OperationCanceledException) when (stopping.IsCancellationRequested) { break; }
@@ -552,6 +610,32 @@ public sealed class DispatchJob : IDisposable
             }
         }
         finally { await Task.WhenAll(nativeTasks); }
+    }
+
+    long _lastSnapshot;
+
+    /// <summary>macOS only: records each running attempt's process tree for cleanup (see <see cref="RunProcessSnapshots"/>).</summary>
+    void SnapshotRunningProcesses()
+    {
+        if (!OperatingSystem.IsMacOS() || Stopwatch.GetElapsedTime(_lastSnapshot) < RunProcessSnapshots.Interval) { return; }
+        _lastSnapshot = Stopwatch.GetTimestamp();
+        try
+        {
+            var roots = new List<ProcessSnapshotRoot>();
+            foreach (var active in _running.Values)
+            {
+                if (Volatile.Read(ref active.BackendRun) is { } backendRun
+                    && (backendRun.SnapshotRoot ?? (backendRun.ProcessId is int pid ? new(pid, active.Correlation) : null)) is { } root)
+                {
+                    roots.Add(root);
+                }
+            }
+            RunProcessSnapshots.Capture(roots);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            log($"process snapshot failed: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     bool CanNativeCodex(JobRecord parent) =>
@@ -588,8 +672,7 @@ public sealed class DispatchJob : IDisposable
         var live = backends.Resolve(parent.Backend) switch
         {
             HerdrInteractiveBackend herdr => herdr.HasLiveClaudeSession(session),
-            WtInteractiveBackend wt => wt.HasLiveClaudeSession(session),
-            _ => false
+            var other => TabBackend(other)?.HasLiveClaudeSession(session) == true,
         };
         if (!live) { return false; }
         var channel = store.ManagedClaudeChannel(parent.JobId);
@@ -609,8 +692,7 @@ public sealed class DispatchJob : IDisposable
                 var taken = backend switch
                 {
                     HerdrInteractiveBackend herdr => herdr.HasIdleClaudeSession(session) && herdr.TakeIdleForNativeTurn(session),
-                    WtInteractiveBackend wt => wt.HasIdleClaudeSession(session) && wt.TakeIdleForNativeTurn(session),
-                    _ => false
+                    var other => TabBackend(other) is { } wt && wt.HasIdleClaudeSession(session) && wt.TakeIdleForNativeTurn(session),
                 };
                 if (taken) { reserved = session; }
                 return taken;
@@ -745,7 +827,7 @@ public sealed class DispatchJob : IDisposable
     {
         var run = new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
         using var stopRequested = new CancellationTokenSource();
-        var active = new ActiveRun(stopRequested);
+        var active = new ActiveRun(stopRequested, run.Correlation);
         _running[run.JobId] = active;
         IBackendRun? backendRun = null;
         HeadlessRun? headless = null;
@@ -769,7 +851,7 @@ public sealed class DispatchJob : IDisposable
                 : CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, stopRequested.Token, jobTimeout.Token);
             // Interactive launch and native transcript confirmation can exceed the fake
             // backend's short default runtime on a loaded desktop.
-            var runtime = backends.Resolve(claim.Job.Backend) is HerdrInteractiveBackend or WtInteractiveBackend
+            var runtime = Interactive(backends.Resolve(claim.Job.Backend))
                 ? TimeSpan.FromTicks(Math.Max(limits.MaxFakeRuntime.Ticks,
                     (InteractiveStartup.Timeout * 2 + TimeSpan.FromSeconds(90)).Ticks))
                 : limits.MaxFakeRuntime;
@@ -824,7 +906,7 @@ public sealed class DispatchJob : IDisposable
                 catch (OperationCanceledException)
                 {
                     TerminateLateStart(starting, run, daemonLifetime.IsCancellationRequested
-                        && backend is HerdrInteractiveBackend or WtInteractiveBackend);
+                        && Interactive(backend));
                     if (!daemonLifetime.IsCancellationRequested && !stopRequested.IsCancellationRequested)
                     {
                         End(run, JobStatus.NeedsReconciliation, "backend_start_timeout");
@@ -891,9 +973,12 @@ public sealed class DispatchJob : IDisposable
                             TryRecordBlocked(run, blocked.Blocked);
                             break;
                         case BackendEvidence.NotStarted rejected:
+                            // Like a failed preflight, a start refused inside the backend names its reason in daemon.log.
+                            log($"backend failure for {run.RunId}: job {run.JobId}: backend_not_started: {rejected.Details}");
                             End(run, JobStatus.Failed, "backend_not_started", rejected.Details);
                             return;
                         case BackendEvidence.LaunchFailed failed:
+                            log($"backend failure for {run.RunId}: job {run.JobId}: launch_failed: {failed.Details}");
                             End(run, JobStatus.Failed, "launch_failed", failed.Details);
                             return;
                         case BackendEvidence.EndOfOutput:
@@ -920,7 +1005,7 @@ public sealed class DispatchJob : IDisposable
         catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested)
         {
             // Interactive terminal sessions outlive the daemon; restart quarantines them.
-            if (backends.Resolve(claim.Job.Backend) is not (HerdrInteractiveBackend or WtInteractiveBackend))
+            if (!Interactive(backends.Resolve(claim.Job.Backend)))
             {
                 active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
             }
@@ -943,7 +1028,7 @@ public sealed class DispatchJob : IDisposable
             {
                 message += ": " + ex.InnerException.GetBaseException().Message;
             }
-            log($"backend failure for {run.RunId}: {reason}: {message}");
+            log($"backend failure for {run.RunId}: job {run.JobId}: {reason}: {message}");
             active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
             End(run, noEffects ? JobStatus.Failed : JobStatus.NeedsReconciliation, reason,
                 message);
@@ -992,7 +1077,7 @@ public sealed class DispatchJob : IDisposable
                 try { store.ReconcileStoppedJob(run.JobId); }
                 catch (StorageException ex)
                 {
-                    log($"session reconciliation failed for {run.JobId}: {ex.Message}");
+                    log($"session reconciliation failed for {run.JobId}: {ex.Failure}: {ex.Message}");
                     Halt("terminal_write_failed");
                 }
             }
@@ -1009,7 +1094,7 @@ public sealed class DispatchJob : IDisposable
         switch (backends.Resolve(backend))
         {
             case HerdrInteractiveBackend herdr: herdr.RememberNativeTurn(sessionId); break;
-            case WtInteractiveBackend wt: wt.RememberNativeTurn(sessionId); break;
+            case var other when TabBackend(other) is { } wt: wt.RememberNativeTurn(sessionId); break;
         }
     }
 
@@ -1215,9 +1300,9 @@ public sealed class DispatchJob : IDisposable
 
     HeadlessRun? TrackHeadless(AttemptClaim claim)
     {
-        if (backends.Resolve(claim.Job.Backend) is HerdrInteractiveBackend or WtInteractiveBackend) { return null; }
+        if (Interactive(backends.Resolve(claim.Job.Backend))) { return null; }
         var directory = Path.TrimEndingDirectorySeparator(
-            Path.GetFullPath(claim.Job.WorktreePath ?? claim.Job.Cwd ?? Environment.CurrentDirectory));
+            Path.GetFullPath(JobWorktree.WorkingDirectory(claim.Job) ?? Environment.CurrentDirectory));
         var entry = new HeadlessRun(directory, claim.Correlation);
         lock (_reapGate) { _headless.Add(entry); }
         return entry;
@@ -1254,11 +1339,13 @@ public sealed class DispatchJob : IDisposable
             || parent == Path.GetPathRoot(parent);
     }
 
-    sealed class ActiveRun(CancellationTokenSource stop)
+    sealed class ActiveRun(CancellationTokenSource stop, string correlation)
     {
         int _terminated;
 
         public CancellationTokenSource Stop { get; } = stop;
+
+        public string Correlation { get; } = correlation;
 
         public IBackendRun? BackendRun;
 
@@ -1312,7 +1399,7 @@ public sealed class DispatchJob : IDisposable
         }
         catch (Exception ex) when (ex is StorageException or InjectedFailureException)
         {
-            log($"completion write failed for {run.RunId}; marking uncertain");
+            log($"completion write failed for {run.RunId}: {StorageException.Describe(ex)}; marking uncertain");
             End(run, JobStatus.NeedsReconciliation, "completion_write_failed");
             Halt("terminal_write_failed");
         }
@@ -1326,7 +1413,7 @@ public sealed class DispatchJob : IDisposable
         }
         catch (Exception ex)
         {
-            log($"terminal write failed for {run.RunId}: {(ex is StorageException storage ? storage.Failure.ToString() : ex.GetType().Name)}; halting dispatch");
+            log($"terminal write failed for {run.RunId}: {StorageException.Describe(ex)}; halting dispatch");
             Halt("terminal_write_failed");
         }
     }
@@ -1340,7 +1427,7 @@ public sealed class DispatchJob : IDisposable
         catch (StorageException ex)
         {
             // Without it a follow-up is refused (parent_not_ready); the turn itself is unaffected.
-            log($"session record failed for {run.RunId}: {ex.Failure}");
+            log($"session record failed for {run.RunId}: {ex.Failure}: {ex.Message}");
         }
     }
 
@@ -1353,7 +1440,7 @@ public sealed class DispatchJob : IDisposable
         catch (StorageException ex)
         {
             // The marker is informational; the turn itself is unaffected.
-            log($"blocked marker failed for {run.RunId}: {ex.Failure}");
+            log($"blocked marker failed for {run.RunId}: {ex.Failure}: {ex.Message}");
         }
     }
 

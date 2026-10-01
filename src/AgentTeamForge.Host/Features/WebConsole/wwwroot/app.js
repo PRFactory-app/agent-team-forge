@@ -98,6 +98,19 @@
     }
   }
 
+  // A rejected value names its field: mark that control (and clear the others) and say why.
+  function markInvalid(controls, field) {
+    for (const [name, control] of Object.entries(controls)) {
+      if (name === field) control.setAttribute('aria-invalid', 'true');
+      else control.removeAttribute('aria-invalid');
+    }
+  }
+
+  function showOutcome(target, r, saved, fallback) {
+    target.textContent = r?.ok ? saved : r?.error_detail || r?.error || fallback;
+    target.className = r?.ok ? '' : 'error';
+  }
+
   function logout(message) {
     token = null;
     sessionStorage.removeItem(tokenKey);
@@ -319,7 +332,7 @@
     const r = await api('GET', '/api/settings/tiers');
     if (!r?.ok) { $('settings-status').textContent = r?.error || 'Could not load settings.'; return; }
     tierSettings = r.tiers || [];
-    renderTierSettings(r.model_catalog || {});
+    renderTierSettings(r.model_catalog || {}, r.model_efforts || {});
   }
 
   function setPlacementControls(prefix, value) {
@@ -330,7 +343,7 @@
     return 'herdr-session:' + $(prefix + '-session').value.trim();
   }
 
-  function renderTierSettings(catalog) {
+  function renderTierSettings(catalog, modelEfforts) {
     const target = $('tier-settings');
     target.replaceChildren();
     for (const backend of ['codex', 'pi', 'cursor', 'droid']) {
@@ -359,11 +372,18 @@
         modelCell.append(model); tr.append(modelCell);
         const effortCell = element('td'); effortCell.dataset.label = 'Effort';
         const effort = element('select'); effort.setAttribute('aria-label', `${backend} ${row.tier} effort`);
-        const levels = backend === 'pi' ? ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
-          : backend === 'droid' ? ['none', 'dynamic', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
-          : backend === 'cursor' ? ['none'] : ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-        for (const value of levels) { const option = element('option', '', value); option.value = value; effort.append(option); }
-        effort.value = row.effort; effortCell.append(effort); tr.append(effortCell);
+        // The daemon's levels for the chosen model; the saved model keeps its stored value visible even if the catalog dropped it.
+        const fillEfforts = () => {
+          const levels = modelEfforts[backend]?.[model.value] || row.efforts || [];
+          const options = model.value === row.model ? [...new Set([...levels, row.effort])] : levels;
+          const prior = effort.value || row.effort;
+          effort.replaceChildren();
+          for (const value of options) { const option = element('option', '', value); option.value = value; effort.append(option); }
+          effort.value = options.includes(prior) ? prior : options.includes(row.effort) ? row.effort : options[0] || '';
+        };
+        fillEfforts();
+        model.addEventListener('change', fillEfforts);
+        effortCell.append(effort); tr.append(effortCell);
         const defaults = element('td', 'tier-default', `${row.default_model} / ${row.default_effort}`);
         defaults.dataset.label = 'Default'; tr.append(defaults);
         const actions = element('td', 'tier-actions');
@@ -371,14 +391,15 @@
         save.addEventListener('click', async () => {
           save.disabled = true;
           const result = await api('PUT', '/api/settings/tiers', { backend, tier: row.tier, model: model.value.trim(), effort: effort.value });
-          $('settings-status').textContent = result?.ok ? `${backend} ${row.tier} saved.` : (result?.error || 'Save failed.');
+          markInvalid({ model, effort }, result?.ok ? null : result?.field);
+          showOutcome($('settings-status'), result, `${backend} ${row.tier} saved.`, 'Save failed.');
           if (result?.ok) { await loadTierSettings(); await loadConfig(); }
           save.disabled = false;
         });
         const reset = element('button', '', 'Reset'); reset.type = 'button'; reset.disabled = !row.custom;
         reset.addEventListener('click', async () => {
           const result = await api('PUT', '/api/settings/tiers', { backend, tier: row.tier });
-          $('settings-status').textContent = result?.ok ? `${backend} ${row.tier} reset.` : (result?.error || 'Reset failed.');
+          showOutcome($('settings-status'), result, `${backend} ${row.tier} reset.`, 'Reset failed.');
           if (result?.ok) { await loadTierSettings(); await loadConfig(); }
         });
         actions.append(save, reset); tr.append(actions); body.append(tr);
@@ -502,12 +523,15 @@
       result.textContent = 'Not submitted (' + r.error + '). Retry with the same key or discard.';
       result.className = 'warn';
     } else {
-      result.textContent = r.error === 'invalid_request' || r.error === 'web_bad_request'
-        ? 'Rejected: check the name, model, effort, and existing absolute directory.'
-        : 'Rejected: ' + r.error;
+      result.textContent = 'Rejected: ' + (r.error_detail || (r.error === 'invalid_request' || r.error === 'web_bad_request'
+        ? 'check the name, model, effort, and existing absolute directory.' : r.error));
       result.className = 'error';
       newAgent.pending = null;
     }
+    markInvalid({
+      backend: $('new-agent-backend'), name: $('new-agent-name'), model: $('new-agent-model'), effort: $('new-agent-effort'),
+      cwd: $('new-agent-cwd'), instruction: $('new-agent-prompt'), lead_session_id: $('new-agent-lead'),
+    }, r && !r.ok ? r.field : null);
     newAgentControls();
   }
 
@@ -661,7 +685,7 @@
       state.resultClass = 'warn';
     } else {
       state.pending = null;
-      state.result = 'Failed: ' + r.error;
+      state.result = 'Failed: ' + (r.error_detail || r.error);
       state.resultClass = 'error';
     }
     await loadJobs();
@@ -1437,7 +1461,8 @@
         max_retained_sessions: Number($('settings-max-retained').value),
         idle_close_minutes: $('settings-idle-off').checked ? 'off' : Number($('settings-idle-minutes').value),
       });
-      $('retention-status').textContent = r?.ok ? 'Saved. Applies on the next idle sweep.' : r?.error || 'Could not save idle settings.';
+      markInvalid({ max_retained_sessions: $('settings-max-retained'), idle_close_minutes: $('settings-idle-minutes') }, r?.ok ? null : r?.field);
+      showOutcome($('retention-status'), r, 'Saved. Applies on the next idle sweep.', 'Could not save idle settings.');
       button.disabled = false;
     });
     $('settings-back').addEventListener('click', () => {
@@ -1447,12 +1472,13 @@
     });
     $('tiers-reset-all').addEventListener('click', async () => {
       const result = await api('PUT', '/api/settings/tiers', { reset_all: true });
-      $('settings-status').textContent = result?.ok ? 'All tiers reset.' : (result?.error || 'Reset failed.');
+      showOutcome($('settings-status'), result, 'All tiers reset.', 'Reset failed.');
       if (result?.ok) { await loadTierSettings(); await loadConfig(); }
     });
     $('settings-placement-save').addEventListener('click', async () => {
       const result = await api('PUT', '/api/settings/herdr-placement', { herdr_placement: chosenPlacement('settings') });
-      $('settings-status').textContent = result?.ok ? 'Herdr placement saved.' : (result?.error || 'Save failed.');
+      markInvalid({ herdr_placement: $('settings-session') }, result?.ok ? null : result?.field);
+      showOutcome($('settings-status'), result, 'Herdr placement saved.', 'Save failed.');
       if (result?.ok) { defaultPlacement = result.herdr_placement; setPlacementControls('new-agent', defaultPlacement); }
     });
     $('theme-select').value = theme;

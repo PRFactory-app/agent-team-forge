@@ -29,9 +29,14 @@ public static class JobsMcpBridge
           "queue_ttl_s":{"type":"integer","minimum":1,"maximum":86400,"description":"Cancel the job (reason queue_ttl) if it has not started this many seconds after acceptance."}
         """;
 
-    const string SubmitProperties = """
+    // Generated from ModelSelection, the daemon's own list, so the advertised names cannot drift from what it accepts.
+    static readonly string TierList = string.Join(", ", ModelSelection.TierNames("codex"))
+        + "; pi also has " + string.Join(", ", ModelSelection.TierNames("pi").Except(ModelSelection.TierNames("codex")));
+    static readonly string ClaudeModelList = string.Join(", ", ModelSelection.ConsoleOptions["claude"].Models);
+
+    static readonly string SubmitProperties = $$"""
           "backend":{"type":"string","enum":["claude","codex","pi","cursor","droid","fake"],"description":"Agent CLI the daemon runs for this job. Cursor and Droid require headless launch mode."},
-          "model":{"type":"string","description":"Codex/pi/cursor/droid capability tier: cheapest, low, medium, high, xhigh, max; pi also has medium-fast. Tier mappings are configurable; read the effective table in session_info or Settings. Claude: haiku, sonnet, opus (default), fable. Raw model slugs pass through."},
+          "model":{"type":"string","description":"Codex/pi/cursor/droid capability tier: {{TierList}}. Tier mappings are configurable; read the effective table in session_info or Settings. Claude: {{ClaudeModelList}} (opus when omitted). Raw model slugs pass through; a rejected name is answered with the accepted values."},
           "effort":{"type":"string","description":"Explicit effort for Claude or a raw/blank Codex/pi model. A capability tier owns its effort and ignores this override."},
           "herdr_placement":{"type":"string","description":"Optional: herdr-session:<name> (started if stopped). Omit to use the daemon's default."},
           "expected_outputs":{"type":"array","items":{"type":"string"},"maxItems":100,"description":"Expected output paths retained as metadata; does not verify files."},
@@ -42,12 +47,12 @@ public static class JobsMcpBridge
           "idempotency_key":{"type":"string","description":"Caller-chosen key; retry with the same key to recover the job."},
         """ + LimitProperties;
 
-    const string SubmitSchema = """{"type":"object","properties":{""" + SubmitProperties + """
+    static readonly string SubmitSchema = """{"type":"object","properties":{""" + SubmitProperties + """
         },"required":["backend","instruction","idempotency_key"]}
         """;
 
     // Test-profile only: fake barrier/behaviour controls. The daemon enforces this independently.
-    const string TestSubmitSchema = """{"type":"object","properties":{""" + SubmitProperties + """
+    static readonly string TestSubmitSchema = """{"type":"object","properties":{""" + SubmitProperties + """
           ,"behavior":{"type":"string","enum":["complete","eof_after_ack","exit_after_receipt","mismatched_correlation","hang"]},
           "hold":{"type":"boolean"}},
          "required":["backend","instruction","idempotency_key"]}
@@ -71,7 +76,7 @@ public static class JobsMcpBridge
          "required":["job_id"]}
         """;
 
-    const string FollowUpSchema = """
+    static readonly string FollowUpSchema = $$"""
         {"type":"object","properties":{
           "job_id":{"type":"string","description":"Job whose native agent session is resumed."},
           "instruction":{"type":"string"},
@@ -79,7 +84,7 @@ public static class JobsMcpBridge
           "defer":{"type":"boolean","default":true,"description":"Queue durably behind a busy or queued parent. False refuses a busy parent."},
           "replace_if_idle":{"type":"boolean","default":true,"description":"False refuses an idle live interactive agent; dead sessions can still be resumed."},
           "interrupt":{"type":"boolean","description":"If the parent is running, cancel its turn (reason interrupted) and run this prompt in the same session."},
-          "model":{"type":"string","description":"Optional replacement model or capability tier. Codex/pi: cheapest, low, medium, high, xhigh, max; pi also has medium-fast. Mappings are configurable; read the effective table in session_info or the web console Settings view. Omit to inherit the resolved parent model."},
+          "model":{"type":"string","description":"Optional replacement model or capability tier. Codex/pi: {{TierList}}. Claude: {{ClaudeModelList}}. Mappings are configurable; read the effective table in session_info or the web console Settings view. Omit to inherit the resolved parent model."},
           "effort":{"type":"string","description":"Optional effort override; ignored when model is a capability tier. Omit to inherit the parent's effort."},
         """ + LimitProperties + """
         },"required":["job_id","instruction","idempotency_key"]}
@@ -100,7 +105,7 @@ public static class JobsMcpBridge
     const string TicketSchema = """{"type":"object","properties":{"name":{"type":"string"},"note":{"type":"string"}},"required":["name"]}""";
     const string JoinSchema = """{"type":"object","properties":{"session_id":{"type":"string"},"token":{"type":"string"}},"required":["session_id","token"]}""";
     const string MemberSendSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"text":{"type":"string"}},"required":["member_token","text"]}""";
-    const string LeadSendSchema = """{"type":"object","properties":{"to":{"type":"string","default":"team-lead"},"job_id":{"type":"string","description":"Managed child job to follow up."},"text":{"type":"string"},"idempotency_key":{"type":"string","description":"Required with job_id; reuse on retry."}},"required":["text"]}""";
+    const string LeadSendSchema = """{"type":"object","properties":{"to":{"type":"string","default":"team-lead"},"job_id":{"type":"string","description":"Managed child job to follow up."},"text":{"type":"string"},"idempotency_key":{"type":"string","description":"Required with job_id; reuse on retry."}},"required":["text"],"dependentRequired":{"job_id":["idempotency_key"]}}""";
     const string MemberReadSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"from_agent":{"type":"string"},"since_seq":{"type":"integer","minimum":0},"full":{"type":"boolean"},"limit":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0}},"required":["member_token"]}""";
     const string LeadReadSchema = """{"type":"object","properties":{"from_agent":{"type":"string"},"since_seq":{"type":"integer","minimum":0},"full":{"type":"boolean"},"limit":{"type":"integer","minimum":0,"maximum":10000},"max_chars":{"type":"integer","minimum":0}}}""";
     const string HumanInputSchema = """{"type":"object","properties":{"question":{"type":"string"},"idempotency_key":{"type":"string","description":"Stable key for this question; reuse it when retrying."}},"required":["question","idempotency_key"]}""";
@@ -114,6 +119,9 @@ public static class JobsMcpBridge
     };
 
     const string MemberWakeSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"kind":{"type":"string","enum":["claude","codex"]},"codex_thread_id":{"type":"string"},"codex_home":{"type":"string"}},"required":["member_token"]}""";
+
+    /// <summary>Set to 1 by setup and uninstall for the client commands they run; see <see cref="SetupCommand.RunCommand"/>.</summary>
+    internal const string HealthCheckVariable = "ATF_MCP_HEALTH_CHECK";
 
     public static async Task<int> RunAsync(StateDirectory state, bool testProfile, string? managedContextPath = null)
     {
@@ -133,14 +141,21 @@ public static class JobsMcpBridge
                 || available.GetBoolean();
         }
         var externalOnly = managedContextPath is null && Environment.GetEnvironmentVariable("ATF_EXTERNAL_ONLY") == "1";
+        // A client health check (`claude mcp get`, run by setup, setup --check and uninstall) only needs
+        // initialize and tools/list; it must not start a daemon or bind a lead session as a side effect.
+        var healthCheck = Environment.GetEnvironmentVariable(HealthCheckVariable) == "1";
         _ = StateDirectory.ReadPrivateFile(state.CredentialFile);
-        if (await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = state.Path }, quiet: true) != 0)
+        if (!healthCheck && await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = state.Path }, quiet: true) != 0)
         {
             return 1;
         }
         var client = new IpcClient(state, new SpikeLimits());
         async Task<IpcResponse> SendAsync(IpcRequest request, CancellationToken cancellationToken)
         {
+            if (healthCheck)
+            {
+                return new IpcResponse(false, IpcProtocol.DaemonUnavailable, ErrorDetail: "This bridge was started by a client health check and does not contact the daemon.");
+            }
             var response = await client.SendAsync(request, cancellationToken);
             if (response.Error != IpcProtocol.DaemonUnavailable || cancellationToken.IsCancellationRequested)
             {
@@ -224,7 +239,7 @@ public static class JobsMcpBridge
                 Console.Error.WriteLine($"[atf-bridge] wake registration failed: {ex.GetType().Name}");
             }
         }
-        if (!externalOnly)
+        if (!externalOnly && !healthCheck)
         {
             await EnsureSessionAsync(CancellationToken.None);
             await RegisterWakeAsync(CancellationToken.None);
@@ -273,7 +288,7 @@ public static class JobsMcpBridge
 
         var options = new McpServerOptions
         {
-            ServerInfo = new Implementation { Name = "agentteamforge", Version = "0.1.0-mvp" },
+            ServerInfo = new Implementation { Name = "agentteamforge", Version = ProductVersion.Current },
             Capabilities = new ServerCapabilities { Tools = new ToolsCapability() },
             Handlers = new McpServerHandlers
             {
@@ -282,6 +297,10 @@ public static class JobsMcpBridge
                 {
                     var call = request.Params ?? throw new InvalidOperationException("missing params");
                     var args = call.Arguments ?? new Dictionary<string, JsonElement>();
+                    if (tools.Find(tool => tool.Name == call.Name) is { } known && McpArguments.Invalid(known.InputSchema, args) is { } invalid)
+                    {
+                        return ToolResult(new IpcResponse(false, JobErrors.InvalidRequest, ErrorDetail: invalid));
+                    }
                     if (externalOnly)
                     {
                         var (memberRequest, rejection) = Map(call.Name, args, testProfile);
@@ -292,12 +311,7 @@ public static class JobsMcpBridge
                         var memberResponse = memberRequest is null || tools.All(tool => tool.Name != call.Name)
                             ? new IpcResponse(false, rejection ?? IpcProtocol.UnknownOp)
                             : await SendAsync(memberRequest, cancellationToken);
-                        memberResponse = await BindJoinedClaudeAsync(call.Name, memberResponse, cancellationToken);
-                        return new CallToolResult
-                        {
-                            IsError = !memberResponse.Ok,
-                            Content = [new TextContentBlock { Text = JsonSerializer.Serialize(memberResponse.ForMcp(), IpcJson.Default.IpcResponse) }],
-                        };
+                        return ToolResult(await BindJoinedClaudeAsync(call.Name, memberResponse, cancellationToken));
                     }
                     await RegisterWakeAsync(cancellationToken);
                     var started = await EnsureSessionAsync(cancellationToken);
@@ -396,12 +410,7 @@ public static class JobsMcpBridge
                                 or IpcProtocol.ExternalSetWake or IpcProtocol.ExternalLeave ? ipc
                                 : ipc with { LeadSessionId = sessionId, Workspace = workspace }, cancellationToken);
                     }
-                    response = await BindJoinedClaudeAsync(call.Name, response, cancellationToken);
-                    return new CallToolResult
-                    {
-                        IsError = !response.Ok,
-                        Content = [new TextContentBlock { Text = JsonSerializer.Serialize(response.ForMcp(), IpcJson.Default.IpcResponse) }],
-                    };
+                    return ToolResult(await BindJoinedClaudeAsync(call.Name, response, cancellationToken));
                 },
             },
         };
@@ -442,7 +451,12 @@ public static class JobsMcpBridge
         {
             await BindWakeAsync(CancellationToken.None);
         }
-        await using var server = McpServer.Create(new StdioServerTransport("agentteamforge"), options);
+        var transportReady = new TaskCompletionSource<ITransport>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var input = new McpStdioInput(Console.OpenStandardInput(),
+            async (error, cancellationToken) => await (await transportReady.Task).SendMessageAsync(error, cancellationToken));
+        var transport = new StreamServerTransport(input, new BufferedStream(Console.OpenStandardOutput()), "agentteamforge");
+        transportReady.SetResult(transport);
+        await using var server = McpServer.Create(transport, options);
         using var relayLifetime = new CancellationTokenSource();
         var relay = ClaudeWakeRelay.RunAsync(wakeTarget, client, relayLifetime.Token,
             managedJobId, () => sessionId, workspace);
@@ -450,6 +464,12 @@ public static class JobsMcpBridge
         finally { await relayLifetime.CancelAsync(); await relay; }
         return 0;
     }
+
+    static CallToolResult ToolResult(IpcResponse response) => new()
+    {
+        IsError = !response.Ok,
+        Content = [new TextContentBlock { Text = JsonSerializer.Serialize(response.ForMcp(), IpcJson.Default.IpcResponse) }],
+    };
 
     /// <summary>Optional read_messages arguments sent as JSON null mean "not given", as before validation named fields.</summary>
     internal static Dictionary<string, JsonElement> WithoutNulls(IDictionary<string, JsonElement> args) =>

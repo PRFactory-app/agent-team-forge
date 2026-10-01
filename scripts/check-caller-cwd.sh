@@ -15,13 +15,13 @@ CALLER="$(mktemp -d "$ROOT/.run/caller-cwd-XXXXXX")"
 DECOY=scripts/verify.sh
 [[ -x "$ROOT/$DECOY" && ! -e "$CALLER/$DECOY" ]] || { echo "BLOCKED: decoy precondition failed" >&2; exit 2; }
 
-fails=0
+fails=0 passes=0
 expect() { # name, expected-substring, command...
   local name="$1" want="$2"; shift 2
   local out status=0
   out="$(cd "$CALLER" && "$@" 2>&1 >/dev/null)" || status=$?
   if [[ "$status" == 2 && "$out" == *"$want"* ]]; then
-    echo "ok   $name"
+    echo "ok   $name"; passes=$((passes + 1))
   else
     echo "FAIL $name: exit=$status stderr=$out" >&2; fails=$((fails + 1))
   fi
@@ -31,5 +31,9 @@ expect "demo DOTNET" "$CALLER/$DECOY" env DOTNET="$DECOY" "$ROOT/scripts/demo.sh
 expect "verify DOTNET" "$CALLER/$DECOY" env DOTNET="$DECOY" "$ROOT/scripts/verify.sh"
 expect "smoke DOTNET" "$CALLER/$DECOY" env DOTNET="$DECOY" "$ROOT/scripts/published-smoke.sh" "$DECOY"
 expect "smoke binary" "$CALLER/$DECOY" env DOTNET="$DOTNET" "$ROOT/scripts/published-smoke.sh" "$DECOY"
+expect "web ATF_DEMO_BIN" "$CALLER/$DECOY" env DOTNET="$DOTNET" ATF_DEMO_BIN="$DECOY" "$ROOT/scripts/demo-web.sh"
+expect "web DOTNET" "$CALLER/$DECOY" env DOTNET="$DECOY" "$ROOT/scripts/demo-web.sh"
+expect "real ATF_BIN" "$CALLER/$DECOY" env DOTNET="$DOTNET" ATF_BIN="$DECOY" "$ROOT/scripts/demo-real.sh" fake
+expect "real DOTNET" "$CALLER/$DECOY" env DOTNET="$DECOY" "$ROOT/scripts/demo-real.sh" fake
 [[ "$fails" == 0 ]] || { echo "caller-cwd check: $fails failed" >&2; exit 1; }
-echo "caller-cwd check: 5 passed"
+echo "caller-cwd check: $passes passed"

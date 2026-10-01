@@ -8,7 +8,7 @@ public sealed class TierMapTests
     [Fact]
     public void Built_in_codex_tier_effort_is_non_decreasing_within_each_model()
     {
-        string[] order = [.. TierMap.Efforts("codex")];
+        string[] order = [.. ModelSelection.Efforts("codex")];
         var defaults = ModelSelection.TierNames("codex").Select(tier => ModelSelection.DefaultTier("codex", tier));
         foreach (var group in defaults.GroupBy(item => item.Model))
         {
@@ -49,12 +49,12 @@ public sealed class TierMapTests
         var map = new TierMap(state.Path, _ => ["gpt-6-sol"]);
         map.Change("codex", "high", "gpt-6-sol", "low");
         var before = File.ReadAllText(state.File("tier-map.json"));
-        Assert.Throws<ArgumentException>(() => map.Change("pi", "high-fast", "gpt-6-sol", "low"));
-        Assert.Throws<ArgumentException>(() => map.Change("codex", "high", "gpt-6-sol", "off"));
+        Assert.Throws<TierSettingException>(() => map.Change("pi", "high-fast", "gpt-6-sol", "low"));
+        Assert.Throws<TierSettingException>(() => map.Change("codex", "high", "gpt-6-sol", "off"));
         map.Change("codex", "high", "gpt-6-sol", "ultra");
         map.Change("codex", "high", "gpt-6-sol", "low");
-        Assert.Throws<ArgumentException>(() => map.Change("codex", "high", "bad;slug", "low"));
-        Assert.Contains("npm install -g", Assert.Throws<ArgumentException>(() =>
+        Assert.Throws<TierSettingException>(() => map.Change("codex", "high", "bad;slug", "low"));
+        Assert.Contains("npm install -g", Assert.Throws<TierSettingException>(() =>
             map.Change("codex", "high", "gpt-6-astra", "low")).Message);
         Assert.Equal(before, File.ReadAllText(state.File("tier-map.json")));
         map.Change(null, null, null, null, resetAll: true);

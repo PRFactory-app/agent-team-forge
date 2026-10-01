@@ -77,7 +77,7 @@ team. More in the [usage guide](docs/usage.md).
 
 - **Linux x64:** tested end to end with real agents.
 - **Windows x64:** supported as of v0.1.0; tested with real Claude Code and Codex agents in Windows Terminal tabs (Pi on Windows not yet tested).
-- **macOS arm64:** release built, untested — testers welcome.
+- **macOS arm64:** tested on macOS 26 with real Claude Code, Codex and Pi agents, headless and in kitty, Terminal.app and Herdr; native wake untested.
 
 ## PRFactory: tickets, workflows and teamwork
 

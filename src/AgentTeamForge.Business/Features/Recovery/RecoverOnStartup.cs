@@ -6,8 +6,9 @@ namespace AgentTeamForge.Business.Features.Recovery;
 /// <summary>
 /// Runs before the daemon serves requests or dispatches. Unattempted intents
 /// stay eligible for one dispatch; started attempts without committed
-/// completion are quarantined. On Linux, leftover backend processes are killed
-/// only when they carry an interrupted run's random marker in their environment.
+/// completion are quarantined. On Linux and macOS, leftover backend processes are killed
+/// only when they carry an interrupted run's random marker in their environment (on macOS
+/// also their descendants, whose environment platform binaries hide).
 /// </summary>
 public sealed class RecoverOnStartup(JobStore store, Action? recoverOwnedTerminals = null)
 {

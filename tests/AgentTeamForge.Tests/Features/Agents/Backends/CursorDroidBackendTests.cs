@@ -55,6 +55,39 @@ public sealed class CursorDroidBackendTests : IDisposable
             await Run(agent, request with { ResumeSessionId = "session-1" }));
     }
 
+    // Captured from signed-out CLIs (HOME without credentials).
+    [Theory]
+    [InlineData("droid", """{"type":"result","subtype":"failure","is_error":true,"duration_ms":1,"num_turns":0,"result":"Authentication failed. Please log in using /login or set a valid FACTORY_API_KEY environment variable.","session_id":"8f4ea11a-d301-4f10-93eb-d565f1841798"}""", "", 1)]
+    [InlineData("droid", """{"type":"result","subtype":"failure","is_error":true,"result":"Authentication failed. Please log in using /login or set a valid FACTORY_API_KEY environment variable.","session_id":"s"}""", "", 0)]
+    [InlineData("cursor", "", "Error: Authentication required. Please run 'agent login' first, or set CURSOR_API_KEY environment variable.", 1)]
+    public async Task Signed_out_cli_is_login_required(string backend, string stdout, string stderr, int exit)
+    {
+        if (OperatingSystem.IsWindows()) { return; }
+        var script = FakeCli(stdout, exit, stderr);
+        IJobBackend agent = backend == "cursor" ? new CursorCliBackend(script) : new DroidBackend(script);
+        var request = new BackendRequest("job", "corr", "task", "") { WorkingDirectory = _state.Path };
+
+        var login = Assert.IsType<BackendEvidence.AgentError>(Assert.Single(await Run(agent, request)));
+
+        Assert.Equal("agent_login_required", login.Code);
+        Assert.Contains("Authentication", login.Details, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("cursor")]
+    [InlineData("droid")]
+    public async Task Successful_reply_that_mentions_login_still_completes(string backend)
+    {
+        if (OperatingSystem.IsWindows()) { return; }
+        var script = FakeCli("""{"type":"result","subtype":"success","is_error":false,"result":"Authentication failed. Please log in using /login or set FACTORY_API_KEY; Authentication required, run agent login or set CURSOR_API_KEY.","session_id":"s"}""",
+            0, "Authentication required. Please run 'agent login' first, or set CURSOR_API_KEY.");
+        IJobBackend agent = backend == "cursor" ? new CursorCliBackend(script) : new DroidBackend(script);
+
+        var evidence = await Run(agent, new BackendRequest("job", "corr", "task", "") { WorkingDirectory = _state.Path });
+
+        Assert.Contains(evidence, e => e is BackendEvidence.Result);
+    }
+
     [Fact]
     public void Interactive_mode_refuses_before_accepting_cursor_or_droid()
     {
@@ -93,13 +126,14 @@ public sealed class CursorDroidBackendTests : IDisposable
         return evidence;
     }
 
-    string FakeCli(string result, int exit = 0)
+    string FakeCli(string result, int exit = 0, string stderr = "")
     {
         var script = _state.File("fake-" + Guid.NewGuid().ToString("N"));
         File.WriteAllText(script, "#!/bin/sh\n" +
             "printf '%s\\n' \"$@\" > '" + _state.File("args") + "'\n" +
             "cat > '" + _state.File("stdin") + "'\n" +
             "printf '%s\\n' '" + result + "'\n" +
+            "printf '%s\\n' \"" + stderr + "\" >&2\n" +
             "exit " + exit + "\n");
         File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return script;

@@ -1,5 +1,7 @@
 using AgentTeamForge.DAL.Files;
 using System.Diagnostics;
+using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Agents.Terminals;
 using System.Text;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.Business.Features.Processes;
@@ -52,12 +54,22 @@ public static class JobWorktree
         }
         PrivateFiles.CreateDirectory(Path.GetDirectoryName(path)!);
         // An interrupted worktree add can have already created the branch.
-        var existing = Git(repository, QueryTimeout, "rev-parse", "--verify", $"refs/heads/{branch}");
+        var existing = Git(repository, QueryTimeout, "rev-parse", "--verify", "--quiet", $"refs/heads/{branch}");
         if (existing is not null)
         {
-            return existing == startingSha && Git(repository, AddTimeout, "worktree", "add", path, branch) is not null;
+            return existing == startingSha && Add(repository, "worktree", "add", path, branch);
         }
-        return Git(repository, AddTimeout, "worktree", "add", "-b", branch, path, startingSha) is not null;
+        return Add(repository, "worktree", "add", "-b", branch, path, startingSha);
+    }
+
+    /// <summary>A refused checkout fails the job; keep git's reason in the daemon log rather than on its raw stderr.</summary>
+    static bool Add(string repository, params string[] args)
+    {
+        var result = RunAsync(repository, AddTimeout, CancellationToken.None, args).GetAwaiter().GetResult();
+        if (result is { ExitCode: 0 }) { return true; }
+        var reason = result is null ? "timed out or could not start" : ErrorText(result) ?? $"exit {result.ExitCode}";
+        Console.Error.WriteLine($"[atf-daemon] git {string.Join(' ', args)} failed: {reason}");
+        return false;
     }
 
     public static bool Prepare(JobRecord job)
@@ -94,7 +106,11 @@ public static class JobWorktree
         }
     }
 
-    /// <summary>The submitted cwd's counterpart inside the worktree, so a repo subdirectory stays the working directory.</summary>
+    /// <summary>
+    /// The submitted cwd's counterpart inside the worktree, so a repo subdirectory stays the working directory.
+    /// Found without running git (cheap enough for job views), the way git discovers the repository:
+    /// the nearest physical ancestor of the cwd that holds .git.
+    /// </summary>
     public static string? WorkingDirectory(JobRecord job)
     {
         if (job.WorktreePath is null || job.Cwd is null)
@@ -102,12 +118,27 @@ public static class JobWorktree
             return job.WorktreePath ?? job.Cwd;
         }
 
-        var prefix = Git(job.Cwd, QueryTimeout, "rev-parse", "--show-prefix");
+        var prefix = RepositoryPrefix(job.Cwd);
         var mapped = string.IsNullOrEmpty(prefix) ? job.WorktreePath : Path.Combine(job.WorktreePath, prefix);
         return Directory.Exists(mapped) ? mapped : job.WorktreePath;
     }
 
-    /// <summary>Trimmed stdout (possibly empty) on exit code 0; otherwise null.</summary>
+    static string? RepositoryPrefix(string cwd)
+    {
+        if (PhysicalPath.Resolve(Path.GetFullPath(cwd)) is not { } physical) { return null; }
+        for (var directory = physical; directory is not null; directory = Path.GetDirectoryName(directory))
+        {
+            var marker = Path.Combine(directory, ".git");
+            if (Directory.Exists(marker) || File.Exists(marker))
+            {
+                var prefix = Path.GetRelativePath(directory, physical);
+                return prefix == "." ? string.Empty : prefix;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Trimmed stdout (possibly empty) on exit code 0; otherwise null. Git's stderr is captured, never inherited.</summary>
     static string? Git(string cwd, TimeSpan timeout, params string[] args) =>
         GitAsync(cwd, timeout, CancellationToken.None, args).GetAwaiter().GetResult();
 
@@ -124,7 +155,22 @@ public static class JobWorktree
     internal static Task<string?> GitOutputAsync(string cwd, TimeSpan timeout, bool includeFailure, CancellationToken cancellationToken, params string[] args) =>
         GitCaptureAsync(cwd, timeout, true, includeFailure, cancellationToken, args);
 
-    static async Task<string?> GitCaptureAsync(string cwd, TimeSpan timeout, bool trim, bool includeFailure, CancellationToken cancellationToken, params string[] args)
+    static async Task<string?> GitCaptureAsync(string cwd, TimeSpan timeout, bool trim, bool includeFailure, CancellationToken cancellationToken, params string[] args) =>
+        await RunAsync(cwd, timeout, cancellationToken, args) is { } result && (result.ExitCode == 0 || includeFailure)
+            ? trim ? result.Output.Trim() : result.Output
+            : null;
+
+    internal sealed record GitResult(int ExitCode, string Output, string Error);
+
+    /// <summary>Git's stderr, trimmed and bounded for a log line or result detail; null when it printed nothing.</summary>
+    internal static string? ErrorText(GitResult result)
+    {
+        var text = result.Error.Trim();
+        return text.Length == 0 ? null : text.Length <= 2000 ? text : text[..2000] + "...";
+    }
+
+    /// <summary>Exit code with bounded stdout and stderr; null when git could not run or hit the deadline.</summary>
+    internal static async Task<GitResult?> RunAsync(string cwd, TimeSpan timeout, CancellationToken cancellationToken, params string[] args)
     {
         try
         {
@@ -133,7 +179,7 @@ public static class JobWorktree
             var info = new ProcessStartInfo("git")
             {
                 RedirectStandardOutput = true,
-                RedirectStandardError = false,
+                RedirectStandardError = true,
                 UseShellExecute = false,
             };
             info.Environment["GIT_TERMINAL_PROMPT"] = "0";
@@ -150,11 +196,12 @@ public static class JobWorktree
                 return null;
             }
 
-            // A hook descendant may retain stdout after git exits. Exit shares the whole
-            // deadline; after exit the drain gets a short grace and keeps what it read.
+            // A hook descendant may retain stdout or stderr after git exits. Exit shares the
+            // whole deadline; after exit both drains get a short grace and keep what they read.
             // Output beyond the cap is discarded while draining continues.
             using var drain = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
             var output = DrainAsync(process.StandardOutput.BaseStream, drain.Token);
+            var error = DrainAsync(process.StandardError.BaseStream, drain.Token);
             try
             {
                 await process.WaitForExitAsync(deadline.Token);
@@ -163,7 +210,7 @@ public static class JobWorktree
             {
                 try
                 {
-                    process.Kill(entireProcessTree: true);
+                    OwnedProcessTermination.Kill(process);
                 }
                 catch (InvalidOperationException)
                 {
@@ -171,15 +218,15 @@ public static class JobWorktree
                 }
 
                 drain.Cancel();
-                await output;
+                await Task.WhenAll(output, error);
                 cancellationToken.ThrowIfCancellationRequested();
                 return null;
             }
 
             drain.CancelAfter(DrainGrace);
-            var text = await output;
+            await Task.WhenAll(output, error);
             cancellationToken.ThrowIfCancellationRequested();
-            return process.ExitCode == 0 || includeFailure ? trim ? text.Trim() : text : null;
+            return new(process.ExitCode, output.Result, error.Result);
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
         {

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Tests.Support;
 
 namespace AgentTeamForge.Tests.Features.Agents.Backends;
 
@@ -9,9 +10,10 @@ public sealed class OrphanedBackendProcessTests
     public void Only_processes_carrying_an_exact_run_marker_are_killed_including_descendants()
     {
         var run = Guid.NewGuid().ToString("N");
+        // The grandchild is the system sleep: on macOS its marker is hidden, so it must be found through its parent.
         var marked = Start(info => OrphanedBackendProcess.Mark(info, run), "sleep 300 & echo $!; wait");
-        var otherRun = Start(info => OrphanedBackendProcess.Mark(info, run + "0"), "exec sleep 300");
-        var lookalike = Start(info => info.Environment["X_ATF_RUN_CORRELATION"] = run, "exec sleep 300");
+        var otherRun = Start(info => OrphanedBackendProcess.Mark(info, run + "0"), $"exec '{MarkerVisibleExecutable.Sleep}' 300");
+        var lookalike = Start(info => info.Environment["X_ATF_RUN_CORRELATION"] = run, $"exec '{MarkerVisibleExecutable.Sleep}' 300");
         try
         {
             var grandchild = int.Parse(marked.StandardOutput.ReadLine()!, System.Globalization.CultureInfo.InvariantCulture);
@@ -27,7 +29,7 @@ public sealed class OrphanedBackendProcessTests
         {
             foreach (var process in new[] { marked, otherRun, lookalike })
             {
-                try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                try { OwnedProcessTermination.Kill(process); } catch (InvalidOperationException) { }
                 process.Dispose();
             }
         }
@@ -35,13 +37,18 @@ public sealed class OrphanedBackendProcessTests
 
     static Process Start(Action<ProcessStartInfo> tag, string script)
     {
-        var info = new ProcessStartInfo("/bin/sh", ["-c", script]) { RedirectStandardOutput = true };
+        var info = new ProcessStartInfo(MarkerVisibleExecutable.Shell, ["-c", script]) { RedirectStandardOutput = true };
         tag(info);
         return Process.Start(info)!;
     }
 
     static bool IsAlive(int pid)
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            return DarwinProcess.Info(pid) is { IsZombie: false };
+        }
+
         try
         {
             // A killed grandchild may linger as a zombie until init reaps it.

@@ -152,6 +152,41 @@ public sealed class InteractiveTranscriptReaderTests
         Assert.Equal("retry succeeded", retried?.Message);
     }
 
+    // Codex 0.159 rollout of a turn that ended on a rejected credential (trimmed real record).
+    static string CodexFailed(int status, string message) =>
+        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"last_agent_message\":null,\"error\":{\"message\":\"" + message
+            + "\",\"codex_error_info\":{\"http_connection_failed\":{\"http_status_code\":" + status + "}}}}}";
+    const string Codex401 = "unexpected status 401 Unauthorized: Incorrect API key provided: sk-proj-***0000., url: https://api.openai.com/v1/responses, auth error: 401, auth error code: invalid_api_key";
+
+    [Fact]
+    public void Codex_turn_ended_by_a_definite_401_is_a_login_error()
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Codex);
+        File.WriteAllLines(file, [CodexMeta, CodexStarted, CodexUser(Marker),
+            """{"type":"event_msg","payload":{"type":"error","message":"Reconnecting... 2/5 (unexpected status 401 Unauthorized: x)"}}"""]);
+        Assert.Null(reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError); // Still retrying.
+
+        File.AppendAllLines(file, [CodexFailed(401, Codex401)]);
+        var error = reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError;
+        Assert.Equal("agent_login_required", error?.Code);
+        Assert.Contains("run `codex login`", error?.Message);
+        Assert.Contains("unexpected status 401 Unauthorized", error?.Message);
+        Assert.True(error?.TurnEnded);
+
+        // Another status, or a 401 Codex's own status contradicts, is not a login problem.
+        File.WriteAllLines(file, [CodexMeta, CodexStarted, CodexUser(Marker), CodexFailed(500, "unexpected status 500 Internal Server Error")]);
+        Assert.Null(reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError);
+        File.WriteAllLines(file, [CodexMeta, CodexStarted, CodexUser(Marker), CodexFailed(502, Codex401)]);
+        Assert.Null(reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError);
+        // A later turn's 401 does not belong to this one.
+        File.WriteAllLines(file, [CodexMeta, CodexStarted, CodexUser(Marker), CodexAssistant("done"), CodexComplete,
+            CodexStarted, CodexUser("human"), CodexFailed(401, Codex401)]);
+        var completed = reader.Read(launch, Marker, DateTimeOffset.UtcNow);
+        Assert.Null(completed?.ApiError);
+        Assert.True(completed?.Completed);
+    }
+
     [Fact]
     public void Claude_transient_api_error_waits_longer_until_the_turn_has_ended()
     {
@@ -302,6 +337,50 @@ public sealed class InteractiveTranscriptReaderTests
         env.Remove("CLAUDE_CONFIG_DIR");
         Assert.Equal(Path.Combine(home, ".claude"), ClaudeConfigRoot.Resolve(name => env.GetValueOrDefault(name), cwd));
     }
+
+    [Fact]
+    public void Claude_transcript_is_found_under_the_physical_cwd_when_the_launch_cwd_is_a_symlink()
+    {
+        if (OperatingSystem.IsWindows()) { return; }
+        using var state = new TempStateDir();
+        // Claude names the project after getcwd(), which resolves every link (macOS /tmp is /private/tmp).
+        var physical = Path.Combine(CodexPaths.TrustKey(state.Path), "real", "work");
+        Directory.CreateDirectory(physical);
+        Directory.CreateSymbolicLink(Path.Combine(state.Path, "alias"), Path.Combine(state.Path, "real"));
+        var config = Path.Combine(state.Path, "claude");
+        var dir = Directory.CreateDirectory(Path.Combine(config, "projects", Slug(physical))).FullName;
+        File.WriteAllLines(Path.Combine(dir, "claude-native.jsonl"), [ClaudeUser(Marker), ClaudeAssistant("physical", "end_turn")]);
+        var env = new Dictionary<string, string?> { ["HOME"] = Path.Combine(state.Path, "home"), ["CLAUDE_CONFIG_DIR"] = config };
+        var reader = new InteractiveTranscriptReader(name => env.GetValueOrDefault(name));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", Path.Combine(state.Path, "alias", "work") + "/", null, null,
+            Path.Combine(state.Path, "bootstrap"));
+
+        var transcript = reader.Read(launch, Marker, DateTimeOffset.UtcNow);
+
+        Assert.Equal("physical", transcript?.Message);
+        Assert.True(transcript?.Completed);
+    }
+
+    [Fact]
+    public void Claude_transcript_under_a_hashed_long_project_slug_is_matched_by_prefix()
+    {
+        using var state = new TempStateDir();
+        var cwd = Directory.CreateDirectory(Path.Combine(state.Path, new string('a', 120), new string('b', 120))).FullName;
+        var config = Path.Combine(state.Path, "claude");
+        var slug = Slug(CodexPaths.TrustKey(cwd));
+        Assert.True(slug.Length > 200);
+        // Claude cuts a long slug to 200 characters and appends '-' plus a hash it may compute differently per version.
+        var dir = Directory.CreateDirectory(Path.Combine(config, "projects", slug[..200] + "-1x2y3z")).FullName;
+        Directory.CreateDirectory(Path.Combine(config, "projects", slug[..199] + "z-1x2y3z"));
+        File.WriteAllLines(Path.Combine(dir, "claude-native.jsonl"), [ClaudeUser(Marker), ClaudeAssistant("long", "end_turn")]);
+        var env = new Dictionary<string, string?> { ["HOME"] = Path.Combine(state.Path, "home"), ["CLAUDE_CONFIG_DIR"] = config };
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", cwd, null, null, Path.Combine(state.Path, "bootstrap"));
+
+        Assert.Equal("long", new InteractiveTranscriptReader(name => env.GetValueOrDefault(name)).Read(launch, Marker, DateTimeOffset.UtcNow)?.Message);
+        Assert.Equal([dir], InteractiveTranscriptReader.ClaudeProjectDirectories(Path.Combine(config, "projects"), cwd));
+    }
+
+    static string Slug(string path) => new([.. path.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-')]);
 
     [Fact]
     public void Relative_claude_config_dir_resolves_against_the_launch_working_directory()

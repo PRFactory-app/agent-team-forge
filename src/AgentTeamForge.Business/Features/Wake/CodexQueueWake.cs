@@ -143,7 +143,7 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
             {
                 try
                 {
-                    if (!process.HasExited) { process.Kill(entireProcessTree: true); }
+                    if (!process.HasExited) { OwnedProcessTermination.Kill(process); }
                 }
                 catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { }
                 return new(true, null);

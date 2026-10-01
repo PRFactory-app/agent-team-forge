@@ -14,7 +14,7 @@ validation. Headless backends receive prompts on stdin.
 
 | Mode | Platform | What you get |
 | --- | --- | --- |
-| `herdr` | Linux (macOS after `brew install herdr`, untested) | Each agent's real TUI in a tab of a Herdr session |
+| `herdr` | Linux; macOS after `brew install herdr` | Each agent's real TUI in a tab of a Herdr session |
 | `wt` | Windows | Each agent's real TUI in a Windows Terminal tab |
 | `terminal` | macOS | Terminal.app by default; kitty tabs if kitty's remote-control socket answers during setup |
 | `headless` | All | Agents run in the background; output in logs and the web console |
@@ -54,7 +54,7 @@ native session and terminal tab belong together.
   as success.
 
 `ATF_INTERACTIVE_STARTUP_TIMEOUT_SECONDS` (default 180, range 30–900) sets how
-long Herdr and Windows Terminal launches wait for the agent to be ready and
+long Herdr, Windows Terminal and macOS launches wait for the agent to be ready and
 confirm the prompt. A prompt that times out is never resent; the job stays
 under observation and then becomes `needs_reconciliation`
 ([ADR 0008](adr/0008-never-replay-uncertain-prompts.md)).
@@ -88,8 +88,9 @@ reasoning-effort level. Override tier models to match your account.
 | Platform | Notes |
 | --- | --- |
 | Linux / Herdr | Tested. Agents share the `default` session by default, with one workspace per Git repository and one tab per agent. If that session is stopped, ATF starts its server (it does not create an absent session name) and opens the tab there. Set `ATF_HERDR_SESSION` before starting the daemon or choose `herdr-session:<name>` in Settings to use another listed session. `own-session` was removed for new jobs; existing own-session jobs keep follow-up and recovery. Opt-in live test: `ATF_REAL_HERDR=1` launches only in its own `atf-test-*` session. |
-| Windows / `wt` | Partly verified ([platform status](platform-status.md)). State lives under `%USERPROFILE%\.local\state`, not `%LOCALAPPDATA%`, because Windows Terminal tabs cannot read the MSIX-virtualized path. Interactive Codex needs the native `codex.exe`, not a `.cmd` shim. |
-| macOS / `terminal` | Untested. Terminal.app's AppleScript `do script` may open a window rather than a tab. The chosen host is saved; if kitty later disappears, jobs fail rather than switch hosts. Claude native wake is unavailable. |
+| macOS / Herdr | Claude and Codex launch, follow-up, stop agent and reattach of a running turn after a daemon restart tested against Herdr 0.9.3. A pane's shell must prove it carries the launch's private bootstrap path. macOS hides the environment of Apple's own shells (`/bin/zsh`), so ATF then types one `/bin/sh -c 'printf …'` line into the new pane: it records the shell's PID next to the bootstrap path the shell exported, and only a shell carrying exactly that path can write it. A shell whose environment is readable (for example Homebrew zsh) needs no typed line. After a daemon restart an idle retained Claude or Codex pane is retained again: the pane's live native session is matched through the Darwin process table, Claude's session registry and the files Codex holds open (libproc), as `/proc` does on Linux. A Herdr server ATF starts leads its own process group (Linux uses `setsid`), because launchd kills a stopped job's whole process group (`AbandonProcessGroup` in launchd.plist(5)). |
+| Windows / `wt` | Partly verified ([platform status](platform-status.md)). State lives under `%USERPROFILE%\.local\state`, not `%LOCALAPPDATA%`, because Windows Terminal tabs cannot read the MSIX-virtualized path. Interactive Codex needs the native `codex.exe`, not a `.cmd` shim. Idle agents that outlive a daemon restart are adopted again from their wrapper's PID and start time, as on macOS (unverified on Windows). |
+| macOS / `terminal` | kitty tested with Claude Code, Codex and Pi ([platform status](platform-status.md)). A follow-up closes the idle tab and opens a new one that resumes the same session. Idle agents that outlive a daemon restart are adopted again, so follow-up, Stop agent and idle close still reach them. A turn still running when the daemon stops keeps its tab, and only a turn that settled records its tab as idle, so idle close and the retention cap never close a working agent; after the restart the job stays `needs_reconciliation` until `stop_job` closes that tab. A native Claude follow-up running in a surviving tab stays fenced the same way while that tab lives. `stop_job` also releases the fence of a tab whose agent is proven to have exited, but not of one whose exit cannot be verified. A tab stopped before its wrapper reported a PID cannot start the agent later: the stop claims that PID record first. A kitty that is not in front can take seconds to answer remote control; ATF waits up to 10 seconds. The chosen host is saved; if kitty later disappears, jobs fail with `backend_not_started` rather than switch hosts. Terminal.app needs the Automation permission for the app that started the daemon to control Terminal (System Settings > Privacy & Security > Automation); without it a job fails at once with `backend_not_started` and that remedy. A Terminal.app launch with the permission granted is untested, and AppleScript `do script` may open a window rather than a tab. Claude native wake is unavailable. |
 
 Process ownership is decided by the agent's PID plus its kernel start token,
 not by the terminal application. A background daemon may not be able to open

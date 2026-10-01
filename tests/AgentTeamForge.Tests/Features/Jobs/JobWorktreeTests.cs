@@ -73,6 +73,7 @@ public sealed class JobWorktreeTests
         await Dispatch(f, catalog);
         var mapped = Path.Combine(parent.WorktreePath!, "odd dir -x");
         Assert.Equal(mapped, backend.Started[0].WorkingDirectory?.TrimEnd('/'));
+        Assert.Equal(mapped, f.Get().Execute(parent.JobId).Job!.Cwd);
 
         // An agent that moves the worktree to its own branch must not break follow-ups.
         Git(parent.WorktreePath!, "checkout", "-b", "agent-branch");
@@ -80,6 +81,36 @@ public sealed class JobWorktreeTests
         await Dispatch(f, catalog);
         Assert.Equal(mapped, backend.Started[1].WorkingDirectory?.TrimEnd('/'));
         Assert.Equal("agent-branch", Git(parent.WorktreePath!, "rev-parse", "--abbrev-ref", "HEAD"));
+    }
+
+    [Fact]
+    public async Task Job_views_survive_a_deleted_submitted_cwd()
+    {
+        using var f = new JobFixture();
+        using var source = new TempStateDir();
+        var sub = Directory.CreateDirectory(Path.Combine(source.Path, "sub")).FullName;
+        File.WriteAllText(Path.Combine(sub, "tracked.txt"), "x");
+        Git(source.Path, "init");
+        Git(source.Path, "add", "-A");
+        Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial");
+        var backend = new ScriptedBackend(r =>
+        [
+            new BackendEvidence.Session(r.Correlation, "session-1"),
+            new BackendEvidence.Result(r.Correlation, "done"),
+        ]);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var job = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, catalog.Names)
+            .Execute(new SubmitJobRequest("one", "first", null, false) { Cwd = sub, Worktree = true }).Job!;
+        await Dispatch(f, catalog);
+
+        // Only the subdirectory gone: its counterpart in the worktree is still the working directory.
+        Directory.Delete(sub, recursive: true);
+        Assert.Equal(Path.Combine(job.WorktreePath!, "sub"), f.Get().Execute(job.JobId).Job!.Cwd);
+
+        // The whole checkout gone: the views fall back to the worktree itself.
+        Directory.Delete(source.Path, recursive: true);
+        Assert.Equal(job.WorktreePath, f.Get().Execute(job.JobId).Job!.Cwd);
+        Assert.Contains(f.List().Execute(new ListJobsRequest()).Page!.Jobs, j => j.JobId == job.JobId);
     }
 
     [Fact]
@@ -118,38 +149,80 @@ public sealed class JobWorktreeTests
     {
         using var source = new TempStateDir();
         Git(source.Path, "init");
-        Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
         var pidFile = Path.Combine(source.Path, "child.pid");
-        Executable(Path.Combine(source.Path, ".git", "hooks", "pre-commit"), $"exec 1>/proc/$PPID/fd/1\nsleep 10 &\necho $! > '{pidFile}'\necho ready");
+        // An alias runs with git's own stdout and stderr; the background child keeps both open after git exits.
+        var script = Script(source.Path, $"sleep 10 &\necho $! > '{pidFile}'\necho ready");
         var watch = Stopwatch.StartNew();
         try
         {
             var result = await JobWorktree.GitAsync(source.Path, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken,
-                "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "second");
+                "-c", $"alias.atf-probe=!{script}", "atf-probe");
             Assert.NotNull(result);
             Assert.Contains("ready", result);
-            Assert.True(File.Exists(pidFile));
+            Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5), $"git drain took {watch.Elapsed}");
+        }
+        finally
+        {
+            KillRecorded(pidFile);
+        }
+    }
+
+    [Fact]
+    public async Task Git_success_is_not_held_by_a_hook_descendant_that_keeps_stderr_after_git_exits()
+    {
+        using var source = new TempStateDir();
+        Git(source.Path, "init");
+        Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+        var pidFile = Path.Combine(source.Path, "child.pid");
+        // Git points a hook's stdout at its own stderr, so the hook's child holds git's stderr.
+        Executable(Path.Combine(source.Path, ".git", "hooks", "pre-commit"), $"sleep 10 &\necho $! > '{pidFile}'\necho ready");
+        var watch = Stopwatch.StartNew();
+        try
+        {
+            var result = await JobWorktree.RunAsync(source.Path, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken,
+                "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "second");
+            Assert.Equal(0, result?.ExitCode);
+            Assert.Contains("ready", result!.Error);
             Assert.Equal("second", Git(source.Path, "log", "-1", "--format=%s"));
             Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5), $"git drain took {watch.Elapsed}");
         }
         finally
         {
-            if (File.Exists(pidFile) && int.TryParse(File.ReadAllText(pidFile).Trim(), out var pid))
+            KillRecorded(pidFile);
+        }
+    }
+
+    [Fact]
+    public async Task Git_stderr_is_captured_and_returned_on_failure()
+    {
+        using var source = new TempStateDir();
+        Git(source.Path, "init");
+
+        var result = await JobWorktree.RunAsync(source.Path, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken,
+            "rev-parse", "--verify", "refs/heads/missing");
+
+        Assert.NotNull(result);
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains("fatal", JobWorktree.ErrorText(result));
+        Assert.Null(await JobWorktree.GitAsync(source.Path, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken,
+            "rev-parse", "--verify", "refs/heads/missing"));
+    }
+
+    static void KillRecorded(string pidFile)
+    {
+        if (!File.Exists(pidFile) || !int.TryParse(File.ReadAllText(pidFile).Trim(), out var pid)) { return; }
+        try
+        {
+            using var child = Process.GetProcessById(pid);
+            if (!child.HasExited)
             {
-                try
-                {
-                    using var child = Process.GetProcessById(pid);
-                    if (!child.HasExited)
-                    {
-                        child.Kill();
-                        child.WaitForExit(5_000);
-                    }
-                }
-                catch (ArgumentException)
-                {
-                    // The test-owned child already exited.
-                }
+                child.Kill();
+                child.WaitForExit(5_000);
             }
+        }
+        catch (ArgumentException)
+        {
+            // The test-owned child already exited.
         }
     }
 
