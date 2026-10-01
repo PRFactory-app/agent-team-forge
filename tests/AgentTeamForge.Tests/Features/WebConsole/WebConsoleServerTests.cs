@@ -337,6 +337,16 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task Markdown_library_is_served_as_javascript_with_csp()
+    {
+        using var response = await _http.GetAsync(new Uri(new Uri(_server.Url), "/lib.js"), TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/javascript", response.Content.Headers.ContentType!.MediaType);
+        Assert.Contains("script-src 'self'", Assert.Single(response.Headers.GetValues("Content-Security-Policy")), StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("localhost:{port}")]
     [InlineData("attacker.example:{port}")]

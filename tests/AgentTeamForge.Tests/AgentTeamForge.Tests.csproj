@@ -8,6 +8,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/AgentTeamForge.Host/AgentTeamForge.Host.csproj" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Jint" />
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="ModelContextProtocol.Core" />

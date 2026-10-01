@@ -1,5 +1,5 @@
 'use strict';
-// Text-only operator console. All server text is rendered with textContent.
+// No HTML from agents: server text is rendered with textContent or the safe markdown renderer.
 // A fragment token is copied to per-tab storage and removed from the address bar.
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -159,6 +159,60 @@
     if (cls) node.className = cls;
     if (value != null) node.textContent = String(value);
     return node;
+  }
+
+  // Markdown tree (AtfLib.parseMarkdown) -> DOM. Tags come from this fixed table, never from input.
+  const MD_TAGS = { p: 'p', ul: 'ul', ol: 'ol', li: 'li', code: 'code', pre: 'pre', table: 'table',
+    tr: 'tr', th: 'th', td: 'td', strong: 'strong', em: 'em', a: 'a' };
+
+  function appendMarkdown(parent, nodes) {
+    for (const n of nodes) {
+      if (n.t === 'text') { parent.append(document.createTextNode(n.v)); continue; }
+      if (n.t === 'br') { parent.append(document.createElement('br')); continue; }
+      const tag = n.t === 'h' ? 'h' + Math.min(6, Math.max(3, n.level + 2)) : MD_TAGS[n.t];
+      if (!tag) { parent.append(document.createTextNode('')); continue; }
+      const el = document.createElement(tag);
+      if (n.t === 'a') {
+        const href = AtfLib.safeHref(n.href || '');
+        if (!href) { parent.append(document.createTextNode(n.c.map(c => c.v || '').join(''))); continue; }
+        el.href = href;
+        el.rel = 'noopener noreferrer';
+        el.target = '_blank';
+      }
+      if (n.v != null) el.textContent = n.v;
+      if (n.c) appendMarkdown(el, n.c);
+      if (n.t === 'table') {
+        const wrap = document.createElement('div');
+        wrap.className = 'md-scroll';
+        wrap.append(el);
+        parent.append(wrap);
+      } else parent.append(el);
+    }
+  }
+
+  function renderMarkdown(container, text) {
+    container.textContent = '';
+    appendMarkdown(container, AtfLib.parseMarkdown(text));
+  }
+
+  // Rendered markdown with a per-bubble Raw toggle (client state only).
+  function markdownView(text) {
+    const wrap = element('div', 'md-view');
+    const toggle = element('button', 'md-raw-toggle', 'Raw');
+    toggle.type = 'button';
+    toggle.setAttribute('aria-pressed', 'false');
+    const body = element('div', 'md');
+    renderMarkdown(body, text);
+    let raw = false;
+    toggle.addEventListener('click', () => {
+      raw = !raw;
+      toggle.setAttribute('aria-pressed', String(raw));
+      toggle.textContent = raw ? 'Rendered' : 'Raw';
+      if (raw) { body.textContent = ''; body.append(element('pre', '', text)); }
+      else renderMarkdown(body, text);
+    });
+    wrap.append(toggle, body);
+    return wrap;
   }
 
   function age(when) {
@@ -861,7 +915,7 @@
     const section = element('section', 'card-result');
     section.append(element('h4', '', 'Result'));
     const meta = element('p', 'result-meta');
-    const output = element('pre');
+    const output = element('div', 'result-body');
     const cached = jobDetails.get(jobId);
     if (cached) showDetail(cached, meta, output);
     else output.textContent = 'Loading result…';
@@ -874,10 +928,15 @@
     meta.textContent = [job.status, job.reason_code, job.backend, job.session_id,
       job.parent_job_id ? 'parent ' + job.parent_job_id : null,
       job.cwd, 'attempts ' + job.attempts].filter(Boolean).join(' · ');
+    // Render once per result: polls with an unchanged result keep the DOM (and the Raw toggle).
+    const signature = job.job_id + ':' + (job.result == null ? '-' : job.result.length);
+    if (output.dataset.signature === signature && output.childNodes.length > 0) return;
+    output.dataset.signature = signature;
     keepScroll(output, () => {
+      if (job.result) { output.textContent = ''; output.append(markdownView(job.result)); return; }
       output.textContent = job.result == null
         ? (job.status === 'queued' || job.status === 'running' ? 'No result yet.' : 'Result unavailable.')
-        : job.result === '' ? '(empty result)' : job.result;
+        : '(empty result)';
     });
   }
 
