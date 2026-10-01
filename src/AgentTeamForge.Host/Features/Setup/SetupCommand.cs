@@ -447,10 +447,12 @@ public static class SetupCommand
         return ready;
     }
 
+    static readonly string[] SetsidLocations = ["/usr/bin/setsid", "/bin/setsid"];
+
     /// <summary>PATH first, then the fixed util-linux locations; <paramref name="search"/> (tests) replaces both.</summary>
     static string? ResolveSetsid(IReadOnlyList<string>? search) =>
         search is null
-            ? FindExecutable("setsid") ?? new[] { "/usr/bin/setsid", "/bin/setsid" }.FirstOrDefault(File.Exists)
+            ? FindExecutable("setsid") ?? SetsidLocations.FirstOrDefault(File.Exists)
             : search.FirstOrDefault(File.Exists);
 
     static bool Detach(ProcessStartInfo info, string setsid)
