@@ -25,15 +25,32 @@ it in that tab's session storage and removes it from the address bar.
 
 ## Use it
 
-- **Teams.** Each lead session has a collapsible group for its jobs and joined
-  external members. PRFactory jobs have their own group. The header shows
-  running, waiting and failed counts; the browser remembers which groups you
-  opened or closed.
-- **Cards.** Each lead session and agent has a card with a one-line preview of
-  the latest activity. Click a card (Escape to close) to see its composer,
-  result and live activity transcript. **Raw logs** shows the full output
-  stream. An absent result is shown differently from an empty one.
-- **Follow-up.** Type in the card's composer; Enter sends, Shift+Enter adds a
+- **Chat and Jobs.** The window bar switches between **Chat** (the main view)
+  and **Jobs** (the card dashboard, history paging, status filter and New
+  agent form). The bar also shows the running count and tokens, the theme and
+  **Settings**. The chosen view is remembered in the browser.
+- **Sessions.** The Chat sidebar lists each lead session with its member
+  agents indented underneath, a PRFactory group and an Unassigned group.
+  There is one row per agent session with its status dot (hollow once the
+  agent is closed), backend, tokens and age. Finished agents fold into
+  "N finished", which opens by itself for three or fewer. On a phone the list
+  is a drawer (☰). The selection is kept in the address bar.
+- **Thread.** Selecting an agent shows its turns oldest first: your
+  instruction and follow-ups on the right with a delivery chip, and everything
+  the agent produced on the left. Agent text and results are rendered as safe
+  markdown (**Raw** shows the source), thinking is italic, and tool calls and
+  status lines are collapsed into one "N steps · M tool calls" row that you
+  can expand. **Raw logs** per turn shows the full output stream. The header
+  shows the display name, status, backend, model, effort, lead, branch and
+  tokens; PRFactory jobs read `TICKET · phase · member` and show the work
+  item. A lead thread lists its member agents and their state; click one to
+  open it. **Jump to latest** appears when new entries arrive while you are
+  scrolled up.
+- **Cards.** The Jobs view groups jobs by lead session in collapsible teams (the browser remembers which you opened) and has a card for each lead session and agent with a
+  one-line preview of the latest activity. Click a card (Escape to close) to
+  see its composer, result and live activity transcript. **Raw logs** shows the
+  full output stream. An absent result is shown differently from an empty one.
+- **Follow-up.** Type in a Jobs card's composer; Enter sends, Shift+Enter adds a
   newline. A message to a running agent queues behind its current turn, as
   `atf client follow-up` and MCP `follow_up` do; check **Interrupt** to
   replace the running turn instead. A lead card lets you

@@ -120,6 +120,13 @@
     knownLeads.clear();
     leadNames.clear();
     leadOptionsKey = '';
+    chat.view = null;
+    chat.groups = [];
+    chat.jobs = [];
+    chat.jobsById = new Map();
+    $('thread-inner').replaceChildren();
+    $('session-list').replaceChildren();
+    failedFetches.clear();
     newAgent.pending = null;
     newAgent.sending = false;
     modelOptions = {};
@@ -844,13 +851,19 @@
     return activities.get(jobId);
   }
 
+  // Drop nodes that left the page before adding a new one, so revisiting finished threads cannot accumulate detached trees.
+  function registerActivityNode(state, node) {
+    for (const old of state.nodes) if (!old.isConnected) state.nodes.delete(old);
+    state.nodes.add(node);
+  }
+
   function activityPanel(container, jobId) {
     const section = element('section', 'activity-transcript');
     section.append(element('h4', '', 'Activity'));
     const list = element('ol', 'activity-entries');
     list.setAttribute('aria-label', 'Agent activity');
     const state = activityState(jobId);
-    state.nodes.add(list);
+    registerActivityNode(state, list);
     renderActivity(state, list);
     section.append(list);
     container.append(section);
@@ -873,7 +886,8 @@
   }
 
   function renderActivity(state, list) {
-    keepScroll(list, () => renderActivityEntries(state, list));
+    if (list.renderInto) list.renderInto(state);
+    else keepScroll(list, () => renderActivityEntries(state, list));
   }
 
   function renderActivityEntries(state, list) {
@@ -1130,10 +1144,10 @@
     setStatus('connecting');
     clearInterval(timer);
     clearInterval(ticketTimer);
-    timer = setInterval(loadJobs, 5000);
+    timer = setInterval(poll, 5000);
     ticketTimer = setInterval(updateTicketCountdowns, 1000);
     loadConfig();
-    loadJobs();
+    showView(view);
   }
 
   const innerScrollers = ['.activity-entries', '.card-result pre', '.card-logs pre'];
@@ -1161,6 +1175,13 @@
       if (node && saved.nodes[i]) restoreScroll(node, saved.nodes[i]);
     });
     $('detail-pane').scrollTop = saved.pane;
+  }
+
+  function rememberLead(j) {
+    if (j.connector || !j.lead_session_id) return;
+    if (j.lead_workspace) knownLeads.set(j.lead_session_id, j.lead_workspace);
+    if (j.lead_name) leadNames.set(j.lead_session_id, j.lead_name);
+    else leadNames.delete(j.lead_session_id);
   }
 
   async function loadJobs() {
@@ -1202,11 +1223,7 @@
       const color = Object.hasOwn(counts, j.light) ? j.light : 'red';
       counts[color]++;
       const lead = j.connector ? 'PRFactory' : j.lead_session_id || 'No lead session';
-      if (!j.connector && j.lead_session_id && j.lead_workspace) knownLeads.set(j.lead_session_id, j.lead_workspace);
-      if (!j.connector && j.lead_session_id) {
-        if (j.lead_name) leadNames.set(lead, j.lead_name);
-        else leadNames.delete(lead);
-      }
+      rememberLead(j);
       if (!groups.has(lead)) groups.set(lead, []);
       groups.get(lead).push(j);
     }
@@ -1300,8 +1317,7 @@
       if (lead !== 'PRFactory') teamContent.append(leadCard);
       const tree = element('div', 'agent-tree');
       // Finished jobs fold away below the active ones.
-      const isSettled = (j) => j.light === 'grey'
-        && !['queued', 'running', 'parked', 'needs_reconciliation'].includes(j.status);
+      const isSettled = AtfLib.isSettled;
       const settledJobs = groupJobs.filter(isSettled);
       let settledList = null;
       let settledFold = null;
@@ -1417,6 +1433,531 @@
     refreshDeliveries();
   }
 
+  // ---- Chat view (read path): sidebar of leads and agents, thread of one agent's turns ----
+  const viewKey = 'atf.web.view';
+  const TERMINAL = ['completed', 'failed', 'cancelled'];
+  const CHAIN_CAP = 30;
+  const LONG_INSTRUCTION = 1500;
+  let view = 'chat';
+  let prevView = 'chat';
+  try { if (localStorage.getItem(viewKey) === 'jobs') view = 'jobs'; } catch { /* Default view. */ }
+  const chat = {
+    groups: [], jobs: [], jobsById: new Map(), leadTokens: {}, members: [], sel: null, follow: true,
+    busy: false, dirty: false, gen: 0, seq: 0, view: null,
+  };
+  const failedFetches = new Map();
+  const dotColor = (j) => Object.hasOwn({ green: 1, yellow: 1, red: 1, grey: 1 }, j.light) ? j.light : 'red';
+  const displayName = (j) => j.connector && j.target_agent ? AtfLib.connectorParts(j.target_agent).display : agentName(j);
+  const leadLabel = (id) => leadNames.get(id) || 'lead ' + id.slice(0, 8);
+
+  const activeList = () => view === 'settings' ? prevView : view;
+
+  function showView(name) {
+    if (name === 'settings' && view !== 'settings') prevView = view;
+    view = name;
+    $('chat-view').hidden = name !== 'chat';
+    $('jobs-view').hidden = name !== 'jobs';
+    $('settings-view').hidden = name !== 'settings';
+    $('tab-chat').setAttribute('aria-pressed', String(name === 'chat'));
+    $('tab-jobs').setAttribute('aria-pressed', String(name === 'jobs'));
+    $('settings-toggle').setAttribute('aria-expanded', String(name === 'settings'));
+    document.body.classList.toggle('view-chat', name === 'chat');
+    document.body.classList.remove('drawer-open');
+    if (name === 'chat' || name === 'jobs') {
+      try { localStorage.setItem(viewKey, name); } catch { /* Keep the in-tab choice. */ }
+      if (token) poll();
+    }
+  }
+
+  function poll() {
+    return activeList() === 'jobs' ? loadJobs() : loadChat();
+  }
+
+  function dot(color, closed, label) {
+    const span = element('span', 'cdot ' + color + (closed ? ' closed' : ''));
+    span.append(element('span', 'dot'), element('span', 'state-label', label));
+    span.querySelector('.dot').setAttribute('aria-hidden', 'true');
+    return span;
+  }
+
+  function pill(text, tone) {
+    return element('span', 'pill' + (tone ? ' pill-' + tone : ''), text);
+  }
+
+  const statusTone = (j) => ({ green: 'ok', yellow: 'warn', red: 'bad' })[dotColor(j)] || '';
+  const statusText = (j) => j.status === 'completed' ? 'done' : j.status === 'parked' ? 'parked · awaiting reply' : (j.status || '').replaceAll('_', ' ');
+
+  function selectKey(key, userInitiated) {
+    if (key === chat.sel) return;
+    chat.sel = key;
+    chat.follow = true;
+    chat.gen++;
+    chat.view = null;
+    $('thread-inner').replaceChildren();
+    $('jump').hidden = true;
+    try { history.replaceState(null, '', key ? '#t=' + encodeURIComponent(key) : location.pathname + location.search); } catch { /* No history. */ }
+    if (userInitiated) {
+      document.body.classList.remove('drawer-open');
+      renderSidebar();
+      renderThreadHead();
+      refreshThread();
+    }
+  }
+
+  function findSelection() {
+    for (const g of chat.groups) {
+      if (g.kind === 'lead' && chat.sel === 'lead:' + g.id) return { kind: 'lead', group: g };
+      const agent = g.agents.find(a => a.key === chat.sel);
+      if (agent) return { kind: 'agent', group: g, agent };
+    }
+    return null;
+  }
+
+  function resolveSelection() {
+    if (findSelection()) return;
+    const withAgents = chat.groups.find(g => g.agents.length);
+    const first = withAgents ? withAgents.agents[0].key : chat.groups[0]?.kind === 'lead' ? 'lead:' + chat.groups[0].id : null;
+    selectKey(first, false);
+  }
+
+  async function loadChat() {
+    const seq = ++chat.seq;
+    const r = await api('GET', '/api/jobs');
+    if (!r || seq !== chat.seq) return;
+    if (!r.ok) { setStatus('list failed: ' + r.error, 'error'); return; }
+    setStatus('updated ' + new Date().toLocaleTimeString());
+    const jobs = (r.page && r.page.jobs) || [];
+    for (const j of jobs) rememberLead(j);
+    chat.members = r.external_members || [];
+    for (const m of chat.members) if (m.workspace) knownLeads.set(m.lead_session_id, m.workspace);
+    syncLeadOptions();
+    chat.jobs = jobs;
+    chat.jobsById = new Map(jobs.map(j => [j.job_id, j]));
+    chat.leadTokens = r.lead_tokens || {};
+    chat.groups = AtfLib.groupAgents(jobs, chat.members.map(m => m.lead_session_id));
+    let usage = usageSum(jobs);
+    for (const u of Object.values(chat.leadTokens)) usage = addUsage(usage, u);
+    $('bar-running').textContent = String(jobs.filter(j => j.status === 'running').length);
+    $('bar-tokens').textContent = usage ? fmtTokens(usage.total) : '—';
+    $('bar-tokens').title = tokenTip(usage, 'leads + distinct job sessions on this page');
+    resolveSelection();
+    renderSidebar();
+    renderThreadHead();
+    await refreshThread();
+  }
+
+  function groupColor(g) {
+    const lights = g.agents.map(a => dotColor(a.newest));
+    const waiting = g.kind === 'lead' && chat.members.some(m => m.lead_session_id === g.id);
+    return lights.includes('red') ? 'red' : lights.includes('green') ? 'green' : lights.includes('yellow') || waiting ? 'yellow' : 'grey';
+  }
+
+  function agentRow(a) {
+    const n = a.newest;
+    const closed = AtfLib.isSettled(n) && n.agent_live === false;
+    const row = element('button', 'row agent-row' + (a.key === chat.sel ? ' selected' : ''));
+    row.type = 'button';
+    row.dataset.key = a.key;
+    if (a.key === chat.sel) row.setAttribute('aria-current', 'true');
+    row.title = a.jobs.length + (a.jobs.length === 1 ? ' turn' : ' turns') + ' · ' + statusText(n);
+    const sub = element('span', 'sub');
+    if (n.backend) sub.append(element('span', 'backend', n.backend));
+    if (n.session_tokens) sub.append(element('span', '', fmtTokens(n.session_tokens.total || 0)));
+    sub.append(element('span', '', age(n.updated_at)));
+    row.append(dot(dotColor(n), closed, statusText(n)), element('span', 'name', displayName(n)), sub);
+    row.addEventListener('click', () => selectKey(a.key, true));
+    return row;
+  }
+
+  function groupNode(g) {
+    const section = element('section', 'lead');
+    const color = groupColor(g);
+    const label = { green: 'Running', yellow: 'Waiting', red: 'Needs attention', grey: 'Done' }[color];
+    const title = g.kind === 'prfactory' ? 'PRFactory' : g.kind === 'unassigned' ? 'Unassigned' : leadLabel(g.id);
+    let usage = usageSum(g.agents.flatMap(a => a.jobs));
+    if (g.kind === 'lead' && Object.hasOwn(chat.leadTokens, g.id)) usage = addUsage(usage, chat.leadTokens[g.id]);
+    const sub = element('span', 'sub');
+    if (usage) sub.append(tokenSpan('', 'Σ ', usage, '', 'group: lead + distinct member sessions'));
+    const newest = g.agents[0]?.newest;
+    if (newest) sub.append(element('span', '', age(newest.updated_at)));
+    let head;
+    if (g.kind === 'lead') {
+      head = element('button', 'row lead-row' + (chat.sel === 'lead:' + g.id ? ' selected' : ''));
+      head.type = 'button';
+      head.dataset.key = 'lead:' + g.id;
+      head.title = g.id;
+      head.addEventListener('click', () => selectKey('lead:' + g.id, true));
+    } else head = element('div', 'row lead-row group-row');
+    head.append(dot(color, false, label), element('span', 'name', title), sub);
+    section.append(head);
+    const rows = element('div', 'agent-rows');
+    const settled = g.agents.filter(a => AtfLib.isSettled(a.newest));
+    for (const a of g.agents) if (!settled.includes(a)) rows.append(agentRow(a));
+    for (const m of chat.members.filter(m => g.kind === 'lead' && m.lead_session_id === g.id)) {
+      const row = element('div', 'row agent-row external-row');
+      row.append(dot('yellow', false, 'External member'), element('span', 'name', m.name), element('span', 'sub', 'external · waiting'));
+      rows.append(row);
+    }
+    if (settled.length) {
+      const foldKey = 'chatfold:' + g.id;
+      const fold = element('details', 'fold');
+      let foldOpen = settled.some(a => a.key === chat.sel)
+        || (Object.hasOwn(savedTeams, foldKey) ? savedTeams[foldKey] === true : settled.length <= 3);
+      fold.open = foldOpen;
+      fold.addEventListener('toggle', () => {
+        if (fold.open === foldOpen) return;
+        foldOpen = fold.open;
+        saveTeams(foldKey, foldOpen);
+      });
+      fold.append(element('summary', '', settled.length + ' finished'));
+      for (const a of settled) fold.append(agentRow(a));
+      rows.append(fold);
+    }
+    if (rows.children.length) section.append(rows);
+    return section;
+  }
+
+  function renderSidebar() {
+    const list = $('session-list');
+    const scroll = list.scrollTop;
+    const focused = list.contains(document.activeElement) ? document.activeElement.dataset.key : null;
+    list.replaceChildren(...chat.groups.map(groupNode));
+    if (!chat.groups.length) list.append(element('p', 'note side-empty', 'No sessions yet.'));
+    list.scrollTop = scroll;
+    if (focused) [...list.querySelectorAll('[data-key]')].find(n => n.dataset.key === focused)?.focus();
+  }
+
+  function renderThreadHead() {
+    const head = $('thread-head');
+    const found = findSelection();
+    head.replaceChildren();
+    if (!found) { head.append(element('div', 'head-title', 'Select a session')); return; }
+    const title = element('div', 'head-title');
+    const meta = element('div', 'head-meta');
+    if (found.kind === 'lead') {
+      const g = found.group;
+      title.append(dot(groupColor(g), false, 'lead'), element('h1', '', leadLabel(g.id)), pill('lead'));
+      const workspace = knownLeads.get(g.id);
+      if (workspace) meta.append(element('span', '', workspace));
+      meta.append(element('span', '', g.agents.length + (g.agents.length === 1 ? ' agent' : ' agents')));
+    } else {
+      const n = found.agent.newest;
+      const closed = AtfLib.isSettled(n) && n.agent_live === false;
+      title.append(dot(dotColor(n), closed, statusText(n)), element('h1', '', displayName(n)), pill(statusText(n), statusTone(n)));
+      const parts = n.connector ? AtfLib.connectorParts(n.target_agent || '') : null;
+      if (parts?.key) meta.append(element('span', '', 'ticket ' + parts.key + ' · ' + parts.phase
+        + (n.work_item_id ? ' · work item ' + n.work_item_id.slice(0, 8) : '')));
+      else if (n.connector && n.work_item_id) meta.append(element('span', '', 'work item ' + n.work_item_id.slice(0, 8)));
+      meta.append(element('span', '', [n.backend, n.model, n.effort].filter(Boolean).join(' · ')));
+      if (!n.connector && n.lead_session_id) meta.append(element('span', '', 'lead ' + (leadNames.get(n.lead_session_id) || n.lead_session_id.slice(0, 8))));
+      if (n.worktree_branch) meta.append(element('span', '', n.worktree_branch));
+      meta.append(element('span', '', 'job ' + n.job_id.slice(-8)));
+      if (n.session_tokens) meta.append(tokenSpan('', '', n.session_tokens, ' tok'));
+      meta.append(element('span', '', 'updated ' + age(n.updated_at) + ' ago'));
+    }
+    head.append(title, meta);
+  }
+
+  // Keeps a thread parked at the bottom following new content; otherwise offers "Jump to latest".
+  function threadUpdate(fn) {
+    const t = $('thread');
+    const before = t.scrollHeight;
+    const top = t.scrollTop;
+    const wasBottom = chat.follow || before - top - t.clientHeight < 8;
+    fn();
+    if (wasBottom) { t.scrollTop = t.scrollHeight; $('jump').hidden = true; }
+    else { t.scrollTop = top; if (t.scrollHeight > before) $('jump').hidden = false; }
+  }
+
+  function chatTime(ts) {
+    const when = new Date(ts);
+    if (!ts || !Number.isFinite(when.getTime())) return null;
+    const node = element('time', 'msg-time', when.toLocaleTimeString());
+    node.dateTime = ts;
+    return node;
+  }
+
+  function agentMessage(box, kind, text, ts) {
+    const msg = element('div', 'msg in' + (kind === 'error' ? ' error' : ''));
+    const meta = element('div', 'msg-meta');
+    meta.append(element('span', 'who', box._who || 'Agent'));
+    if (kind === 'error') meta.append(pill('Error', 'bad'));
+    if (kind === 'result') meta.append(pill('Result', 'ok'));
+    const time = chatTime(ts);
+    if (time) meta.append(time);
+    const bubble = element('div', 'bubble');
+    if (kind === 'error') bubble.textContent = text;
+    else bubble.append(markdownView(text));
+    msg.append(meta, bubble);
+    return msg;
+  }
+
+  function appendChatEntry(box, st, e) {
+    if (e.kind === 'result' && st.hasResult) return;
+    if (e.kind === 'assistant_text' || e.kind === 'error' || e.kind === 'result') {
+      st.group = null;
+      box.append(agentMessage(box, e.kind, e.text, e.ts));
+      return;
+    }
+    if (e.kind === 'thinking') {
+      st.group = null;
+      const think = element('div', 'thinking');
+      const text = element('div', 't', e.text);
+      think.append(element('span', 'lbl', 'thinking'), text);
+      if ((e.text || '').length > 280) {
+        think.classList.add('clamp');
+        const more = element('button', '', 'Show more');
+        more.type = 'button';
+        more.addEventListener('click', () => { more.textContent = think.classList.toggle('clamp') ? 'Show more' : 'Show less'; });
+        think.append(more);
+      }
+      box.append(think);
+      return;
+    }
+    // tool_call, tool_result, status and anything unknown: one collapsed group per run of steps.
+    if (!st.group) {
+      const details = element('details', 'tools');
+      const summary = element('summary');
+      const list = element('ol', 'call-list');
+      details.append(summary, list);
+      box.append(details);
+      st.group = { summary, list, steps: 0, calls: 0 };
+    }
+    const g = st.group;
+    const isCall = e.kind === 'tool_call';
+    g.steps++;
+    if (isCall) g.calls++;
+    g.summary.textContent = g.steps + (g.steps === 1 ? ' step' : ' steps') + ' · ' + g.calls + (g.calls === 1 ? ' tool call' : ' tool calls');
+    const li = element('li', 'call');
+    const head = element('div', 'call-head');
+    head.append(element('span', 'tool', isCall ? 'call' : e.kind === 'tool_result' ? 'result' : 'status'));
+    const time = chatTime(e.ts);
+    if (time) head.append(time);
+    li.append(head, element('pre', 'call-out', e.text));
+    g.list.append(li);
+  }
+
+  // Appends only entries it has not drawn yet, so a poll never re-parses finished bubbles.
+  function renderChatActivity(box, state, hasResult) {
+    threadUpdate(() => {
+      let st = box._chat;
+      if (!st || st.omitted !== state.omitted || st.hasResult !== hasResult || st.n > state.entries.length) {
+        box.replaceChildren();
+        st = box._chat = { n: 0, group: null, omitted: state.omitted, hasResult, note: element('div', 'sys') };
+        if (state.omitted) box.append(element('div', 'sys', state.omitted + ' earlier entries omitted; raw logs remain available.'));
+      }
+      st.note.remove();
+      for (; st.n < state.entries.length; st.n++) appendChatEntry(box, st, state.entries[st.n]);
+      const note = state.error || (state.entries.length ? '' : state.complete ? 'No activity recorded.' : 'No activity yet.');
+      if (note) {
+        st.note.textContent = note;
+        st.note.className = 'sys' + (state.error ? ' boxed' : '');
+        box.append(st.note);
+      }
+    });
+  }
+
+  async function fetchDetail(id) {
+    const failedAt = failedFetches.get(id);
+    if (failedAt && Date.now() - failedAt < 30000) return null;
+    const r = await api('GET', '/api/jobs/' + encodeURIComponent(id));
+    if (!r?.ok || !r.job) { failedFetches.set(id, Date.now()); return null; }
+    failedFetches.delete(id);
+    jobDetails.set(id, r.job);
+    return r.job;
+  }
+
+  // Finished turns are cached; a turn is re-read only while its status or delivery can still change.
+  function needsDetail(id) {
+    const d = jobDetails.get(id);
+    if (!d) return true;
+    const status = chat.jobsById.get(id)?.status ?? d.status;
+    return d.status !== status || !TERMINAL.includes(d.status)
+      || ['pending', 'unconfirmed'].includes(d.delivery?.state);
+  }
+
+  function turnView(id) {
+    const s = chat.jobsById.get(id) || {};
+    const d = jobDetails.get(id) || {};
+    return {
+      job_id: id, status: s.status ?? d.status, reason_code: s.reason_code ?? d.reason_code,
+      accepted_at: s.accepted_at, instruction: d.instruction, result: d.result, delivery: d.delivery,
+      haveDetail: jobDetails.has(id),
+    };
+  }
+
+  const deliveryLabel = { pending: 'delivery pending', unconfirmed: 'delivery unconfirmed', acknowledged: 'acknowledged', result_observed: 'result seen' };
+
+  function buildBlock(id, who) {
+    const node = element('div', 'jobblock');
+    node.dataset.jobId = id;
+    const b = { node, sigs: {}, expanded: false,
+      head: element('div', 'sys'), instr: element('div', 'slot'), act: element('div', 'job-activity'), res: element('div', 'slot'),
+      raw: element('div', 'slot') };
+    b.act._who = who;
+    node.append(b.head, b.instr, b.act, b.res, b.raw);
+    cardLog(b.raw, 'chat:logs:' + id, id);
+    const state = activityState(id);
+    registerActivityNode(state, b.act);
+    b.act.renderInto = (st) => renderChatActivity(b.act, st, b.hasResult === true);
+    return b;
+  }
+
+  function updateBlock(b, t, index) {
+    const sig = (name, value) => b.sigs[name] === value ? false : (b.sigs[name] = value, true);
+    if (sig('head', [t.status, t.reason_code, index].join('|'))) {
+      const tone = { running: 'ok', completed: '', cancelled: '', failed: 'bad', needs_reconciliation: 'bad' }[t.status] ?? 'warn';
+      b.head.replaceChildren(element('span', '', 'job ' + t.job_id.slice(-8)), pill(statusText(t), tone));
+      if (t.reason_code) b.head.append(element('span', '', t.reason_code));
+      if (t.accepted_at) b.head.append(element('span', '', new Date(t.accepted_at).toLocaleString()));
+    }
+    const instruction = t.instruction || '';
+    if (sig('instr', [instruction.length, t.delivery?.state ?? '', index].join('|'))) {
+      b.instr.replaceChildren();
+      if (instruction) {
+        const msg = element('div', 'msg out');
+        const meta = element('div', 'msg-meta');
+        meta.append(element('span', 'who', index === 0 ? 'You · instruction' : 'You · follow-up'));
+        if (t.delivery) meta.append(pill(deliveryLabel[t.delivery.state] || t.delivery.state, t.delivery.state === 'pending' || t.delivery.state === 'unconfirmed' ? 'warn' : 'info'));
+        const bubble = element('div', 'bubble');
+        const text = element('div', 'instruction-text', instruction);
+        bubble.append(text);
+        if (instruction.length > LONG_INSTRUCTION) {
+          text.classList.toggle('clamped', !b.expanded);
+          const more = element('button', 'link', b.expanded ? 'Show less' : 'Show all');
+          more.type = 'button';
+          more.addEventListener('click', () => {
+            b.expanded = !b.expanded;
+            text.classList.toggle('clamped', !b.expanded);
+            more.textContent = b.expanded ? 'Show less' : 'Show all';
+          });
+          meta.append(more);
+        }
+        msg.append(meta, bubble);
+        b.instr.append(msg);
+      }
+    }
+    const hasResult = !!t.result;
+    if (b.hasResult !== hasResult) {
+      b.hasResult = hasResult;
+      renderChatActivity(b.act, activityState(t.job_id), hasResult);
+    }
+    if (sig('res', [t.status, t.reason_code, t.result == null ? '-' : t.result.length, t.haveDetail].join('|'))) {
+      b.res.replaceChildren();
+      if (t.result) {
+        const msg = agentMessage(b.act, 'result', t.result, null);
+        b.res.append(msg);
+      } else if (t.result === '') b.res.append(element('div', 'sys', '(empty result)'));
+      else if (t.status === 'completed' && t.haveDetail) b.res.append(element('div', 'sys', 'Result unavailable.'));
+      if (['failed', 'cancelled', 'needs_reconciliation'].includes(t.status)) {
+        b.res.append(element('div', 'sys boxed', t.status.replaceAll('_', ' ') + (t.reason_code ? ' · ' + t.reason_code : '')));
+      }
+    }
+    if (!TERMINAL.includes(t.status) && cardLogState('chat:logs:' + t.job_id).open) loadCardLogs('chat:logs:' + t.job_id, t.job_id);
+  }
+
+  function threadView(key) {
+    if (chat.view?.key === key) return chat.view;
+    const inner = $('thread-inner');
+    inner.replaceChildren();
+    const v = chat.view = { key, blocks: new Map(), note: element('div', 'sys'), tail: element('div', 'state-lines') };
+    inner.append(v.note, v.tail);
+    return v;
+  }
+
+  function renderTail(v, n) {
+    v.tail.replaceChildren();
+    const line = (text, cls) => v.tail.append(element('div', cls || 'sys', text));
+    if (n.status === 'queued' && n.parent_job_id) line('queued behind job ' + n.parent_job_id.slice(-8));
+    if (n.startup) {
+      line('Startup: ' + (n.startup.no_marker_since_launch ? 'no state marker since launch' : n.startup.phase) + ' · ' + n.startup.elapsed_seconds + 's');
+      if (n.startup.hint) line(n.startup.hint, 'sys boxed info');
+    }
+    if (n.agent_live === false) line('Agent closed — sending resumes it');
+  }
+
+  async function renderAgentThread(found, gen) {
+    const n = found.agent.newest;
+    const known = () => [...jobDetails.values(), ...chat.jobs];
+    let r = AtfLib.threadChain(known(), n.job_id, CHAIN_CAP);
+    // Parents that fell off the first page are fetched one at a time (the web API limits concurrent calls).
+    for (let hops = 0; r.missing && hops < CHAIN_CAP; hops++) {
+      if (!await fetchDetail(r.missing)) break;
+      if (gen !== chat.gen) return;
+      r = AtfLib.threadChain(known(), n.job_id, CHAIN_CAP);
+    }
+    for (const j of r.chain) {
+      if (needsDetail(j.job_id)) {
+        await fetchDetail(j.job_id);
+        if (gen !== chat.gen) return;
+      }
+    }
+    threadUpdate(() => {
+      const v = threadView(chat.sel);
+      v.note.textContent = r.truncated ? 'Earlier turns omitted (showing the latest ' + CHAIN_CAP + ').'
+        : r.missing ? 'Earlier turns are unavailable.' : '';
+      v.note.hidden = !v.note.textContent;
+      const wanted = new Set(r.chain.map(j => j.job_id));
+      for (const [id, b] of v.blocks) if (!wanted.has(id)) { b.node.remove(); v.blocks.delete(id); }
+      let prev = v.note;
+      r.chain.forEach((j, i) => {
+        let b = v.blocks.get(j.job_id);
+        if (!b) { b = buildBlock(j.job_id, displayName(n)); v.blocks.set(j.job_id, b); }
+        if (prev.nextElementSibling !== b.node) prev.after(b.node);
+        prev = b.node;
+        updateBlock(b, turnView(j.job_id), i);
+        b.act.renderInto(activityState(j.job_id));
+      });
+      if (prev.nextElementSibling !== v.tail) prev.after(v.tail);
+      renderTail(v, n);
+    });
+    // Newest turn first, so the live end of the conversation fills in before the history above it.
+    for (const j of [...r.chain].reverse()) {
+      if (gen !== chat.gen) return;
+      await loadActivity(j.job_id, chat.jobsById.get(j.job_id)?.status ?? jobDetails.get(j.job_id)?.status);
+    }
+  }
+
+  function renderLeadThread(found) {
+    threadUpdate(() => {
+      const inner = $('thread-inner');
+      chat.view = null;
+      inner.replaceChildren();
+      const g = found.group;
+      const members = chat.members.filter(m => m.lead_session_id === g.id);
+      if (!g.agents.length && !members.length) inner.append(element('div', 'empty', 'No member agents yet.'));
+      else inner.append(element('div', 'sys', 'Member agents'));
+      for (const a of g.agents) {
+        const n = a.newest;
+        const line = element('button', 'member-line');
+        line.type = 'button';
+        line.append(dot(dotColor(n), AtfLib.isSettled(n) && n.agent_live === false, statusText(n)),
+          element('strong', '', displayName(n)), element('span', '', statusText(n)), element('span', 'muted', age(n.updated_at) + ' ago'));
+        line.addEventListener('click', () => selectKey(a.key, true));
+        inner.append(line);
+      }
+      for (const m of members) {
+        const line = element('div', 'member-line');
+        line.append(dot('yellow', false, 'External member'), element('strong', '', m.name), element('span', '', 'external · waiting'));
+        inner.append(line);
+      }
+    });
+  }
+
+  async function refreshThread() {
+    if (chat.busy) { chat.dirty = true; return; }
+    chat.busy = true;
+    try {
+      do {
+        chat.dirty = false;
+        const found = findSelection();
+        if (!found) { $('thread-inner').replaceChildren(element('div', 'empty', 'Select a session from the list.')); chat.view = null; }
+        else if (found.kind === 'lead') renderLeadThread(found);
+        else await renderAgentThread(found, chat.gen);
+      } while (chat.dirty);
+    } finally { chat.busy = false; }
+  }
+
   async function stopJob(jobId, status, cardKey) {
     const active = status === 'queued' || status === 'running' || status === 'needs_reconciliation';
     const action = active ? 'Stop job ' : 'Stop agent for job ';
@@ -1440,9 +1981,7 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     $('settings-toggle').addEventListener('click', async () => {
-      $('overview-view').hidden = true;
-      $('settings-view').hidden = false;
-      $('settings-toggle').setAttribute('aria-expanded', 'true');
+      showView('settings');
       await loadTierSettings();
       await loadRetentionSettings();
       if (herdrMode) {
@@ -1465,10 +2004,20 @@
       showOutcome($('retention-status'), r, 'Saved. Applies on the next idle sweep.', 'Could not save idle settings.');
       button.disabled = false;
     });
-    $('settings-back').addEventListener('click', () => {
-      $('settings-view').hidden = true;
-      $('overview-view').hidden = false;
-      $('settings-toggle').setAttribute('aria-expanded', 'false');
+    $('settings-back').addEventListener('click', () => showView(prevView));
+    for (const button of document.querySelectorAll('[data-view]')) button.addEventListener('click', () => showView(button.dataset.view));
+    $('drawer-open').addEventListener('click', () => document.body.classList.add('drawer-open'));
+    $('drawer-close').addEventListener('click', () => document.body.classList.remove('drawer-open'));
+    $('backdrop').addEventListener('click', () => document.body.classList.remove('drawer-open'));
+    $('thread').addEventListener('scroll', () => {
+      const t = $('thread');
+      chat.follow = t.scrollHeight - t.scrollTop - t.clientHeight < 8;
+      if (chat.follow) $('jump').hidden = true;
+    });
+    $('jump').addEventListener('click', () => {
+      chat.follow = true;
+      $('thread').scrollTop = $('thread').scrollHeight;
+      $('jump').hidden = true;
     });
     $('tiers-reset-all').addEventListener('click', async () => {
       const result = await api('PUT', '/api/settings/tiers', { reset_all: true });
@@ -1488,6 +2037,11 @@
       try { localStorage.setItem(themeKey, theme); } catch { /* Keep the in-tab choice. */ }
     });
     const fragment = new URLSearchParams(location.hash.slice(1));
+    chat.sel = fragment.get('t');
+    if (['chat', 'jobs'].includes(fragment.get('v'))) view = fragment.get('v');
+    document.body.classList.toggle('view-chat', view === 'chat');
+    $('tab-chat').setAttribute('aria-pressed', String(view === 'chat'));
+    $('tab-jobs').setAttribute('aria-pressed', String(view === 'jobs'));
     if (fragment.has('token')) {
       const fragmentToken = fragment.get('token');
       history.replaceState(null, '', location.pathname + location.search);
@@ -1532,7 +2086,8 @@
       if (nextCursor) { pageCursors[++pageIndex] = nextCursor; loadJobs(); }
     });
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape' && expandedKey) { e.preventDefault(); toggleCard(expandedKey, true); }
+      if (e.key === 'Escape' && document.body.classList.contains('drawer-open')) document.body.classList.remove('drawer-open');
+      else if (e.key === 'Escape' && expandedKey && view === 'jobs') { e.preventDefault(); toggleCard(expandedKey, true); }
     });
   });
 })();
