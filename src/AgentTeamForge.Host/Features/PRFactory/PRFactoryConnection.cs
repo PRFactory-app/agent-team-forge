@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using AgentTeamForge.Host.Hosting;
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.DAL.Features.External;
 
 namespace AgentTeamForge.Host.Features.PRFactory;
@@ -43,6 +44,8 @@ public static class PRFactoryConnection
                 File.Delete(Path.Combine(state.Path, LimitName));
                 Console.WriteLine("PRFactory disconnected.");
                 return 0;
+            case "release":
+                return Release(state, args);
             case "status":
                 var settings = LoadSettings(state);
                 if (settings is null)
@@ -90,7 +93,7 @@ public static class PRFactoryConnection
                 }
                 return 0;
             default:
-                Console.Error.WriteLine("usage: atf prfactory connect|disconnect|status [options]");
+                Console.Error.WriteLine("usage: atf prfactory connect|disconnect|status|release [options]");
                 return 64;
         }
     }
@@ -255,6 +258,56 @@ public static class PRFactoryConnection
         return 0;
     }
 
+    /// <summary>Forgets a fenced team (atomic in the database, safe while the daemon runs) so the next poll re-claims the item.</summary>
+    static int Release(StateDirectory state, IReadOnlyList<string> args)
+    {
+        var raw = args.Skip(2).FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal) && Guid.TryParse(a, out _));
+        if (raw is null)
+        {
+            Console.Error.WriteLine("usage: atf prfactory release <work-item-id> [--state-dir DIR]");
+            return 64;
+        }
+        var id = Guid.Parse(raw);
+        var settings = LoadSettings(state);
+        if (settings is null)
+        {
+            Console.Error.WriteLine("error: PRFactory is not connected");
+            return 1;
+        }
+        if (!File.Exists(state.Database))
+        {
+            Console.Error.WriteLine("error: no ATF database in this state directory");
+            return 1;
+        }
+        var result = new PRFactoryTeamStore(JobDatabase.Open(state.Database, TimeSpan.FromSeconds(10))).ReleaseFenced(settings.Url, id);
+        switch (result)
+        {
+            case PRFactoryReleaseResult.Released:
+                Console.WriteLine($"Released work item {id:D}: the fence and ownership rows are gone; local worktrees, artefacts, jobs and logs are kept.");
+                Console.WriteLine($"Next: release the acceptance on the PRFactory side too (POST /api/work-items/{id:D}/atf-acceptance/release), "
+                    + "then the next poll claims the item afresh. This command does not call PRFactory.");
+                return 0;
+            case PRFactoryReleaseResult.NotFound:
+                Console.Error.WriteLine($"error: no ATF team for work item {id:D} on {settings.Url}");
+                return 1;
+            case PRFactoryReleaseResult.StopNotAcknowledged:
+                Console.Error.WriteLine($"error: work item {id:D} is fenced but the daemon has not yet confirmed that its agents and sessions are stopped "
+                    + "(the daemon must be running to finish the stop); retry in a moment");
+                return 1;
+            case PRFactoryReleaseResult.NeedsReconciliation:
+                Console.Error.WriteLine($"error: work item {id:D} has a job in needs_reconciliation that may still have a live process; "
+                    + "stop or cancel that job (atf client stop JOB) and retry");
+                return 1;
+            case PRFactoryReleaseResult.ExternalMemberOpen:
+                Console.Error.WriteLine($"error: work item {id:D} still has an unclosed external member; let the daemon revoke it "
+                    + "(it retries while running) or leave the team, then retry");
+                return 1;
+            default:
+                Console.Error.WriteLine($"error: work item {id:D} is not fenced (reconciliation needed); only a fenced team can be released");
+                return 1;
+        }
+    }
+
     static int InvalidMapping()
     {
         Console.Error.WriteLine("error: require unique --repo <repository-guid>=<existing-local-directory> and optional --external <repository-guid>:<recipe-member>");
@@ -314,7 +367,7 @@ public static class PRFactoryConnection
                 .Select(member => $"Work item {team.WorkItemId:D}, external member {member.Member}: "
                     + new JoinTicket(member.TeamId, member.ActualName, member.TicketToken, member.TicketExpires).JoinPrompt))
             .Concat(teams.ReconciliationNeeded(server)
-                .Select(team => $"Work item {team.WorkItemId:D}: reconciliation needed; local results retained, remote publication fenced."))
+                .Select(team => $"Work item {team.WorkItemId:D}: reconciliation needed; local results retained, remote publication fenced. Release with: atf prfactory release {team.WorkItemId:D}"))
             .ToArray();
         WritePrivate(Path.Combine(state.Path, JoinsName), JsonSerializer.SerializeToUtf8Bytes(prompts, PRFactorySettingsJson.Default.StringArray));
     }

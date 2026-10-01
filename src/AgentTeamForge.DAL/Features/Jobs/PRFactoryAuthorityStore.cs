@@ -33,7 +33,8 @@ public sealed class PRFactoryAuthorityStore(JobDatabase database)
         // An ordinary acceptance observation cannot resurrect fenced work. Reconciliation is explicit.
         command.CommandText = """
             INSERT INTO prfactory_authority(server,work_item_id,disposition,reason,stopping)
-            VALUES($server,$id,$disposition,$reason,$stopping)
+            SELECT $server,$id,$disposition,$reason,$stopping
+            WHERE EXISTS (SELECT 1 FROM prfactory_teams WHERE server=$server AND work_item_id=$id) -- a released team is not resurrected by a stale poll
             ON CONFLICT(server,work_item_id) DO UPDATE SET
                 disposition=excluded.disposition,reason=excluded.reason,stopping=excluded.stopping
             WHERE prfactory_authority.disposition='accepted'

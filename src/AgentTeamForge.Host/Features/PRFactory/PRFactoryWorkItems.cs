@@ -728,6 +728,12 @@ public sealed partial class PRFactoryWorkItems(
         return head.Length == 0 ? hash : head + "_" + hash;
     }
 
+    // Execution-specific keys carry the durable acceptance identity: stable within one acceptance, new after a
+    // release and re-claim, so the re-claimed team gets fresh jobs instead of the old execution's.
+    string AcceptanceScope(Guid id) => teams.Get(server, id)?.AtfJobId is { Length: > 0 } atf
+        ? ":" + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(atf)))[..12]
+        : "";
+
     async Task<JobRecord?> SubmitMember(PRFactoryWorkItem item, string member,
         PRFactoryAgentType agent, string? model, PRFactoryEffort? effort, string instruction, string cwd, bool isolated, CancellationToken ct)
     {
@@ -741,7 +747,7 @@ public sealed partial class PRFactoryWorkItems(
         // The same key and exact request resolve a lost local acceptance response to one job.
         var prefix = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(server)))[..12];
         var memberKey = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(member)))[..12];
-        var key = $"prf:{prefix}:{item.Id:N}:{memberKey}:0";
+        var key = $"prf:{prefix}:{item.Id:N}:{memberKey}:0{AcceptanceScope(item.Id)}";
         var result = JobResult.Fail(JobErrors.DaemonUnhealthy);
         await Guard(item.Id, () =>
         {
@@ -1101,7 +1107,7 @@ public sealed partial class PRFactoryWorkItems(
         await Guard(item.Id, () =>
         {
             // No Defer: finalization starts only after every turn, the lead's included, has completed.
-            result = followUp?.Invoke(new FollowUpRequest(lead.JobId, instruction, $"prf-finalize:{item.Id:N}"))
+            result = followUp?.Invoke(new FollowUpRequest(lead.JobId, instruction, $"prf-finalize:{item.Id:N}{AcceptanceScope(item.Id)}"))
                 ?? JobResult.Fail(JobErrors.DaemonUnhealthy);
             if (result.Error is null) { teams.RecordMember(server, item.Id, "lead", FinalizeTurn, result.Job!.JobId); }
             return Task.CompletedTask;
