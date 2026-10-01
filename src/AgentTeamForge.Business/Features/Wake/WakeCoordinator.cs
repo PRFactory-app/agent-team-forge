@@ -30,6 +30,7 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
         public DateTimeOffset? FirstNew;
         public WakeBackoff Backoff = new();
         public int Renotifies;
+        public long LatestSeq;
     }
     static readonly TimeSpan MaxRenotify = TimeSpan.FromMinutes(60);
     readonly Dictionary<string, State> states = [];
@@ -67,6 +68,14 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
                 states[stateKey] = state;
             }
             var current = now();
+            if (snapshot.LatestSeq > state.LatestSeq)
+            {
+                // A newly finished job must not wait behind retry/reminder backoff earned by older ones.
+                state.LatestSeq = snapshot.LatestSeq;
+                state.Backoff.Reset();
+                state.Renotifies = 0;
+                state.FirstNew = current;
+            }
             if (current < state.Backoff.Until)
             {
                 continue;

@@ -24,7 +24,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         j.job_id, j.principal, j.team, j.target_agent, j.idempotency_key, j.instruction, j.options,
         j.status, j.reason_code, j.result_text,
         (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id),
-        j.backend, j.cwd, j.parent_job_id, j.session_id, j.worktree_path, j.worktree_branch, j.worktree_base, j.timeout_s
+        j.backend, j.cwd, j.parent_job_id, j.session_id, j.worktree_path, j.worktree_branch, j.worktree_base, j.timeout_s,
+        (SELECT coalesce(max(e.seq),0) FROM events e WHERE e.job_id=j.job_id)
         """;
 
     const string SessionPeers = """
@@ -1172,7 +1173,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                    (SELECT s.display_name FROM lead_sessions s WHERE s.session_id=j.lead_session_id AND s.closed_at IS NULL),
                    (SELECT m.work_item_id FROM prfactory_members m WHERE m.job_id=j.job_id LIMIT 1),
                    j.status IN ('completed','failed','needs_reconciliation','cancelled')
-                       AND EXISTS (SELECT 1 FROM wake_jobs w WHERE w.job_id=j.job_id AND w.read_at IS NULL)
+                       AND EXISTS (SELECT 1 FROM wake_jobs w WHERE w.job_id=j.job_id AND w.read_at IS NULL),
+                   (SELECT coalesce(max(e.seq),0) FROM events e WHERE e.job_id=j.job_id)
             FROM jobs j
             WHERE ((j.principal=$p AND j.team=$t) OR ($connector=1 AND j.principal='prfactory' AND j.team='connector'))
               -- A malformed pre-release row must not break this page or its cursor.
@@ -1214,6 +1216,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 LeadName = NullableText(reader, 17),
                 WorkItemId = NullableText(reader, 18),
                 Unread = reader.GetBoolean(19),
+                Revision = reader.GetInt64(20),
             });
         }
 
@@ -1245,7 +1248,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             return null;
         }
 
-        return (ReadJob(reader), reader.GetString(19));
+        return (ReadJob(reader), reader.GetString(20));
     }
 
     static JobRecord ReadJob(SqliteDataReader reader) => new(
@@ -1258,6 +1261,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         WorktreeBranch = NullableString(reader, 16),
         WorktreeBase = NullableString(reader, 17),
         TimeoutSeconds = reader.IsDBNull(18) ? null : reader.GetInt32(18),
+        Revision = reader.GetInt64(19),
     };
 
     static string? NullableString(SqliteDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);

@@ -93,8 +93,8 @@ public sealed class WakeStore(JobDatabase database)
         command.ExecuteNonQuery();
     }
 
-    /// <summary>Reads only a terminal state the caller saw: a completion racing a read of the running job still wakes.</summary>
-    public void MarkRead(string jobId, string observedStatus, string key, long generation)
+    /// <summary>Reads only the terminal state (status and event revision) the caller saw; a null revision skips the revision check: a completion racing a read of the running job still wakes.</summary>
+    public void MarkRead(string jobId, string observedStatus, string key, long generation, long? revision = null)
     {
         if (observedStatus is Jobs.JobStatus.Queued or Jobs.JobStatus.Running) { return; }
         using var connection = database.OpenConnection();
@@ -102,28 +102,33 @@ public sealed class WakeStore(JobDatabase database)
         command.CommandText = """
             UPDATE wake_jobs SET read_at=$now WHERE job_id=$job AND target_key=$key AND read_at IS NULL
             AND EXISTS (SELECT 1 FROM wake_targets WHERE target_key=$key AND generation=$generation AND active=1)
-            AND EXISTS (SELECT 1 FROM jobs WHERE job_id=$job AND status IN ('completed','failed','needs_reconciliation','cancelled'));
+            AND EXISTS (SELECT 1 FROM jobs j WHERE j.job_id=$job AND j.status=$status
+                AND ($revision IS NULL OR (SELECT coalesce(max(e.seq),0) FROM events e WHERE e.job_id=j.job_id)=$revision));
             """;
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$job", jobId);
+        command.Parameters.AddWithValue("$status", observedStatus);
+        command.Parameters.AddWithValue("$revision", (object?)revision ?? DBNull.Value);
         command.Parameters.AddWithValue("$key", key);
         command.Parameters.AddWithValue("$generation", generation);
         command.ExecuteNonQuery();
     }
 
     /// <summary>Acks by owning lead session, so a read while the wake is cleared or not yet re-registered still counts.</summary>
-    public void MarkReadForLead(string jobId, string observedStatus, string leadSessionId)
+    public void MarkReadForLead(string jobId, string observedStatus, long? revision, string leadSessionId)
     {
         if (observedStatus is Jobs.JobStatus.Queued or Jobs.JobStatus.Running) { return; }
         using var connection = database.OpenConnection();
         using var command = connection.CreateCommand();
         command.CommandText = """
             UPDATE wake_jobs SET read_at=$now WHERE job_id=$job AND read_at IS NULL
-            AND EXISTS (SELECT 1 FROM jobs WHERE job_id=$job AND lead_session_id=$lead
-                AND status IN ('completed','failed','needs_reconciliation','cancelled'));
+            AND EXISTS (SELECT 1 FROM jobs j WHERE j.job_id=$job AND j.lead_session_id=$lead AND j.status=$status
+                AND ($revision IS NULL OR (SELECT coalesce(max(e.seq),0) FROM events e WHERE e.job_id=j.job_id)=$revision));
             """;
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$job", jobId);
+        command.Parameters.AddWithValue("$status", observedStatus);
+        command.Parameters.AddWithValue("$revision", (object?)revision ?? DBNull.Value);
         command.Parameters.AddWithValue("$lead", leadSessionId);
         command.ExecuteNonQuery();
     }

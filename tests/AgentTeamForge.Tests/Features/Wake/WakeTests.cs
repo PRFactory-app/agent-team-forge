@@ -896,7 +896,7 @@ public sealed class WakeTests
         Assert.True(fixture.Store.Complete(run, "done"));
         Assert.True(wake.ClearLead(leadId, target.Key, target.Generation));
 
-        wake.MarkReadForLead(jobId, JobStatus.Completed, leadId);
+        wake.MarkReadForLead(jobId, JobStatus.Completed, null, leadId);
         var again = wake.Register(target.Key, "codex", "thread", "", "/tmp");
         sessions.BindWake(leadId, again.Key, again.Generation);
 
@@ -959,11 +959,16 @@ public sealed class WakeTests
         Assert.True(fixture.Store.RecordSession(run, "native"));
         fixture.Store.RecordStartup(run, "submitted");
         Assert.Equal([jobId], fixture.Store.QuarantineUncertainAttempts());
-        wake.MarkReadForLead(jobId, JobStatus.NeedsReconciliation, leadId);
+        var observed = fixture.Store.GetJob(jobId)!;
+        wake.MarkReadForLead(jobId, observed.Status, observed.Revision, leadId);
         Assert.Empty(wake.Pending());
 
         Assert.True(fixture.Store.ReattachQuarantined(run));
         Assert.True(fixture.Store.Complete(run, "done"));
+        // The lead observed needs_reconciliation before the completion; that stale read must not consume it.
+        wake.MarkReadForLead(jobId, observed.Status, observed.Revision, leadId);
+        wake.MarkReadForLead(jobId, JobStatus.Completed, observed.Revision, leadId);
+        Assert.Equal(1, Assert.Single(wake.Pending()).Unread);
 
         var poster = new FakePoster();
         await new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero).TickAsync(TestContext.Current.CancellationToken);
@@ -980,7 +985,7 @@ public sealed class WakeTests
         var (unreadId, unreadRun) = LeadJob(fixture, leadId, target, "unread");
         Assert.True(fixture.Store.Complete(unreadRun, "done"));
         var (runningId, _) = LeadJob(fixture, leadId, target, "running");
-        wake.MarkReadForLead(readId, JobStatus.Completed, leadId);
+        wake.MarkReadForLead(readId, JobStatus.Completed, null, leadId);
 
         var list = new ListJobs(fixture.Store, JobFixture.Operator);
         var page = list.Execute(new ListJobsRequest(Since: DateTimeOffset.UtcNow.AddHours(1).ToString("O")) { Unread = true, LeadSessionId = leadId });
@@ -989,5 +994,35 @@ public sealed class WakeTests
         Assert.Equal(unreadId, Assert.Single(unreadOnly).JobId);
         Assert.True(unreadOnly[0].Unread);
         Assert.DoesNotContain(list.Execute(new ListJobsRequest { LeadSessionId = leadId }).Page!.Jobs, j => j.JobId == runningId && j.Unread);
+    }
+    [Fact]
+    public async Task New_completion_wakes_after_coalesce_even_at_the_retry_cap()
+    {
+        using var fixture = new JobFixture();
+        var store = new WakeStore(fixture.Database);
+        var target = store.Register("codex:cap", "codex", "thread", "", "/tmp");
+        Finish(fixture, target, "old");
+        var time = DateTimeOffset.UtcNow;
+        var reachable = false;
+        var poster = new FakePoster((_, _) => reachable);
+        var coordinator = new WakeCoordinator(store, poster, _ => { }, () => time);
+        for (var i = 0; i < 10; i++)
+        {
+            time += TimeSpan.FromSeconds(301);
+            await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        }
+        var failed = poster.Attempts.Count;
+        Assert.True(failed >= 8);
+
+        Finish(fixture, target, "new");
+        reachable = true;
+        time += TimeSpan.FromSeconds(1);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(failed, poster.Attempts.Count); // coalesce window still open
+        time += TimeSpan.FromSeconds(2);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(failed + 1, poster.Attempts.Count);
+        Assert.Contains("2 job(s)", poster.Attempts[^1].Notice);
     }
 }

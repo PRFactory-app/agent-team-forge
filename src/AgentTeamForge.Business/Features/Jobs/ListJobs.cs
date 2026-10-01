@@ -68,6 +68,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
             Connector = r.Connector,
             WorkItemId = r.WorkItemId,
             Unread = r.Unread,
+            Revision = r.Revision,
             LastActivity = logs?.LastActivity(r.JobId, r.Backend ?? ""),
         }).ToList();
         return new JobListResult(new JobListPage(jobs, limit, hasMore, hasMore ? jobs[^1].JobId : null), null);
@@ -112,6 +113,8 @@ public sealed record JobSummary(string JobId, string Status, string? ReasonCode,
     public string? WorkItemId { get; init; }
     public bool Connector { get; init; }
     public bool Unread { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public long Revision { get; init; }
     public string Light => Status switch
     {
         JobStatus.Queued or "waiting" or "parked" => "yellow",

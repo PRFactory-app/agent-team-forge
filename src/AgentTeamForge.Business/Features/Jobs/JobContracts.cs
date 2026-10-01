@@ -98,6 +98,8 @@ public static class JobErrors
 /// <summary>The public view of a job. Never a raw storage record.</summary>
 public sealed record JobView(string JobId, string Status, string? Result, string? ReasonCode, int Attempts)
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public long Revision { get; init; }
     public string[]? ExpectedOutputs { get; init; }
     public bool? AgentLive { get; init; }
     public JobDelivery? Delivery { get; init; }
