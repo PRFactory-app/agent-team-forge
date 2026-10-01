@@ -57,4 +57,44 @@ public sealed class AuthorityWiringTests
         Assert.Empty(server.Completions);
         Assert.Empty(server.Failures);
     }
+
+    [Fact]
+    public async Task Fence_whose_authority_write_failed_is_retried_on_the_next_poll()
+    {
+        using var dir = new TempStateDir();
+        var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var store = new JobStore(db, DurabilityCheckpoints.None);
+        var teams = new PRFactoryTeamStore(db);
+        var rows = new PRFactoryAuthorityStore(db);
+        var server = new ChainServer(new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            RepositoryId = Guid.NewGuid(),
+            ReadOnly = true,
+            LeaseToken = Guid.NewGuid(),
+            AgentType = PRFactoryAgentType.Codex,
+            Prompt = "Do work"
+        });
+        var accept = new AcceptJob(store, Connector, new SpikeLimits(), true, new AdmissionGate(), ["codex"]);
+        var stop = new StopJob(store, Connector, _ => { });
+        var stopAgent = new StopAgent(store, Connector, new BackendCatalog().Register("codex", () => new ScriptedBackend(_ => [])));
+        using var authority = new PRFactoryAuthority(ChainServer.Url, rows, teams, stop.Execute, stopAgent.Execute,
+            (_, _) => true, id => store.GetJob(id)?.Status is not (JobStatus.Queued or JobStatus.Running));
+        var client = server.Client();
+        var logs = new List<string>();
+        PRFactoryWorkItems Adapter() => new(ChainServer.Url, [new RepositoryMapping(server.Item.RepositoryId!.Value, dir.Path)], teams, client,
+            accept.Execute, store.GetJob, () => { }, stopJob: stop.Execute, authority: authority, log: logs.Add);
+
+        await Adapter().TickAsync(Machine, TestContext.Current.CancellationToken);
+        Assert.True(authority.MayLaunch(server.Item.Id));
+        // SetAcceptance committed but the authority write was lost.
+        teams.SetAcceptance(ChainServer.Url, server.Item.Id, "reconciliation_needed");
+        Assert.Equal("accepted", Assert.Single(rows.Read(ChainServer.Url)).Disposition);
+
+        server.Status = 6;
+        await Adapter().TickAsync(Machine, TestContext.Current.CancellationToken);
+        Assert.Equal("reconciliation-needed", Assert.Single(rows.Read(ChainServer.Url)).Disposition);
+        Assert.False(authority.MayLaunch(server.Item.Id));
+        Assert.DoesNotContain(logs, l => l.Contains("reconciliation needed", StringComparison.Ordinal));
+    }
 }

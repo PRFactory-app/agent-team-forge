@@ -348,16 +348,18 @@ public sealed partial class PRFactoryWorkItems(
                 log?.Invoke($"PRFactory work item {id:D} {acceptance.Disposition} by server; local execution stopped");
                 return false;
             default:
-                if (team.AcceptanceState == "reconciliation_needed") { return false; } // fenced and logged once already
-                await FenceAsync(id, acceptance.Reason ?? "reconciliation_needed", ct);
+                await FenceAsync(id, acceptance.Reason ?? "reconciliation_needed", ct, team.AcceptanceState == "reconciliation_needed");
                 return false;
         }
     }
 
-    async Task FenceAsync(Guid id, string reason, CancellationToken ct)
+    // A repeat poll of an already fenced team still retries Observe (the authority write may have failed
+    // after SetAcceptance committed) but neither re-sets the state nor logs again.
+    async Task FenceAsync(Guid id, string reason, CancellationToken ct, bool alreadyFenced = false)
     {
-        teams.SetAcceptance(server, id, "reconciliation_needed");
+        if (!alreadyFenced) { teams.SetAcceptance(server, id, "reconciliation_needed"); }
         await Observe(id, "reconciliation-needed", reason, ct);
+        if (alreadyFenced) { return; }
         log?.Invoke($"PRFactory work item {id:D} reconciliation needed ({reason}); dispatch and publication fenced");
     }
 
