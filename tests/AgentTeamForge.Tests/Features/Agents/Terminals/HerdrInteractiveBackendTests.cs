@@ -719,6 +719,25 @@ public sealed class HerdrInteractiveBackendTests
     }
 
     [Fact]
+    public async Task Interrupt_cancels_a_deferred_prompt_before_escape_so_it_is_never_submitted()
+    {
+        var control = new FakeControl { HangPrompt = true, InterruptGate = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+        var backend = new HerdrInteractiveBackend(control, new FakeReader(null), InteractiveAgentKind.Codex, Path.GetTempPath());
+        await using var run = backend.Start(new BackendRequest("job", "corr", "cancelled instruction", "") { WorkingDirectory = Path.GetTempPath() });
+        var delivery = run.DeliverAsync(CancellationToken.None);
+
+        var interrupt = Task.Run(run.InterruptTurn, TestContext.Current.CancellationToken);
+        await Bounded.Until(() => control.Interrupts == 1, "interrupt started");
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => delivery);
+        control.InterruptGate.SetResult(); // Interrupt completion is delayed past the cancellation.
+        await interrupt;
+
+        Assert.True(control.PromptCancelledAtInterrupt);
+        Assert.Equal(0, control.Prompts);
+        Assert.False(control.Prompted);
+    }
+
+    [Fact]
     public async Task Binding_error_is_uncertain_without_acknowledgement_or_result()
     {
         var control = new FakeControl();
@@ -1101,7 +1120,7 @@ public sealed class HerdrInteractiveBackendTests
         await second.DeliverAsync(CancellationToken.None);
         await Collect(second);
         await second.DisposeAsync();
-        Assert.True(control.Stopped);
+        await Bounded.Until(() => control.Stopped, "pane closed after the sustained idle proof");
         control.FailStatus = true; // The real control throws after removing its binding.
         Assert.False(backend.HasLiveSession("native-1"));
     }
@@ -1128,6 +1147,11 @@ public sealed class HerdrInteractiveBackendTests
         }
 
         public bool FailPrompt { get; init; }
+        // A deferred prompt waits on its token; Escape must find that token already cancelled.
+        public bool HangPrompt { get; init; }
+        public bool? PromptCancelledAtInterrupt { get; private set; }
+        CancellationToken _promptToken;
+        public TaskCompletionSource? InterruptGate { get; init; }
         public bool FailStatus { get; set; }
         public InteractiveAgentStatus Status { get; set; } = InteractiveAgentStatus.Done;
         public Queue<InteractiveAgentStatus>? Statuses { get; set; }
@@ -1141,6 +1165,11 @@ public sealed class HerdrInteractiveBackendTests
             {
                 throw new HerdrLaunchException("herdr agent prompt exited 1: agent_blocked");
             }
+            if (HangPrompt)
+            {
+                _promptToken = cancellationToken;
+                return Task.Delay(Timeout.Infinite, cancellationToken);
+            }
             launch.StartupProgress?.Invoke("ready");
             launch.StartupProgress?.Invoke("submitted");
             Prompt = prompt;
@@ -1152,10 +1181,11 @@ public sealed class HerdrInteractiveBackendTests
             FailStatus ? throw new HerdrLaunchException("herdr agent get exited 1: io") : Task.FromResult(Statuses?.Count > 0 ? Statuses.Dequeue() : Status);
 
         public void StopOwned(InteractiveLaunch launch) => Stopped = true;
-        public Task InterruptAsync(InteractiveLaunch launch, CancellationToken cancellationToken)
+        public async Task InterruptAsync(InteractiveLaunch launch, CancellationToken cancellationToken)
         {
+            PromptCancelledAtInterrupt = _promptToken.IsCancellationRequested;
             Interrupts++;
-            return Task.CompletedTask;
+            if (InterruptGate is not null) { await InterruptGate.Task; }
         }
     }
 

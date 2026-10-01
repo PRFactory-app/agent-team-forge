@@ -121,7 +121,7 @@ public sealed class RetainedSessionsTests
         using var clock = new ManualClock();
         var stopped = new List<InteractiveLaunch>();
         var idle = false;
-        using var sessions = new RetainedSessions(stopped.Add, TimeSpan.FromMinutes(5), clock, isIdle: _ => idle);
+        using var sessions = new RetainedSessions(stopped.Add, TimeSpan.FromMinutes(5), clock, isIdle: _ => Task.FromResult(idle));
         sessions.Remember("s", Launch(1));
 
         clock.Advance(TimeSpan.FromMinutes(6));
@@ -141,12 +141,53 @@ public sealed class RetainedSessionsTests
     {
         using var clock = new ManualClock();
         var stopped = new List<InteractiveLaunch>();
-        using var sessions = new RetainedSessions(stopped.Add, TimeSpan.FromMinutes(5), clock, isIdle: _ => throw new IOException("probe"));
+        using var sessions = new RetainedSessions(stopped.Add, TimeSpan.FromMinutes(5), clock, isIdle: _ => Task.FromException<bool>(new IOException("probe")));
         sessions.Remember("s", Launch(1));
 
         clock.Advance(TimeSpan.FromMinutes(6));
 
         Assert.Empty(stopped);
+    }
+
+    [Fact]
+    public void Busy_pane_survives_cap_and_zero_timeout_cleanup_in_Remember()
+    {
+        var stopped = new List<InteractiveLaunch>();
+        using var capped = new RetainedSessions(stopped.Add, isIdle: _ => Task.FromResult(false));
+        for (var i = 0; i <= RetainedSessions.MaxRetained; i++) { capped.Remember("s" + i, Launch(i)); }
+        using var zero = new RetainedSessions(stopped.Add, TimeSpan.Zero, isIdle: _ => Task.FromResult(false));
+        zero.Remember("z", Launch(99));
+
+        Assert.Empty(stopped);
+        Assert.Equal(RetainedSessions.MaxRetained + 1, capped.Count);
+        Assert.Equal(1, zero.Count);
+    }
+
+    [Fact]
+    public void Idle_pane_is_still_closed_by_cap_and_zero_timeout_with_a_probe()
+    {
+        var stopped = new List<InteractiveLaunch>();
+        using var capped = new RetainedSessions(stopped.Add, isIdle: _ => Task.FromResult(true));
+        for (var i = 0; i <= RetainedSessions.MaxRetained; i++) { capped.Remember("s" + i, Launch(i)); }
+        using var zero = new RetainedSessions(stopped.Add, TimeSpan.Zero, isIdle: _ => Task.FromResult(true));
+        zero.Remember("z", Launch(99));
+
+        Assert.Equal(["atf0", "atf99"], stopped.Select(l => l.AgentName));
+    }
+
+    [Fact]
+    public void Permanently_busy_pane_is_closed_at_the_absolute_lifetime_without_a_probe_reset()
+    {
+        using var clock = new ManualClock();
+        var stopped = new List<InteractiveLaunch>();
+        using var sessions = new RetainedSessions(stopped.Add, TimeSpan.FromMinutes(5), clock, isIdle: _ => Task.FromResult(false));
+        sessions.Remember("s", Launch(1));
+
+        for (var hour = 0; hour < 23; hour++) { clock.Advance(TimeSpan.FromHours(1)); }
+        Assert.Empty(stopped);
+        clock.Advance(TimeSpan.FromHours(2));
+
+        Assert.Single(stopped);
     }
 
     [Fact]

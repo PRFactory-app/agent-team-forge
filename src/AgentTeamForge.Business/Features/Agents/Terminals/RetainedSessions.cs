@@ -7,8 +7,10 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 internal sealed class RetainedSessions : IDisposable
 {
     public const int MaxRetained = 16;
+    // Busy probes refresh the idle clock but never this: a pane that never goes idle is still reclaimed.
+    public static readonly TimeSpan AbsoluteLifetime = TimeSpan.FromHours(24);
     readonly Lock _gate = new();
-    readonly Dictionary<string, (InteractiveLaunch Launch, long Order, long IdleSince)> _sessions = [];
+    readonly Dictionary<string, (InteractiveLaunch Launch, long Order, long IdleSince, long Born)> _sessions = [];
     readonly Dictionary<string, InteractiveLaunch?> _reserved = [];
     readonly Dictionary<string, (InteractiveLaunch Launch, bool Live)> _known = [];
     long _next;
@@ -19,14 +21,14 @@ internal sealed class RetainedSessions : IDisposable
     readonly Func<InteractiveRetentionSettings>? _settings;
     readonly Action<InteractiveLaunch, string>? _idle;
     readonly Action<InteractiveLaunch>? _busy;
-    readonly Func<InteractiveLaunch, bool>? _isIdle;
+    readonly Func<InteractiveLaunch, Task<bool>>? _isIdle;
 
     // isIdle proves a pane is idle before the sweep closes it (sustained, not one sample).
     // idle records that a launch now waits idle for its session, so a restarted daemon may adopt it; busy
     // withdraws that record while a turn runs in the launch, so a restart never adopts a working agent as idle.
     public RetainedSessions(Action<InteractiveLaunch> stop, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null, Func<InteractiveRetentionSettings>? settings = null,
         Action<InteractiveLaunch, string>? idle = null, Action<InteractiveLaunch>? busy = null,
-        Func<InteractiveLaunch, bool>? isIdle = null)
+        Func<InteractiveLaunch, Task<bool>>? isIdle = null)
     {
         _isIdle = isIdle;
         _stop = stop;
@@ -35,35 +37,39 @@ internal sealed class RetainedSessions : IDisposable
         _clock = timeProvider ?? TimeProvider.System;
         _timeout = idleTimeout ?? TimeSpan.FromMinutes(5);
         _settings = settings;
-        _timer = _clock.CreateTimer(_ => Sweep(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+        _timer = _clock.CreateTimer(_ => _ = SweepAsync(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
     }
 
     public void Dispose() => _timer.Dispose();
 
-    internal void Sweep()
+    internal void Sweep() => SweepAsync().GetAwaiter().GetResult();
+
+    internal async Task SweepAsync()
     {
         var settings = _settings?.Invoke();
         var timeout = settings?.IdleTimeout() ?? _timeout;
         var maxRetained = settings?.MaxRetainedSessions ?? MaxRetained;
-        var candidates = new List<(string Id, InteractiveLaunch Launch)>();
+        var candidates = new List<(string Id, InteractiveLaunch Launch, bool Absolute)>();
         lock (_gate)
         {
             foreach (var pair in _sessions)
             {
-                if (!_reserved.ContainsKey(pair.Key) && timeout >= TimeSpan.Zero && _clock.GetElapsedTime(pair.Value.IdleSince) >= timeout)
+                if (_reserved.ContainsKey(pair.Key)) { continue; }
+                var absolute = _clock.GetElapsedTime(pair.Value.Born) >= AbsoluteLifetime;
+                if (absolute || timeout >= TimeSpan.Zero && _clock.GetElapsedTime(pair.Value.IdleSince) >= timeout)
                 {
-                    candidates.Add((pair.Key, pair.Value.Launch));
+                    candidates.Add((pair.Key, pair.Value.Launch, absolute));
                 }
             }
             var rest = _sessions.Where(pair => !_reserved.ContainsKey(pair.Key) && candidates.All(c => c.Id != pair.Key))
                 .OrderBy(pair => pair.Value.Order).ToArray();
-            candidates.AddRange(rest.Take(Math.Max(0, rest.Length - maxRetained)).Select(pair => (pair.Key, pair.Value.Launch)));
+            candidates.AddRange(rest.Take(Math.Max(0, rest.Length - maxRetained)).Select(pair => (pair.Key, pair.Value.Launch, false)));
         }
         // The probe runs outside the lock: a pane that is still working is kept and re-checked later.
         var expired = new List<(string Id, InteractiveLaunch Launch)>();
-        foreach (var (id, launch) in candidates)
+        foreach (var (id, launch, absolute) in candidates)
         {
-            var idle = IsIdle(launch);
+            var idle = absolute || await IsIdleAsync(launch);
             lock (_gate)
             {
                 if (_reserved.ContainsKey(id) || !_sessions.TryGetValue(id, out var current) || !ReferenceEquals(current.Launch, launch)) { continue; }
@@ -75,10 +81,10 @@ internal sealed class RetainedSessions : IDisposable
     }
 
     // Without a probe the retention timer alone decides; a failing probe is never proof of idleness.
-    bool IsIdle(InteractiveLaunch launch)
+    async Task<bool> IsIdleAsync(InteractiveLaunch launch)
     {
         if (_isIdle is null) { return true; }
-        try { return _isIdle(launch); }
+        try { return await _isIdle(launch); }
         catch (Exception ex) when (ex is not OutOfMemoryException) { return false; }
     }
 
@@ -186,9 +192,6 @@ internal sealed class RetainedSessions : IDisposable
 
     public void Remember(string sessionId, InteractiveLaunch launch)
     {
-        var settings = _settings?.Invoke();
-        var timeout = settings?.IdleTimeout() ?? _timeout;
-        var maxRetained = settings?.MaxRetainedSessions ?? MaxRetained;
         var evicted = new List<(string Id, InteractiveLaunch Launch)>();
         lock (_gate)
         {
@@ -197,7 +200,7 @@ internal sealed class RetainedSessions : IDisposable
             {
                 // A running parent's own settlement may race native submission.
                 // Record that settlement, but keep it protected until release.
-                if (reserved is null) { _sessions[sessionId] = (launch, _next++, _clock.GetTimestamp()); }
+                if (reserved is null) { _sessions[sessionId] = (launch, _next++, _clock.GetTimestamp(), _clock.GetTimestamp()); }
                 return;
             }
             // The agent name is the pane's durable identity: another launch object for the
@@ -206,18 +209,12 @@ internal sealed class RetainedSessions : IDisposable
             {
                 evicted.Add((sessionId, replaced.Launch));
             }
-            _sessions[sessionId] = (launch, _next++, _clock.GetTimestamp());
+            _sessions[sessionId] = (launch, _next++, _clock.GetTimestamp(), _clock.GetTimestamp());
             _idle?.Invoke(launch, sessionId);
-            while (true)
-            {
-                var idle = _sessions.Where(pair => !_reserved.ContainsKey(pair.Key)).ToArray();
-                if (idle.Length <= maxRetained && (timeout != TimeSpan.Zero || idle.Length == 0)) { break; }
-                var oldest = idle.MinBy(pair => pair.Value.Order);
-                _sessions.Remove(oldest.Key);
-                evicted.Add((oldest.Key, oldest.Value.Launch));
-            }
         }
         CloseBestEffort(evicted);
+        // Cap and zero-timeout cleanup use the same idle proof as the timer; a working pane stays protected.
+        _ = SweepAsync();
     }
 
     void CloseBestEffort(List<(string Id, InteractiveLaunch Launch)> evicted)
@@ -228,7 +225,7 @@ internal sealed class RetainedSessions : IDisposable
             try { _stop(old); Closed(old); }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
-                lock (_gate) { _sessions.TryAdd(id, (old, _next++, _clock.GetTimestamp())); }
+                lock (_gate) { _sessions.TryAdd(id, (old, _next++, _clock.GetTimestamp(), _clock.GetTimestamp())); }
             }
         }
     }
@@ -242,7 +239,7 @@ internal sealed class RetainedSessions : IDisposable
         try { _stop(launch); Closed(launch); }
         catch
         {
-            lock (_gate) { _sessions.TryAdd(sessionId, (launch, _next++, _clock.GetTimestamp())); }
+            lock (_gate) { _sessions.TryAdd(sessionId, (launch, _next++, _clock.GetTimestamp(), _clock.GetTimestamp())); }
             throw;
         }
         return true;
