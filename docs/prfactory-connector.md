@@ -41,8 +41,11 @@ The PRFactory server-side durable ATF acceptance is merged
    output) is never re-claimed on its own. `atf prfactory release WORK_ITEM_ID`
    forgets that team, so the next poll can claim the item afresh. It works while
    the daemon runs (one database transaction; a late authority write for the
-   released item is ignored) and refuses an unfenced or unknown team, or one
-   whose execution is still being stopped. Worktrees, artefacts, jobs and logs
+   released item is ignored) and refuses an unfenced or unknown team. It also
+   refuses until the daemon has acknowledged the stop of every agent and
+   retained session, and while a job is `needs_reconciliation` or an external
+   member is still open (the message says what to do). Pending commands for the
+   item are discarded; a re-claim starts fresh member jobs. Worktrees, artefacts, jobs and logs
    are kept. It does not call PRFactory: also release the acceptance there
    (`POST /api/work-items/{id}/atf-acceptance/release`), otherwise the server
    still answers `accepted` for the old job.

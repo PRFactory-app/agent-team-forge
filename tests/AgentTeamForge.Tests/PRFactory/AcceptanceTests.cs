@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
@@ -201,6 +202,7 @@ public sealed class AcceptanceTests
         Assert.Equal("reconciliation_needed", teams.Get(ServerUrl, server.Item.Id)!.AcceptanceState);
         teams.RecordExternal(ServerUrl, server.Item.Id, "reviewer", "reviewer", "team-1", "t", DateTimeOffset.UtcNow.AddHours(1));
         var authority = new PRFactoryAuthorityStore(database);
+        teams.MarkExternalClosed(ServerUrl, server.Item.Id);
         authority.Set(ServerUrl, server.Item.Id, "accepted", null);
         authority.Set(ServerUrl, server.Item.Id, "reconciliation-needed", "test");
         authority.Stopped(ServerUrl, server.Item.Id);
@@ -219,6 +221,84 @@ public sealed class AcceptanceTests
         var reclaimed = teams.Get(ServerUrl, server.Item.Id);
         Assert.NotNull(reclaimed);
         Assert.NotEqual(oldJob, reclaimed.AtfJobId); // A fresh claim with its own acceptance identity.
+    }
+
+    [Fact]
+    public async Task Release_fails_closed_until_the_stop_is_acknowledged_and_nothing_is_uncertain()
+    {
+        using var dir = new TempStateDir();
+        using var jobs = new JobFixture();
+        var teams = new PRFactoryTeamStore(jobs.Database);
+        var authority = new PRFactoryAuthorityStore(jobs.Database);
+        var server = new FakeServer(NewItem());
+        var adapter = RealJobsAdapter(dir, teams, server, jobs);
+        var id = server.Item.Id;
+        server.Status = 1;
+        await adapter.TickAsync(Machine, CancellationToken.None);
+        var lead = teams.MemberJob(ServerUrl, id, "lead", 0)!;
+        // Fenced, but the authority write has not happened yet (SetAcceptance-to-Observe gap).
+        teams.SetAcceptance(ServerUrl, id, "reconciliation_needed");
+        MarkJob(jobs, lead, "completed"); // e.g. a completed job that still owns a retained session
+        Assert.Equal(PRFactoryReleaseResult.StopNotAcknowledged, teams.ReleaseFenced(ServerUrl, id));
+        authority.Set(ServerUrl, id, "accepted", null);
+        Assert.Equal(PRFactoryReleaseResult.StopNotAcknowledged, teams.ReleaseFenced(ServerUrl, id));
+        authority.Set(ServerUrl, id, "reconciliation-needed", "gap"); // stopping=1 until the daemon acknowledges
+        Assert.Equal(PRFactoryReleaseResult.StopNotAcknowledged, teams.ReleaseFenced(ServerUrl, id));
+        authority.Stopped(ServerUrl, id);
+        MarkJob(jobs, lead, "needs_reconciliation");
+        Assert.Equal(PRFactoryReleaseResult.NeedsReconciliation, teams.ReleaseFenced(ServerUrl, id));
+        MarkJob(jobs, lead, "completed");
+        teams.RecordExternal(ServerUrl, id, "reviewer", "reviewer", "team-1", "t", DateTimeOffset.UtcNow.AddHours(1));
+        Assert.Equal(PRFactoryReleaseResult.ExternalMemberOpen, teams.ReleaseFenced(ServerUrl, id));
+        teams.MarkExternalClosed(ServerUrl, id);
+        Assert.Equal(PRFactoryReleaseResult.Released, teams.ReleaseFenced(ServerUrl, id));
+    }
+
+    [Fact]
+    public async Task Reclaim_after_release_starts_a_fresh_job_and_drops_old_pending_commands()
+    {
+        using var dir = new TempStateDir();
+        using var jobs = new JobFixture();
+        var teams = new PRFactoryTeamStore(jobs.Database);
+        var authority = new PRFactoryAuthorityStore(jobs.Database);
+        var server = new FakeServer(NewItem());
+        var adapter = RealJobsAdapter(dir, teams, server, jobs);
+        var id = server.Item.Id;
+        server.Status = 1;
+        await adapter.TickAsync(Machine, CancellationToken.None);
+        var oldLead = teams.MemberJob(ServerUrl, id, "lead", 0)!;
+        // A stable key within one acceptance: another tick maps the same job.
+        await adapter.TickAsync(Machine, CancellationToken.None);
+        Assert.Equal(oldLead, teams.MemberJob(ServerUrl, id, "lead", 0));
+
+        server.Status = 6;
+        await adapter.TickAsync(Machine, CancellationToken.None);
+        MarkJob(jobs, oldLead, "failed");
+        authority.Set(ServerUrl, id, "accepted", null);
+        authority.Set(ServerUrl, id, "reconciliation-needed", "test");
+        authority.Stopped(ServerUrl, id);
+        teams.SavePendingCommand(ServerUrl, id, Guid.NewGuid(), "{}", oldLead);
+        Assert.Equal(PRFactoryReleaseResult.Released, teams.ReleaseFenced(ServerUrl, id));
+        Assert.Empty(teams.PendingCommands(ServerUrl, id));
+
+        server.Status = 1;
+        server.AcceptedJobId = null;
+        await adapter.TickAsync(Machine, CancellationToken.None);
+        var newLead = teams.MemberJob(ServerUrl, id, "lead", 0);
+        Assert.NotNull(newLead);
+        Assert.NotEqual(oldLead, newLead);
+        Assert.Equal(JobStatus.Queued, jobs.Store.GetJob(newLead)!.Status);
+        Assert.Equal(JobStatus.Failed, jobs.Store.GetJob(oldLead)!.Status); // Old results are kept untouched.
+    }
+
+    static void MarkJob(JobFixture jobs, string jobId, string status)
+    {
+        using var connection = jobs.Database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE jobs SET status=$status WHERE job_id=$id";
+        command.Parameters.AddWithValue("$status", status);
+        command.Parameters.AddWithValue("$id", jobId);
+        command.ExecuteNonQuery();
     }
 
     [Fact]
@@ -259,6 +339,15 @@ public sealed class AcceptanceTests
             _ => local(), () => { }, log: log);
     }
 
+    static PRFactoryWorkItems RealJobsAdapter(TempStateDir dir, PRFactoryTeamStore teams, FakeServer server, JobFixture jobs)
+    {
+        var accept = new AcceptJob(jobs.Store, JobFixture.Operator, jobs.Limits, jobs.TestProfile, jobs.Admission,
+            [BackendCatalog.Fake, BackendCatalog.Codex]);
+        var client = new PRFactoryClient(PRFactoryClient.CreateHttpClient(ServerUrl, "fake-token", new FakeHandler(server.Reply)));
+        return new PRFactoryWorkItems(ServerUrl, [new RepositoryMapping(server.Item.RepositoryId!.Value, dir.Path)], teams, client,
+            accept.Execute, jobs.Store.GetJob, () => { });
+    }
+
     sealed class FakeServer(PRFactoryWorkItem item)
     {
         public PRFactoryWorkItem Item { get; } = item;
@@ -268,7 +357,7 @@ public sealed class AcceptanceTests
         public HttpStatusCode? GetOverride { get; set; }
         public HttpStatusCode? PostOverride { get; set; }
         public int Status { get; set; } = 1;
-        public string? AcceptedJobId { get; private set; }
+        public string? AcceptedJobId { get; set; }
         public int Posts { get; private set; }
         public int Gets { get; private set; }
         public int Uploads { get; private set; }

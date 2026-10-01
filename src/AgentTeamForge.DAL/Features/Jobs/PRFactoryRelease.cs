@@ -1,6 +1,6 @@
 namespace AgentTeamForge.DAL.Features.Jobs;
 
-public enum PRFactoryReleaseResult { Released, NotFound, NotFenced, StillRunning }
+public enum PRFactoryReleaseResult { Released, NotFound, NotFenced, StopNotAcknowledged, NeedsReconciliation, ExternalMemberOpen }
 
 public sealed partial class PRFactoryTeamStore
 {
@@ -29,26 +29,16 @@ public sealed partial class PRFactoryTeamStore
                     return PRFactoryReleaseResult.NotFenced;
                 }
             }
-            using (var running = connection.CreateCommand())
+            // Ownership may only go once the daemon durably fenced the item AND acknowledged the stop of every owned
+            // turn, retained session and external member (stopping=0 on a non-accepted authority row). A missing or
+            // accepted row is the SetAcceptance-to-Observe gap: fail closed.
+            var blocked = Blocker(connection, server, id);
+            if (blocked is not null)
             {
-                // Owned execution must be quiescent: the daemon's retried stop completes before a release.
-                running.CommandText = """
-                    WITH RECURSIVE owned(job_id) AS (
-                        SELECT job_id FROM prfactory_members WHERE server=$server AND work_item_id=$id
-                        UNION
-                        SELECT j.job_id FROM jobs j JOIN owned o ON j.parent_job_id=o.job_id)
-                    SELECT EXISTS(SELECT 1 FROM jobs j JOIN owned o ON o.job_id=j.job_id WHERE j.status IN ('queued','running'))
-                        OR EXISTS(SELECT 1 FROM prfactory_authority WHERE server=$server AND work_item_id=$id AND stopping=1)
-                    """;
-                running.Parameters.AddWithValue("$server", server);
-                running.Parameters.AddWithValue("$id", id.ToString("D"));
-                if (Convert.ToInt32(running.ExecuteScalar()) != 0)
-                {
-                    Exec(connection, "ROLLBACK", null);
-                    return PRFactoryReleaseResult.StillRunning;
-                }
+                Exec(connection, "ROLLBACK", null);
+                return blocked.Value;
             }
-            foreach (var table in new[] { "prfactory_authority", "prfactory_members", "prfactory_external", "prfactory_command_receipts",
+            foreach (var table in new[] { "prfactory_pending_commands", "prfactory_authority", "prfactory_members", "prfactory_external", "prfactory_command_receipts",
                 "prfactory_artefact_delivery", "prfactory_human_stream", "human_waits", "prfactory_killed_members", "prfactory_teams" })
             {
                 Exec(connection, $"DELETE FROM {table} WHERE server=$server AND work_item_id=$id", (server, id));
@@ -61,6 +51,30 @@ public sealed partial class PRFactoryTeamStore
             try { Exec(connection, "ROLLBACK", null); } catch (Microsoft.Data.Sqlite.SqliteException) { }
             throw;
         }
+    }
+
+    static PRFactoryReleaseResult? Blocker(Microsoft.Data.Sqlite.SqliteConnection connection, string server, Guid id)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            WITH RECURSIVE owned(job_id) AS (
+                SELECT job_id FROM prfactory_members WHERE server=$server AND work_item_id=$id
+                UNION
+                SELECT j.job_id FROM jobs j JOIN owned o ON j.parent_job_id=o.job_id)
+            SELECT
+                NOT EXISTS(SELECT 1 FROM prfactory_authority WHERE server=$server AND work_item_id=$id
+                    AND disposition<>'accepted' AND stopping=0)
+                OR EXISTS(SELECT 1 FROM jobs j JOIN owned o ON o.job_id=j.job_id WHERE j.status IN ('queued','running')),
+                EXISTS(SELECT 1 FROM jobs j JOIN owned o ON o.job_id=j.job_id WHERE j.status='needs_reconciliation'),
+                EXISTS(SELECT 1 FROM prfactory_external WHERE server=$server AND work_item_id=$id AND closed=0)
+            """;
+        command.Parameters.AddWithValue("$server", server);
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        using var reader = command.ExecuteReader();
+        reader.Read();
+        return reader.GetInt32(0) != 0 ? PRFactoryReleaseResult.StopNotAcknowledged
+            : reader.GetInt32(1) != 0 ? PRFactoryReleaseResult.NeedsReconciliation
+            : reader.GetInt32(2) != 0 ? PRFactoryReleaseResult.ExternalMemberOpen : null;
     }
 
     static void Exec(Microsoft.Data.Sqlite.SqliteConnection connection, string sql, (string Server, Guid Id)? key)

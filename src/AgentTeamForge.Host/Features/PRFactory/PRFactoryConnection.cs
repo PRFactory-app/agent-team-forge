@@ -290,8 +290,17 @@ public static class PRFactoryConnection
             case PRFactoryReleaseResult.NotFound:
                 Console.Error.WriteLine($"error: no ATF team for work item {id:D} on {settings.Url}");
                 return 1;
-            case PRFactoryReleaseResult.StillRunning:
-                Console.Error.WriteLine($"error: work item {id:D} is fenced but its execution is still being stopped; retry in a moment");
+            case PRFactoryReleaseResult.StopNotAcknowledged:
+                Console.Error.WriteLine($"error: work item {id:D} is fenced but the daemon has not yet confirmed that its agents and sessions are stopped "
+                    + "(the daemon must be running to finish the stop); retry in a moment");
+                return 1;
+            case PRFactoryReleaseResult.NeedsReconciliation:
+                Console.Error.WriteLine($"error: work item {id:D} has a job in needs_reconciliation that may still have a live process; "
+                    + "stop or cancel that job (atf client stop JOB) and retry");
+                return 1;
+            case PRFactoryReleaseResult.ExternalMemberOpen:
+                Console.Error.WriteLine($"error: work item {id:D} still has an unclosed external member; let the daemon revoke it "
+                    + "(it retries while running) or leave the team, then retry");
                 return 1;
             default:
                 Console.Error.WriteLine($"error: work item {id:D} is not fenced (reconciliation needed); only a fenced team can be released");
