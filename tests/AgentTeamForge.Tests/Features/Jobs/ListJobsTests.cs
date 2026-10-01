@@ -51,6 +51,29 @@ public sealed class ListJobsTests
     }
 
     [Fact]
+    public void Connector_job_carries_its_work_item_id_and_ordinary_jobs_do_not()
+    {
+        using var f = new JobFixture();
+        var connector = f.Accept(principal: new BoundPrincipal("prfactory", "connector", "connector-lead"))
+            .Execute(new SubmitJobRequest("connector", "three", null, false)).Job!;
+        var ordinary = f.Submit("ordinary");
+        using (var connection = f.Database.OpenConnection())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                PRAGMA foreign_keys=OFF;
+                INSERT INTO prfactory_members(server, work_item_id, member, turn, job_id) VALUES ('s', 'wi-1', 'lead', 1, $job);
+                """;
+            command.Parameters.AddWithValue("$job", connector.JobId);
+            command.ExecuteNonQuery();
+        }
+
+        var jobs = f.List().Execute(new ListJobsRequest { IncludeConnector = true }).Page!.Jobs;
+        Assert.Equal("wi-1", Assert.Single(jobs, j => j.JobId == connector.JobId).WorkItemId);
+        Assert.Null(Assert.Single(jobs, j => j.JobId == ordinary.JobId).WorkItemId);
+    }
+
+    [Fact]
     public void Malformed_legacy_row_is_skipped_without_losing_page_cursor()
     {
         using var f = new JobFixture();

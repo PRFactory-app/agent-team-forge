@@ -45,6 +45,10 @@ public sealed class JobLogsTests
         var accept = f.Accept();
         var endpoint = new JobsEndpoint(accept, f.Get(), new FollowUpJob(f.Store, JobFixture.Operator, accept), f.List(),
             new StopJob(f.Store, JobFixture.Operator, _ => { }), new DurabilityCheckpoints(null), () => { }, logs: logs);
+        var mcp = endpoint.Handle(new IpcRequest { Op = IpcProtocol.JobGet, JobId = job.JobId });
+        Assert.Null(mcp.Job!.Instruction);
+        var web = endpoint.Handle(new IpcRequest { Op = IpcProtocol.JobGet, JobId = job.JobId, IncludeInstruction = true });
+        Assert.NotNull(web.Job!.Instruction);
         var response = endpoint.Handle(new IpcRequest { Op = IpcProtocol.JobOutput, JobId = job.JobId, Offset = 0 });
         Assert.True(response.Ok);
         Assert.Contains("hello\n", response.Output!.Text);

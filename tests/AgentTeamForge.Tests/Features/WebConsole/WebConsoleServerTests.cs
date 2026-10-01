@@ -294,6 +294,16 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Job_detail_asks_the_daemon_for_the_instruction()
+    {
+        var (status, _) = await Send(Api(HttpMethod.Get, "/api/jobs/j1"));
+        Assert.Equal(HttpStatusCode.OK, status);
+        var request = Assert.Single(_forwarded);
+        Assert.Equal(IpcProtocol.JobGet, request.Op);
+        Assert.True(request.IncludeInstruction);
+    }
+
+    [Fact]
     public async Task Activity_endpoint_forwards_cursor_and_limit_under_existing_auth_checks()
     {
         Daemon = _ => Task.FromResult(new IpcResponse(true, Outcome: "activity", Activity: new JobActivityPage([new ActivityEntry("2026-01-01T00:00:00Z", "assistant_text", "hi")], 42)));

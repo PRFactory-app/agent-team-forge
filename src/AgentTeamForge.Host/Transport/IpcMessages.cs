@@ -47,6 +47,7 @@ public sealed record IpcRequest
     public bool OrderByActivity { get; init; }
     public bool IncludeConnector { get; init; }
     public bool IncludeUsage { get; init; }
+    public bool IncludeInstruction { get; init; }
     public string? NativeKind { get; init; }
     public string? NativeSessionId { get; init; }
     public string? NativeHome { get; init; }

@@ -119,4 +119,5 @@ public sealed record JobSummaryRecord(string JobId, string Status, string? Reaso
     public string? LeadWorkspace { get; init; }
     public string? TargetAgent { get; init; }
     public bool Connector { get; init; }
+    public string? WorkItemId { get; init; }
 }

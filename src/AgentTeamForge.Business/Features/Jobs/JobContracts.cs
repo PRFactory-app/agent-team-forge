@@ -98,6 +98,9 @@ public sealed record JobView(string JobId, string Status, string? Result, string
     public string? HerdrTab { get; init; }
     public string? HerdrTabLabel { get; init; }
 
+    /// <summary>Raw instruction of this turn; only the single-job read fills it (web console), never lists or action responses.</summary>
+    public string? Instruction { get; init; }
+
     public string? SessionId { get; init; }
 
     public string? ParentJobId { get; init; }
