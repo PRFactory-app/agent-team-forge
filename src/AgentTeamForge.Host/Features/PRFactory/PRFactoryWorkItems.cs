@@ -17,7 +17,8 @@ public sealed partial class PRFactoryWorkItems(
     AccountAdmission? accounts = null, int maxAcceptedTeams = 10, PRFactoryPublicationStore? publications = null,
     PRFactoryInteraction? interaction = null, HumanWaitStore? humanWaits = null,
     bool allowRepoLess = false, PRFactoryHandoverStore? handovers = null,
-    PRFactoryRepositorySet? repositorySets = null, Action<PRFactoryServerLimit?>? onLimit = null)
+    PRFactoryRepositorySet? repositorySets = null, Action<PRFactoryServerLimit?>? onLimit = null,
+    PRFactoryPullRequests? pullRequests = null)
 {
     // Parked turns share one account binding per backend until configured accounts exist.
     public const string DefaultAccount = "default";
@@ -71,34 +72,49 @@ public sealed partial class PRFactoryWorkItems(
 
         // Accepted-but-unfinished teams are bounded separately from running processes; a full
         // backlog only stops polling, never fails already accepted work.
+        // Worker-native pull request work needs no team slot, so polling continues for it when teams are full.
         var free = maxAcceptedTeams - teams.AdmissionCount(server);
-        if (free <= 0)
+        var teamsFull = free <= 0;
+        if (teamsFull)
         {
             var parked = teams.ParkedCount(server);
             log?.Invoke($"PRFactory intake paused: {maxAcceptedTeams} accepted-team slots occupied"
                 + (parked > 0 ? $"; {parked} account-parked team(s) retain admission capacity" : ""));
-            return;
         }
         var offered = new List<PRFactoryWorkItem>();
         // Only a poll made in this tick may report the cap; a limit left over from an earlier tick never suppresses polling.
         var capped = false;
         if (repositories.Count > 0)
         {
-            offered.AddRange(await client.PollAsync(repositories.Select(r => r.Id), machineId, ct, Math.Min(free, 10)));
+            offered.AddRange(await client.PollAsync(repositories.Select(r => r.Id), machineId, ct, teamsFull ? 10 : Math.Min(free, 10)));
             capped = NoteLimit();
         }
-        if (allowRepoLess && offered.Count < free && !capped)
+        if (allowRepoLess && !teamsFull && offered.Count < free && !capped)
         {
             offered.AddRange((await client.PollAsync([], machineId, ct, Math.Min(free - offered.Count, 10)))
                 .Where(i => i.RepositoryId is null));
             capped = NoteLimit();
         }
-        if (capped)
-        {
-            return;
-        }
         foreach (var item in offered)
         {
+            if (item.Type == nameof(PRFactoryWorkItemType.PullRequestCreate))
+            {
+                // Worker-native: no team, account or admission slot. A lost completion is retried after lease expiry and is idempotent.
+                if (item.Id == Guid.Empty || pullRequests is null) { continue; }
+                var (claimedPr, prConflict) = await client.ClaimAsync(item.Id, machineId, ct);
+                if (prConflict)
+                {
+                    log?.Invoke($"PRFactory claim of {item.Id:D} refused (409); stopping claims this tick");
+                    break;
+                }
+                if (claimedPr is { } pr && pr.Id == item.Id)
+                {
+                    await IsolateAsync(item.Id, () => pullRequests.HandleAsync(pr, ct), ct);
+                }
+                continue;
+            }
+            // Team work waits while the server cap or the accepted-team backlog is full.
+            if (capped || teamsFull) { continue; }
             if (item.Id == Guid.Empty || teams.Get(server, item.Id) is not null
                 || item.RepositoryId is null && !allowRepoLess)
             {

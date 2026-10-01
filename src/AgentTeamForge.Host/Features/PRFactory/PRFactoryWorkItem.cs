@@ -10,7 +10,7 @@ public enum PRFactoryEffort { Low, Medium, High, XHigh, Max, Ultra }
 public enum PRFactoryWorkItemType
 {
     TicketRefinement, Planning, TestPlan, Implementation, CodeReview, Discovery, VisualQa,
-    PlanReview, ClarifyingQuestions, Decomposition, HostingNeedsDerivation, HostingResearch, CustomStep
+    PlanReview, ClarifyingQuestions, Decomposition, HostingNeedsDerivation, HostingResearch, CustomStep, PullRequestCreate
 }
 
 public sealed class PRFactoryWorkItem
@@ -101,6 +101,10 @@ public sealed record PRFactoryCompletionRequest(bool Success, string? ResultMark
 // remote-publication-v1: the branch/head were pushed and verified with ls-remote; the server opens the PR remotely.
 public sealed record PRFactoryRemotePublication(bool Remote, string Branch, string HeadSha, bool Verified);
 public sealed record PRFactoryFailureRequest(string ErrorMessage, string ErrorDetails, bool ShouldRetry, string PartialResult, Guid? LeaseToken);
+// pull-request-v1: contextJson of a PullRequestCreate item and the resultMarkdown that completes it.
+public sealed record PRFactoryPullRequestRequest(string Kind, int Version, Guid SourceWorkItemId, Guid RepositoryId,
+    string HeadBranch, string HeadSha, string BaseBranch, string Title, string Body);
+public sealed record PRFactoryPullRequestResult(string Kind, int Version, int Number, string Url, string HeadSha, bool Created);
 public sealed record PRFactoryCompletionResponse(bool Accepted);
 public sealed record PRFactoryFailureResponse(bool Acknowledged);
 // QuestionId correlates a human answer to request_human_input (human-wait-v1); absent for ordinary sends.
@@ -128,6 +132,8 @@ public sealed record PRFactoryStreamResponse(bool Accepted, Dictionary<string, l
 [JsonSerializable(typeof(PRFactoryPlanBasis))]
 [JsonSerializable(typeof(PRFactoryCompletionRequest))]
 [JsonSerializable(typeof(PRFactoryFailureRequest))]
+[JsonSerializable(typeof(PRFactoryPullRequestRequest))]
+[JsonSerializable(typeof(PRFactoryPullRequestResult))]
 [JsonSerializable(typeof(PRFactoryCompletionResponse))]
 [JsonSerializable(typeof(PRFactoryFailureResponse))]
 [JsonSerializable(typeof(PRFactoryWorkItem))]

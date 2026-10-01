@@ -338,7 +338,9 @@ public static class DaemonCommand
                         publications: connectorPublications, interaction: connectorInteraction, humanWaits: humanWaits,
                         allowRepoLess: settings.TenantWideToken && settings.RepoLess,
                         handovers: connectorHandovers, repositorySets: connectorRepositorySets,
-                        onLimit: limit => PRFactoryConnection.PublishLimit(state, limit)).TickAsync(machineId, ct);
+                        onLimit: limit => PRFactoryConnection.PublishLimit(state, limit),
+                        pullRequests: new PRFactoryPullRequests(settings.Url, settings.Repositories, settings.GitHubUser, client,
+                            connectorPublications, Log)).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
             },
             onTokenRejected: ct => authority?.TransportFailureAsync(Guid.Empty, System.Net.HttpStatusCode.Unauthorized, ct) ?? Task.CompletedTask,

@@ -47,7 +47,7 @@ public sealed partial class PRFactoryClient(HttpClient httpClient, TimeProvider?
     // Only semantics that are wired and tested end to end: explicit server dispositions stop and fence
     // owned work; completion carries a pushed, ls-remote-verified branch for remote-only PR creation.
     // Not yet: human-wait-v1, readiness-parking-v1 (no auth/model probes),
-    public static readonly string[] Capabilities = ["authority-disposition-v1", "remote-publication-v1", "workspace-continuity-v1", "blob-attachments-v1", "base-wip-v1", "multi-repo-v1"];
+    public static readonly string[] Capabilities = ["authority-disposition-v1", "remote-publication-v1", "workspace-continuity-v1", "blob-attachments-v1", "base-wip-v1", "multi-repo-v1", "pull-request-v1"];
     bool legacyLogged;
     public enum AcceptanceResult { Confirmed, NotFound, Conflict }
     /// <summary>Server disposition: accepted, completed, cancelled, revoked or reconciliation-needed.</summary>
@@ -76,7 +76,7 @@ public sealed partial class PRFactoryClient(HttpClient httpClient, TimeProvider?
     public async Task<RegisterMachineResponse> RegisterMachineAsync(CancellationToken ct)
     {
         var supported = await ServerCapabilitiesAsync(ct, legacyOnServerError: true);
-        var advertised = Capabilities.Where(capability => capability is not ("base-wip-v1" or "multi-repo-v1")
+        var advertised = Capabilities.Where(capability => capability is not ("base-wip-v1" or "multi-repo-v1" or "pull-request-v1")
             || supported.Contains(capability, StringComparer.Ordinal)).ToArray();
         var request = new RegisterMachineRequest(Environment.MachineName,
             $"{Environment.MachineName}:{Environment.UserName}",
@@ -113,8 +113,11 @@ public sealed partial class PRFactoryClient(HttpClient httpClient, TimeProvider?
     public async Task<IReadOnlyList<PRFactoryWorkItem>> PollAsync(IEnumerable<Guid> repositories, Guid? machineId, CancellationToken ct,
         int maxItems = 10)
     {
+        // Work that needs a server-gated capability is only requested once registration saw the server list it.
+        var supported = serverCapabilities ?? [];
         var query = $"maxItems={maxItems}" + string.Concat(repositories.Select(id => $"&repositoryIds={id:D}"))
-            + $"&workerVersion={workerVersion}" + (machineId is Guid mid ? $"&machineId={mid:D}" : "");
+            + $"&workerVersion={workerVersion}" + (machineId is Guid mid ? $"&machineId={mid:D}" : "")
+            + (supported.Contains("pull-request-v1", StringComparer.Ordinal) ? "&capabilities=pull-request-v1" : "");
         using var response = await httpClient.GetAsync("api/worker/poll?" + query, ct);
         RejectToken(response.StatusCode);
         if (response.StatusCode == HttpStatusCode.NoContent)
@@ -306,10 +309,10 @@ public sealed partial class PRFactoryClient(HttpClient httpClient, TimeProvider?
         }
     }
 
-    public async Task FailAsync(Guid id, Guid? lease, string error, CancellationToken ct, bool shouldRetry = false)
+    public async Task FailAsync(Guid id, Guid? lease, string error, CancellationToken ct, bool shouldRetry = false, string details = "")
     {
         using var response = await httpClient.PostAsJsonAsync($"api/worker/fail/{id:D}",
-            new PRFactoryFailureRequest(error, string.Empty, shouldRetry, string.Empty, lease), PRFactoryWorkItemJson.Default.PRFactoryFailureRequest, ct);
+            new PRFactoryFailureRequest(error, details, shouldRetry, string.Empty, lease), PRFactoryWorkItemJson.Default.PRFactoryFailureRequest, ct);
         RejectToken(response.StatusCode);
         RejectLostLease(response.StatusCode, id);
         response.EnsureSuccessStatusCode();
