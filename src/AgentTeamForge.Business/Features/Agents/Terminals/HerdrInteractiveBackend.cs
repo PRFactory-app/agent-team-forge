@@ -10,7 +10,7 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
 public enum InteractiveAgentKind { Claude, Codex, Pi }
 
-public enum PaneOwnerRecovery { Unverified, Retained, Gone }
+public enum PaneOwnerRecovery { Unverified, Retained, Gone, GoneAgain }
 
 /// <summary>Runs a real agent TUI in a tab of an ATF-owned Herdr session.</summary>
 public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionStop, IDisposable
@@ -171,13 +171,15 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         }
     }
 
-    // Nothing is left to stop in a proven-gone pane of a terminal job, so the released record is forgotten
-    // with its fence: otherwise every start re-fences the job from the record and logs the release again.
+    // The record stays as proof for the restored-pane sweep and stop_agent. A sibling marker makes
+    // later starts repeat the release silently instead of logging it again.
     static PaneOwnerRecovery Gone(string recordPath, Func<bool> releaseFence)
     {
         if (!releaseFence()) { return PaneOwnerRecovery.Unverified; }
-        try { File.Delete(recordPath); }
-        catch (IOException) { } // Best effort: the next start repeats the release.
+        var marker = recordPath + ".gone";
+        if (File.Exists(marker)) { return PaneOwnerRecovery.GoneAgain; }
+        try { File.WriteAllText(marker, "released"); }
+        catch (IOException) { } // Best effort: the next start logs again.
         return PaneOwnerRecovery.Gone;
     }
 

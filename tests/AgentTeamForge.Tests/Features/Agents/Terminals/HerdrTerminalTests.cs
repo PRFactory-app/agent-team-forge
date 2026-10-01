@@ -1146,7 +1146,7 @@ public class HerdrTerminalTests
     }
 
     [Fact]
-    public async Task Proven_gone_pane_of_a_terminal_job_releases_the_fence_once_and_forgets_its_record()
+    public async Task Proven_gone_pane_of_a_terminal_job_releases_the_fence_every_start_keeps_its_record_and_reports_once()
     {
         using var state = new AgentTeamForge.Tests.Support.TempStateDir();
         using var f = new AgentTeamForge.Tests.Support.JobFixture();
@@ -1170,9 +1170,13 @@ public class HerdrTerminalTests
         Assert.Equal(PaneOwnerRecovery.Gone, backend.RecoverTerminalOwner(owner, [],
             () => f.Store.ReleaseRestartFence(owner.JobId, owner.SessionId)));
 
-        Assert.False(File.Exists(HerdrOwnedSessions.PathFor(launch)));
+        Assert.True(File.Exists(HerdrOwnedSessions.PathFor(launch)));
         HerdrOwnedSessions.Recover(state.Path, f.Store.FenceSession, _ => { });
+        Assert.Contains(job.JobId, f.Store.FencedTerminalJobs());
+        Assert.Equal(PaneOwnerRecovery.GoneAgain, backend.RecoverTerminalOwner(owner, [],
+            () => f.Store.ReleaseRestartFence(owner.JobId, owner.SessionId)));
         Assert.DoesNotContain(job.JobId, f.Store.FencedTerminalJobs());
+        Assert.True(File.Exists(HerdrOwnedSessions.PathFor(launch)));
         Assert.Equal("result kept", f.Store.GetJob(job.JobId)!.ResultText);
     }
 
