@@ -23,6 +23,8 @@ public sealed class SchemaTests
         {
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP INDEX events_job_seq;
+                DELETE FROM schema_migrations WHERE version=31;
                 ALTER TABLE lead_sessions DROP COLUMN native_kind;
                 ALTER TABLE lead_sessions DROP COLUMN native_session_id;
                 ALTER TABLE lead_sessions DROP COLUMN native_home;
@@ -125,6 +127,8 @@ public sealed class SchemaTests
         using var version = check.CreateCommand();
         version.CommandText = "SELECT max(version) FROM schema_migrations";
         Assert.Equal((long)AgentTeamForge.DAL.Migrations.Schema.CurrentVersion, (long)version.ExecuteScalar()!);
+        version.CommandText = "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='events_job_seq'";
+        Assert.Equal(1L, (long)version.ExecuteScalar()!);
         version.CommandText = "PRAGMA foreign_key_check";
         using var violations = version.ExecuteReader();
         Assert.False(violations.Read());
@@ -189,6 +193,8 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP INDEX events_job_seq;
+                DELETE FROM schema_migrations WHERE version=31;
                 ALTER TABLE lead_sessions DROP COLUMN native_kind;
                 ALTER TABLE lead_sessions DROP COLUMN native_session_id;
                 ALTER TABLE lead_sessions DROP COLUMN native_home;
@@ -295,6 +301,8 @@ public sealed class SchemaTests
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText = """
+                DROP INDEX events_job_seq;
+                DELETE FROM schema_migrations WHERE version=31;
                 ALTER TABLE lead_sessions DROP COLUMN native_kind;
                 ALTER TABLE lead_sessions DROP COLUMN native_session_id;
                 ALTER TABLE lead_sessions DROP COLUMN native_home;
