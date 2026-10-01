@@ -851,13 +851,19 @@
     return activities.get(jobId);
   }
 
+  // Drop nodes that left the page before adding a new one, so revisiting finished threads cannot accumulate detached trees.
+  function registerActivityNode(state, node) {
+    for (const old of state.nodes) if (!old.isConnected) state.nodes.delete(old);
+    state.nodes.add(node);
+  }
+
   function activityPanel(container, jobId) {
     const section = element('section', 'activity-transcript');
     section.append(element('h4', '', 'Activity'));
     const list = element('ol', 'activity-entries');
     list.setAttribute('aria-label', 'Agent activity');
     const state = activityState(jobId);
-    state.nodes.add(list);
+    registerActivityNode(state, list);
     renderActivity(state, list);
     section.append(list);
     container.append(section);
@@ -1792,7 +1798,7 @@
     node.append(b.head, b.instr, b.act, b.res, b.raw);
     cardLog(b.raw, 'chat:logs:' + id, id);
     const state = activityState(id);
-    state.nodes.add(b.act);
+    registerActivityNode(state, b.act);
     b.act.renderInto = (st) => renderChatActivity(b.act, st, b.hasResult === true);
     return b;
   }
