@@ -25,7 +25,7 @@ public static class JobsMcpBridge
         _ => !string.IsNullOrWhiteSpace(claudeId) ? "claude" : !string.IsNullOrWhiteSpace(codexId) ? "codex" : null
     };
     const string LimitProperties = """
-          "timeout_s":{"type":"integer","minimum":1,"maximum":86400,"description":"Cancel the job (reason timeout) this many seconds after it starts running."},
+          "timeout_s":{"type":"integer","minimum":1,"maximum":86400,"description":"Cancel the job (reason timeout) this many seconds after it starts running. Default: the profile limit for headless backends, 24h for interactive ones."},
           "queue_ttl_s":{"type":"integer","minimum":1,"maximum":86400,"description":"Cancel the job (reason queue_ttl) if it has not started this many seconds after acceptance."}
         """;
 

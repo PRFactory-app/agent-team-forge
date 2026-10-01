@@ -1865,6 +1865,36 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task Prompt_waits_past_the_readiness_bound_while_the_agent_is_busy_and_is_sent_once()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { BootstrapFromTab = true, AgentStatuses = new Queue<string>([.. Enumerable.Repeat("working", 12), "idle"]) };
+        var control = new HerdrAgentControl(Terminal(fake), TimeSpan.FromSeconds(2));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, Path.Combine(state.Path, "bootstrap"));
+        await control.StartAsync(launch, TestContext.Current.CancellationToken);
+
+        await control.PromptAsync(launch, "revive", TestContext.Current.CancellationToken);
+
+        Assert.Empty(fake.AgentStatuses);
+        Assert.Single(fake.Calls, c => c.Args is ["--session", _, "agent", "prompt", ..]);
+    }
+
+    [Fact]
+    public async Task Cancelled_deferred_prompt_is_never_submitted()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { BootstrapFromTab = true, AgentStatuses = new Queue<string>([.. Enumerable.Repeat("working", 40), "idle"]) };
+        var control = new HerdrAgentControl(Terminal(fake), TimeSpan.FromSeconds(2));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, Path.Combine(state.Path, "bootstrap"));
+        await control.StartAsync(launch, TestContext.Current.CancellationToken);
+        using var cancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(600));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => control.PromptAsync(launch, "cancelled", cancel.Token));
+
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["--session", _, "agent", "prompt", ..]);
+    }
+
+    [Fact]
     public async Task Blocked_startup_sends_no_prompt()
     {
         using var state = new AgentTeamForge.Tests.Support.TempStateDir();

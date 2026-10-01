@@ -11,12 +11,16 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
     // A resumed agent replays its transcript before it is ready, so it gets a longer `agent start` wait.
     internal const int FreshStartTimeoutMs = 15_000;
     internal const int ResumeStartTimeoutMs = 90_000;
+    static readonly TimeSpan BusyWaitLimit = TimeSpan.FromHours(1);
     static readonly TimeSpan PaneBusyGrace = TimeSpan.FromSeconds(5);
 
     // stop_job terminates from another thread while the dispatcher is still polling.
     readonly ConcurrentDictionary<string, (OwnedHerdrSession Session, HerdrTabBinding Binding)> _runs = [];
     // Pi login errors already on screen when the prompt was sent (history of a resumed session).
     readonly ConcurrentDictionary<string, string[]> _piLoginAnchorBeforePrompt = [];
+    // Serializes the final prompt submission against Escape, so an interrupted job's prompt is never sent after it.
+    readonly ConcurrentDictionary<string, SemaphoreSlim> _submitGates = [];
+    SemaphoreSlim SubmitGate(InteractiveLaunch launch) => _submitGates.GetOrAdd(launch.AgentName, _ => new SemaphoreSlim(1, 1));
 
     public async Task StartAsync(InteractiveLaunch launch, CancellationToken cancellationToken)
     {
@@ -144,7 +148,12 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         }
         // Agent detection can precede the first rendered input editor. Require a
         // settled ready state before sending any bytes, including on resumed panes.
-        var deadline = DateTimeOffset.UtcNow.Add(readinessTimeout ?? InteractiveStartup.Timeout);
+        var readiness = readinessTimeout ?? InteractiveStartup.Timeout;
+        var deadline = DateTimeOffset.UtcNow.Add(readiness);
+        // A resumed agent can be busy with its own wake turn: queue behind it and submit once it is idle.
+        // The wait is bounded by BusyWaitLimit, the turn deadline and stop (the cancellation token).
+        var busyLimit = DateTimeOffset.UtcNow + BusyWaitLimit;
+        var busyLogged = false;
         DateTimeOffset? readySince = null;
         string screen;
         while (true)
@@ -160,32 +169,48 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
                 if (DateTimeOffset.UtcNow - readySince >= TimeSpan.FromSeconds(1)) { break; }
             }
             else { readySince = null; }
+            if (status is InteractiveAgentStatus.Working && DateTimeOffset.UtcNow < busyLimit)
+            {
+                deadline = DateTimeOffset.UtcNow.Add(readiness);
+                if (!busyLogged)
+                {
+                    busyLogged = true;
+                    Console.Error.WriteLine($"[atf-daemon] prompt deferred: agent busy ({launch.AgentName})");
+                }
+            }
             if (status is InteractiveAgentStatus.Blocked or InteractiveAgentStatus.Gone || DateTimeOffset.UtcNow >= deadline)
             {
                 throw new HerdrLaunchException("interactive agent not ready before prompt delivery");
             }
             await Task.Delay(250, cancellationToken);
         }
-        launch.StartupProgress?.Invoke("ready");
-        _piLoginAnchorBeforePrompt[launch.AgentName] = PiLoginAnchor(screen);
+        var gate = SubmitGate(launch);
+        await gate.WaitAsync(cancellationToken);
         try
         {
-            launch.StartupProgress?.Invoke("submitted");
-            // Herdr requires an observed state change after submission. Without --wait,
-            // an immediate response can report success while the TUI has not processed it.
-            var response = await terminal.RunOwnedAsync(session, cancellationToken, "--session", session.SessionName,
-                "agent", "prompt", binding.PaneId, prompt, "--wait", "--timeout", "15000");
-            if (response["result"]?["type"]?.GetValue<string>() != "agent_prompted")
+            cancellationToken.ThrowIfCancellationRequested();
+            launch.StartupProgress?.Invoke("ready");
+            _piLoginAnchorBeforePrompt[launch.AgentName] = PiLoginAnchor(screen);
+            try
             {
-                throw new HerdrLaunchException("Herdr did not confirm agent prompt submission");
+                launch.StartupProgress?.Invoke("submitted");
+                // Herdr requires an observed state change after submission. Without --wait,
+                // an immediate response can report success while the TUI has not processed it.
+                var response = await terminal.RunOwnedAsync(session, cancellationToken, "--session", session.SessionName,
+                    "agent", "prompt", binding.PaneId, prompt, "--wait", "--timeout", "15000");
+                if (response["result"]?["type"]?.GetValue<string>() != "agent_prompted")
+                {
+                    throw new HerdrLaunchException("Herdr did not confirm agent prompt submission");
+                }
+            }
+            catch (HerdrLaunchException e) when (IsUnsettledPrompt(e))
+            {
+                // A long turn can outlive the wait, and a fresh TUI can accept input without an
+                // observed state change (agent_prompt_stalled). The prompt may already be executing;
+                // ReadEvidenceAsync keeps observing this exact bound pane/transcript and never resends.
             }
         }
-        catch (HerdrLaunchException e) when (IsUnsettledPrompt(e))
-        {
-            // A long turn can outlive the wait, and a fresh TUI can accept input without an
-            // observed state change (agent_prompt_stalled). The prompt may already be executing;
-            // ReadEvidenceAsync keeps observing this exact bound pane/transcript and never resends.
-        }
+        finally { gate.Release(); }
     }
 
     public async Task InterruptAsync(InteractiveLaunch launch, CancellationToken cancellationToken)
@@ -195,9 +220,15 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         {
             throw new HerdrLaunchException("refusing interrupt: " + problem);
         }
-        await terminal.RunOwnedAsync(session, cancellationToken, "agent", "send-keys", binding.PaneId, "esc");
-        await terminal.RunOwnedAsync(session, cancellationToken, "agent", "wait", binding.PaneId,
-            "--until", "idle", "--until", "done", "--timeout", "15000");
+        var gate = SubmitGate(launch);
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            await terminal.RunOwnedAsync(session, cancellationToken, "agent", "send-keys", binding.PaneId, "esc");
+            await terminal.RunOwnedAsync(session, cancellationToken, "agent", "wait", binding.PaneId,
+                "--until", "idle", "--until", "done", "--timeout", "15000");
+        }
+        finally { gate.Release(); }
     }
 
     public async Task<InteractiveAgentStatus> StatusAsync(InteractiveLaunch launch, CancellationToken cancellationToken)

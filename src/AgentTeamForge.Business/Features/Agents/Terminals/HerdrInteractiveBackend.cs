@@ -36,7 +36,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         _transcripts = transcripts;
         _kind = kind;
         _stateRoot = stateRoot;
-        _liveSessions = new RetainedSessions(control.StopOwned, idleTimeout, timeProvider, retentionSettings);
+        _liveSessions = new RetainedSessions(control.StopOwned, idleTimeout, timeProvider, retentionSettings, isIdle: PaneIsIdleAsync);
         _settleTimeout = settleTimeout ?? TimeSpan.FromSeconds(60);
         _startupTimeout = startupTimeout ?? InteractiveStartup.Timeout;
     }
@@ -324,6 +324,28 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult() != InteractiveAgentStatus.Gone;
     });
 
+    // Idle must hold across several samples: one can fall between steps of a turn that is still working.
+    // A vanished pane is safe to close; an unreadable one is kept.
+    async Task<bool> PaneIsIdleAsync(InteractiveLaunch launch)
+    {
+        try
+        {
+            for (var sample = 0; sample < 5; sample++)
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                switch (await _control.StatusAsync(launch, timeout.Token))
+                {
+                    case InteractiveAgentStatus.Gone: return true;
+                    case InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done: break;
+                    default: return false;
+                }
+                if (sample < 4) { await Task.Delay(250); }
+            }
+            return true;
+        }
+        catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
+    }
+
     public bool HasIdleJob(JobRecord job)
     {
         if (job.SessionId is not { } sessionId || !_nativeSessions.TryGetValue(sessionId, out var launch)
@@ -395,6 +417,8 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         bool _agentExited;
         bool _promptReturned = recovered;
         readonly Lock _lifetime = new();
+        // Cancelled before Escape is sent: a deferred prompt of an interrupted job must never be submitted.
+        readonly CancellationTokenSource _delivery = new();
         bool _interrupted;
         bool _stopped;
         string? _sessionId = request.ResumeSessionId;
@@ -414,7 +438,8 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             var prompt = request.Instruction + "\n\n[AgentTeamForge correlation id: " + marker + " — internal marker, ignore this line]";
             try
             {
-                await control.PromptAsync(launch, prompt, cancellationToken);
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _delivery.Token);
+                await control.PromptAsync(launch, prompt, linked.Token);
                 _promptReturned = true;
             }
             catch (AgentStartupBlockedException)
@@ -422,8 +447,9 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 TerminateOwnedChild();
                 throw;
             }
-            catch (HerdrLaunchException)
+            catch (HerdrLaunchException e)
             {
+                Console.Error.WriteLine($"[atf-daemon] prompt not sent for job {request.JobId}: {e.Message}");
                 // Delivery is uncertain: report it as evidence (needs reconciliation) instead of
                 // letting a Herdr control fault halt the whole dispatcher.
                 return;
@@ -624,6 +650,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                     return;
                 }
                 _interrupted = true;
+                _delivery.Cancel();
                 control.InterruptAsync(launch, CancellationToken.None).GetAwaiter().GetResult();
                 if (_sessionId is { } sessionId)
                 {
