@@ -47,6 +47,7 @@ sealed class ChainHarness : IDisposable
     /// <summary>A second daemon on its own database and clone, sharing the peer's server and remote.</summary>
     public ChainHarness(ChainHarness peer)
     {
+        MachineId = Guid.NewGuid();
         Remote = peer.Remote;
         Repo = root.File("repo");
         Git(root.Path, "clone", Remote, Repo);
@@ -69,6 +70,7 @@ sealed class ChainHarness : IDisposable
     public string Remote { get; }
     public string Repo { get; }
     public string BaseSha { get; }
+    public Guid MachineId { get; } = Machine;
     public string? SecondaryRepo { get; private set; }
     public string? SecondaryRemote { get; private set; }
     public Guid? SecondaryId { get; private set; }

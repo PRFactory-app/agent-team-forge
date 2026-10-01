@@ -147,6 +147,10 @@ public sealed class BaseWipHandoverTests
         Assert.Equal("claimed", h.Teams.Get(ChainServer.Url, item.Id)!.State);
         Assert.Equal(child, ChainHarness.Git(workspace.Members[0].Path, "rev-parse", "HEAD"));
         Assert.Contains(h.Logs, line => line.Contains("child commits", StringComparison.Ordinal));
+        // The adapter is rebuilt every tick; the unchanged reason is still posted to the stream once.
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        Assert.Single(h.Server.Lines, line => line.RecordKind == "handover-held");
     }
 
     [Fact]
@@ -228,27 +232,42 @@ public sealed class BaseWipHandoverTests
         using var a = new ChainHarness(item);
         a.Server.BaseWipSupported = true;
         a.Server.ReleaseRequeues = true;
-        await a.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, ct);
+        await a.Adapter(baseWip: true).TickAsync(a.MachineId, ct);
+        var jobA = a.Server.AcceptedJobId!;
         var (lead, run) = a.StartOne();
         var head = ChainHarness.Commit(lead.Cwd!, "work.txt", "from A");
-        // An untracked ticket document is uploaded by publication, so it must not block release.
+        // An untracked ticket document is not committed work: it must reach the server before release, then not block it.
         Directory.CreateDirectory(Path.Combine(lead.Cwd!, "docs/PRF-42"));
-        File.WriteAllText(Path.Combine(lead.Cwd!, "docs/PRF-42/notes.md"), "# notes");
+        File.WriteAllText(Path.Combine(lead.Cwd!, "docs/PRF-42/notes.md"), "# notes from A");
         Assert.True(a.Store.Complete(run, "done"));
         a.Server.HandoverRequested = true;
         for (var i = 0; i < 5 && a.Server.Releases.Count == 0; i++)
         {
-            await a.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, ct);
+            await a.Adapter(baseWip: true).TickAsync(a.MachineId, ct);
         }
         var release = Assert.Single(a.Server.Releases);
         Assert.Equal(head, release.GetProperty("verifiedWipSha").GetString());
+        Assert.Equal(a.MachineId, release.GetProperty("machineId").GetGuid());
+        Assert.Contains(a.Server.Artefacts, body => body.Contains("# notes from A", StringComparison.Ordinal));
+        Assert.True(a.Server.UploadOrder.IndexOf("artefacts") < a.Server.UploadOrder.IndexOf("release"));
         Assert.Equal("completed", a.Teams.Get(ChainServer.Url, item.Id)!.State);
+        Assert.Null(a.Server.Owner);
 
         using var b = new ChainHarness(a);
+        Assert.NotEqual(a.MachineId, b.MachineId);
+        await a.Adapter(baseWip: true).TickAsync(a.MachineId, ct); // A is no longer offered the item.
+        Assert.Null(a.Server.Owner);
         for (var i = 0; i < 3 && b.Teams.Get(ChainServer.Url, item.Id) is null; i++)
         {
-            await b.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, ct);
+            await b.Adapter(baseWip: true).TickAsync(b.MachineId, ct);
         }
+        Assert.Equal(b.MachineId, a.Server.Owner);
+        Assert.Equal(b.MachineId, a.Server.AcceptedMachineId);
+        Assert.Equal(b.MachineId, a.Server.PollMachines.Last());
+        Assert.Equal(b.MachineId, a.Server.ClaimMachines.Last());
+        Assert.NotEqual(jobA, a.Server.AcceptedJobId);
+        var revoked = await a.Server.Client().GetAtfAcceptanceAsync(item.Id, a.MachineId, jobA, ct);
+        Assert.Equal(PRFactoryClient.AcceptanceResult.NotFound, revoked.Result);
         var workspace = b.Workspaces.Get($"{ChainServer.Url}|{item.Id:D}")!;
         Assert.Equal(head, ChainHarness.Git(workspace.LeadPath, "rev-parse", "HEAD"));
         var (leadB, runB) = b.StartOne();
@@ -256,10 +275,70 @@ public sealed class BaseWipHandoverTests
         Assert.True(b.Store.Complete(runB, "done"));
         for (var i = 0; i < 5 && a.Server.Completions.Count == 0; i++)
         {
-            await b.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, ct);
+            await b.Adapter(baseWip: true).TickAsync(b.MachineId, ct);
         }
         Assert.Single(a.Server.Completions);
         Assert.Empty(a.Server.Failures);
+    }
+
+    [Fact]
+    public async Task Release_check_exempts_only_untracked_top_level_ticket_documents()
+    {
+        using var root = new AgentTeamForge.Tests.Support.TempStateDir();
+        var repo = Directory.CreateDirectory(root.File("repo")).FullName;
+        ChainHarness.Git(repo, "init", "-b", "main");
+        ChainHarness.Commit(repo, "docs/PRF-42/plan.md", "committed plan");
+        ChainHarness.Commit(repo, "docs/PRF-42/gone.md", "gone");
+        ChainHarness.Commit(repo, "docs/OTHER/keep.md", "other");
+        const string folder = "docs/PRF-42";
+
+        async Task<(string[] Dirty, string[] Documents)> Inspect(string? f = folder) =>
+            await PRFactoryHandover.InspectAsync(repo, f);
+
+        File.WriteAllText(Path.Combine(repo, "docs/PRF-42/new.md"), "new");
+        var (cleanDirty, cleanDocuments) = await Inspect();
+        Assert.Empty(cleanDirty);
+        Assert.Equal(["docs/PRF-42/new.md"], cleanDocuments);
+
+        // Tracked edit, staged new document and deleted document all stay dirty.
+        File.WriteAllText(Path.Combine(repo, "docs/PRF-42/plan.md"), "edited");
+        Assert.Single((await Inspect()).Dirty);
+        ChainHarness.Git(repo, "checkout", "--", "docs/PRF-42/plan.md");
+        ChainHarness.Git(repo, "add", "docs/PRF-42/new.md");
+        var (stagedDirty, stagedDocuments) = await Inspect();
+        Assert.Single(stagedDirty);
+        Assert.Empty(stagedDocuments);
+        ChainHarness.Git(repo, "reset", "-q");
+        File.Delete(Path.Combine(repo, "docs/PRF-42/gone.md"));
+        Assert.Single((await Inspect()).Dirty);
+        ChainHarness.Git(repo, "checkout", "--", "docs/PRF-42/gone.md");
+
+        // Source, nested and outside paths stay dirty.
+        File.WriteAllText(Path.Combine(repo, "src.cs"), "x");
+        Directory.CreateDirectory(Path.Combine(repo, "docs/PRF-42/sub"));
+        File.WriteAllText(Path.Combine(repo, "docs/PRF-42/sub/n.md"), "x");
+        File.WriteAllText(Path.Combine(repo, "docs/OTHER/o.md"), "x");
+        File.WriteAllText(Path.Combine(repo, "docs/PRF-42/data.json"), "{}");
+        var (mixedDirty, mixedDocuments) = await Inspect();
+        Assert.Equal(4, mixedDirty.Length);
+        Assert.Equal(["docs/PRF-42/new.md"], mixedDocuments);
+
+        // Glob, rooted and traversing folder names exempt nothing.
+        foreach (var bad in new[] { "docs/*", "docs/PRF-4?", "/docs/PRF-42", "docs/../docs/PRF-42" })
+        {
+            Assert.Empty((await Inspect(bad)).Documents);
+        }
+    }
+
+    [Fact]
+    public void Rate_limit_details_carry_the_reset_as_an_iso_utc_string()
+    {
+        using var details = System.Text.Json.JsonDocument.Parse(PRFactoryWorkItems.RateLimitDetails(
+            "agent_rate_limited: usage limit reached; resets at 2026-10-01T14:30:00.0000000+02:00"));
+        Assert.Equal("2026-10-01T12:30:00Z", details.RootElement.GetProperty("retryNotBeforeUtc").GetString());
+        Assert.Contains("usage limit reached", details.RootElement.GetProperty("message").GetString(), StringComparison.Ordinal);
+        using var unknown = System.Text.Json.JsonDocument.Parse(PRFactoryWorkItems.RateLimitDetails("agent_rate_limited: reset time unknown"));
+        Assert.False(unknown.RootElement.TryGetProperty("retryNotBeforeUtc", out _));
     }
 
     static PRFactoryWorkItem Work(string type) => new()

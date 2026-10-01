@@ -96,7 +96,7 @@ public sealed class BranchPublisher(PRFactoryPublicationStore store, Publication
 
     // Untracked phase documents and allowlisted attachment outputs are uploaded separately.
     // Tracked changes there still count as dirty.
-    internal static bool IsStagedArtefact(string porcelain, string? folder)
+    public static bool IsStagedArtefact(string porcelain, string? folder)
     {
         if (string.IsNullOrWhiteSpace(folder) || !porcelain.StartsWith("?? ", StringComparison.Ordinal)) { return false; }
         var prefix = folder.Replace('\\', '/').Trim('/') + "/";

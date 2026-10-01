@@ -971,19 +971,24 @@ public sealed partial class PRFactoryWorkItems(
         if (PRFactoryRepositorySet.HasSecondaries(item))
         {
             // Only the primary lead is published and released; secondary checkouts would be left behind.
-            await HeldOnceAsync(item, "multi-repository handover is unsupported", ct);
+            await HeldOnceAsync(item, request.RequestId, "multi-repository handover is unsupported", ct);
             return true;
         }
 
         try
         {
-            foreach (var path in new[] { workspace.LeadPath }.Concat(workspace.Members.Select(m => m.Path)))
+            var (leadDirty, leadDocuments) = await PRFactoryHandover.InspectAsync(workspace.LeadPath, item.TicketArtefactFolder);
+            var childDirty = false;
+            foreach (var member in workspace.Members)
             {
-                if ((await TeamWorkspace.Git(path, PRFactoryHandover.DirtyArgs(item.TicketArtefactFolder))).Length != 0)
-                {
-                    throw new InvalidOperationException("Uncommitted work remains; handover held.");
-                }
+                childDirty |= (await PRFactoryHandover.InspectAsync(member.Path, null)).Dirty.Length != 0;
             }
+            if (leadDirty.Length != 0 || childDirty)
+            {
+                throw new InvalidOperationException("Uncommitted work remains; handover held.");
+            }
+            Task Preserve(string[] documents) => UploadDocumentsAsync(item, workspace.LeadPath, documents, ct);
+            await Preserve(leadDocuments);
             var publisher = new WipPublisher(handovers, async (id, effect, token) =>
             {
                 await Guard(id, effect, token);
@@ -1007,7 +1012,7 @@ public sealed partial class PRFactoryWorkItems(
                 await Guard(id, effect, token);
                 return true;
             });
-            await coordinator.ReleaseAsync(item, workspace, machine, atfJob, request.Reason, Quiescent, ct);
+            await coordinator.ReleaseAsync(item, workspace, machine, atfJob, request.Reason, Quiescent, ct, Preserve);
             await Observe(item.Id, "revoked", "handover_released", ct);
             teams.Finish(server, item.Id, "completed");
             try
@@ -1021,17 +1026,46 @@ public sealed partial class PRFactoryWorkItems(
         }
         catch (InvalidOperationException ex)
         {
-            await HeldOnceAsync(item, ex.Message, ct);
+            await HeldOnceAsync(item, request.RequestId, ex.Message, ct);
         }
         return true;
     }
 
-    readonly HashSet<(Guid, string)> heldReasons = [];
-
-    /// <summary>Log a held handover reason once per distinct reason, and show it on the agent stream so the server UI can display it.</summary>
-    async Task HeldOnceAsync(PRFactoryWorkItem item, string reason, CancellationToken ct)
+    /// <summary>Upload ticket documents that are not committed, so the receiving machine and the server have them before release.</summary>
+    async Task UploadDocumentsAsync(PRFactoryWorkItem item, string leadPath, string[] documents, CancellationToken ct)
     {
-        if (!heldReasons.Add((item.Id, reason))) { return; }
+        if (documents.Length == 0) { return; }
+        var files = new List<PRFactoryArtefactFile>();
+        long total = 0;
+        foreach (var relative in documents.Order(StringComparer.Ordinal))
+        {
+            var full = Path.Combine(leadPath, relative);
+            var info = new FileInfo(full);
+            if (info.LinkTarget is not null || (total += info.Length) > PRFactoryArtefacts.MaxUploadBytes)
+            {
+                throw new InvalidOperationException($"Ticket document {relative} cannot be preserved for handover.");
+            }
+            files.Add(new(info.Name, await File.ReadAllTextAsync(full, ct), PRFactoryArtefacts.Kind(info.Name, item.Type)));
+        }
+        try
+        {
+            await Guard(item.Id, () => client.UploadArtefactPayloadAsync(item.Id,
+                JsonSerializer.Serialize(new PRFactoryArtefactRequest(files, item.LeaseToken), PRFactoryWorkItemJson.Default.PRFactoryArtefactRequest), ct), ct);
+        }
+        catch (InvalidDataException ex)
+        {
+            throw new InvalidOperationException("Server rejected ticket documents: " + ex.Message);
+        }
+    }
+
+    // Daemon-lived: the adapter is rebuilt every heartbeat, and a held request must not repost its notice each time.
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<(string, Guid, string, string), byte> heldReasons = [];
+
+    /// <summary>Log a held handover reason and show it on the agent stream once per request and reason; retried until delivered.</summary>
+    async Task HeldOnceAsync(PRFactoryWorkItem item, string requestId, string reason, CancellationToken ct)
+    {
+        var key = (server, item.Id, requestId, reason);
+        if (heldReasons.ContainsKey(key)) { return; }
         log?.Invoke($"PRFactory work item {item.Id:D} handover held: {reason}");
         try
         {
@@ -1040,6 +1074,7 @@ public sealed partial class PRFactoryWorkItems(
                 $"handover-held:{item.Id:N}:{seq}",
                 [new("member", item.Id.ToString("D"), "handover", "atf", "Waiting", item.RepositoryId, "lead")],
                 [new("handover", seq, DateTimeOffset.UtcNow, "Record", "Handover held: " + reason, "handover-held")]), ct), ct);
+            heldReasons[key] = 0;
         }
         catch (Exception ex) when (ex is HttpRequestException or PRFactoryStreamRejectedException)
         {
@@ -1384,11 +1419,28 @@ public sealed partial class PRFactoryWorkItems(
         {
             await Guard(item.Id, () => client.FailAsync(item.Id, item.LeaseToken, error, ct,
                 error.StartsWith("agent_rate_limited", StringComparison.Ordinal),
-                    error.StartsWith("agent_rate_limited", StringComparison.Ordinal) ? error : ""), ct);
+                    error.StartsWith("agent_rate_limited", StringComparison.Ordinal) ? RateLimitDetails(error) : ""), ct);
             StopManagedJobs(item.Id);
             teams.Finish(server, item.Id, error.StartsWith("multi-repository", StringComparison.Ordinal) ? "refused" : "failed");
             await Observe(item.Id, "completed", "failure_reported", ct);
         }
+    }
+
+    /// <summary>JSON details: the limit text plus the reset as an ISO-8601 UTC string the server uses to exclude this machine.</summary>
+    internal static string RateLimitDetails(string error)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            if (AccountLimitDetector.ResetIn(error) is { } reset)
+            {
+                writer.WriteString("retryNotBeforeUtc", reset.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture));
+            }
+            writer.WriteString("message", error);
+            writer.WriteEndObject();
+        }
+        return System.Text.Encoding.UTF8.GetString(stream.ToArray());
     }
 
     void StopManagedJobs(Guid itemId)

@@ -193,19 +193,34 @@ public sealed partial class PRFactoryClient
 /// <summary>Handover only after all writers are quiescent and committed work has a verified WIP receipt.</summary>
 public sealed class PRFactoryHandover(PRFactoryClient client, PRFactoryHandoverStore store, PublicationAuthority authority)
 {
-    static readonly string[] DocumentExtensions = ["md", "html", "json"];
-
-    /// <summary>Dirty check that ignores the top-level documents of the ticket folder: publication uploads those, so they never block release.</summary>
-    public static string[] DirtyArgs(string? artefactFolder)
+    /// <summary>
+    /// Uncommitted entries of a checkout. Untracked top-level md/html files directly in the literal ticket
+    /// folder are returned separately (publication's own predicate): the caller must preserve them before release.
+    /// Tracked, staged or deleted documents and everything else stay dirty.
+    /// </summary>
+    public static async Task<(string[] Dirty, string[] Documents)> InspectAsync(string path, string? artefactFolder)
     {
-        string[] args = ["status", "--porcelain", "--untracked-files=all"];
-        if (string.IsNullOrWhiteSpace(artefactFolder)) { return args; }
-        var folder = artefactFolder.Replace('\\', '/').Trim('/');
-        return [.. args, "--", ".", .. DocumentExtensions.Select(e => $":(exclude,glob){folder}/*.{e}")];
+        var folder = artefactFolder?.Replace('\\', '/').Trim('/');
+        var literal = !string.IsNullOrWhiteSpace(folder) && !Path.IsPathRooted(artefactFolder)
+            && folder.IndexOfAny(['*', '?', '[', ':']) < 0 && !folder.Split('/').Contains("..");
+        List<string> dirty = [], documents = [];
+        foreach (var line in (await TeamWorkspace.Git(path, "status", "--porcelain=v1", "--untracked-files=all"))
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var entry = line.Length > 3 ? line[3..].Trim('"') : "";
+            if (literal && BranchPublisher.IsStagedArtefact(line, folder) && !entry[(folder!.Length + 1)..].Contains('/')
+                && File.Exists(Path.Combine(path, entry)))
+            {
+                documents.Add(entry);
+            }
+            else { dirty.Add(line); }
+        }
+        return ([.. dirty], [.. documents]);
     }
 
     public async Task<PRFactoryReleaseResponse> ReleaseAsync(PRFactoryWorkItem item, WorkspaceSnapshot workspace,
-        Guid machineId, string atfJobId, string reason, Func<bool> writersQuiescent, CancellationToken ct)
+        Guid machineId, string atfJobId, string reason, Func<bool> writersQuiescent, CancellationToken ct,
+        Func<string[], Task>? preserveDocuments = null)
     {
         if (!writersQuiescent())
         {
@@ -221,16 +236,20 @@ public sealed class PRFactoryHandover(PRFactoryClient client, PRFactoryHandoverS
             throw new InvalidOperationException("Accepted repository identity is missing.");
         }
 
-        var dirty = await TeamWorkspace.Git(workspace.LeadPath, DirtyArgs(item.TicketArtefactFolder));
+        var (dirty, documents) = await InspectAsync(workspace.LeadPath, item.TicketArtefactFolder);
         if (dirty.Length != 0)
         {
             throw new InvalidOperationException("Release refused: uncommitted work remains in the lead checkout.");
         }
+        if (documents.Length > 0)
+        {
+            if (preserveDocuments is null) { throw new InvalidOperationException("Release refused: unpreserved ticket documents remain."); }
+            await preserveDocuments(documents);
+        }
 
         foreach (var member in workspace.Members)
         {
-            var status = await TeamWorkspace.Git(member.Path, DirtyArgs(item.TicketArtefactFolder));
-            if (status.Length != 0)
+            if ((await InspectAsync(member.Path, null)).Dirty.Length != 0)
             {
                 throw new InvalidOperationException("Release refused: child workspace has uncommitted work.");
             }

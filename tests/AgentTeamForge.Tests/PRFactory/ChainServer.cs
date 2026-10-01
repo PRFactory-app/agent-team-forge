@@ -33,6 +33,11 @@ sealed class ChainServer(PRFactoryWorkItem item)
     public bool HandoverRequested { get; set; }
     /// <summary>Like the real server: a release makes the item pending again with the handover fields for the next claim.</summary>
     public bool ReleaseRequeues { get; set; }
+    /// <summary>Pin: only this machine is offered the item once claimed. A release clears it.</summary>
+    public Guid? Owner { get; private set; }
+    public Guid? AcceptedMachineId { get; private set; }
+    public List<Guid?> PollMachines { get; } = [];
+    public List<Guid?> ClaimMachines { get; } = [];
     public List<JsonElement> WipReports { get; } = [];
     public HttpStatusCode? WipRejection { get; set; }
     public List<JsonElement> Releases { get; } = [];
@@ -128,7 +133,7 @@ sealed class ChainServer(PRFactoryWorkItem item)
             if (path.EndsWith("/handover-request", StringComparison.Ordinal))
             {
                 Assert.True(BaseWipSupported);
-                Assert.Contains("machineId=" + ChainHarness.Machine.ToString("D"), request.RequestUri.Query);
+                Assert.Contains("machineId=" + (AcceptedMachineId ?? ChainHarness.Machine).ToString("D"), request.RequestUri.Query);
                 Assert.Contains("atfJobId=" + Uri.EscapeDataString(AcceptedJobId!), request.RequestUri.Query);
                 return HandoverRequested ? Json("{\"requestId\":\"request-1\",\"reason\":\"move\",\"requestedAt\":\"2026-09-28T00:00:00Z\"}")
                     : new HttpResponseMessage(HttpStatusCode.NoContent);
@@ -148,6 +153,13 @@ sealed class ChainServer(PRFactoryWorkItem item)
             {
                 var release = JsonElement.Parse(body!);
                 Releases.Add(release);
+                UploadOrder.Add("release");
+                if (ReleaseRequeues)
+                {
+                    Assert.Equal(Owner, release.GetProperty("machineId").GetGuid());
+                    Assert.Equal(Item.LeaseToken, release.GetProperty("leaseToken").GetGuid());
+                    (Owner, AcceptedMachineId, Item.LeaseToken) = (null, null, null);
+                }
                 HandoverRequested = false;
                 if (ReleaseRequeues)
                 {
@@ -178,18 +190,40 @@ sealed class ChainServer(PRFactoryWorkItem item)
             if (path.EndsWith("/poll", StringComparison.Ordinal))
             {
                 PollQueries.Add(request.RequestUri.Query);
+                var machine = System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query)["machineId"] is { } polled ? Guid.Parse(polled) : (Guid?)null;
+                PollMachines.Add(machine);
+                if (Owner is not null && Owner != machine) { return Json("{\"workItems\":[]}"); }
                 return Json(Offered ? "{\"workItems\":[" + ItemJson() + "]}" : "{\"workItems\":[]}");
             }
             if (path.Contains("/claim/", StringComparison.Ordinal))
             {
                 Offered = false;
+                var claimed = JsonElement.Parse(body!).GetProperty("machineId").GetGuid();
+                ClaimMachines.Add(claimed);
+                Owner = claimed;
+                if (ReleaseRequeues) { Item.LeaseToken = Guid.NewGuid(); }
                 return Json("{\"workItem\":" + ItemJson() + "}");
             }
             if (path.EndsWith("/atf-acceptance", StringComparison.Ordinal))
             {
                 if (request.Method == HttpMethod.Post)
                 {
-                    AcceptedJobId ??= JsonElement.Parse(body!).GetProperty("jobId").GetString();
+                    var accept = JsonElement.Parse(body!);
+                    if (ReleaseRequeues && (accept.GetProperty("leaseToken").GetGuid() != Item.LeaseToken
+                        || accept.GetProperty("machineId").GetGuid() != Owner))
+                    {
+                        return new HttpResponseMessage(HttpStatusCode.Conflict);
+                    }
+                    if (AcceptedJobId is null)
+                    {
+                        AcceptedJobId = accept.GetProperty("jobId").GetString();
+                        AcceptedMachineId = accept.GetProperty("machineId").GetGuid();
+                    }
+                }
+                else if (ReleaseRequeues && System.Web.HttpUtility.ParseQueryString(request.RequestUri.Query)["machineId"]
+                    != AcceptedMachineId?.ToString("D"))
+                {
+                    return new HttpResponseMessage(HttpStatusCode.NotFound); // Revoked for every other machine.
                 }
                 return AcceptedJobId is null ? new HttpResponseMessage(HttpStatusCode.NotFound)
                     : Json(JsonSerializer.Serialize(new PRFactoryAtfAcceptanceResponse(AcceptedJobId,
