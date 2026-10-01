@@ -562,6 +562,19 @@ public sealed class SetupCommandTests
         Assert.NotEqual(Environment.ProcessId, ppid);
     }
 
+    [Fact]
+    public async Task StartWithoutSetsidStillStartsAndWarnsInDaemonLog()
+    {
+        if (!OperatingSystem.IsLinux()) { return; }
+
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        Assert.Equal(0, await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = rig.StateDir },
+            SpikeRig.Binary, quiet: true, setsidSearch: []));
+        Assert.Contains("util-linux", File.ReadAllText(Path.Combine(rig.StateDir, "daemon.log")));
+        Assert.NotNull(DaemonLock.ReadOwnerPid(StateDirectory.Open(rig.StateDir).LockFile));
+    }
+
     [Theory]
     [InlineData("profile.json")]
     [InlineData("launch-mode.json")]

@@ -295,7 +295,7 @@ public static class SetupCommand
         return null;
     }
 
-    public static async Task<int> StartAsync(IReadOnlyDictionary<string, string> options, string? executablePath = null, bool quiet = false)
+    public static async Task<int> StartAsync(IReadOnlyDictionary<string, string> options, string? executablePath = null, bool quiet = false, IReadOnlyList<string>? setsidSearch = null)
     {
         var state = StateDirectory.Open(ResolveStateDir(options));
         var profile = ProfileFile.Load(state);
@@ -351,7 +351,7 @@ public static class SetupCommand
         {
             return OperatingSystem.IsWindows()
                 ? await StartWindowsAsync(state, binary, quiet)
-                : await StartPosixAsync(state, binary, quiet, profile.TestProfile);
+                : await StartPosixAsync(state, binary, quiet, profile.TestProfile, setsidSearch);
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException or ArgumentException)
         {
@@ -360,7 +360,7 @@ public static class SetupCommand
         }
     }
 
-    static async Task<int> StartPosixAsync(StateDirectory state, string binary, bool quiet, bool testProfile)
+    static async Task<int> StartPosixAsync(StateDirectory state, string binary, bool quiet, bool testProfile, IReadOnlyList<string>? setsidSearch = null)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         if (OperatingSystem.IsLinux()
@@ -419,13 +419,39 @@ public static class SetupCommand
         // The scope leaves the cgroup but the daemon stays a child of this process, so a host that tree-kills
         // by ppid (Claude Code does) would take it down. `setsid --fork` makes it a grandchild whose parent exits
         // at once, so it is reparented to the subreaper. Without setsid the launch stays a direct child.
-        var detached = OperatingSystem.IsLinux() && FindExecutable("setsid") is { } setsid && Detach(info, setsid);
+        var detached = false;
+        string? detachWarning = null;
+        if (OperatingSystem.IsLinux())
+        {
+            if (ResolveSetsid(setsidSearch) is { } setsid)
+            {
+                detached = Detach(info, setsid);
+            }
+            else
+            {
+                const string warning = "warning: setsid (util-linux) not found; the daemon stays attached to its starter and can be killed with it";
+                Console.Error.WriteLine(warning);
+                detachWarning = warning;
+            }
+        }
         var logOffset = log.Length;
         using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
-        return detached
+        var ready = detached
             ? await WaitForReadyAsync(state, quiet, null, logOffset)
             : await WaitForReadyAsync(state, quiet, process);
+        if (detachWarning is not null)
+        {
+            // After the launch: the daemon's inherited stdout shares this file's offset and would overwrite an earlier line.
+            File.AppendAllText(log.Name, $"[atf-daemon] {DateTime.UtcNow:O} {detachWarning}\n");
+        }
+        return ready;
     }
+
+    /// <summary>PATH first, then the fixed util-linux locations; <paramref name="search"/> (tests) replaces both.</summary>
+    static string? ResolveSetsid(IReadOnlyList<string>? search) =>
+        search is null
+            ? FindExecutable("setsid") ?? new[] { "/usr/bin/setsid", "/bin/setsid" }.FirstOrDefault(File.Exists)
+            : search.FirstOrDefault(File.Exists);
 
     static bool Detach(ProcessStartInfo info, string setsid)
     {
