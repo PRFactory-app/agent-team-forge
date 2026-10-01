@@ -116,6 +116,40 @@ public sealed class RetainedSessionsTests
     }
 
     [Fact]
+    public void Idle_cleanup_keeps_a_busy_pane_and_closes_it_once_idle()
+    {
+        using var clock = new ManualClock();
+        var stopped = new List<InteractiveLaunch>();
+        var idle = false;
+        using var sessions = new RetainedSessions(stopped.Add, TimeSpan.FromMinutes(5), clock, isIdle: _ => idle);
+        sessions.Remember("s", Launch(1));
+
+        clock.Advance(TimeSpan.FromMinutes(6));
+        Assert.Empty(stopped);
+        Assert.True(sessions.IsAlive("s", _ => true));
+
+        // The busy probe refreshed the idle clock: the next close waits another full timeout.
+        idle = true;
+        clock.Advance(TimeSpan.FromMinutes(4));
+        Assert.Empty(stopped);
+        clock.Advance(TimeSpan.FromMinutes(2));
+        Assert.Single(stopped);
+    }
+
+    [Fact]
+    public void Idle_cleanup_never_closes_when_the_probe_fails()
+    {
+        using var clock = new ManualClock();
+        var stopped = new List<InteractiveLaunch>();
+        using var sessions = new RetainedSessions(stopped.Add, TimeSpan.FromMinutes(5), clock, isIdle: _ => throw new IOException("probe"));
+        sessions.Remember("s", Launch(1));
+
+        clock.Advance(TimeSpan.FromMinutes(6));
+
+        Assert.Empty(stopped);
+    }
+
+    [Fact]
     public void Taken_session_is_not_closed_by_timeout()
     {
         using var clock = new ManualClock();

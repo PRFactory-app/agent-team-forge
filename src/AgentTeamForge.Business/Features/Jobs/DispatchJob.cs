@@ -131,6 +131,8 @@ public sealed class DispatchJob : IDisposable
         !_running.ContainsKey(jobId) && !_reconciledWindows.ContainsKey(jobId)
         && store.GetJob(jobId)?.Status is { } status && status is not (JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation);
 
+    internal static TimeSpan TurnRuntime(bool interactive, SpikeLimits limits) => interactive ? MaxAllowedRuntime : limits.MaxFakeRuntime;
+
     public bool ReconcileIdleInteractive(JobRecord job)
     {
         if (job.Status != JobStatus.NeedsReconciliation
@@ -857,10 +859,8 @@ public sealed class DispatchJob : IDisposable
                 : CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, stopRequested.Token, jobTimeout.Token);
             // Interactive launch and native transcript confirmation can exceed the fake
             // backend's short default runtime on a loaded desktop.
-            var runtime = Interactive(backends.Resolve(claim.Job.Backend))
-                ? TimeSpan.FromTicks(Math.Max(limits.MaxFakeRuntime.Ticks,
-                    (InteractiveStartup.Timeout * 2 + TimeSpan.FromSeconds(90)).Ticks))
-                : limits.MaxFakeRuntime;
+            // Interactive builders legitimately work for hours: without an explicit timeout_s they get the 24h cap.
+            var runtime = TurnRuntime(Interactive(backends.Resolve(claim.Job.Backend)), limits);
             if (jobTimeout is null) { deadline.CancelAfter(runtime); }
             if (recovered is null) { checkpoints.Hit(DurabilityCheckpoints.AttemptAfterCommit); }
 

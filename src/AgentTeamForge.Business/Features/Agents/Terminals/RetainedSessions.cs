@@ -19,12 +19,16 @@ internal sealed class RetainedSessions : IDisposable
     readonly Func<InteractiveRetentionSettings>? _settings;
     readonly Action<InteractiveLaunch, string>? _idle;
     readonly Action<InteractiveLaunch>? _busy;
+    readonly Func<InteractiveLaunch, bool>? _isIdle;
 
+    // isIdle proves a pane is idle before the sweep closes it (sustained, not one sample).
     // idle records that a launch now waits idle for its session, so a restarted daemon may adopt it; busy
     // withdraws that record while a turn runs in the launch, so a restart never adopts a working agent as idle.
     public RetainedSessions(Action<InteractiveLaunch> stop, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null, Func<InteractiveRetentionSettings>? settings = null,
-        Action<InteractiveLaunch, string>? idle = null, Action<InteractiveLaunch>? busy = null)
+        Action<InteractiveLaunch, string>? idle = null, Action<InteractiveLaunch>? busy = null,
+        Func<InteractiveLaunch, bool>? isIdle = null)
     {
+        _isIdle = isIdle;
         _stop = stop;
         _idle = idle;
         _busy = busy;
@@ -41,27 +45,41 @@ internal sealed class RetainedSessions : IDisposable
         var settings = _settings?.Invoke();
         var timeout = settings?.IdleTimeout() ?? _timeout;
         var maxRetained = settings?.MaxRetainedSessions ?? MaxRetained;
-        var expired = new List<(string Id, InteractiveLaunch Launch)>();
+        var candidates = new List<(string Id, InteractiveLaunch Launch)>();
         lock (_gate)
         {
-            foreach (var pair in _sessions.ToArray())
+            foreach (var pair in _sessions)
             {
                 if (!_reserved.ContainsKey(pair.Key) && timeout >= TimeSpan.Zero && _clock.GetElapsedTime(pair.Value.IdleSince) >= timeout)
                 {
-                    _sessions.Remove(pair.Key);
-                    expired.Add((pair.Key, pair.Value.Launch));
+                    candidates.Add((pair.Key, pair.Value.Launch));
                 }
             }
-            while (true)
+            var rest = _sessions.Where(pair => !_reserved.ContainsKey(pair.Key) && candidates.All(c => c.Id != pair.Key))
+                .OrderBy(pair => pair.Value.Order).ToArray();
+            candidates.AddRange(rest.Take(Math.Max(0, rest.Length - maxRetained)).Select(pair => (pair.Key, pair.Value.Launch)));
+        }
+        // The probe runs outside the lock: a pane that is still working is kept and re-checked later.
+        var expired = new List<(string Id, InteractiveLaunch Launch)>();
+        foreach (var (id, launch) in candidates)
+        {
+            var idle = IsIdle(launch);
+            lock (_gate)
             {
-                var idle = _sessions.Where(pair => !_reserved.ContainsKey(pair.Key)).ToArray();
-                if (idle.Length <= maxRetained) { break; }
-                var oldest = idle.MinBy(pair => pair.Value.Order);
-                _sessions.Remove(oldest.Key);
-                expired.Add((oldest.Key, oldest.Value.Launch));
+                if (_reserved.ContainsKey(id) || !_sessions.TryGetValue(id, out var current) || !ReferenceEquals(current.Launch, launch)) { continue; }
+                if (idle) { _sessions.Remove(id); expired.Add((id, launch)); }
+                else { _sessions[id] = current with { IdleSince = _clock.GetTimestamp() }; }
             }
         }
         CloseBestEffort(expired);
+    }
+
+    // Without a probe the retention timer alone decides; a failing probe is never proof of idleness.
+    bool IsIdle(InteractiveLaunch launch)
+    {
+        if (_isIdle is null) { return true; }
+        try { return _isIdle(launch); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { return false; }
     }
 
     public int Count { get { lock (_gate) { return _sessions.Count; } } }

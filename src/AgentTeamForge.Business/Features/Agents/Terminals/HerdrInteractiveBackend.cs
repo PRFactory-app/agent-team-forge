@@ -36,7 +36,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         _transcripts = transcripts;
         _kind = kind;
         _stateRoot = stateRoot;
-        _liveSessions = new RetainedSessions(control.StopOwned, idleTimeout, timeProvider, retentionSettings);
+        _liveSessions = new RetainedSessions(control.StopOwned, idleTimeout, timeProvider, retentionSettings, isIdle: PaneIsIdle);
         _settleTimeout = settleTimeout ?? TimeSpan.FromSeconds(60);
         _startupTimeout = startupTimeout ?? InteractiveStartup.Timeout;
     }
@@ -324,6 +324,28 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         return _control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult() != InteractiveAgentStatus.Gone;
     });
 
+    // Idle must hold across several samples: one can fall between steps of a turn that is still working.
+    // A vanished pane is safe to close; an unreadable one is kept.
+    bool PaneIsIdle(InteractiveLaunch launch)
+    {
+        try
+        {
+            for (var sample = 0; sample < 5; sample++)
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                switch (_control.StatusAsync(launch, timeout.Token).GetAwaiter().GetResult())
+                {
+                    case InteractiveAgentStatus.Gone: return true;
+                    case InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done: break;
+                    default: return false;
+                }
+                if (sample < 4) { Thread.Sleep(250); }
+            }
+            return true;
+        }
+        catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
+    }
+
     public bool HasIdleJob(JobRecord job)
     {
         if (job.SessionId is not { } sessionId || !_nativeSessions.TryGetValue(sessionId, out var launch)
@@ -422,8 +444,9 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 TerminateOwnedChild();
                 throw;
             }
-            catch (HerdrLaunchException)
+            catch (HerdrLaunchException e)
             {
+                Console.Error.WriteLine($"[atf-daemon] prompt not sent for job {request.JobId}: {e.Message}");
                 // Delivery is uncertain: report it as evidence (needs reconciliation) instead of
                 // letting a Herdr control fault halt the whole dispatcher.
                 return;

@@ -11,6 +11,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
     // A resumed agent replays its transcript before it is ready, so it gets a longer `agent start` wait.
     internal const int FreshStartTimeoutMs = 15_000;
     internal const int ResumeStartTimeoutMs = 90_000;
+    static readonly TimeSpan BusyWaitLimit = TimeSpan.FromHours(1);
     static readonly TimeSpan PaneBusyGrace = TimeSpan.FromSeconds(5);
 
     // stop_job terminates from another thread while the dispatcher is still polling.
@@ -144,7 +145,12 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         }
         // Agent detection can precede the first rendered input editor. Require a
         // settled ready state before sending any bytes, including on resumed panes.
-        var deadline = DateTimeOffset.UtcNow.Add(readinessTimeout ?? InteractiveStartup.Timeout);
+        var readiness = readinessTimeout ?? InteractiveStartup.Timeout;
+        var deadline = DateTimeOffset.UtcNow.Add(readiness);
+        // A resumed agent can be busy with its own wake turn: queue behind it and submit once it is idle.
+        // The wait is bounded by BusyWaitLimit, the turn deadline and stop (the cancellation token).
+        var busyLimit = DateTimeOffset.UtcNow + BusyWaitLimit;
+        var busyLogged = false;
         DateTimeOffset? readySince = null;
         string screen;
         while (true)
@@ -160,6 +166,15 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
                 if (DateTimeOffset.UtcNow - readySince >= TimeSpan.FromSeconds(1)) { break; }
             }
             else { readySince = null; }
+            if (status is InteractiveAgentStatus.Working && DateTimeOffset.UtcNow < busyLimit)
+            {
+                deadline = DateTimeOffset.UtcNow.Add(readiness);
+                if (!busyLogged)
+                {
+                    busyLogged = true;
+                    Console.Error.WriteLine($"[atf-daemon] prompt deferred: agent busy ({launch.AgentName})");
+                }
+            }
             if (status is InteractiveAgentStatus.Blocked or InteractiveAgentStatus.Gone || DateTimeOffset.UtcNow >= deadline)
             {
                 throw new HerdrLaunchException("interactive agent not ready before prompt delivery");

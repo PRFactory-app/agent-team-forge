@@ -48,6 +48,15 @@ public sealed class JobTimeoutTests
     }
 
     [Fact]
+    public void Interactive_turn_without_timeout_s_gets_the_24h_cap_and_headless_keeps_the_profile_limit()
+    {
+        var limits = new SpikeLimits { MaxFakeRuntime = TimeSpan.FromHours(1) };
+
+        Assert.Equal(TimeSpan.FromHours(24), DispatchJob.TurnRuntime(interactive: true, limits));
+        Assert.Equal(TimeSpan.FromHours(1), DispatchJob.TurnRuntime(interactive: false, limits));
+    }
+
+    [Fact]
     public async Task Follow_up_timeout_overrides_daemon_runtime_and_cancels_with_timeout()
     {
         using var f = new JobFixture(new SpikeLimits { MaxFakeRuntime = TimeSpan.FromMilliseconds(200) });
