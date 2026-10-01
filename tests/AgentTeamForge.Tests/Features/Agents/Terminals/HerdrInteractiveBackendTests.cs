@@ -47,6 +47,29 @@ public sealed class HerdrInteractiveBackendTests
     }
 
     [Fact]
+    public async Task Unobserved_turn_that_reads_idle_only_momentarily_is_not_settled_as_interrupted()
+    {
+        using var f = new JobFixture();
+        var reader = new BoundMutableReader(new InteractiveTranscript("native-1", "partial", ["partial"]));
+        var control = new FakeControl { Status = InteractiveAgentStatus.Idle };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Codex, Path.GetTempPath(),
+            settleTimeout: TimeSpan.FromMilliseconds(20));
+        var parent = f.Submit("momentary");
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+        Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(parent.JobId)!.Status);
+
+        control.Statuses = new([InteractiveAgentStatus.Idle, InteractiveAgentStatus.Working]);
+        Assert.False(dispatcher.ReconcileIdleInteractive(f.Store.GetJob(parent.JobId)!));
+        Assert.Equal((JobStatus.NeedsReconciliation, "interactive_completion_unobserved"),
+            (f.Store.GetJob(parent.JobId)!.Status, f.Store.GetJob(parent.JobId)!.ReasonCode));
+
+        control.Statuses = null;
+        Assert.True(dispatcher.ReconcileIdleInteractive(f.Store.GetJob(parent.JobId)!));
+        Assert.Equal(JobStatus.Failed, f.Store.GetJob(parent.JobId)!.Status);
+    }
+
+    [Fact]
     public async Task Follow_up_replaces_a_running_turn_when_Codex_TUI_was_interrupted_to_idle()
     {
         using var f = new JobFixture();

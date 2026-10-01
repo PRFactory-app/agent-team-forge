@@ -392,7 +392,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                     else
                     {
                         completed |= CompletedTurn(root, kind);
-                        if (kind == InteractiveAgentKind.Codex && CodexLoginError(root) is { } login) { apiError = login; }
+                        if (kind == InteractiveAgentKind.Codex && (CodexLoginError(root) ?? CodexTurnError(root)) is { } turnError) { apiError = turnError; }
                     }
                     if (AssistantText(root, kind) is { } text)
                     {
@@ -458,6 +458,15 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
         if (info.ValueKind == JsonValueKind.Object && HttpStatus(info) is { } status && status != 401) { return null; }
         return BackendLoginErrors.Inspect("codex", message) is { } login ? new(login.Code, login.Details, TurnEnded: true) : null;
     }
+
+    /// <summary>
+    /// Codex ended the turn itself on an error (e.g. server_overloaded "Selected model is at capacity").
+    /// Retries are separate `error` events, so only task_complete is final.
+    /// </summary>
+    static InteractiveApiError? CodexTurnError(JsonElement root) =>
+        Str(root, "type") == "event_msg" && root.TryGetProperty("payload", out var payload) && Str(payload, "type") == "task_complete"
+            && payload.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object
+            ? new("agent_api_error", "Codex: " + (Str(error, "message") ?? "turn failed"), TurnEnded: true) : null;
 
     static int? HttpStatus(JsonElement info)
     {

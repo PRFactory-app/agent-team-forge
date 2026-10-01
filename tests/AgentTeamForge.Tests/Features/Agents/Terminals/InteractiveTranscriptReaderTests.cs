@@ -174,17 +174,29 @@ public sealed class InteractiveTranscriptReaderTests
         Assert.Contains("unexpected status 401 Unauthorized", error?.Message);
         Assert.True(error?.TurnEnded);
 
-        // Another status, or a 401 Codex's own status contradicts, is not a login problem.
+        // Another status, or a 401 Codex's own status contradicts, is a final API error but not a login problem.
         File.WriteAllLines(file, [CodexMeta, CodexStarted, CodexUser(Marker), CodexFailed(500, "unexpected status 500 Internal Server Error")]);
-        Assert.Null(reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError);
+        Assert.Equal("agent_api_error", reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError?.Code);
         File.WriteAllLines(file, [CodexMeta, CodexStarted, CodexUser(Marker), CodexFailed(502, Codex401)]);
-        Assert.Null(reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError);
+        Assert.Equal("agent_api_error", reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError?.Code);
         // A later turn's 401 does not belong to this one.
         File.WriteAllLines(file, [CodexMeta, CodexStarted, CodexUser(Marker), CodexAssistant("done"), CodexComplete,
             CodexStarted, CodexUser("human"), CodexFailed(401, Codex401)]);
         var completed = reader.Read(launch, Marker, DateTimeOffset.UtcNow);
         Assert.Null(completed?.ApiError);
         Assert.True(completed?.Completed);
+    }
+
+    [Fact]
+    public void Codex_turn_ended_by_server_overload_is_a_final_api_error()
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Codex);
+        File.WriteAllLines(file, [CodexMeta, CodexStarted, CodexUser(Marker),
+            """{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":null,"error":{"message":"Selected model is at capacity. Please try a different model.","codex_error_info":"server_overloaded"}}}"""]);
+        var error = reader.Read(launch, Marker, DateTimeOffset.UtcNow)?.ApiError;
+        Assert.Equal("agent_api_error", error?.Code);
+        Assert.True(error?.TurnEnded);
     }
 
     [Fact]

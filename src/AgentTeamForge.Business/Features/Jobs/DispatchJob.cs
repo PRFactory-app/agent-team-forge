@@ -134,7 +134,13 @@ public sealed class DispatchJob : IDisposable
     public bool ReconcileIdleInteractive(JobRecord job)
     {
         if (job.Status != JobStatus.NeedsReconciliation
-            || backends.Resolve(job.Backend) is not HerdrInteractiveBackend herdr || !herdr.HasIdleJob(job)) { return false; }
+            || backends.Resolve(job.Backend) is not HerdrInteractiveBackend herdr) { return false; }
+        // One idle sample can fall between steps of a turn that is still working (see HasIdleInteractive).
+        for (var sample = 0; sample < 5; sample++)
+        {
+            if (!herdr.HasIdleJob(job)) { return false; }
+            if (sample < 4) { Thread.Sleep(250); }
+        }
         var settled = store.SettleInterrupted(job.JobId);
         if (settled) { Signal(); }
         return settled;
