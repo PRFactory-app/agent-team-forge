@@ -24,7 +24,9 @@ fi
 if [[ "$DOTNET" == */* ]]; then export DOTNET_ROOT="$(dirname "$DOTNET")"; fi
 [[ -x "$BIN" ]] || { echo "not executable: $BIN" >&2; exit 2; }
 BIN="$(realpath "$BIN")"
-if file "$BIN" | grep -q 'ELF' && [[ ! -f "$(dirname "$BIN")/atf.dll" ]]; then kind=native; else kind=jit; fi
+if file "$BIN" | grep -qE 'ELF|Mach-O' && [[ ! -f "$(dirname "$BIN")/atf.dll" ]]; then kind=native; else kind=jit; fi
+if command -v sha256sum >/dev/null; then HASH=(sha256sum); else HASH=(shasum -a 256); fi
+shopt -s nullglob; libs=("$(dirname "$BIN")"/*.so "$(dirname "$BIN")"/*.dylib); shopt -u nullglob
 mkdir -p evidence
 EVIDENCE_DIR="$(mktemp -d "$ROOT/evidence/published-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
 ATF_TEST_TMP_ROOT="$(mktemp -d /tmp/atf-smoke-XXXXXX)"
@@ -62,6 +64,6 @@ fi
   echo "uname=$(uname -srm)"
   echo "scenarios_total=$total scenarios_passed=$passed scenarios_skipped=$skipped"
   ls -l "$(dirname "$BIN")" | awk 'NR>1{print "file", $5, $9}'
-  sha256sum "$BIN" "$(dirname "$BIN")"/*.so 2>/dev/null | sed 's#  .*/#  #'
+  "${HASH[@]}" "$BIN" ${libs[@]+"${libs[@]}"} | sed 's#  .*/#  #'
 } > "$EVIDENCE_DIR/published-manifest.txt"
 echo "published scenarios passed ($kind, $passed/$total, $skipped skipped); manifest: $EVIDENCE_DIR/published-manifest.txt"

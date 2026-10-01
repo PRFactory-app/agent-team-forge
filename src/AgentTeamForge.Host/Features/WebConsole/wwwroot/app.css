@@ -243,6 +243,7 @@ main { padding-top: 23px; }
 .pager { display: flex; align-items: center; gap: 10px; justify-content: end; color: var(--muted); font: 12px var(--font-mono); }
 pre { max-height: 50vh; margin: 7px 0; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--border); border-radius: 6px; background: var(--sunken); font: 12px/1.5 var(--font-mono); }
 .error { color: var(--danger) !important; }
+[aria-invalid="true"] { border-color: var(--danger) !important; box-shadow: 0 0 0 1px var(--danger); }
 .warn { color: var(--warning); }
 /* Keep state labels accessible while the dot supplies the compact visual cue. */
 .lead-state .state-label, .card-identity .state-label { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

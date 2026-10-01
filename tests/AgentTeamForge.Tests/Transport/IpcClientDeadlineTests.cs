@@ -19,6 +19,10 @@ public sealed class IpcClientDeadlineTests
 {
     static readonly TimeSpan Budget = TimeSpan.FromMilliseconds(800);
 
+    // Outcome-unknown cases need connect and hello to finish inside the budget so the request write starts;
+    // on a loaded host that can exceed 800 ms, and the client then correctly reports daemon_unavailable.
+    static readonly TimeSpan WriteBudget = TimeSpan.FromSeconds(5);
+
     // Generous upper bound for scheduling noise; far below the old 5 s/30 s step timeouts.
     static readonly TimeSpan Slack = TimeSpan.FromSeconds(2);
 
@@ -70,10 +74,10 @@ public sealed class IpcClientDeadlineTests
             await Task.Delay(Timeout.Infinite, ct);
         });
 
-        var (response, elapsed) = await Timed(() => peer.Client(Budget).SendAsync(Submit, CancellationToken.None));
+        var (response, elapsed) = await Timed(() => peer.Client(WriteBudget).SendAsync(Submit, CancellationToken.None));
 
         Assert.Equal(IpcProtocol.OutcomeUnknown, response.Error);
-        Assert.True(elapsed < Budget + Slack, $"took {elapsed}");
+        Assert.True(elapsed < WriteBudget + Slack, $"took {elapsed}");
         Assert.Equal(1, peer.Connections);
     }
 
@@ -89,10 +93,10 @@ public sealed class IpcClientDeadlineTests
         });
         var big = Submit with { Instruction = new string('x', 8 * 1024 * 1024) };
 
-        var (response, elapsed) = await Timed(() => peer.Client(Budget).SendAsync(big, CancellationToken.None));
+        var (response, elapsed) = await Timed(() => peer.Client(WriteBudget).SendAsync(big, CancellationToken.None));
 
         Assert.Equal(IpcProtocol.OutcomeUnknown, response.Error);
-        Assert.True(elapsed < Budget + Slack, $"took {elapsed}");
+        Assert.True(elapsed < WriteBudget + Slack, $"took {elapsed}");
         Assert.Equal(1, peer.Connections);
     }
 

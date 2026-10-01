@@ -12,18 +12,24 @@ internal static class ClientSetup
     const string Name = "agentteamforge";
     const string Adapter = PiMcpAdapter.Package;
 
+    /// <summary>
+    /// The installer's stable link, as written from HOME, when <paramref name="executable"/> is the
+    /// release it currently points at. The OS may report the executable fully link-resolved
+    /// (macOS: /private/tmp/... for HOME=/tmp/...), so the comparison is on canonical paths.
+    /// </summary>
     internal static string StableBinary(string executable, string home)
     {
         var binary = Path.GetFullPath(executable);
         var stable = Path.Combine(home, ".local", "bin", "atf");
-        var current = Path.Combine(home, ".local", "share", "agentteamforge", "current");
+        var root = Path.Combine(home, ".local", "share", "agentteamforge");
+        var current = Path.Combine(root, "current");
         try
         {
-            var link = new FileInfo(stable).LinkTarget;
-            var release = new DirectoryInfo(current).ResolveLinkTarget(true)?.FullName;
-            if (link is not null && release is not null
-                && Path.GetFullPath(Path.Combine(Path.GetDirectoryName(stable)!, link)) == Path.Combine(current, "atf")
-                && (binary == stable || binary == Path.Combine(release, "atf")))
+            if (new FileInfo(stable).LinkTarget is { } link && new DirectoryInfo(current).LinkTarget is not null
+                && Path.GetFullPath(link, Path.GetDirectoryName(stable)!) is var target
+                && Path.GetFileName(target) == "atf" && Path.GetFileName(Path.GetDirectoryName(target)) == "current"
+                && CanonicalPath.Same(Path.GetDirectoryName(Path.GetDirectoryName(target))!, root)
+                && CanonicalPath.Same(binary, Path.Combine(current, "atf")))
             {
                 return stable;
             }
@@ -37,7 +43,7 @@ internal static class ClientSetup
     {
         var root = Path.Combine(home, ".local", "share", "agentteamforge");
         var binary = Path.GetFullPath(executable);
-        if (!binary.StartsWith(Path.Combine(root, "releases") + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+        if (!CanonicalPath.Within(binary, Path.Combine(root, "releases")))
         {
             return executable;
         }
@@ -70,7 +76,7 @@ internal static class ClientSetup
             installed++;
 
             var (exitCode, output) = run(client, ["mcp", "get", Name]);
-            var desiredArgs = $"mcp --state-dir {stateDir}";
+            var desiredArgs = StateArgs + stateDir;
             var found = exitCode == 0;
             var matches = found && HasLine(output, "Command:", binary)
                 && HasLine(output, "Args:", desiredArgs)
@@ -180,12 +186,17 @@ internal static class ClientSetup
         {
             Console.Out.WriteLine($"{(apply ? "Setup succeeded, but no" : "No")} agent clients were found. Install and log in to Claude, Codex, or Pi, then rerun atf setup.");
         }
-        if (!healthy)
+        if (!healthy && !apply)
+        {
+            // Check mode changed nothing, so there is nothing written and nothing to reload.
+            Console.Error.WriteLine("warning: some client registrations are missing or stale (see above); run atf setup to repair them.");
+        }
+        else if (!healthy)
         {
             Console.Error.WriteLine("warning: some client registrations failed (see above); launch config is written. Fix the cause, then rerun atf setup or run the commands above; atf setup --check verifies.");
             Console.Out.WriteLine("Reload clients whose MCP registration succeeded.");
         }
-        else if (installed > 0)
+        else if (installed > 0 && apply)
         {
             Console.Out.WriteLine("Reload installed clients to use AgentTeamForge.");
         }
@@ -216,8 +227,11 @@ internal static class ClientSetup
         foreach (var client in new[] { "claude", "codex" })
         {
             var (code, output) = run(client, ["mcp", "get", Name]);
-            if (code != 0 || !HasLine(output, "Command:", binary)
-                || !HasLine(output, "Args:", $"mcp --state-dir {stateDir}")
+            // Ownership compares canonical paths: an older setup may have registered the same
+            // binary or state through a differently spelled (link-resolved) path.
+            if (code != 0 || !LineValues(output, "Command:").Any(command => SamePath(command, binary))
+                || !LineValues(output, "Args:").Any(args => args.StartsWith(StateArgs, StringComparison.Ordinal)
+                    && SamePath(args[StateArgs.Length..], stateDir))
                 || client == "claude" && !output.Contains("Scope: User config", StringComparison.Ordinal))
             {
                 continue;
@@ -244,7 +258,7 @@ internal static class ClientSetup
             if (settings["packages"] is JsonArray packages)
             {
                 var owned = packages.Where(node => PiMcpAdapter.PackageSource(node) is string source && IsLocalPackageSource(source)
-                    && Path.GetFullPath(source, directory).Equals(extension, StringComparison.Ordinal)).ToArray();
+                    && CanonicalPath.Same(Path.GetFullPath(source, directory), extension)).ToArray();
                 foreach (var entry in owned)
                 {
                     packages.Remove(entry);
@@ -257,11 +271,12 @@ internal static class ClientSetup
             }
             var mcp = ReadObject(mcpPath);
             if (mcp["mcpServers"] is JsonObject servers
-                && JsonNode.DeepEquals(servers[Name], new JsonObject
-                {
-                    ["command"] = binary,
-                    ["args"] = new JsonArray("mcp", "--state-dir", stateDir),
-                }))
+                && servers[Name] is JsonObject { Count: 2 } registration
+                && registration["command"]?.GetValueKind() == JsonValueKind.String && SamePath(registration["command"]!.GetValue<string>(), binary)
+                && registration["args"] is JsonArray { Count: 3 } args
+                && args.All(arg => arg?.GetValueKind() == JsonValueKind.String)
+                && args[0]!.GetValue<string>() == "mcp" && args[1]!.GetValue<string>() == "--state-dir"
+                && SamePath(args[2]!.GetValue<string>(), stateDir))
             {
                 servers.Remove(Name);
                 WriteObject(mcpPath, mcp);
@@ -269,7 +284,7 @@ internal static class ClientSetup
             }
             var state = ReadObject(statePath);
             if (state["stateDir"]?.GetValueKind() == JsonValueKind.String
-                && state["stateDir"]!.GetValue<string>() == stateDir)
+                && SamePath(state["stateDir"]!.GetValue<string>(), stateDir))
             {
                 state.Remove("stateDir");
                 WriteObject(statePath, state);
@@ -376,9 +391,19 @@ internal static class ClientSetup
     internal static bool IsLocalPackageSource(string source) => !source.Contains(':', StringComparison.Ordinal)
         || source.Length >= 3 && char.IsAsciiLetter(source[0]) && source[1] == ':' && source[2] is '\\' or '/';
 
-    static bool HasLine(string output, string label, string value) => output.Split('\n').Any(line =>
-        line.Trim().StartsWith(label + " ", StringComparison.OrdinalIgnoreCase)
-        && line.Trim()[(label.Length + 1)..].Equals(value, StringComparison.Ordinal));
+    const string StateArgs = "mcp --state-dir ";
+
+    static bool HasLine(string output, string label, string value) =>
+        LineValues(output, label).Any(found => found.Equals(value, StringComparison.Ordinal));
+
+    static IEnumerable<string> LineValues(string output, string label) => output.Split('\n')
+        .Select(line => line.Trim())
+        .Where(line => line.StartsWith(label + " ", StringComparison.OrdinalIgnoreCase))
+        .Select(line => line[(label.Length + 1)..]);
+
+    /// <summary>Only absolute paths are compared; a relative one in a client config is not ours.</summary>
+    static bool SamePath(string registered, string expected) =>
+        Path.IsPathFullyQualified(registered) && CanonicalPath.Same(registered, expected);
 
     static bool ClaudeInboundCurrent(string path)
     {

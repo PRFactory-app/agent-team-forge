@@ -46,6 +46,11 @@ if [[ -n "${ATF_DEMO_BIN:-}" ]]; then
   binary_env=(ATF_HOST_BINARY="$ATF_DEMO_BIN")
 fi
 
+# GNU timeout bounds the build and test; macOS ships none (Homebrew coreutils
+# installs it as gtimeout, or as timeout with the gnubin PATH).
+TIMEOUT="$(command -v timeout || command -v gtimeout || true)"
+[[ -n "$TIMEOUT" ]] || { echo "BLOCKED: GNU timeout not found (on macOS: brew install coreutils)" >&2; exit 2; }
+
 mkdir -p .run
 RUN_DIR="$(mktemp -d "$ROOT/.run/demo-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
 
@@ -53,7 +58,7 @@ echo "== AgentTeamForge fake-core demo (TEST CHECKPOINT: fake backend, not a rea
 echo "   sdk $actual | binary ${ATF_DEMO_BIN:-built apphost (JIT)} | evidence $RUN_DIR"
 
 echo "== build (Release)"
-if ! timeout --kill-after=10 "$BUILD_TIMEOUT" "$DOTNET" build AgentTeamForge.slnx -c Release \
+if ! "$TIMEOUT" --kill-after=10 "$BUILD_TIMEOUT" "$DOTNET" build AgentTeamForge.slnx -c Release \
     > "$RUN_DIR/build.log" 2>&1; then
   echo "FAIL: build failed or timed out; see $RUN_DIR/build.log" >&2
   exit 1
@@ -73,7 +78,7 @@ cleanup_tmp() {
 }
 trap 'cleanup_tmp $?' EXIT
 status=0
-env "${binary_env[@]}" timeout --kill-after=10 "$TEST_TIMEOUT" "$DOTNET" test AgentTeamForge.slnx \
+env ${binary_env[@]+"${binary_env[@]}"} "$TIMEOUT" --kill-after=10 "$TEST_TIMEOUT" "$DOTNET" test AgentTeamForge.slnx \
   -c Release --no-build --filter "FullyQualifiedName=$SCENARIO" \
   --logger "trx;LogFileName=demo.trx" --results-directory "$RUN_DIR" \
   > "$RUN_DIR/test.log" 2>&1 || status=$?

@@ -42,8 +42,11 @@ internal static class InteractiveAgentCommand
                 // The cwd key belongs in the TOML value: Codex splits CLI override paths on dots.
                 // TOML literal strings keep Windows backslashes verbatim and avoid double quotes,
                 // which Windows PowerShell 5.1 mangles when it starts a .cmd shim.
+                // Codex rebuilds its tool shells' environment from shell_environment_policy, which can drop the
+                // launch's run marker; the override restores it so cleanup finds what a tool left running.
                 args.AddRange(["--dangerously-bypass-approvals-and-sandbox", "-C", launch.WorkingDirectory,
-                    "-c", "projects={" + TomlKey(CodexPaths.TrustKey(launch.WorkingDirectory)) + "={trust_level='trusted'}}"]);
+                    "-c", "projects={" + TomlKey(CodexPaths.TrustKey(launch.WorkingDirectory)) + "={trust_level='trusted'}}",
+                    "-c", OrphanedBackendProcess.CodexShellMarker(launch.AgentName)]);
                 break;
             case InteractiveAgentKind.Pi:
                 args.AddRange([piShortApprove ? "-a" : "--approve", "--session-dir", launch.PiSessionDirectory!,

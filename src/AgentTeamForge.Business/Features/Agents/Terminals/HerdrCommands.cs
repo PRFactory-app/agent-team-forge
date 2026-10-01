@@ -56,11 +56,17 @@ static class HerdrCommands
         return psi;
     }
 
+    /// <summary>
+    /// macOS has no setsid(1): sh backgrounds the server and exits, so launchd adopts it. Job control (<c>set -m</c>)
+    /// gives it its own process group, which launchd's kill of the daemon's group on a LaunchAgent stop never reaches.
+    /// </summary>
+    internal const string MacServerScript = "set -m; " + ServerScript + " &";
+
     static ProcessStartInfo ServerStartInfo(string sessionName, IReadOnlyDictionary<string, string?> seed, string? extraAllowed)
     {
         var psi = new ProcessStartInfo(OperatingSystem.IsMacOS() ? "/bin/sh" : "setsid") { UseShellExecute = false };
         var args = OperatingSystem.IsMacOS()
-            ? new[] { "-c", ServerScript + " &", sessionName }
+            ? new[] { "-c", MacServerScript, sessionName }
             : ["-f", "sh", "-c", ServerScript, sessionName];
         foreach (var a in args)
         {

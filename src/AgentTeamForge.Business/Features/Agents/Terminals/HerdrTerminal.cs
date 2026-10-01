@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Security.Cryptography;
@@ -275,6 +276,7 @@ public sealed class HerdrTerminal
         onCreated?.Invoke(session with { TabId = tab, PaneId = pane, TerminalId = terminal, TabLabel = label });
 
         var clock = Stopwatch.StartNew();
+        var shellProofRequested = false;
         while (true)
         {
             var info = await OwnedAsync(session.SocketPath, cancellationToken, "pane", "process-info", "--pane", pane);
@@ -284,11 +286,31 @@ public sealed class HerdrTerminal
                 {
                     throw new HerdrLaunchException($"bootstrap proof failed for tab {tab}: its shell is not a child of the recorded server; the tab is left open");
                 }
-                if (_runner.EnvironmentValue(shellPid, BootstrapVariable) != bootstrapFile)
+                var carried = _runner.EnvironmentValue(shellPid, BootstrapVariable);
+                var awaitingShell = carried is null && _runner.EnvironmentMayBeHidden;
+                if (awaitingShell)
                 {
-                    throw new HerdrLaunchException($"bootstrap proof failed for tab {tab}: its shell does not carry this launch's bootstrap; the tab is left open");
+                    // macOS hides a platform shell's (/bin/zsh) environment: a child of the shell reports what it inherited.
+                    if (!shellProofRequested)
+                    {
+                        File.Delete(ShellProofPath(bootstrapFile));
+                        await OwnedAsync(session.SocketPath, cancellationToken, "pane", "run", pane, ShellProofCommand);
+                        shellProofRequested = true;
+                    }
+                    // The report must also have finished: `agent start` refuses a pane whose foreground is not its shell.
+                    if (ShellProof(bootstrapFile) is { } reporter && (reporter != shellPid
+                        || info["result"]?["process_info"]?["foreground_process_group_id"] is JsonValue group && group.TryGetValue<int>(out var foreground) && foreground == shellPid))
+                    {
+                        carried = reporter == shellPid ? bootstrapFile : "";
+                        awaitingShell = false;
+                    }
                 }
-                return new(session, tab, pane, terminal, shell.Pid, shell.StartTicks);
+                if (!awaitingShell)
+                {
+                    return carried == bootstrapFile
+                        ? new(session, tab, pane, terminal, shell.Pid, shell.StartTicks)
+                        : throw new HerdrLaunchException($"bootstrap proof failed for tab {tab}: its shell does not carry this launch's bootstrap; the tab is left open");
+                }
             }
             if (clock.Elapsed >= _options.StartupTimeout)
             {
@@ -308,9 +330,8 @@ public sealed class HerdrTerminal
         Directory.CreateDirectory(root);
         var digest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(label)))[..16];
         var lockPath = Path.Combine(root, $"win-agent-teams-{session.SessionName}.ws-{digest}.lock");
-        // O_RDWR | O_CREAT | O_CLOEXEC: herdr children spawned while the lock is held must not inherit it.
-        var descriptor = OpenLockFile(lockPath, 2 | (OperatingSystem.IsMacOS() ? 0x200 | 0x1000000 : 0x40 | 0x80000), 0x180);
-        if (descriptor < 0) { throw new HerdrLaunchException($"could not open Herdr workspace lock: errno {Marshal.GetLastPInvokeError()}"); }
+        var (descriptor, openError) = OpenLock(lockPath);
+        if (descriptor < 0) { throw new HerdrLaunchException($"could not open Herdr workspace lock: errno {openError}"); }
         using var guard = new SafeFileHandle((IntPtr)descriptor, ownsHandle: true);
         var lockWait = Stopwatch.StartNew();
         while (Flock(descriptor, 2 | 4) != 0)
@@ -343,8 +364,40 @@ public sealed class HerdrTerminal
         finally { _ = Flock(descriptor, 8); }
     }
 
+    /// <summary>
+    /// open(2) is variadic, and Apple arm64 passes variadic arguments on the stack: a mode bound as a fixed argument
+    /// arrives as garbage (files of mode 0 that later opens refuse with EACCES). The file is therefore created by .NET
+    /// with an explicit 0600 and only opened here, and a lock file of ours left unopenable that way is repaired.
+    /// </summary>
+    static (int Descriptor, int Error) OpenLock(string path)
+    {
+        // O_RDWR | O_CLOEXEC: herdr children spawned while the lock is held must not inherit it.
+        var flags = 2 | (OperatingSystem.IsMacOS() ? 0x1000000 : 0x80000);
+        const UnixFileMode privateFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        for (var attempt = 0; ; attempt++)
+        {
+            var descriptor = OpenLockFile(path, flags);
+            var error = descriptor < 0 ? Marshal.GetLastPInvokeError() : 0;
+            if (descriptor >= 0 || attempt > 0) { return (descriptor, error); }
+            try
+            {
+                if (error == 2) // ENOENT
+                {
+                    using var created = new FileStream(path, new FileStreamOptions
+                    { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.ReadWrite, UnixCreateMode = privateFile });
+                }
+                else if (error == 13 && new FileInfo(path).LinkTarget is null) // EACCES
+                {
+                    File.SetUnixFileMode(path, privateFile);
+                }
+                else { return (descriptor, error); }
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { } // Raced or not ours: the retry reports it.
+        }
+    }
+
     [DllImport("libc", EntryPoint = "open", CharSet = CharSet.Ansi, SetLastError = true)]
-    static extern int OpenLockFile(string path, int flags, int mode);
+    static extern int OpenLockFile(string path, int flags);
 
     [DllImport("libc", EntryPoint = "flock", SetLastError = true)]
     static extern int Flock(int descriptor, int operation);
@@ -378,17 +431,20 @@ public sealed class HerdrTerminal
         {
             var psi = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
             foreach (var arg in new[] { "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir" }) { psi.ArgumentList.Add(arg); }
-            using var git = Process.Start(psi);
-            if (git is not null && !git.WaitForExit(3000)) { git.Kill(); }
-            else if (git is not null && git.ExitCode == 0)
+            using var git = Process.Start(psi) ?? throw new InvalidOperationException("git did not start");
+            // Drain both pipes while waiting: a child blocked on a full pipe never exits.
+            var output = git.StandardOutput.ReadToEndAsync();
+            _ = git.StandardError.ReadToEndAsync();
+            if (!git.WaitForExit(3000)) { git.Kill(); }
+            else if (git.ExitCode == 0 && output.Wait(3000))
             {
-                var common = git.StandardOutput.ReadToEnd().Trim();
+                var common = output.Result.Trim();
                 var directory = Path.GetFileName(Path.TrimEndingDirectorySeparator(common));
                 name = directory == ".git" ? Path.GetFileName(Path.GetDirectoryName(common)) ?? name
                     : directory.EndsWith(".git", StringComparison.Ordinal) ? directory[..^4] : directory;
             }
         }
-        catch (Exception e) when (e is IOException or Win32Exception or InvalidOperationException) { }
+        catch (Exception e) when (e is IOException or Win32Exception or InvalidOperationException or AggregateException) { }
         var clean = new string([.. name.Where(c => !char.IsControl(c))]).Trim().TrimStart('-').Trim();
         return clean.Length == 0 ? "agents" : clean[..Math.Min(clean.Length, 128)];
     }
@@ -434,8 +490,10 @@ public sealed class HerdrTerminal
 
     bool ServerIdentityLost(OwnedHerdrSession session) => ProcessReplaced(session.ServerPid, session.ServerStartTicks);
 
-    bool ProcessReplaced(int pid, ulong startTicks) =>
-        _runner.Identity(pid) is { } identity ? identity.StartTicks != startTicks : !PidMayBeAlive(pid);
+    bool ProcessReplaced(int pid, ulong startTicks) => ProcessReplaced(_runner, pid, startTicks);
+
+    static bool ProcessReplaced(IHerdrProcessRunner runner, int pid, ulong startTicks) =>
+        runner.Identity(pid) is { } identity ? identity.StartTicks != startTicks : !PidMayBeAlive(pid);
 
     /// <summary>Rebuild a binding only from the same server, pane, terminal and shell identity.</summary>
     internal async Task<HerdrTabBinding?> RebindAsync(OwnedHerdrSession session, string bootstrapFile, CancellationToken cancellationToken)
@@ -450,17 +508,43 @@ public sealed class HerdrTerminal
             session.ShellPid.Value, session.ShellStartTicks.Value);
         if (await VerifyBindingAsync(binding, cancellationToken) is not null
             || _runner.ParentOf(binding.ShellPid) != session.ServerPid
-            || _runner.EnvironmentValue(binding.ShellPid, BootstrapVariable) != bootstrapFile)
+            || (_runner.EnvironmentValue(binding.ShellPid, BootstrapVariable) is { } carried
+                ? carried != bootstrapFile
+                : !_runner.EnvironmentMayBeHidden || ShellProof(bootstrapFile) != binding.ShellPid))
         {
             return null;
         }
         return binding;
     }
 
+    /// <summary>
+    /// Typed into a new pane only when its shell's environment is hidden: <c>sh</c> is a direct child of the pane
+    /// shell and writes that shell's PID next to the bootstrap path it inherited. Only a shell carrying exactly
+    /// this bootstrap writes the expected file; the leading space keeps it out of history where shells allow.
+    /// </summary>
+    internal const string ShellProofCommand = " /bin/sh -c 'printf %s \"$PPID\" > \"$" + BootstrapVariable + ".shell\"'";
+
+    internal static string ShellProofPath(string bootstrapFile) => bootstrapFile + ".shell";
+
+    /// <summary>The pane shell PID reported for this bootstrap, or null while absent or unreadable.</summary>
+    internal static int? ShellProof(string bootstrapFile)
+    {
+        var path = ShellProofPath(bootstrapFile);
+        try
+        {
+            var file = new FileInfo(path);
+            return file.Exists && file.LinkTarget is null && file.Length is > 0 and <= 16
+                && int.TryParse(File.ReadAllText(path), NumberStyles.None, CultureInfo.InvariantCulture, out var pid) ? pid : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+    }
+
     /// <summary>True only with process proof that the recorded server or pane shell no longer exists.</summary>
-    internal bool OwnedPaneIsGone(OwnedHerdrSession session) =>
-        ServerIdentityLost(session)
-        || session.ShellPid is int shell && session.ShellStartTicks is ulong ticks && ProcessReplaced(shell, ticks);
+    internal bool OwnedPaneIsGone(OwnedHerdrSession session) => OwnedPaneIsGone(_runner, session);
+
+    internal static bool OwnedPaneIsGone(IHerdrProcessRunner runner, OwnedHerdrSession session) =>
+        ProcessReplaced(runner, session.ServerPid, session.ServerStartTicks)
+        || session.ShellPid is int shell && session.ShellStartTicks is ulong ticks && ProcessReplaced(runner, shell, ticks);
 
     internal bool HasUnverifiedLiveIdentity(HerdrTabBinding binding)
     {
@@ -469,7 +553,7 @@ public sealed class HerdrTerminal
         return _runner.Identity(binding.Session.ServerPid) is null || _runner.Identity(binding.ShellPid) is null;
     }
 
-    static bool PidMayBeAlive(int pid)
+    internal static bool PidMayBeAlive(int pid)
     {
         try
         {

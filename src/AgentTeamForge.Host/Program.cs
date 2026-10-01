@@ -1,4 +1,3 @@
-using System.Reflection;
 using AgentTeamForge.Host.Features.FakeBackend;
 using AgentTeamForge.Host.Features.Jobs;
 using AgentTeamForge.Host.Features.PRFactory;
@@ -26,8 +25,7 @@ try
 {
     if (args is ["--version"])
     {
-        var version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
-        Console.WriteLine($"atf {version?.Split('+')[0] ?? "unknown"}");
+        Console.WriteLine($"atf {ProductVersion.Current}");
         return 0;
     }
 

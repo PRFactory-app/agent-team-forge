@@ -41,6 +41,9 @@ public sealed class JobDatabase
             throw new StorageException(StorageFailure.Unavailable, "database already exists");
         }
 
+        // Create the file owner-only before SQLite writes to it; SQLite gives its -wal and -shm
+        // files the database's mode, so the whole set stays private whatever the umask.
+        using (new FileStream(path, PrivateFiles.Options(FileMode.CreateNew, FileAccess.Write))) { }
         var db = new JobDatabase(path, busyTimeout, SqliteOpenMode.ReadWriteCreate);
         db.Migrate(allowCreate: true);
         return new JobDatabase(path, busyTimeout, SqliteOpenMode.ReadWrite);
@@ -57,6 +60,41 @@ public sealed class JobDatabase
         var db = new JobDatabase(path, busyTimeout, SqliteOpenMode.ReadWrite);
         db.Migrate(allowCreate: false);
         return db;
+    }
+
+    /// <summary>
+    /// Runs SQLite's <c>quick_check</c> on an existing database without migrating it. A damaged
+    /// file throws <see cref="StorageFailure.Corrupt"/> carrying SQLite's own report.
+    /// </summary>
+    public static void Verify(string path, TimeSpan busyTimeout)
+    {
+        if (!File.Exists(path))
+        {
+            throw new StorageException(StorageFailure.Unavailable, "database file is missing");
+        }
+
+        try
+        {
+            using var connection = new JobDatabase(path, busyTimeout, SqliteOpenMode.ReadWrite).OpenConnection();
+            using var check = connection.CreateCommand();
+            check.CommandText = "PRAGMA quick_check(10)";
+            var report = new List<string>();
+            using (var reader = check.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    report.Add(reader.GetString(0));
+                }
+            }
+            if (report is not ["ok"])
+            {
+                throw new StorageException(StorageFailure.Corrupt, "quick_check: " + string.Join("; ", report));
+            }
+        }
+        catch (SqliteException ex)
+        {
+            throw StorageException.From(ex);
+        }
     }
 
     /// <summary>Copies an existing database through SQLite, including committed WAL pages.</summary>

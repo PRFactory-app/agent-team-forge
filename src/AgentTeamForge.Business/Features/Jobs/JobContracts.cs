@@ -77,6 +77,7 @@ public static class JobErrors
     public const string ParentNotReady = "parent_not_ready";
     public const string SessionExpired = "session_expired";
     public const string CwdNotGitRepo = "cwd_not_git_repo";
+    public const string NoWorktree = "no_worktree";
 
     public static string FromStorage(StorageException ex) => ex.Failure == StorageFailure.Busy ? StorageBusy : StorageUnavailable;
 

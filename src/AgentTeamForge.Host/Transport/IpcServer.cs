@@ -12,15 +12,32 @@ namespace AgentTeamForge.Host.Transport;
 /// connection: OS peer restriction, one hello frame with the operator credential,
 /// then one request frame and one response.
 /// Handlers run against the daemon lifetime, not the client's connection.
+/// At most <see cref="MaxConcurrentConnections"/> requests are handled at once. Further authenticated
+/// connections wait for a slot; one still waiting after <see cref="SlotWait"/> is answered
+/// <see cref="IpcProtocol.DaemonBusy"/> in place of the hello acknowledgement, before any request
+/// byte is sent, so the client can retry it safely. A live daemon never just drops a connection.
+/// Before authentication a connection is bounded separately: its hello may be at most <see cref="MaxHelloBytes"/>,
+/// and at most <see cref="MaxPendingHandshakes"/> hellos are awaited at once. A connection beyond that is
+/// answered busy as soon as its hello arrives (or <see cref="SlotWait"/> passes), without authenticating it.
 /// </summary>
 public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincipal principal, SpikeLimits limits,
     Func<IpcRequest, IpcResponse> handle, Action<string> log, Action<IpcResponse>? afterReply = null,
     Func<IpcRequest, IDisposable?>? beforeRequest = null) : IDisposable
 {
-    const int MaxConcurrentConnections = 16;
-    readonly SemaphoreSlim _slots = new(MaxConcurrentConnections);
+    internal const int MaxConcurrentConnections = 16;
+    internal static readonly TimeSpan SlotWait = TimeSpan.FromSeconds(1);
+    internal const int MaxPendingHandshakes = 64;
 
-    public void Dispose() => _slots.Dispose();
+    // A hello is the protocol version, op, operator credential and optional principal: well under this.
+    internal const int MaxHelloBytes = 16 * 1024;
+    readonly SemaphoreSlim _slots = new(MaxConcurrentConnections);
+    readonly SemaphoreSlim _handshakes = new(MaxPendingHandshakes);
+
+    public void Dispose()
+    {
+        _slots.Dispose();
+        _handshakes.Dispose();
+    }
 
     /// <summary>Caller must already hold the daemon lock; only then is a stale socket unlinked.</summary>
     public Socket Bind()
@@ -38,7 +55,8 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
         var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         socket.Bind(new UnixDomainSocketEndPoint(socketPath));
         File.SetUnixFileMode(socketPath, StateDirectory.PrivateFile);
-        socket.Listen(32);
+        // Accepting no longer waits for a free handler, so the backlog only absorbs connect bursts.
+        socket.Listen(128);
         return socket;
     }
 
@@ -119,12 +137,8 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
 
             retryDelay = 25;
             failures = 0;
-            if (!_slots.Wait(0, CancellationToken.None))
-            {
-                connection.Dispose();
-                continue;
-            }
-
+            // Concurrency is limited in HandleStreamAsync, for pending hellos and per request after the hello,
+            // so a burst of clients waits or gets a retryable busy reply instead of a silently closed connection.
             try
             {
                 _ = Task.Run(async () =>
@@ -137,14 +151,12 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
                     finally
                     {
                         connection.Dispose();
-                        _slots.Release();
                     }
                 }, CancellationToken.None);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 connection.Dispose();
-                _slots.Release();
                 log($"ipc connection launch failed: {ex}");
             }
         }
@@ -158,6 +170,8 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
 
     async Task HandleStreamAsync(Stream stream, bool peerAuthorized, CancellationToken daemonLifetime)
     {
+        var slotHeld = false;
+        var handshakeHeld = false;
         try
         {
             if (!peerAuthorized)
@@ -165,13 +179,26 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
                 return;
             }
 
-            var hello = await Frames.ReadAsync(stream, IpcJson.Default.IpcRequest, limits.MaxFrameBytes, limits.FrameReadTimeout, daemonLifetime);
+            if (!(handshakeHeld = _handshakes.Wait(0, CancellationToken.None)))
+            {
+                await AnswerBusyAsync(stream, daemonLifetime);
+                return;
+            }
+
+            var hello = await Frames.ReadAsync(stream, IpcJson.Default.IpcRequest, MaxHelloBytes, limits.FrameReadTimeout, daemonLifetime);
+            _handshakes.Release();
+            handshakeHeld = false;
             if (hello is null)
             {
                 return;
             }
 
             var rejection = Authenticate(hello);
+            if (rejection is null)
+            {
+                slotHeld = await _slots.WaitAsync(SlotWait, daemonLifetime);
+                rejection = slotHeld ? null : new IpcResponse(false, IpcProtocol.DaemonBusy);
+            }
             await Frames.WriteAsync(stream, rejection ?? new IpcResponse(true), IpcJson.Default.IpcResponse, daemonLifetime);
             if (rejection is not null)
             {
@@ -229,6 +256,29 @@ public sealed class IpcServer(string socketPath, byte[] credential, BoundPrincip
             log($"request failed: {ex}");
             await TryWriteAsync(stream, new IpcResponse(false, IpcProtocol.InternalError));
         }
+        finally
+        {
+            if (handshakeHeld) { _handshakes.Release(); }
+            if (slotHeld) { _slots.Release(); }
+        }
+    }
+
+    // The hello is consumed first, as on the authenticated busy path, so the client's hello write never meets a
+    // closed peer and it reads a retryable busy reply. The hello itself is never authenticated here.
+    static async Task AnswerBusyAsync(Stream stream, CancellationToken daemonLifetime)
+    {
+        try
+        {
+            if (await Frames.ReadAsync(stream, IpcJson.Default.IpcRequest, MaxHelloBytes, SlotWait, daemonLifetime) is null)
+            {
+                return;
+            }
+        }
+        catch (OperationCanceledException) when (!daemonLifetime.IsCancellationRequested)
+        {
+            // A hello still unsent after the wait is answered busy too.
+        }
+        await Frames.WriteAsync(stream, new IpcResponse(false, IpcProtocol.DaemonBusy), IpcJson.Default.IpcResponse, daemonLifetime);
     }
 
     // A handler's own IOException (e.g. file access) must not look like a dropped client.

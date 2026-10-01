@@ -66,7 +66,12 @@ jobs:
           Copy-Item install.ps1 $bundle
           $extension = Join-Path $bundle 'extensions/pi-wake'
           New-Item -ItemType Directory -Force $extension | Out-Null
-          Copy-Item -Path @('extensions/pi-wake/index.ts','extensions/pi-wake/package.json','extensions/pi-wake/README.md','extensions/pi-wake/PROVENANCE.md') -Destination $extension
+          Copy-Item -Path @('extensions/pi-wake/index.ts','extensions/pi-wake/README.md','extensions/pi-wake/PROVENANCE.md') -Destination $extension
+          # The bundled extension carries the release version, not the source tree's placeholder.
+          # A CRLF checkout (autocrlf) ends the line in \r, which multiline $ alone does not match.
+          $package = (Get-Content -Raw extensions/pi-wake/package.json) -replace '(?m)^  "version": "[^"]*",(?=\r?$)', "  `"version`": `"$version`","
+          [IO.File]::WriteAllText((Join-Path $extension 'package.json'), $package)
+          if ((Get-Content -Raw (Join-Path $extension 'package.json') | ConvertFrom-Json).version -ne $version) { throw 'pi-wake version stamp failed' }
           Copy-Item -Path extensions/pi-wake/src -Destination $extension -Recurse
           foreach ($license in 'LICENSE','LICENSE.md','COPYING') {
             if (Test-Path $license) { Copy-Item $license $bundle }

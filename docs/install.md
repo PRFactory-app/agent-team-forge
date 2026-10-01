@@ -1,7 +1,7 @@
 # Install and startup
 
 After a release is published, install the latest Linux x64 release (tested glibc
-distributions) with:
+distributions) or macOS arm64 tester build with:
 
 ```sh
 curl -fsSL https://github.com/PRFactory-app/agent-team-forge/releases/latest/download/install.sh | sh
@@ -41,6 +41,14 @@ The installer downloads the archive and its checksum from the same tag. This
 detects transfer corruption; it is not an independent publisher signature, and
 the downloaded installer is trusted before archive verification.
 
+The macOS binary is ad-hoc signed, not notarized. An archive downloaded with a
+browser carries the `com.apple.quarantine` attribute, which `tar` copies onto
+every extracted file, and Gatekeeper then refuses to open `atf`. `install.sh
+--archive` clears that attribute from the files it extracts after the checksum
+matches; `curl` downloads are not quarantined. If you unpack an archive by hand,
+run `xattr -dr com.apple.quarantine` on the extracted directory before starting
+`atf`.
+
 Install and log in to whichever backend CLIs you use: Claude Code, Codex, or Pi.
 On Linux, the first interactive setup asks you to choose Herdr for visible agent
 windows or headless for background agents. If Herdr cannot run, setup explains
@@ -63,22 +71,33 @@ If you intentionally test a temporary binary or state directory, setup requires
 `--force` before writing global MCP registrations. For isolated daemon testing,
 use `atf start --state-dir DIR` or `atf mcp --state-dir DIR` instead.
 
-Linux arm64 and musl are not supported. macOS arm64 remains
-tester-only until validated on that machine. See [usage](usage.md)
+Linux arm64 and musl are not supported. macOS arm64 is tested; see
+[platform status](platform-status.md). See [usage](usage.md)
 for use, and `"$HOME/.local/bin/atf" uninstall` for removal. See
 [Upgrade and uninstall](#upgrade-and-uninstall).
 
 Login autostart is optional and off by default. Run `atf setup --autostart`
 to enable it, `atf setup --autostart=off` to remove it, and
 `atf doctor` to see its status. Linux uses a systemd user unit; macOS uses a
-LaunchAgent. When the Linux unit is installed, lazy start uses `systemctl --user
-start agentteamforge.service`; otherwise it uses `setsid`. A unit-started daemon gets systemd's user environment,
+LaunchAgent (`~/Library/LaunchAgents/com.agentteamforge.daemon.plist`). On macOS,
+enabling also loads the agent with `launchctl bootstrap`, so launchd starts the
+daemon right away (it exits at once if a daemon is already running), and
+`--autostart=off` unloads it with `launchctl bootout`, which also stops a daemon
+that launchd started. The launchd label is per user, not per HOME: setup only unloads, replaces
+or kickstarts a loaded job that runs this binary on this state directory (or what this HOME's
+plist registered), and refuses to enable over another installation's job. When the Linux unit is installed, lazy start uses `systemctl --user
+start agentteamforge.service`; when the macOS LaunchAgent is loaded, it uses `launchctl kickstart`,
+so the daemon runs under launchd rather than as a child of the client that needed it. Otherwise
+lazy start launches the daemon directly (through `setsid` on Linux). A unit-started daemon gets systemd's user environment,
 not your shell's; put provider keys or config variables agents need in
 `~/.config/environment.d/`. Windows uses the current user's Run entry through a hidden
 `wscript.exe` launcher in the state directory. The default state directory is
 `~/.local/state/agentteamforge` on every OS (`%USERPROFILE%\.local\state\agentteamforge`
 on Windows); it is deliberately not under `%LOCALAPPDATA%`, which Windows Terminal
-tabs see through MSIX virtualization and cannot read. A lazy Windows start detaches
+tabs see through MSIX virtualization and cannot read. On Linux and macOS the daemon
+socket `STATE/daemon.sock` may be at most 107 and 103 bytes respectively, so
+`atf setup` and `atf init` refuse a longer state path before creating anything;
+use a shorter `--state-dir`, HOME or `XDG_STATE_HOME`. A lazy Windows start detaches
 without inheriting the bridge's handles and writes to `daemon.log`. macOS and
 Windows startup still need validation on those machines. `atf start` and `atf stop`
 are available for manual control.
@@ -86,13 +105,22 @@ are available for manual control.
 ## Upgrade and uninstall
 
 Rerun the installer to upgrade. Rerunning the active version verifies its installed
-files and makes no changes. An upgrade stops the running daemon, so wait for jobs
+files and makes no changes. Without `--version`, the installer never switches to
+an older release: if the active version is a newer prerelease than the latest
+release, it reports that and changes nothing. With `--version` or `--archive` it
+switches to the named version, reactivating it in place when that version is
+still installed, and says so when that is a downgrade. An upgrade stops the running daemon, so wait for jobs
 to finish first. It preserves the profile, launch mode, state, and stable MCP
 executable path; reload agent clients after an upgrade. If setup used a custom
 `--state-dir`, pass the same directory to the installer. Back up the state
 directory before an upgrade that changes the database schema: switching back
 to an older binary does not roll back a migrated database. ATF has no restore
-command; restore from a backup is a manual operation with the daemon stopped.
+command; restore from a backup is a manual operation with the daemon stopped:
+move `jobs.db`, `jobs.db-wal` and `jobs.db-shm` out of the state directory, copy
+a `backups/jobs-*.db` file to `jobs.db`, `chmod 600` it, then `atf start`. The
+daemon runs SQLite's `quick_check` on every start and refuses a damaged database
+before reporting ready; `atf start` then prints the SQLite error, the available
+backups and these steps.
 
 Run `"$HOME/.local/bin/atf" uninstall` (or `atf uninstall` on Windows) to remove
 the binaries, ATF-owned client registrations, Pi wake entry, and login

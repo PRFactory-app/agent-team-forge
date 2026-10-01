@@ -11,9 +11,12 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
     // A resumed agent replays its transcript before it is ready, so it gets a longer `agent start` wait.
     internal const int FreshStartTimeoutMs = 15_000;
     internal const int ResumeStartTimeoutMs = 90_000;
+    static readonly TimeSpan PaneBusyGrace = TimeSpan.FromSeconds(5);
 
     // stop_job terminates from another thread while the dispatcher is still polling.
     readonly ConcurrentDictionary<string, (OwnedHerdrSession Session, HerdrTabBinding Binding)> _runs = [];
+    // Pi login errors already on screen when the prompt was sent (history of a resumed session).
+    readonly ConcurrentDictionary<string, string[]> _piLoginAnchorBeforePrompt = [];
 
     public async Task StartAsync(InteractiveLaunch launch, CancellationToken cancellationToken)
     {
@@ -57,7 +60,21 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
             args.AddRange(AgentArguments(launch));
             try
             {
-                await terminal.RunOwnedAsync(session, TimeSpan.FromMilliseconds(startTimeoutMs) + TimeSpan.FromSeconds(15), cancellationToken, [.. args]);
+                // Herdr samples a pane's foreground lazily: right after the macOS shell proof ran in it, `agent start`
+                // can still see a busy pane. It refuses before typing anything, so a short retry is safe.
+                var busyUntil = DateTimeOffset.UtcNow + PaneBusyGrace;
+                while (true)
+                {
+                    try
+                    {
+                        await terminal.RunOwnedAsync(session, TimeSpan.FromMilliseconds(startTimeoutMs) + TimeSpan.FromSeconds(15), cancellationToken, [.. args]);
+                        break;
+                    }
+                    catch (HerdrLaunchException e) when (e.Message.Contains("agent_pane_busy", StringComparison.Ordinal) && DateTimeOffset.UtcNow < busyUntil)
+                    {
+                        await Task.Delay(250, cancellationToken);
+                    }
+                }
             }
             catch (HerdrLaunchException) when (launch.ResumeSessionId is not null && !terminal.OwnedPaneIsGone(session))
             {
@@ -80,7 +97,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
             _runs.TryRemove(launch.AgentName, out _);
             if (cleaned)
             {
-                File.Delete(launch.BootstrapPath);
+                HerdrOwnedSessions.DeleteLaunchFiles(launch.BootstrapPath);
                 throw new BackendNotStartedException("interactive launch failed; owned session stopped: " + ex.Message, ex);
             }
             throw;
@@ -129,10 +146,11 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         // settled ready state before sending any bytes, including on resumed panes.
         var deadline = DateTimeOffset.UtcNow.Add(readinessTimeout ?? InteractiveStartup.Timeout);
         DateTimeOffset? readySince = null;
+        string screen;
         while (true)
         {
             var status = await StatusAsync(launch, cancellationToken);
-            var screen = await terminal.ReadAgentAsync(session, binding.PaneId, cancellationToken);
+            screen = await terminal.ReadAgentAsync(session, binding.PaneId, cancellationToken);
             // A retained live pane already passed startup; its scrollback is agent output.
             if (!launch.LiveReuse && StartupBlocker(launch.Kind, screen, launch.ResumeSessionId is not null) is { } blocker) { throw blocker; }
             if (status is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done
@@ -149,6 +167,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
             await Task.Delay(250, cancellationToken);
         }
         launch.StartupProgress?.Invoke("ready");
+        _piLoginAnchorBeforePrompt[launch.AgentName] = PiLoginAnchor(screen);
         try
         {
             launch.StartupProgress?.Invoke("submitted");
@@ -212,27 +231,136 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
 
     public bool StopJobs(string stateRoot, IReadOnlyList<string> jobIds) =>
         HerdrOwnedSessions.Stop(stateRoot, jobIds, session =>
-            terminal.RecoverOwnedSessionAsync(session, CancellationToken.None).GetAwaiter().GetResult());
+        {
+            var tree = PaneTree(session.ShellPid, session.ShellStartTicks);
+            terminal.RecoverOwnedSessionAsync(session, CancellationToken.None).GetAwaiter().GetResult();
+            if (HerdrOwnedSessions.ValidAgentName(session.AgentName)) { TerminateLeftovers(session.AgentName!, tree); }
+        });
 
     internal bool IsBound(InteractiveLaunch launch) => _runs.ContainsKey(launch.AgentName);
+
+    public ProcessIdentity? PaneShell(InteractiveLaunch launch) =>
+        _runs.TryGetValue(launch.AgentName, out var run) ? new(run.Binding.ShellPid, run.Binding.ShellStartTicks) : null;
 
     public void StopOwned(InteractiveLaunch launch)
     {
         if (_runs.TryGetValue(launch.AgentName, out var run))
         {
+            var tree = PaneTree(run.Binding.ShellPid, run.Binding.ShellStartTicks);
             terminal.StopOwnedSessionAsync(run.Session, CancellationToken.None).GetAwaiter().GetResult();
+            TerminateLeftovers(launch.AgentName, tree);
             _runs.TryRemove(launch.AgentName, out _);
+            _piLoginAnchorBeforePrompt.TryRemove(launch.AgentName, out _);
+            // The bootstrap files proved this pane's ownership; the record goes last, as it fences the job.
+            HerdrOwnedSessions.DeleteLaunchFiles(launch.BootstrapPath);
             HerdrOwnedSessions.Delete(launch);
         }
+    }
+
+    /// <summary>
+    /// Captured before the pane closes: on macOS a tool shell started in its own session survives the pane's hangup,
+    /// is reparented to launchd and, as a platform binary, never shows the launch marker.
+    /// </summary>
+    static IReadOnlyDictionary<int, ulong> PaneTree(int? shellPid, ulong? shellToken) =>
+        OperatingSystem.IsMacOS() && shellPid is int pid && shellToken is ulong token
+            ? RunProcessSnapshots.Tree(pid, token) : new Dictionary<int, ulong>();
+
+    /// <summary>Codex tool shells carry the launch marker (InteractiveAgentCommand) and outlive the closed pane.</summary>
+    static void TerminateLeftovers(string agentName, IReadOnlyDictionary<int, ulong> tree)
+    {
+        OrphanedBackendProcess.TerminateMarked([agentName]);
+        RunProcessSnapshots.Signal(tree);
     }
 
     internal static bool IsUnsettledPrompt(HerdrLaunchException e) =>
         e.Message.Contains("timeout", StringComparison.Ordinal) || e.Message.Contains("timed out", StringComparison.Ordinal)
         || e.Message.Contains("agent_prompt_stalled", StringComparison.Ordinal);
 
+    /// <summary>
+    /// Pi rejects a prompt it has no credential for without recording it, so no transcript ever
+    /// acknowledges it; its own error on screen is the only evidence. Only an error line that
+    /// appeared after the prompt was sent counts, so a resumed session's history never does. A run
+    /// this daemon did not prompt (recovered after a restart) has no record of the screen before its
+    /// prompt, so no screen line is evidence for it.
+    /// </summary>
+    public async Task<AgentStartupBlockedException?> DeliveryBlockerAsync(InteractiveLaunch launch, CancellationToken cancellationToken)
+    {
+        if (launch.Kind != InteractiveAgentKind.Pi || !_piLoginAnchorBeforePrompt.TryGetValue(launch.AgentName, out var anchor)) { return null; }
+        var (session, binding) = Binding(launch);
+        var screen = await terminal.ReadAgentAsync(session, binding.PaneId, cancellationToken);
+        return DeliveryBlocker(launch.Kind, screen, anchor);
+    }
+
+    const int PiLoginAnchorContext = 4;
+
+    /// <summary>The last Pi login line before the prompt with the lines above it; empty when there was none.</summary>
+    internal static string[] PiLoginAnchor(string screen)
+    {
+        if (PiLoginLines(screen) is not [.., var last]) { return []; }
+        var lines = screen.Split('\n');
+        var first = Math.Max(0, last - PiLoginAnchorContext);
+        return [.. lines[first..(last + 1)].Select(line => line.Trim())];
+    }
+
+    /// <summary>
+    /// A login line below where <paramref name="anchor"/> (the last one before the prompt) now sits. The screen is a
+    /// sliding window that only grows at the bottom, so the anchor is its topmost match (its context may be cut off
+    /// at the top); once it has scrolled out, every visible login line came after it.
+    /// </summary>
+    internal static AgentStartupBlockedException? DeliveryBlocker(InteractiveAgentKind kind, string screen, IReadOnlyList<string> anchor)
+    {
+        if (kind != InteractiveAgentKind.Pi) { return null; }
+        var found = PiLoginLines(screen);
+        if (found.Count == 0) { return null; }
+        var after = anchor.Count == 0 ? -1 : AnchorLine(screen.Split('\n'), anchor, found);
+        return found[^1] > after ? PiLoginBlocker(screen, found[^1]) : null;
+    }
+
+    /// <summary>The topmost login line whose preceding lines match the anchor; -1 when it is no longer on screen.</summary>
+    static int AnchorLine(string[] lines, IReadOnlyList<string> anchor, List<int> loginLines)
+    {
+        foreach (var index in loginLines)
+        {
+            var matches = true;
+            for (var back = 0; back < anchor.Count && index - back >= 0; back++)
+            {
+                if (lines[index - back].Trim() != anchor[anchor.Count - 1 - back]) { matches = false; break; }
+            }
+            if (matches) { return index; }
+        }
+        return -1;
+    }
+
+    /// <summary>Pi's own signed-out lines ("Warning: No models available. Use /login ...", "Error: No API key found ..."), by index.</summary>
+    static List<int> PiLoginLines(string screen)
+    {
+        var lines = screen.Split('\n');
+        var found = new List<int>();
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i].Trim();
+            if (line.StartsWith("Error: No API key found", StringComparison.Ordinal)
+                || line.StartsWith("Warning: No models available", StringComparison.Ordinal))
+            {
+                found.Add(i);
+            }
+        }
+        return found;
+    }
+
+    // The same mapping headless Pi uses, over the error line and its "Use /login" continuation.
+    static AgentStartupBlockedException? PiLoginBlocker(string screen, int line) =>
+        BackendLoginErrors.Inspect("pi", string.Join('\n', screen.Split('\n').Skip(line).Take(3))) is { } login
+            ? new(login.Code, login.Details) : null;
+
     internal static AgentStartupBlockedException? StartupBlocker(InteractiveAgentKind kind, string screen, bool resumed = false)
     {
         bool Has(string text) => screen.Contains(text, StringComparison.OrdinalIgnoreCase);
+        // A fresh Pi renders its editor even without any credential and warns above it.
+        if (kind == InteractiveAgentKind.Pi && !resumed && PiLoginLines(screen) is [var first, ..])
+        {
+            return PiLoginBlocker(screen, first);
+        }
         // A ready editor (or a resumed transcript) can contain historical output quoting
         // setup screens. Only Claude's logged-out status in the footer below the editor
         // is a blocker then.

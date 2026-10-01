@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Processes;
 
 namespace AgentTeamForge.Business.Features.Jobs;
@@ -51,7 +52,7 @@ public static class BackendAvailability
             var error = process.StandardError.ReadToEndAsync();
             if (!process.WaitForExit(3000))
             {
-                try { process.Kill(entireProcessTree: true); }
+                try { OwnedProcessTermination.Kill(process); }
                 catch (InvalidOperationException) { }
                 return "unknown";
             }

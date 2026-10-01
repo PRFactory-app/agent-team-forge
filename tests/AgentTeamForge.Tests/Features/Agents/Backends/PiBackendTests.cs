@@ -136,6 +136,59 @@ public sealed class PiBackendTests : IDisposable
         Assert.Contains("Unknown option: --mcp-config", Assert.IsType<BackendEvidence.NotStarted>(failure).Details);
     }
 
+    [Fact]
+    public async Task Missing_api_key_is_login_required_and_names_the_reason_last()
+    {
+        // Captured from `pi -p --mode json` with no credentials (HOME without ~/.pi/agent/auth.json).
+        var script = _dir.File("pi-signed-out");
+        File.WriteAllText(script, """
+            #!/usr/bin/env bash
+            cat > /dev/null
+            echo "Warning: No project session found with id 'b881f901'; creating a new session with that id." >&2
+            echo '{"type":"session","version":3,"id":"b881f901-e15b-47ba-b8e4-7d64703e7a4a"}'
+            printf '%s\n' 'No API key found for the selected model.' '' 'Use /login to log into a provider via OAuth or API key. See:' '  /opt/pi/docs/providers.md' '  /opt/pi/docs/models.md' >&2
+            exit 1
+
+            """.ReplaceLineEndings("\n"));
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        List<string> log = [];
+        var request = Request("x") with
+        {
+            Output = (stream, bytes) => { lock (log) { log.Add(stream + ":" + System.Text.Encoding.UTF8.GetString(bytes.Span)); } },
+        };
+
+        var evidence = await RunAsync(request, new PiBackend(script));
+
+        var login = Assert.IsType<BackendEvidence.AgentError>(evidence[^1]);
+        Assert.Equal("agent_login_required", login.Code);
+        Assert.Contains("No API key found for the selected model.", login.Details, StringComparison.Ordinal);
+        Assert.DoesNotContain("docs", login.Details, StringComparison.Ordinal);
+        // The reason is logged after the CLI's last stderr line (a docs path), so it is the latest activity.
+        var reason = log.FindIndex(line => line.StartsWith("status:Pi has no login", StringComparison.Ordinal));
+        Assert.True(reason > log.FindLastIndex(line => line.StartsWith("stderr:", StringComparison.Ordinal) && line.Length > "stderr:".Length));
+    }
+
+    [Fact]
+    public async Task Settled_turn_completes_even_when_stderr_or_reply_mentions_a_missing_key()
+    {
+        var script = _dir.File("pi-mentions-login");
+        File.WriteAllText(script, """
+            #!/usr/bin/env bash
+            cat > /dev/null
+            echo 'No API key found for the selected model.' >&2
+            echo '{"type":"agent_start"}'
+            echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"No API key found; use /login"}],"stopReason":"stop"}}'
+            echo '{"type":"agent_settled"}'
+
+            """.ReplaceLineEndings("\n"));
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        var evidence = await RunAsync(Request("x"), new PiBackend(script));
+
+        Assert.Contains(new BackendEvidence.Result("c1", "No API key found; use /login"), evidence);
+        Assert.DoesNotContain(evidence, e => e is BackendEvidence.AgentError);
+    }
+
     [Theory]
     [InlineData("\"npm:pi-mcp-adapter\"")]
     [InlineData("{\"source\":\"npm:pi-mcp-adapter\"}")]

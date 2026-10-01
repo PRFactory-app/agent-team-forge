@@ -112,7 +112,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         {
             DisplayName = job.TargetAgent,
             ResumeSessionId = job.SessionId,
-            WorkingDirectory = job.WorktreePath ?? job.Cwd,
+            WorkingDirectory = JobWorktree.WorkingDirectory(job),
         };
         return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout,
             RememberSession, BindNativeSession, StopLaunch, recovered: true);
@@ -158,10 +158,10 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         {
             var owned = HerdrOwnedSessions.Read(_stateRoot, _ => { }).FirstOrDefault(entry => entry.Session.JobId == owner.JobId);
             if (owned.Session is null) { return PaneOwnerRecovery.Unverified; }
-            if (control.PaneIsGone(owned.Session)) { return Gone(owned.Path, releaseFence); }
+            if (control.PaneIsGone(owned.Session)) { return Gone(owned.Path, owned.Session, releaseFence); }
             if (owner.SessionId is not { } sessionId || Rebind(control, owned.Path, owned.Session, owner, sessionId) is not { } launch)
             {
-                return control.PaneIsGone(owned.Session) ? Gone(owned.Path, releaseFence) : PaneOwnerRecovery.Unverified;
+                return control.PaneIsGone(owned.Session) ? Gone(owned.Path, owned.Session, releaseFence) : PaneOwnerRecovery.Unverified;
             }
             if (!BindTranscript(launch, owned.Session, sessionId) || !SettledIdle(launch) || !LatestTurnSettled(launch, correlations)
                 || !releaseFence()) { return PaneOwnerRecovery.Unverified; }
@@ -172,10 +172,13 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     }
 
     // The record stays as proof for the restored-pane sweep and stop_agent. A sibling marker makes
-    // later starts repeat the release silently instead of logging it again.
-    static PaneOwnerRecovery Gone(string recordPath, Func<bool> releaseFence)
+    // later starts repeat the release silently instead of logging it again. The bootstrap files only
+    // proved the pane, which is gone, and processes its agent left behind no longer belong to anything.
+    static PaneOwnerRecovery Gone(string recordPath, OwnedHerdrSession session, Func<bool> releaseFence)
     {
         if (!releaseFence()) { return PaneOwnerRecovery.Unverified; }
+        if (HerdrOwnedSessions.ValidAgentName(session.AgentName)) { OrphanedBackendProcess.TerminateMarked([session.AgentName!]); }
+        HerdrOwnedSessions.DeleteLaunchFiles(HerdrOwnedSessions.BootstrapForRecord(recordPath));
         var marker = recordPath + ".gone";
         if (File.Exists(marker)) { return PaneOwnerRecovery.GoneAgain; }
         try { File.WriteAllText(marker, "released"); }
@@ -204,7 +207,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             ? _transcripts.FindPiSessionDirectory(Path.Combine(_stateRoot, "pi-sessions"), sessionId) : null;
         if (_kind == InteractiveAgentKind.Pi && piDirectory is null) { return null; }
         var launch = new InteractiveLaunch(_kind, Path.GetFileNameWithoutExtension(bootstrap),
-            owner.WorktreePath ?? owner.Cwd ?? Environment.CurrentDirectory, sessionId, piDirectory, bootstrap)
+            JobWorktree.WorkingDirectory(owner) ?? Environment.CurrentDirectory, sessionId, piDirectory, bootstrap)
         { JobId = owner.JobId, TabLabel = session.TabLabel, LiveReuse = true }.WithSelection(owner.Options);
         try
         {
@@ -403,6 +406,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         string? _lastControlError;
         public bool OwnedSessionStopped { get; private set; }
         public int? ProcessId => null; // The Herdr server owns the TUI process, not this daemon.
+        public ProcessSnapshotRoot? SnapshotRoot => control.PaneShell(launch) is { } shell ? new(shell.Pid, launch.AgentName, shell.StartTicks) : null;
 
         public async Task DeliverAsync(CancellationToken cancellationToken)
         {
@@ -535,6 +539,13 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 }
                 if (!acknowledged)
                 {
+                    if (_promptReturned && launch.Kind == InteractiveAgentKind.Pi && await DeliveryBlockerAsync(cancellationToken) is { } login)
+                    {
+                        // Pi refused the prompt before recording it: nothing ran, so the pane goes too.
+                        TerminateOwnedChild();
+                        yield return new BackendEvidence.AgentError(login.Reason, login.Message);
+                        yield break;
+                    }
                     if (status == InteractiveAgentStatus.Unverified)
                     {
                         confirmationDeadline = DateTimeOffset.UtcNow.Add(startupTimeout);
@@ -576,6 +587,12 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 }
                 await Task.Delay(250, cancellationToken);
             }
+        }
+
+        async Task<AgentStartupBlockedException?> DeliveryBlockerAsync(CancellationToken cancellationToken)
+        {
+            try { return await control.DeliveryBlockerAsync(launch, cancellationToken); }
+            catch (HerdrLaunchException) { return null; } // A failed screen read is no evidence either way.
         }
 
         async Task<InteractiveAgentStatus?> StatusAsync(CancellationToken cancellationToken)
@@ -681,8 +698,15 @@ internal interface IHerdrAgentControl
     Task<InteractiveAgentStatus> StatusAsync(InteractiveLaunch launch, CancellationToken cancellationToken);
     void StopOwned(InteractiveLaunch launch);
 
+    /// <summary>The agent's own sign-in error for a sent prompt it never recorded; null when none is on screen.</summary>
+    Task<AgentStartupBlockedException?> DeliveryBlockerAsync(InteractiveLaunch launch, CancellationToken cancellationToken) =>
+        Task.FromResult<AgentStartupBlockedException?>(null);
+
     /// <summary>True only with process proof that the launch's server or pane shell no longer exists.</summary>
     bool PaneIsGone(InteractiveLaunch launch) => true;
+
+    /// <summary>The bound pane shell's PID and start identity; null while unbound.</summary>
+    ProcessIdentity? PaneShell(InteractiveLaunch launch) => null;
 }
 
 internal interface IInteractiveTranscriptReader

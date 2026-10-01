@@ -58,7 +58,10 @@ public sealed class ClaudeCodeBackendTests : IDisposable
             [new BackendEvidence.Session("c1", chosen), new BackendEvidence.Ack("c1"), new BackendEvidence.Session("c1", "s-1"), new BackendEvidence.Result("c1", "hello"), new BackendEvidence.EndOfOutput()],
             evidence);
         Assert.Equal("say --hi", File.ReadAllText(_dir.File("stdin")));
-        Assert.Equal(_dir.Path, File.ReadAllText(_dir.File("cwd")).Trim());
+        // `pwd` reports the physical path; on macOS /tmp is a symlink to /private/tmp.
+        var cwd = File.ReadAllText(_dir.File("cwd")).Trim();
+        Assert.EndsWith(Path.GetFileName(_dir.Path), cwd, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(cwd, "cwd")));
     }
 
     [Fact]

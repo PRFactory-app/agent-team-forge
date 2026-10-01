@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
@@ -98,7 +99,7 @@ public sealed class WebConsoleScenarios
             {
                 try
                 {
-                    browser.Kill(entireProcessTree: true);
+                    OwnedProcessTermination.Kill(browser);
                 }
                 catch (InvalidOperationException)
                 {

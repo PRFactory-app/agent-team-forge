@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using System.Text.Json;
 
 namespace AgentTeamForge.Business.Features.Jobs;
@@ -119,22 +120,57 @@ public sealed class BackendModelDiscovery
                     .Where(line => line.Length > 0 && line.Length < 128 && !line.Contains(' '))];
             }
 
-            using var document = JsonDocument.Parse(output);
-            return [.. document.RootElement.GetProperty("models").EnumerateArray()
-                .Where(item => item.TryGetProperty("supported_in_api", out var supported) && supported.ValueKind == JsonValueKind.True
-                    && item.TryGetProperty("visibility", out var visibility) && visibility.GetString() == "list"
-                    && item.TryGetProperty("slug", out var slug) && slug.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(slug.GetString()))
-                .Select(item => item.GetProperty("slug").GetString()!)];
+            return ParseCodex(output);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             // Missing binary, changed output, or deadline: the catalog is unknown.
             if (started && !process.HasExited)
             {
-                try { process.Kill(entireProcessTree: true); }
+                try { OwnedProcessTermination.Kill(process); }
                 catch (Exception killError) when (killError is not OutOfMemoryException) { }
             }
             return [];
         }
     }
+
+    /// <summary>Listed API models from <c>codex debug models</c>, with each model's reasoning levels when it reports them.</summary>
+    internal static IReadOnlyCollection<string> ParseCodex(string output)
+    {
+        using var document = JsonDocument.Parse(output);
+        var models = new List<string>();
+        var efforts = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        foreach (var item in document.RootElement.GetProperty("models").EnumerateArray())
+        {
+            if (!(item.TryGetProperty("supported_in_api", out var supported) && supported.ValueKind == JsonValueKind.True
+                && item.TryGetProperty("visibility", out var visibility) && visibility.GetString() == "list"
+                && item.TryGetProperty("slug", out var slug) && slug.GetString() is { Length: > 0 } name))
+            {
+                continue;
+            }
+
+            models.Add(name);
+            if (item.TryGetProperty("supported_reasoning_levels", out var levels) && levels.ValueKind == JsonValueKind.Array)
+            {
+                string[] known = [.. levels.EnumerateArray()
+                    .Select(level => level.ValueKind == JsonValueKind.Object && level.TryGetProperty("effort", out var effort) ? effort.GetString() : null)
+                    .OfType<string>().Where(effort => effort.Length > 0)];
+                if (known.Length > 0) { efforts[name] = known; }
+            }
+        }
+        return new DiscoveredModelCollection(models, efforts);
+    }
+}
+
+/// <summary>A discovered model list; also knows each model's reasoning levels when the CLI reports them.</summary>
+public sealed class DiscoveredModelCollection(IReadOnlyList<string> models, IReadOnlyDictionary<string, IReadOnlyList<string>> efforts) : IReadOnlyCollection<string>
+{
+    public int Count => models.Count;
+
+    /// <summary>The model's reported levels, or null when the CLI did not report any.</summary>
+    public IReadOnlyList<string>? EffortsFor(string model) => efforts.GetValueOrDefault(model);
+
+    public IEnumerator<string> GetEnumerator() => models.GetEnumerator();
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 }

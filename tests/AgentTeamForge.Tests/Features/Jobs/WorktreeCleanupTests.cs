@@ -17,7 +17,8 @@ public sealed class WorktreeCleanupTests
         public string Origin, Clone;
         public WorktreeCleanup Cleanup;
 
-        public Env()
+        /// <param name="linkedState">Reach the state directory through a symlink, as macOS /tmp and a linked XDG_STATE_HOME do.</param>
+        public Env(bool linkedState = false)
         {
             Origin = Path.Combine(_dir.Path, "origin.git");
             Clone = Path.Combine(_dir.Path, "clone");
@@ -27,7 +28,15 @@ public sealed class WorktreeCleanupTests
             Git(Clone, "push", "origin", "HEAD:refs/heads/main");
             Git(Clone, "fetch", "origin");
             Git(Clone, "remote", "set-head", "origin", "main");
-            Cleanup = new WorktreeCleanup(Fixture.Store, new BackendCatalog());
+            var store = Fixture.Store;
+            if (linkedState)
+            {
+                var real = Directory.CreateDirectory(Path.Combine(_dir.Path, "real-state")).FullName;
+                var linked = Path.Combine(_dir.Path, "linked-state");
+                Directory.CreateSymbolicLink(linked, real);
+                store = new JobStore(JobDatabase.Create(Path.Combine(linked, "jobs.db"), Fixture.Limits.BusyTimeout), DurabilityCheckpoints.None);
+            }
+            Cleanup = new WorktreeCleanup(store, new BackendCatalog());
         }
 
         public string Path_(string id) => System.IO.Path.Combine(Cleanup.Root, id);
@@ -58,6 +67,70 @@ public sealed class WorktreeCleanupTests
         Assert.DoesNotContain("job_one", Git(e.Clone, "worktree", "list"));
         Assert.Equal("", Git(e.Clone, "branch", "--list", "atf/job-job_one"));
         Assert.Equal(sha, Git(e.Origin, "rev-parse", "main"));
+    }
+
+    [Fact]
+    public async Task Worktree_under_a_symlinked_state_directory_is_owned_and_removed()
+    {
+        using var e = new Env(linkedState: true);
+        Assert.NotNull(new DirectoryInfo(Path.GetDirectoryName(e.Cleanup.Root)!).LinkTarget);
+        var path = e.Make("job_linked");
+        Commit(path, "b.txt", "b");
+        Git(path, "push", "origin", "HEAD:refs/heads/main");
+        Git(e.Clone, "fetch", "origin");
+
+        Assert.Equal("would_remove", (await e.Cleanup.RemoveAsync(path, false, true, false, TestContext.Current.CancellationToken)).Outcome);
+        Assert.Equal("removed", (await e.Cleanup.RemoveAsync(path, false, false, true, TestContext.Current.CancellationToken)).Outcome);
+        Assert.False(Directory.Exists(path));
+        Assert.Equal("", Git(e.Clone, "branch", "--list", "atf/job-job_linked"));
+    }
+
+    [Fact]
+    public async Task Symlinked_entry_under_a_symlinked_state_directory_is_still_rejected()
+    {
+        using var e = new Env(linkedState: true);
+        var path = e.Make("job_real");
+        var link = e.Path_("job_alias");
+        Directory.CreateSymbolicLink(link, path);
+
+        var result = await e.Cleanup.RemoveAsync(link, true, false, false, TestContext.Current.CancellationToken);
+
+        Assert.Equal(("kept", "not_owned_path"), (result.Outcome, result.Reason));
+        Assert.True(Directory.Exists(path));
+    }
+
+    [Fact]
+    public async Task Job_lookup_distinguishes_unknown_job_and_job_without_worktree()
+    {
+        using var e = new Env();
+        var plain = e.Fixture.Submit("plain");
+        var ct = TestContext.Current.CancellationToken;
+
+        Assert.Equal((null, JobErrors.NotFound), await e.Cleanup.RemoveJobAsync("job_missing", false, true, ct));
+        Assert.Equal((null, JobErrors.NoWorktree), await e.Cleanup.RemoveJobAsync(plain.JobId, false, true, ct));
+        var remove = new RemoveWorktree(e.Fixture.Store, JobFixture.Operator, e.Cleanup);
+        Assert.Equal((null, JobErrors.NoWorktree), await remove.ExecuteAsync(plain.JobId, false, true, ct));
+        Assert.Equal((null, JobErrors.NotFound), await remove.ExecuteAsync("job_missing", false, true, ct));
+
+        var job = e.Fixture.Accept().Execute(new SubmitJobRequest("tree", "work", null, false) { Cwd = e.Clone, Worktree = true }).Job!;
+        Assert.True(JobWorktree.Prepare(e.Fixture.Store.GetJob(job.JobId)!));
+        var (found, error) = await e.Cleanup.RemoveJobAsync(job.JobId, false, true, ct);
+        Assert.Null(error);
+        Assert.Equal(("kept", "job_active"), (found!.Outcome, found.Reason));
+    }
+
+    [Fact]
+    public async Task Git_refusal_reports_gits_reason()
+    {
+        using var e = new Env();
+        var path = e.Make("job_locked");
+        Git(e.Clone, "worktree", "lock", "--reason", "held by test", path);
+
+        var result = await e.Cleanup.RemoveAsync(path, false, false, false, TestContext.Current.CancellationToken);
+
+        Assert.Equal(("kept", "git_refused"), (result.Outcome, result.Reason));
+        Assert.Contains(result.Details!, line => line.Contains("locked", StringComparison.Ordinal));
+        Assert.True(Directory.Exists(path));
     }
 
     [Fact]

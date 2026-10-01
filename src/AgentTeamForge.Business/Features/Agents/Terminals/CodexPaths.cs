@@ -27,42 +27,10 @@ public static class CodexPaths
         {
             throw new BackendNotStartedException("Codex working directory does not exist");
         }
-        var current = Path.TrimEndingDirectorySeparator(Canonical(full, 0));
+        var physical = PhysicalPath.Resolve(full)
+            ?? throw new BackendNotStartedException("Codex working directory has too many symbolic links");
+        var current = Path.TrimEndingDirectorySeparator(physical);
         return OperatingSystem.IsWindows() ? WindowsKey(current) : current;
-    }
-
-    static string Canonical(string full, int depth)
-    {
-        if (depth > 40)
-        {
-            throw new BackendNotStartedException("Codex working directory has too many symbolic links");
-        }
-        // Resolve every component: ResolveLinkTarget on the final directory alone misses
-        // a symlink or junction in one of its parents.
-        var root = Path.GetPathRoot(full)!;
-        var current = root;
-        foreach (var part in full[root.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
-        {
-            // On a case-insensitive macOS volume, canonicalize the on-disk spelling
-            // without changing case on case-sensitive volumes.
-            var actual = part;
-            if (OperatingSystem.IsMacOS())
-            {
-                try
-                {
-                    var entries = Directory.EnumerateFileSystemEntries(current).Select(Path.GetFileName).ToArray();
-                    actual = entries.FirstOrDefault(name => string.Equals(name, part, StringComparison.Ordinal))
-                        ?? entries.FirstOrDefault(name => string.Equals(name, part, StringComparison.OrdinalIgnoreCase)) ?? part;
-                }
-                catch (UnauthorizedAccessException) { /* Traversal may be allowed without listing. */ }
-            }
-            var next = Path.Combine(current, actual);
-            // A link target may itself pass through links (macOS /tmp -> /private/tmp), so
-            // canonicalize it again like realpath does.
-            current = new DirectoryInfo(next).ResolveLinkTarget(returnFinalTarget: true)?.FullName is { } target
-                ? Canonical(target, depth + 1) : next;
-        }
-        return current;
     }
 
     internal static string WindowsKey(string path)

@@ -16,8 +16,10 @@ checkout (found through Git's common directory, so linked worktrees share it)
 and fall back to `dotnet` on PATH. Override with `DOTNET=/path/to/dotnet`. The
 scripts never install an SDK or change your PATH. Native AOT publishing also
 needs the platform's native compiler and linker, and restore may need network
-access. The reasons for .NET 11 and AOT are in
-[ADR 0001](docs/adr/0001-dotnet-11-native-aot.md).
+access. On macOS the Command Line Tools are enough: without Xcode the scripts
+publish with `-p:UseLdClassicXCodeLinker=false`, which skips the ILCompiler's
+`xcodebuild -version` probe (add it yourself when publishing by hand). The
+reasons for .NET 11 and AOT are in [ADR 0001](docs/adr/0001-dotnet-11-native-aot.md).
 
 To build the apphost directly:
 
@@ -37,17 +39,25 @@ src/AgentTeamForge.Host/bin/Release/net11.0/atf --version
                       # result retrieval, idempotent replay, daemon restart
 ```
 
-`verify.sh` publishes the AOT binary to a new, unique directory and prints its
-path. Use that path rather than guessing one, for example
+`verify.sh` publishes the AOT binary for the host's runtime identifier
+(`linux-x64`, `linux-arm64`, `osx-arm64` or `osx-x64`; override with `RID=`) to
+a new, unique directory and prints its path. Use that path rather than
+guessing one, for example
 `ATF_DEMO_BIN=/printed/path/atf ./scripts/demo.sh`.
 
 Other scripts:
 
 - `scripts/demo-real.sh [claude|codex|pi|fake]` — opt-in end-to-end run against
-  a real agent CLI. It spends tokens; `fake` is a plumbing dry run.
-- `scripts/demo-web.sh` — start a demo daemon with the web console.
+  a real agent CLI. It spends tokens; `fake` is a plumbing dry run. It uses
+  `atf init` on a private state directory and never runs `atf setup`, so your
+  client registrations are untouched.
+- `scripts/demo-web.sh [PORT]` — start a demo daemon with the web console.
 - `scripts/release-build.sh VERSION [OUTPUT_DIR]` — build a local Native AOT
   release bundle (linux-x64 or osx-arm64). See [Releases](#releases).
+
+`demo.sh` bounds its build and test with GNU `timeout`; macOS has none, so
+install Homebrew `coreutils` (it provides `gtimeout`, which the script also
+accepts).
 
 To publish a Native AOT apphost by hand:
 
@@ -63,10 +73,13 @@ export DOTNET_ROOT="$(dirname "$DOTNET")"
 A `vX.Y.Z` tag runs `.github/workflows/release.yml`. The version in the
 package and in `atf --version` comes from the tag.
 
-- `scripts/release-build.sh` publishes Native AOT on the matching host and
-  produces `atf-VERSION-<rid>.tar.gz` plus `SHA256SUMS`
-  (`SHA256SUMS-osx-arm64` on macOS), then runs the extracted binary. Linux also
-  runs the published scenario smoke.
+- `scripts/release-build.sh` publishes Native AOT on the matching host
+  (linux-x64 or osx-arm64, the bundles `install.sh` supports) and produces
+  `atf-VERSION-<rid>.tar.gz`, debug symbols as a separate asset
+  (`atf-VERSION-linux-x64.dbg`, `atf-VERSION-osx-arm64.dSYM.tar.gz`) and
+  `SHA256SUMS` (`SHA256SUMS-osx-arm64` on macOS) covering all of them. It then
+  runs the extracted binary and the published scenario smoke against it.
+  `install.sh` uses only the bundle's checksum entry.
 - A `windows-latest` job publishes `atf-VERSION-win-x64.zip` with
   `install.ps1`, `SHA256SUMS-win-x64` and separate debug symbols. Windows AOT
   cannot be cross-compiled from Linux.

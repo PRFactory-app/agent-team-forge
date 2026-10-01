@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using System.Text.Json.Serialization;
 
 namespace AgentTeamForge.Business.Features.Agents.Terminals;
@@ -31,6 +32,13 @@ public static class HerdrOwnedSessions
     }
 
     internal static void Delete(InteractiveLaunch launch) => File.Delete(PathFor(launch));
+
+    /// <summary>The bootstrap file and the macOS shell proof beside it, once no live pane can still be proven by them.</summary>
+    internal static void DeleteLaunchFiles(string bootstrapPath)
+    {
+        File.Delete(bootstrapPath);
+        File.Delete(HerdrTerminal.ShellProofPath(bootstrapPath));
+    }
 
     /// <summary>Preserve launch proof and fence its job; recovery never stops an interactive TUI.</summary>
     public static void Recover(string stateRoot, Action<string> fence, Action<string> log)
@@ -77,6 +85,72 @@ public static class HerdrOwnedSessions
     internal static bool ValidAgentName(string? name) =>
         name is not null && System.Text.RegularExpressions.Regex.IsMatch(name, @"\Aatf[0-9a-f]{20}\z");
 
+    /// <summary>
+    /// Startup sweep of bootstrap files (and their macOS shell proofs) whose pane is provably gone. With an ownership
+    /// record, its server or pane shell must be gone or replaced. Without one, no live process may carry the bootstrap
+    /// path, and where a platform shell hides its environment (macOS) the shell that reported this bootstrap must have
+    /// exited. A file that might still prove a live pane, including one behind an unreadable record, is kept.
+    /// </summary>
+    public static int SweepStaleBootstraps(string stateRoot, Action<string> log) =>
+        SweepStaleBootstraps(stateRoot, new HerdrProcessRunner(), LivePids, log);
+
+    internal static int SweepStaleBootstraps(string stateRoot, IHerdrProcessRunner runner, Func<IReadOnlyList<int>?> livePids, Action<string> log)
+    {
+        var directory = System.IO.Path.Combine(stateRoot, "herdr");
+        if (!Directory.Exists(directory)) { return 0; }
+        var records = Read(stateRoot, _ => { }).ToDictionary(entry => BootstrapForRecord(entry.Path), entry => entry.Session, StringComparer.Ordinal);
+        var unrecorded = new List<string>();
+        var swept = 0;
+        foreach (var bootstrap in Directory.EnumerateFiles(directory, "*.bootstrap"))
+        {
+            if (File.Exists(System.IO.Path.ChangeExtension(bootstrap, ".owned.json")))
+            {
+                if (records.TryGetValue(bootstrap, out var session) && HerdrTerminal.OwnedPaneIsGone(runner, session))
+                {
+                    DeleteLaunchFiles(bootstrap);
+                    swept++;
+                }
+            }
+            else { unrecorded.Add(bootstrap); }
+        }
+        if (unrecorded.Count > 0 && livePids() is { } pids)
+        {
+            var carried = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var pid in pids)
+            {
+                if (runner.EnvironmentValue(pid, HerdrTerminal.BootstrapVariable) is { } value) { carried.Add(value); }
+            }
+            foreach (var bootstrap in unrecorded)
+            {
+                if (carried.Contains(bootstrap)) { continue; }
+                if (runner.EnvironmentMayBeHidden
+                    && (HerdrTerminal.ShellProof(bootstrap) is not { } shell || runner.Identity(shell) is not null || HerdrTerminal.PidMayBeAlive(shell)))
+                {
+                    continue;
+                }
+                DeleteLaunchFiles(bootstrap);
+                swept++;
+            }
+        }
+        foreach (var proof in Directory.EnumerateFiles(directory, "*.bootstrap.shell"))
+        {
+            if (!File.Exists(proof[..^".shell".Length])) { File.Delete(proof); }
+        }
+        if (swept > 0) { log($"recovery: removed {swept} Herdr bootstrap file(s) whose pane is gone"); }
+        return swept;
+    }
+
+    static IReadOnlyList<int>? LivePids()
+    {
+        if (OperatingSystem.IsMacOS()) { return DarwinProcess.Pids() is { Count: > 0 } pids ? pids : null; }
+        try
+        {
+            return [.. Directory.EnumerateDirectories("/proc")
+                .Select(path => int.TryParse(System.IO.Path.GetFileName(path), out var pid) ? pid : 0).Where(pid => pid > 0)];
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+    }
+
     /// <summary>Close restored bare-resume panes per session. Records are never edited: they fence their jobs.</summary>
     public static int SweepRestored(string stateRoot, Func<string, IReadOnlyList<OwnedHerdrSession>, int> closeInSession, Action<string> log)
     {
@@ -93,7 +167,12 @@ public static class HerdrOwnedSessions
     {
         foreach (var (path, session) in Read(stateRoot, message => throw new HerdrLaunchException(message)))
         {
-            if (session.JobId is not null && jobIds.Contains(session.JobId)) { File.Delete(path); }
+            if (session.JobId is not null && jobIds.Contains(session.JobId))
+            {
+                DeleteLaunchFiles(BootstrapForRecord(path));
+                File.Delete(path + ".gone");
+                File.Delete(path);
+            }
         }
     }
 

@@ -92,7 +92,8 @@ public static class ClientCommand
         return response.Ok ? 0 : 1;
     }
 
-    static async Task<bool> EnsureDaemonAsync(StateDirectory state)
+    /// <summary>Starts the daemon if needed, as every daemon-backed command does ("the daemon starts on first use").</summary>
+    internal static async Task<bool> EnsureDaemonAsync(StateDirectory state)
     {
         _ = StateDirectory.ReadPrivateFile(state.CredentialFile);
         return await SetupCommand.StartAsync(new Dictionary<string, string> { ["state-dir"] = state.Path }, quiet: true) == 0;

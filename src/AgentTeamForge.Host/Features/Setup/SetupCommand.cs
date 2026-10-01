@@ -82,8 +82,32 @@ public static class SetupCommand
             // the new default. Reporting missing registrations here is misleading.
             return 1;
         }
+        // Refuse before anything is created; a read-only check reports it with the rest instead of failing harder.
+        var pathProblem = StateDirectory.SocketPathProblem(dir);
+        if (pathProblem is not null && !check)
+        {
+            Console.Error.WriteLine($"error: {StateDirectory.PathTooLong}: {pathProblem}");
+            return 78;
+        }
         var mode = options.GetValueOrDefault("mode");
-        var configuredMode = Directory.Exists(dir) ? ConfiguredMode(StateDirectory.Open(dir)) : null;
+        string? configuredMode = null;
+        string? stateProblem = null;
+        if (Directory.Exists(dir) && pathProblem is null)
+        {
+            try
+            {
+                var existing = StateDirectory.Open(dir);
+                configuredMode = ConfiguredMode(existing);
+                if (check && File.Exists(existing.ProfileFile))
+                {
+                    // The same private-file and content checks the daemon and clients apply.
+                    _ = ProfileFile.Load(existing);
+                    _ = StateDirectory.ReadPrivateFile(existing.CredentialFile);
+                }
+            }
+            // A read-only check reports the state problem with the rest instead of stopping at it.
+            catch (StateDirectoryException ex) when (check) { stateProblem = ex.Message; }
+        }
         mode ??= configuredMode;
         commandRunner ??= RunCommand;
         if (mode is null && !check && autostart is null)
@@ -134,7 +158,16 @@ public static class SetupCommand
                 Console.Out.WriteLine($"Backend {backend}: {(installed[backend] ? "installed" : "not installed")}, " +
                     $"{(available[backend] ? "available" : "unavailable")}, sign-in {signIn[backend]}");
             }
-            return ClientSetup.Reconcile(binary, dir, home, settingsPath, extensionPath, commandRunner, apply: false) ? 0 : 1;
+            if (pathProblem is not null)
+            {
+                Console.Error.WriteLine($"error: {StateDirectory.PathTooLong}: {pathProblem}");
+            }
+            if (stateProblem is not null)
+            {
+                Console.Error.WriteLine($"error: {stateProblem}");
+            }
+            return ClientSetup.Reconcile(binary, dir, home, settingsPath, extensionPath, commandRunner, apply: false)
+                && pathProblem is null && stateProblem is null ? 0 : 1;
         }
 
         if (!(autostart == "off" && !options.ContainsKey("mode"))
@@ -182,8 +215,15 @@ public static class SetupCommand
             Console.Error.WriteLine("error: setup requires an agents profile");
             return 78;
         }
-        var settings = mode == "terminal" ? SelectMacTerminal(Environment.GetEnvironmentVariable("KITTY_LISTEN_ON"), commandRunner)
-            : new LaunchModeSettings(mode!);
+        // A daemon reads its launch settings when it starts; one already running keeps the old ones.
+        int? runningPid = LockIsFree(state) ? null : DaemonLock.ReadOwnerPid(state.LockFile) ?? 0;
+        var kittyAddress = Environment.GetEnvironmentVariable("KITTY_LISTEN_ON");
+        var settings = mode == "terminal" ? SelectMacTerminal(kittyAddress, commandRunner) : new LaunchModeSettings(mode!);
+        if (settings.TerminalProvider == "terminal")
+        {
+            Console.Out.WriteLine((kittyAddress is { Length: > 0 } ? $"kitty remote control at {kittyAddress} did not answer (needs allow_remote_control); " : "")
+                + "Terminal.app hosts agents; allow the app that runs the ATF daemon to control Terminal in System Settings > Privacy & Security > Automation.");
+        }
         var webPort = options.TryGetValue("web-port", out webPortText)
             ? int.Parse(webPortText, CultureInfo.InvariantCulture) : ConfiguredWebPort(state);
         WriteMode(state, settings with { WebPort = webPort, IdleCloseMinutes = idleMinutes ?? ConfiguredIdleCloseMinutes(state), MaxRetainedSessions = maxRetained ?? ConfiguredMaxRetainedSessions(state) });
@@ -202,8 +242,23 @@ public static class SetupCommand
         Console.Out.WriteLine($"Launch mode: {mode}{(mode == "terminal" ? " (" + settings.TerminalProvider + ")" : "")}");
         Console.Out.WriteLine($"Binary: {binary}");
         Console.Out.WriteLine($"State: {state.Path}");
-        Console.Out.WriteLine("The daemon starts on first use.");
+        Console.Out.WriteLine(DaemonStatus(state, runningPid, launchdStarts: autostart == "true" && OperatingSystem.IsMacOS()));
         return 0;
+    }
+
+    /// <summary>Setup itself never starts the daemon; on macOS, loading the LaunchAgent does (RunAtLoad).</summary>
+    static string DaemonStatus(StateDirectory state, int? runningPid, bool launchdStarts)
+    {
+        if (runningPid is { } previous)
+        {
+            return $"Daemon: already running{(previous > 0 ? $" (pid {previous})" : "")} with its previous settings; atf stop applies these from its next start.";
+        }
+        for (var i = 0; launchdStarts && i < 50 && LockIsFree(state); i++)
+        {
+            Thread.Sleep(100);
+        }
+        return LockIsFree(state) ? "The daemon starts on first use."
+            : $"Daemon: running{(DaemonLock.ReadOwnerPid(state.LockFile) is { } pid ? $" (pid {pid})" : "")}{(launchdStarts ? ", started by launchd" : "")}.";
     }
 
     static string? ChooseMode(TextReader input, Func<string, IReadOnlyList<string>, (int ExitCode, string Output)> run)
@@ -241,9 +296,8 @@ public static class SetupCommand
     static string? UnsafeRegistrationPath(string path, string home)
     {
         var full = Path.GetFullPath(path);
-        var homeFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(home));
-        var temp = Path.GetFullPath(Path.GetTempPath());
-        if (Within(full, "/tmp") || Within(full, temp))
+        // Canonical: on macOS the OS reports /tmp and $TMPDIR paths as /private/tmp and /private/var/folders.
+        if (!OperatingSystem.IsWindows() && CanonicalPath.Within(full, "/tmp") || CanonicalPath.Within(full, Path.GetTempPath()))
         {
             return $"{full} is under a temporary directory";
         }
@@ -253,7 +307,7 @@ public static class SetupCommand
             return $"{full} is inside .worktrees or artifacts";
         }
         // Stop at HOME: a dotfiles repository in HOME must not flag every normal install.
-        for (var parent = Path.GetDirectoryName(full); parent is not null && !Within(homeFull, parent); parent = Path.GetDirectoryName(parent))
+        for (var parent = Path.GetDirectoryName(full); parent is not null && !CanonicalPath.Within(home, parent); parent = Path.GetDirectoryName(parent))
         {
             if (File.Exists(Path.Combine(parent, ".git")) || Directory.Exists(Path.Combine(parent, ".git")))
             {
@@ -262,11 +316,6 @@ public static class SetupCommand
         }
         return null;
     }
-
-    static readonly StringComparison PathComparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-
-    static bool Within(string path, string root) => path.Equals(Path.TrimEndingDirectorySeparator(root), PathComparison)
-        || path.StartsWith(Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar, PathComparison);
 
     internal static string ClientHome() => OperatingSystem.IsWindows()
         ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
@@ -279,15 +328,14 @@ public static class SetupCommand
         var defaultState = Path.GetFullPath(Path.Combine(
             environment("XDG_STATE_HOME") is { Length: > 0 } xdg ? xdg : Path.Combine(home, ".local", "state"),
             "agentteamforge"));
-        var nonDefault = !Path.TrimEndingDirectorySeparator(Path.GetFullPath(stateDir))
-            .Equals(Path.TrimEndingDirectorySeparator(defaultState), PathComparison);
+        var nonDefault = !CanonicalPath.Same(stateDir, defaultState);
         if (nonDefault && !force)
         {
             return $"non-default state directory {stateDir} would change client registrations; use --force only with the intended client HOME";
         }
         foreach (var name in new[] { "CODEX_HOME", "CLAUDE_CONFIG_DIR" })
         {
-            if (environment(name) is { Length: > 0 } configured && !Within(Path.GetFullPath(configured), Path.GetFullPath(home)))
+            if (environment(name) is { Length: > 0 } configured && !CanonicalPath.Within(configured, home))
             {
                 return $"{name}={configured} is outside HOME={home}; refusing client config writes for state directory {stateDir}";
             }
@@ -389,19 +437,33 @@ public static class SetupCommand
             await Task.WhenAll(output, error);
             return await WaitForReadyAsync(state, quiet);
         }
+        if (OperatingSystem.IsMacOS()
+            && LoginAutostart.LaunchdService(home, ClientSetup.StableBinary(binary, home), state.Path, RunCommand) is { } launchdService)
+        {
+            // Kickstart starts the loaded job only if it is not running; a launchd-owned daemon outlives this client.
+            var (code, output) = RunCommand("launchctl", ["kickstart", launchdService]);
+            if (code != 0)
+            {
+                Console.Error.WriteLine($"error: launchd daemon start failed: {ClientSetup.BoundedError(output)}");
+                return 1;
+            }
+            return await WaitForReadyAsync(state, quiet);
+        }
         using var input = File.OpenHandle("/dev/null", FileMode.Open, FileAccess.Read);
-        using var log = new FileStream(Path.Combine(state.Path, "daemon.log"),
-            PrivateFiles.Options(FileMode.Append, FileAccess.Write, FileShare.ReadWrite));
+        var logPath = Path.Combine(state.Path, "daemon.log");
+        using var log = AppendOnlyFile.Open(logPath);
         var info = new ProcessStartInfo(binary)
         {
             UseShellExecute = false,
             StartDetached = true,
             StandardInputHandle = input,
-            StandardOutputHandle = log.SafeFileHandle,
-            StandardErrorHandle = log.SafeFileHandle,
+            StandardOutputHandle = log.Handle,
+            StandardErrorHandle = log.Handle,
             InheritedHandles = [],
         };
         DaemonEnvironment.Scrub(info.Environment);
+        // Its stderr is this log already; naming it keeps the daemon from writing each line twice.
+        info.Environment["ATF_DAEMON_LOG"] = logPath;
         SystemdUser.EnsureRuntimeDir(info.Environment);
         // A scope execs in place (same PID, fds, env) but leaves the caller's cgroup, so its
         // teardown cannot SIGKILL the daemon. Test profiles never create scopes.
@@ -434,15 +496,15 @@ public static class SetupCommand
                 detachWarning = warning;
             }
         }
-        var logOffset = log.Length;
+        var logOffset = RandomAccess.GetLength(log.Handle);
         using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
         var ready = detached
             ? await WaitForReadyAsync(state, quiet, null, logOffset)
             : await WaitForReadyAsync(state, quiet, process);
         if (detachWarning is not null)
         {
-            // After the launch: the daemon's inherited stdout shares this file's offset and would overwrite an earlier line.
-            File.AppendAllText(log.Name, $"[atf-daemon] {DateTime.UtcNow:O} {detachWarning}\n");
+            // Logged after the launch so it follows the daemon's own start record.
+            log.WriteLine($"[atf-daemon] {DateTime.UtcNow:O} {detachWarning}");
         }
         return ready;
     }
@@ -491,7 +553,10 @@ public static class SetupCommand
 
     public static int Stop(IReadOnlyDictionary<string, string> options)
     {
-        var state = StateDirectory.Open(ResolveStateDir(options));
+        // Loose permissions do not block stop: it reads no secret and signals only a PID verified as this
+        // state's own daemon (IsOurDaemon), and refusing would leave that daemon serving an exposed directory.
+        var state = StateDirectory.Open(ResolveStateDir(options),
+            problem => Console.Error.WriteLine($"warning: {problem}; stopping the daemon anyway"));
         if (OperatingSystem.IsWindows())
         {
             return StopWindows(state);
@@ -528,13 +593,7 @@ public static class SetupCommand
                 return StoppedDuringCheck(state);
             }
 
-            for (var i = 0; i < 50; i++)
-            {
-                if (LockIsFree(state)) { Console.Out.WriteLine($"Stopped daemon {pid.Value}."); return 0; }
-                Thread.Sleep(100);
-            }
-            Console.Error.WriteLine($"error: daemon {pid.Value} did not stop within 5 seconds");
-            return 1;
+            return AwaitExit(pid.Value, () => DarwinProcess.Info(pid.Value) is not { } entry || entry.Token != token || entry.IsZombie);
         }
 
         using var process = Pidfd.Open(pid.Value);
@@ -560,19 +619,39 @@ public static class SetupCommand
             return StoppedDuringCheck(state);
         }
 
+        // The pidfd pins this process: signal 0 fails once it is reaped, even if the PID is reused.
+        return AwaitExit(pid.Value, () => !Pidfd.Signal(process, 0) || LinuxZombie(pid.Value));
+    }
+
+    /// <summary>
+    /// Waits for the signalled process itself, not for the lock: a waiting starter (a bridge or launchd)
+    /// may take the lock over the moment this daemon releases it, and that is not a failed stop.
+    /// </summary>
+    static int AwaitExit(int pid, Func<bool> exited)
+    {
         for (var i = 0; i < 50; i++)
         {
-            if (LockIsFree(state))
+            if (exited())
             {
-                Console.Out.WriteLine($"Stopped daemon {pid.Value}.");
+                Console.Out.WriteLine($"Stopped daemon {pid}.");
                 return 0;
             }
-
             Thread.Sleep(100);
         }
-
-        Console.Error.WriteLine($"error: daemon {pid.Value} did not stop within 5 seconds");
+        Console.Error.WriteLine($"error: daemon {pid} did not stop within 5 seconds");
         return 1;
+    }
+
+    static bool LinuxZombie(int pid)
+    {
+        try
+        {
+            // Field 3 of /proc/PID/stat follows the parenthesised command name, which may itself contain ") ".
+            var stat = File.ReadAllText($"/proc/{pid}/stat");
+            var end = stat.LastIndexOf(')');
+            return end < 0 || end + 2 >= stat.Length || stat[end + 2] is 'Z' or 'X';
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return true; }
     }
 
     static int StoppedDuringCheck(StateDirectory state)
@@ -617,6 +696,7 @@ public static class SetupCommand
                 using var other = DaemonLock.TryAcquire(state.LockFile);
                 if (other is not null)
                 {
+                    EchoStartupFailure(state, null);
                     Console.Error.WriteLine($"error: daemon exited; see {state.Path}/daemon.log");
                     return 1;
                 }
@@ -626,6 +706,7 @@ public static class SetupCommand
                 using var other = DaemonLock.TryAcquire(state.LockFile);
                 if (other is not null)
                 {
+                    EchoStartupFailure(state, OperatingSystem.IsWindows() ? null : launched.Id);
                     Console.Error.WriteLine(OperatingSystem.IsWindows()
                         ? $"error: daemon exited; see {state.Path}/daemon.log"
                         : $"error: daemon exited ({launched.ExitCode}); see {state.Path}/daemon.log");
@@ -636,6 +717,35 @@ public static class SetupCommand
         }
         Console.Error.WriteLine($"error: daemon did not become ready; see {state.Path}/daemon.log");
         return 1;
+    }
+
+    /// <summary>
+    /// A daemon that refused to start (corrupt database, bad profile) says why in its log; show the caller
+    /// what the daemon with <paramref name="pid"/> (or, when unknown, the most recently started one) logged.
+    /// </summary>
+    static void EchoStartupFailure(StateDirectory state, int? pid)
+    {
+        try
+        {
+            var path = Path.Combine(state.Path, "daemon.log");
+            if (!File.Exists(path))
+            {
+                return;
+            }
+            var lines = LiveFiles.ReadLines(path).ToList();
+            var start = lines.FindLastIndex(line => pid is null
+                ? line.Contains(" starting pid=", StringComparison.Ordinal)
+                : line.EndsWith($" starting pid={pid}", StringComparison.Ordinal));
+            if (start < 0)
+            {
+                return;
+            }
+            foreach (var line in lines.Skip(start + 1).TakeLast(10))
+            {
+                Console.Error.WriteLine(line);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
     static async Task<DaemonLock?> AcquireStartGateAsync(StateDirectory state)
@@ -686,7 +796,8 @@ public static class SetupCommand
 
             if (live is not null)
             {
-                File.AppendAllText(path, $"[atf-daemon] {DateTime.UtcNow:yyyy-MM-dd'T'HH:mm:ss.fff'Z'} previous daemon {live} gone without stop\n");
+                using var log = AppendOnlyFile.Open(path);
+                log.WriteLine($"[atf-daemon] {DateTime.UtcNow:yyyy-MM-dd'T'HH:mm:ss.fff'Z'} previous daemon {live} gone without stop");
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
@@ -743,9 +854,7 @@ public static class SetupCommand
         {
             using var process = Process.GetProcessById(pid.Value);
             process.Kill();
-            process.WaitForExit(5000);
-            Console.Out.WriteLine($"Stopped daemon {pid.Value}.");
-            return 0;
+            return AwaitExit(pid.Value, () => process.HasExited);
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
@@ -777,8 +886,7 @@ public static class SetupCommand
             query.WaitForExit(5000);
             var args = query.ExitCode == 0 ? WindowsCommandLine.Split(commandLine.Trim()) : null;
             return args is { Length: >= 4 } && args[1] == "daemon" && args[2] == "--state-dir"
-                && Path.TrimEndingDirectorySeparator(Path.GetFullPath(args[3])).Equals(
-                    Path.TrimEndingDirectorySeparator(statePath), StringComparison.OrdinalIgnoreCase);
+                && CanonicalPath.Same(args[3], statePath);
         }
         catch (Exception ex) when (ex is IOException or ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { return false; }
     }
@@ -796,10 +904,15 @@ public static class SetupCommand
             try
             {
                 var args = DarwinProcess.Arguments(pid)?.Args;
-                return args is { Length: >= 4 } && Path.GetFileName(args[0]) == "atf"
-                    && args[1] == "daemon" && args[2] == "--state-dir"
-                    && Path.IsPathFullyQualified(args[3])
-                    && Path.TrimEndingDirectorySeparator(Path.GetFullPath(args[3])) == Path.TrimEndingDirectorySeparator(statePath);
+                if (args is not { Length: >= 4 } || Path.GetFileName(args[0]) != "atf"
+                    || args[1] != "daemon" || args[2] != "--state-dir")
+                {
+                    return false;
+                }
+                // A daemon started by hand with a relative --state-dir resolved it against its own cwd.
+                var daemonState = Path.IsPathFullyQualified(args[3]) ? args[3]
+                    : DarwinProcess.WorkingDirectory(pid) is { } cwd ? Path.Combine(cwd, args[3]) : null;
+                return daemonState is not null && CanonicalPath.Same(daemonState, statePath);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
             {
@@ -839,8 +952,7 @@ public static class SetupCommand
             }
 
             var daemonState = cwd is null ? args[3] : Path.Combine(cwd, args[3]);
-            return Path.TrimEndingDirectorySeparator(Path.GetFullPath(daemonState))
-                == Path.TrimEndingDirectorySeparator(statePath);
+            return CanonicalPath.Same(daemonState, statePath);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
@@ -961,21 +1073,13 @@ public static class SetupCommand
     internal static LaunchModeSettings ReadSettings(StateDirectory state)
     {
         var path = Path.Combine(state.Path, SettingsFile);
-        LaunchModeSettings? settings;
-        try
-        {
-            settings = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(path), SetupCommandJson.Default.LaunchModeSettings);
-        }
-        catch (JsonException)
-        {
-            throw new StateDirectoryException("launch_mode_invalid", $"invalid JSON in {path}; run atf setup or atf doctor to inspect configuration");
-        }
-        if (settings?.Mode is not ("headless" or "herdr" or "terminal" or "wt")
+        var settings = StateJson.Read(path, "launch_mode_invalid", SetupCommandJson.Default.LaunchModeSettings, "mode");
+        if (settings.Mode is not ("headless" or "herdr" or "terminal" or "wt")
             || settings.Mode == "terminal" && (settings.TerminalProvider is not ("terminal" or "kitty")
                 || settings.TerminalProvider == "kitty" && (settings.KittyAddress is null || settings.KittyBinary is null))
             || settings.WebPort is not (>= 1 and <= 65535) || settings.IdleCloseMinutes is < -1 or > 1440 || settings.MaxRetainedSessions is < 0 or > 64)
         {
-            throw new StateDirectoryException("launch_mode_invalid");
+            throw new StateDirectoryException("launch_mode_invalid", $"{path} has an unsupported mode, terminal, port or limit value; run atf setup to rewrite it");
         }
 
         return settings;
@@ -1047,6 +1151,8 @@ public static class SetupCommand
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
+        // `claude mcp get` health-checks the registration by spawning `atf mcp`; that bridge must not start the daemon.
+        info.Environment[Jobs.JobsMcpBridge.HealthCheckVariable] = "1";
         // Run from "/" so mise never walks an ancestor chain containing the caller's (or an isolated HOME's parent) configs.
         if (!OperatingSystem.IsWindows())
         {

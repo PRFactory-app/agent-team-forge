@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
@@ -101,18 +103,33 @@ public sealed class CoreFaultScenarios
         var accepted = await rig.SubmitAsync("k-stall", "x", behavior: FakeBehavior.StallBeforeRead);
         var jobId = accepted.Job!.JobId;
         var marker = Path.Combine(rig.BarrierDir, $"stalled-{accepted.Job.JobId}");
-        await Bounded.Until(() => File.Exists(marker), "fake child to stall before reading");
-        var pid = int.Parse(File.ReadAllText(marker), System.Globalization.CultureInfo.InvariantCulture);
+        // The child creates the marker before its PID is in it: wait for the complete content.
+        var pid = 0;
+        await Bounded.Until(() => File.Exists(marker) && int.TryParse(File.ReadAllText(marker), System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out pid) && pid > 0, "fake child to record its PID and stall before reading");
 
         var done = await rig.WaitForStatusAsync(jobId, JobStatus.NeedsReconciliation, JobStatus.Completed, JobStatus.Failed);
         Assert.Equal(JobStatus.NeedsReconciliation, done.Job!.Status);
         Assert.Equal("backend_timeout", done.Job.ReasonCode);
         Assert.Equal(1, done.Job.Attempts);
         Assert.Equal(0, rig.Invocations(jobId));
-        await Bounded.Until(() => !Directory.Exists($"/proc/{pid}"), "stalled child to be terminated");
+        await Bounded.Until(() => !Exists(pid), "stalled child to be terminated");
 
         // The dispatcher is still live: later work progresses.
         var next = await rig.SubmitAsync("k-next", "y");
         await rig.WaitForStatusAsync(next.Job!.JobId, JobStatus.Completed);
+    }
+
+    // A zombie still exists, as /proc/<pid> does on Linux.
+    static bool Exists(int pid)
+    {
+        if (OperatingSystem.IsLinux()) { return Directory.Exists($"/proc/{pid}"); }
+        if (OperatingSystem.IsMacOS()) { return DarwinProcess.Info(pid) is not null; }
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            return !process.HasExited;
+        }
+        catch (ArgumentException) { return false; }
     }
 }

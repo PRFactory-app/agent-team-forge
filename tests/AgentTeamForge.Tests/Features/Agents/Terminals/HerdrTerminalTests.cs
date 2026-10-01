@@ -71,7 +71,8 @@ public class HerdrTerminalTests
 
         // D2 vectors against the production launch: exact argv, fixed server script, credential-free env.
         var server = Assert.Single(fake.Detached);
-        Assert.Equal(["-f", "sh", "-c", HerdrCommands.ServerScript, session.SessionName], server.ArgumentList);
+        Assert.Equal(OperatingSystem.IsMacOS() ? ["-c", HerdrCommands.MacServerScript, session.SessionName]
+            : ["-f", "sh", "-c", HerdrCommands.ServerScript, session.SessionName], server.ArgumentList);
         var tab = fake.Calls.Single(c => c.Args is ["tab", "create", ..]);
         Assert.Equal(["tab", "create", "--workspace", "w1", "--cwd", "/work", "--label", "agent-a", "--env", "ATF_BOOTSTRAP_FILE=" + Bootstrap, "--no-focus"], tab.Args);
         Assert.Null(terminal.Env("CODEX_HOME"));
@@ -130,12 +131,19 @@ public class HerdrTerminalTests
 
     /// <summary>A completed Claude parent whose idle pane (and native transcript) outlived the daemon.</summary>
     private static async Task<(HerdrInteractiveBackend Backend, BackendCatalog Catalog, AcceptJob Accept, JobRecord Parent, string Transcript)>
-        CompletedParentWithLivePane(JobFixture f, TempStateDir state, FakeHerdr fake, Func<IReadOnlySet<string>?>? liveSessions = null, string parentTurn = ParentTurnDone)
+        CompletedParentWithLivePane(JobFixture f, TempStateDir state, FakeHerdr fake, Func<IReadOnlySet<string>?>? liveSessions = null, string parentTurn = ParentTurnDone,
+            Action<InteractiveLaunch>? probed = null)
     {
         var terminal = Terminal(fake, new Dictionary<string, string?>(Desktop) { ["HOME"] = state.Path });
         // The /proc probe of the pane's live native session, which the fake pane cannot provide.
         var backend = new HerdrInteractiveBackend(terminal, InteractiveAgentKind.Claude, state.Path)
-        { LiveSessionProbe = (_, _) => liveSessions is null ? new HashSet<string> { "claude-native" } : liveSessions() };
+        {
+            LiveSessionProbe = (launch, _) =>
+            {
+                probed?.Invoke(launch);
+                return liveSessions is null ? new HashSet<string> { "claude-native" } : liveSessions();
+            },
+        };
         var catalog = new BackendCatalog().Register(BackendCatalog.Claude, () => backend);
         var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
         var parent = accept.Execute(new SubmitJobRequest("parent", "work", null, false) { Backend = BackendCatalog.Claude }).Job!;
@@ -167,6 +175,24 @@ public class HerdrTerminalTests
     private static void RecoverRecords(JobFixture f, TempStateDir state) =>
         new AgentTeamForge.Business.Features.Recovery.RecoverOnStartup(f.Store,
             () => HerdrOwnedSessions.Recover(state.Path, f.Store.FenceSession, _ => { })).Execute();
+
+    [Fact]
+    public async Task Recovered_pane_runs_in_the_jobs_subdirectory_of_its_worktree()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var repo = Directory.CreateDirectory(state.File("repo/sub")).Parent!.FullName;
+        using (var git = Process.Start(new ProcessStartInfo("git", ["init", "-q", repo]))!) { await git.WaitForExitAsync(TestContext.Current.CancellationToken); }
+        var worktree = Directory.CreateDirectory(state.File("worktree/sub")).Parent!.FullName;
+        InteractiveLaunch? rebound = null;
+        var (backend, _, _, parent, _) = await CompletedParentWithLivePane(f, state, new FakeHerdr { BootstrapFromTab = true }, probed: launch => rebound = launch);
+        // Submitted from repo/sub with a worktree: the agent ran in worktree/sub, so its rebound pane does too.
+        var owner = parent with { Cwd = Path.Combine(repo, "sub"), WorktreePath = worktree };
+
+        backend.RecoverTerminalOwner(owner, [], () => true);
+
+        Assert.Equal(Path.Combine(worktree, "sub"), Path.TrimEndingDirectorySeparator(rebound?.WorkingDirectory ?? ""));
+    }
 
     [Fact]
     public async Task Restart_reattaches_a_native_follow_up_to_its_parents_live_pane_and_settles_it()
@@ -588,6 +614,20 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task AgentStart_RetriesAPaneHerdrStillReadsAsBusy()
+    {
+        using var state = new TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, AgentStartBusy = 2, SharedWorkspaceLabel = Path.GetFileName(state.Path) };
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("herdr/bootstrap"))
+        { JobId = "job-busy", HerdrPlacement = "herdr-session:default" };
+
+        await new HerdrAgentControl(Terminal(fake)).StartAsync(launch, CancellationToken.None);
+
+        Assert.Equal(3, fake.Calls.Count(c => c.Args is ["agent", "start", "atftest", ..]));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane" or "tab", "close", ..]);
+    }
+
+    [Fact]
     public async Task ResumeLaunch_UsesLongerStartTimeoutAndSurvivesASlowStartWhilePaneLives()
     {
         using var state = new TempStateDir();
@@ -996,6 +1036,49 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task StopOwned_RemovesThePanesBootstrapShellProofAndRecord()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, SharedWorkspaceLabel = Path.GetFileName(state.Path) };
+        var control = new HerdrAgentControl(Terminal(fake));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("herdr/atftest.bootstrap"))
+        { JobId = "job-stop", HerdrPlacement = "herdr-session:default" };
+        await control.StartAsync(launch, CancellationToken.None);
+        File.WriteAllText(HerdrTerminal.ShellProofPath(launch.BootstrapPath), "4200");
+
+        control.StopOwned(launch);
+
+        Assert.Contains(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
+        Assert.False(File.Exists(launch.BootstrapPath));
+        Assert.False(File.Exists(HerdrTerminal.ShellProofPath(launch.BootstrapPath)));
+        Assert.False(File.Exists(HerdrOwnedSessions.PathFor(launch)));
+    }
+
+    [Fact]
+    public async Task StopAgent_KeepsBootstrapProofUntilTheRecordIsForgotten()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, SharedWorkspaceLabel = Path.GetFileName(state.Path) };
+        var terminal = Terminal(fake);
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("herdr/atftest.bootstrap"))
+        { JobId = "job-agent", HerdrPlacement = "herdr-session:default" };
+        await new HerdrAgentControl(terminal).StartAsync(launch, CancellationToken.None);
+        File.WriteAllText(HerdrTerminal.ShellProofPath(launch.BootstrapPath), "4200");
+        var record = HerdrOwnedSessions.PathFor(launch);
+        File.WriteAllText(record + ".gone", "released");
+
+        Assert.True(new HerdrAgentControl(terminal).StopJobs(state.Path, ["job-agent"]));
+        Assert.True(File.Exists(record));
+
+        HerdrOwnedSessions.Forget(state.Path, ["job-agent"]);
+
+        Assert.False(File.Exists(record));
+        Assert.False(File.Exists(record + ".gone"));
+        Assert.False(File.Exists(launch.BootstrapPath));
+        Assert.False(File.Exists(HerdrTerminal.ShellProofPath(launch.BootstrapPath)));
+    }
+
+    [Fact]
     public async Task FreshStart_ThenShellReplaced_PaneIsGoneAndStopClosesThePane()
     {
         using var state = new AgentTeamForge.Tests.Support.TempStateDir();
@@ -1056,6 +1139,126 @@ public class HerdrTerminalTests
         Assert.DoesNotContain(fake.Calls, c => c.Args is ["tab" or "pane", "close", ..]);
     }
 
+    [Fact]
+    public async Task HiddenShellEnvironment_IsProvenByTheShellsOwnChild()
+    {
+        using var state = new TempStateDir();
+        var bootstrap = state.File("atftest.bootstrap");
+        var fake = new FakeHerdr { HideShellEnvironment = true, EnvironmentMayBeHidden = true, BootstrapFromTab = true, ShellProofReporter = 4200 }; // the fake pane shell's PID
+        var terminal = Terminal(fake);
+        var session = await terminal.StartSessionAsync(CancellationToken.None);
+
+        var binding = await terminal.OpenAgentTabAsync(session, "agent-a", "/work", bootstrap, CancellationToken.None,
+            onCreated: created => session = created);
+
+        Assert.Equal(fake.ShellPid, binding.ShellPid);
+        Assert.Single(fake.Calls, c => c.Args is ["pane", "run", "w1:p2", HerdrTerminal.ShellProofCommand]);
+        var saved = session with { ShellPid = binding.ShellPid, ShellStartTicks = binding.ShellStartTicks };
+        Assert.NotNull(await terminal.RebindAsync(saved, bootstrap, CancellationToken.None));
+        Assert.Null(await terminal.RebindAsync(saved, state.File("other.bootstrap"), CancellationToken.None));
+        fake.Replace(Replacement.ShellReplaced);
+        Assert.Null(await terminal.RebindAsync(saved, bootstrap, CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData(true, 4999, null)] // a process other than the pane shell answered
+    [InlineData(true, null, null)] // the shell never ran the report: times out
+    [InlineData(true, 4200, 4300)] // the report never returned the pane to its shell, so `agent start` would refuse it
+    [InlineData(false, null, null)] // Linux: an unreadable environment is refused at once, nothing is typed
+    public async Task HiddenShellEnvironment_WithoutTheShellsOwnReport_RefusesBinding(bool mayBeHidden, int? reporter, int? foreground)
+    {
+        using var state = new TempStateDir();
+        var fake = new FakeHerdr
+        {
+            HideShellEnvironment = true,
+            EnvironmentMayBeHidden = mayBeHidden,
+            BootstrapFromTab = true,
+            ShellProofReporter = reporter,
+            ForegroundProcessGroup = foreground,
+        };
+        var terminal = Terminal(fake);
+        var session = await terminal.StartSessionAsync(CancellationToken.None);
+
+        await Assert.ThrowsAsync<HerdrLaunchException>(() => terminal.OpenAgentTabAsync(session, "agent-a", "/work", state.File("atftest.bootstrap"), CancellationToken.None));
+
+        Assert.Equal(mayBeHidden ? 1 : 0, fake.Calls.Count(c => c.Args is ["pane", "run", ..]));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["tab" or "pane", "close", ..]);
+    }
+
+    [Fact]
+    public async Task ShellProofCommand_ReportsItsParentShellAtTheInheritedBootstrap()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "POSIX shells only");
+        using var state = new TempStateDir();
+        var bootstrap = state.File("it's \"quoted\" $HOME.bootstrap");
+        // The trailing ':' keeps sh from exec'ing the proof in place, as an interactive pane shell never does.
+        var shell = new ProcessStartInfo("/bin/sh") { ArgumentList = { "-c", HerdrTerminal.ShellProofCommand + "; :" } };
+        shell.Environment[HerdrTerminal.BootstrapVariable] = bootstrap;
+        using var process = Process.Start(shell)!;
+        await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), File.ReadAllText(HerdrTerminal.ShellProofPath(bootstrap)));
+    }
+
+    [Fact]
+    public async Task ServerLaunch_LeavesTheDaemonsProcessGroup()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Herdr launches are POSIX only");
+        using var state = new TempStateDir();
+        var bin = state.File("bin");
+        Directory.CreateDirectory(bin);
+        // Stands in for `herdr --session NAME server`: records its PID and process group, then stays alive.
+        File.WriteAllText(Path.Combine(bin, "herdr"), "#!/bin/sh\necho $$ $(ps -o pgid= -p $$) > \"$HOME/server.tmp\"\nmv \"$HOME/server.tmp\" \"$HOME/server\"\nexec sleep 60\n");
+        File.SetUnixFileMode(Path.Combine(bin, "herdr"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var seed = new Dictionary<string, string?> { ["PATH"] = bin + ":/usr/bin:/bin", ["HOME"] = state.Path };
+
+        await new HerdrProcessRunner().StartDetachedAsync(HerdrCommands.SharedServerStartInfo("atf-test-pgid", seed, null, state.Path),
+            TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        var report = state.File("server");
+        for (var wait = Stopwatch.StartNew(); !File.Exists(report) && wait.Elapsed < TimeSpan.FromSeconds(10);) { await Task.Delay(50, TestContext.Current.CancellationToken); }
+        var fields = File.ReadAllText(report).Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var (pid, group) = (int.Parse(fields[0], System.Globalization.CultureInfo.InvariantCulture), int.Parse(fields[1], System.Globalization.CultureInfo.InvariantCulture));
+        try
+        {
+            using var ps = Process.Start(new ProcessStartInfo("ps", ["-o", "pgid=", "-p", Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture)]) { RedirectStandardOutput = true })!;
+            var ours = int.Parse((await ps.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken)).Trim(), System.Globalization.CultureInfo.InvariantCulture);
+            Assert.Equal(pid, group);
+            Assert.NotEqual(ours, group);
+        }
+        finally
+        {
+            using var server = Process.GetProcessById(pid);
+            server.Kill();
+        }
+    }
+
+    [Fact]
+    public async Task SharedPlacement_CreatesItsLockPrivateAndRepairsAnUnopenableOne()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "flock lock files are POSIX only");
+        using var state = new TempStateDir();
+        var config = state.File("herdr");
+        Directory.CreateDirectory(config);
+        HerdrTerminal Shared(FakeHerdr fake) => new(new HerdrTerminalOptions
+        {
+            Environment = new Dictionary<string, string?>(Desktop) { ["HERDR_CONFIG_PATH"] = Path.Combine(config, "config.toml") },
+            StartupTimeout = TimeSpan.FromMilliseconds(400),
+            PollInterval = TimeSpan.FromMilliseconds(10),
+        }, fake);
+
+        var first = Shared(new FakeHerdr { SharedRunning = true });
+        await first.OpenAgentTabAsync(await first.ExistingSessionAsync("default", CancellationToken.None), "agent-a", "/work", Bootstrap, CancellationToken.None);
+        var lockFile = Assert.Single(Directory.GetFiles(config, "win-agent-teams-default.ws-*.lock"));
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(lockFile));
+
+        // A lock file an earlier macOS build created with a garbage mode is ours to repair, not a permanent EACCES.
+        File.SetUnixFileMode(lockFile, UnixFileMode.None);
+        var second = Shared(new FakeHerdr { SharedRunning = true });
+        await second.OpenAgentTabAsync(await second.ExistingSessionAsync("default", CancellationToken.None), "agent-a", "/work", Bootstrap, CancellationToken.None);
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(lockFile));
+    }
+
     [Theory]
     [InlineData(false, true)]
     [InlineData(true, false)]
@@ -1067,6 +1270,13 @@ public class HerdrTerminalTests
             env.Remove("WAYLAND_DISPLAY");
         }
         var fake = new FakeHerdr { Installed = herdrInstalled };
+        if (OperatingSystem.IsMacOS() && herdrInstalled)
+        {
+            // macOS always has a visible desktop; X11/Wayland variables mean nothing there.
+            await Terminal(fake, env).StartSessionAsync(CancellationToken.None);
+            Assert.Single(fake.Detached);
+            return;
+        }
 
         var error = await Assert.ThrowsAsync<InteractiveTerminalUnavailableException>(() => Terminal(fake, env).StartSessionAsync(CancellationToken.None));
 
@@ -1157,7 +1367,7 @@ public class HerdrTerminalTests
         var run = new AgentTeamForge.DAL.Features.Jobs.RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation);
         f.Store.RecordSession(run, "native-owned");
         f.Store.Complete(run, "result kept");
-        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("herdr/bootstrap"))
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("herdr/atftest.bootstrap"))
         { JobId = job.JobId, HerdrPlacement = "herdr-session:default" };
         await new HerdrAgentControl(terminal).StartAsync(launch, CancellationToken.None);
         fake.Replace(Replacement.ShellReplaced);
@@ -1171,6 +1381,8 @@ public class HerdrTerminalTests
             () => f.Store.ReleaseRestartFence(owner.JobId, owner.SessionId)));
 
         Assert.True(File.Exists(HerdrOwnedSessions.PathFor(launch)));
+        // The bootstrap only proved the pane, which is gone.
+        Assert.False(File.Exists(launch.BootstrapPath));
         HerdrOwnedSessions.Recover(state.Path, f.Store.FenceSession, _ => { });
         Assert.Contains(job.JobId, f.Store.FencedTerminalJobs());
         Assert.Equal(PaneOwnerRecovery.GoneAgain, backend.RecoverTerminalOwner(owner, [],
@@ -1508,6 +1720,7 @@ public class HerdrTerminalTests
     [InlineData(InteractiveAgentKind.Claude, "Yes, I trust this folder", "agent_workspace_trust_required")]
     [InlineData(InteractiveAgentKind.Codex, "Sign in with ChatGPT\nUse an API key", "agent_login_required")]
     [InlineData(InteractiveAgentKind.Codex, "Do you trust the contents of this directory", "agent_workspace_trust_required")]
+    [InlineData(InteractiveAgentKind.Pi, PiNoModelsScreen, "agent_login_required")]
     public async Task Recognized_startup_blocker_fails_without_delivery_or_fence(InteractiveAgentKind kind, string screen, string reason)
     {
         using var state = new TempStateDir();
@@ -1526,6 +1739,86 @@ public class HerdrTerminalTests
         Assert.DoesNotContain(fake.Calls, c => c.Args is ["--session", _, "agent", "prompt", ..]);
         Assert.Contains(fake.Calls, c => c.Args is ["session", "stop", ..]);
         Assert.Null(f.Store.GetRuns(job.JobId).Single().SubmittedAt);
+    }
+
+    // Pi 0.99 signed out: the editor renders, with its own warning above it.
+    const string PiEditor = "\n────────\n\n────────\n/private/tmp/w\n0.0%/0 (auto)    unknown";
+    const string PiNoModelsScreen = " Warning: No models available. Use /login to log into a provider via OAuth or\n API key. See:\n /opt/pi/docs/providers.md" + PiEditor;
+    const string PiNoKeyError = " Error: No API key found for the selected model.\n\n Use /login to log into a provider via OAuth or API key. See:\n /opt/pi/docs/providers.md\n";
+
+    [Fact]
+    public void Pi_login_is_only_its_own_new_error_line()
+    {
+        var blocker = HerdrAgentControl.StartupBlocker(InteractiveAgentKind.Pi, PiNoModelsScreen);
+        Assert.Equal("agent_login_required", blocker?.Reason);
+        Assert.Contains("run `pi` and /login", blocker!.Message);
+        Assert.Contains("No models available", blocker.Message);
+        // A resumed session's history is not a startup screen; prose quoting the error is not Pi's error line.
+        Assert.Null(HerdrAgentControl.StartupBlocker(InteractiveAgentKind.Pi, PiNoModelsScreen, resumed: true));
+        Assert.Null(HerdrAgentControl.StartupBlocker(InteractiveAgentKind.Pi, "Pi said: Error: No API key found" + PiEditor));
+        Assert.Null(HerdrAgentControl.StartupBlocker(InteractiveAgentKind.Codex, PiNoModelsScreen));
+
+        // After the prompt only an error line below the last one already on screen counts.
+        var after = PiNoKeyError + PiEditor;
+        var none = HerdrAgentControl.PiLoginAnchor(PiEditor);
+        Assert.Empty(none);
+        Assert.Equal("agent_login_required", HerdrAgentControl.DeliveryBlocker(InteractiveAgentKind.Pi, after, none)?.Reason);
+        Assert.Contains("No API key found for the selected model.", HerdrAgentControl.DeliveryBlocker(InteractiveAgentKind.Pi, after, none)!.Message);
+        Assert.Null(HerdrAgentControl.DeliveryBlocker(InteractiveAgentKind.Pi, after, HerdrAgentControl.PiLoginAnchor(after)));
+        Assert.Equal("agent_login_required", HerdrAgentControl.DeliveryBlocker(InteractiveAgentKind.Pi, PiNoKeyError + after, HerdrAgentControl.PiLoginAnchor(after))?.Reason);
+        Assert.Null(HerdrAgentControl.DeliveryBlocker(InteractiveAgentKind.Pi, PiEditor, none));
+        Assert.Null(HerdrAgentControl.DeliveryBlocker(InteractiveAgentKind.Codex, after, none));
+    }
+
+    [Fact]
+    public void Pi_login_line_is_placed_by_content_in_a_sliding_window_not_counted()
+    {
+        static string History(int from, int to) => string.Concat(Enumerable.Range(from, to - from).Select(i => $" turn {i} output\n"));
+        var before = History(0, 6) + PiNoKeyError + History(6, 10) + PiEditor;
+        var anchor = HerdrAgentControl.PiLoginAnchor(before);
+
+        // The old error scrolled out of the 100-line window as a new one arrived: the count is unchanged.
+        var replaced = History(8, 10) + " > follow-up prompt\n" + PiNoKeyError + PiEditor;
+        Assert.Equal("agent_login_required", HerdrAgentControl.DeliveryBlocker(InteractiveAgentKind.Pi, replaced, anchor)?.Reason);
+        // The old error is still on screen, only its context above was cut off: nothing new.
+        var scrolled = History(5, 6) + PiNoKeyError + History(6, 10) + " > follow-up prompt\n working\n" + PiEditor;
+        Assert.Null(HerdrAgentControl.DeliveryBlocker(InteractiveAgentKind.Pi, scrolled, anchor));
+        // The same error text again below the old one is new.
+        Assert.Equal("agent_login_required", HerdrAgentControl.DeliveryBlocker(InteractiveAgentKind.Pi, scrolled + "\n" + PiNoKeyError, anchor)?.Reason);
+    }
+
+    [Fact]
+    public async Task Recovered_pi_run_never_reads_old_screen_errors_as_its_own()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        // A retained pane's history: an earlier signed-out turn, since fixed by /login.
+        var fake = new FakeHerdr { BootstrapFromTab = true, Screen = PiNoKeyError + " > earlier prompt\n" + PiEditor };
+        var control = new HerdrAgentControl(Terminal(fake));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Pi, "atftest", state.Path, null, null, Path.Combine(state.Path, "bootstrap"));
+        await control.StartAsync(launch, TestContext.Current.CancellationToken);
+
+        // A restarted daemon observes this pane without having prompted it: there is no pre-prompt screen to compare.
+        Assert.Null(await control.DeliveryBlockerAsync(launch, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Pi_refusing_the_prompt_for_lack_of_a_key_fails_fast_and_closes_its_pane()
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr { BootstrapFromTab = true, Screen = PiEditor, ScreenAfterPrompt = PiNoKeyError + PiEditor };
+        var backend = new HerdrInteractiveBackend(new HerdrAgentControl(Terminal(fake)), new InteractiveTranscriptReader(_ => state.Path), InteractiveAgentKind.Pi, state.Path);
+        var job = f.Submit("pi-signed-out");
+        var claim = f.Store.BeginNextAttempt()!;
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        var clock = Stopwatch.StartNew();
+        await dispatcher.RunAttemptAsync(claim, TestContext.Current.CancellationToken);
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(10));
+        var record = f.Store.GetJob(job.JobId)!;
+        Assert.Equal(JobStatus.Failed, record.Status);
+        Assert.Equal("agent_login_required", record.ReasonCode);
+        Assert.Single(fake.Calls, c => c.Args is ["--session", _, "agent", "prompt", ..]);
+        Assert.Contains(fake.Calls, c => c.Args is ["session", "stop", ..]);
     }
 
     [Fact]
@@ -1774,6 +2067,8 @@ public class HerdrTerminalTests
     private sealed class FakeHerdr : IHerdrProcessRunner
     {
         public bool AgentStartFails { get; init; }
+        /// <summary>How many `agent start` calls Herdr refuses as agent_pane_busy before the pane reads as a free shell.</summary>
+        public int AgentStartBusy { get; set; }
         public bool PaneCloseFails { get; init; }
         public const string TakenName = "atf-test-taken";
 
@@ -1814,6 +2109,18 @@ public class HerdrTerminalTests
 
         /// <summary>The shell carries whatever bootstrap its tab was created with.</summary>
         public bool BootstrapFromTab { get; init; }
+
+        /// <summary>A macOS platform shell (/bin/zsh): its environment reads as absent.</summary>
+        public bool HideShellEnvironment { get; init; }
+
+        /// <summary>The platform answer: true on macOS, where a hidden environment is proven by the shell's child instead.</summary>
+        public bool EnvironmentMayBeHidden { get; init; }
+
+        /// <summary>The PID the child started by `pane run` reports for its parent shell; null when it never runs.</summary>
+        public int? ShellProofReporter { get; set; }
+
+        /// <summary>The pane's foreground process group; null is the shell itself (nothing running in it).</summary>
+        public int? ForegroundProcessGroup { get; set; }
 
         public CapturedProcess? PromptResponse { get; init; }
 
@@ -1884,15 +2191,27 @@ public class HerdrTerminalTests
                 }.ToJsonString()),
                 ["pane", "close", "w1:p2"] => PaneCloseFails ? Err("close_failed") : Ok("{}"),
                 ["pane", "get", "w1:p2"] => PaneGetError is { } error ? Err(error) : _paneGone ? Err("pane_not_found") : Ok(new JsonObject { ["result"] = new JsonObject { ["pane"] = new JsonObject { ["pane_id"] = "w1:p2", ["tab_id"] = "w1:t2", ["terminal_id"] = _terminal } } }.ToJsonString()),
-                ["pane", "process-info", "--pane", "w1:p2"] => Ok("""{"result":{"process_info":{"pane_id":"w1:p2","shell_pid":""" + ShellPid + "}}}"),
+                ["pane", "process-info", "--pane", "w1:p2"] => Ok("""{"result":{"process_info":{"pane_id":"w1:p2","shell_pid":""" + ShellPid
+                    + ""","foreground_process_group_id":""" + (ForegroundProcessGroup ?? ShellPid) + "}}}"),
+                ["pane", "run", "w1:p2", HerdrTerminal.ShellProofCommand] => RunShellProof(),
                 ["pane", "process-info", "--pane", "w1:p1"] => Ok("""{"result":{"process_info":{"pane_id":"w1:p1","shell_pid":""" + ShellPid + "}}}"),
                 ["session", "stop" or "delete", ..] => Ok("{}"),
-                ["agent", "start", ..] => AgentStartFails ? Err("agent_not_ready") : Ok("{}"),
-                ["agent", "read", ..] => Ok(Screen ?? "› Ask Codex\n? for shortcuts\n❯ Try a task\nbypass permissions on\n──────\n──────\n/tmp/work"),
+                ["agent", "start", ..] => AgentStartFails ? Err("agent_not_ready") : AgentStartBusy-- > 0 ? Err("agent_pane_busy") : Ok("{}"),
+                ["agent", "read", ..] => Ok((_prompted && ScreenAfterPrompt is { } prompted ? prompted : Screen) ?? "› Ask Codex\n? for shortcuts\n❯ Try a task\nbypass permissions on\n──────\n──────\n/tmp/work"),
                 ["agent", "get", ..] => Ok("{\"result\":{\"agent\":{\"status\":\"" + (AgentStatuses.TryDequeue(out var status) ? status : "idle") + "\"}}}"),
-                ["--session", _, "agent", "prompt", ..] => PromptResponse ?? Ok("""{"result":{"type":"agent_prompted"}}"""),
+                ["--session", _, "agent", "prompt", ..] => (_prompted = true) && PromptResponse is { } response ? response : Ok("""{"result":{"type":"agent_prompted"}}"""),
                 _ => Err("unexpected " + string.Join(' ', args)),
             };
+        }
+
+        CapturedProcess RunShellProof()
+        {
+            // The pane shell exports the tab's bootstrap; its child writes next to whatever it inherited.
+            if (ShellProofReporter is { } reporter && TabBootstrap() is { } inherited)
+            {
+                File.WriteAllText(HerdrTerminal.ShellProofPath(inherited), reporter.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            return Ok("{}");
         }
 
         CapturedProcess CreateWorkspace()
@@ -1911,6 +2230,10 @@ public class HerdrTerminalTests
         }
 
         public string? Screen { get; init; }
+
+        /// <summary>What the pane shows once a prompt was sent, e.g. the agent's own refusal.</summary>
+        public string? ScreenAfterPrompt { get; init; }
+        bool _prompted;
 
         public Queue<string> AgentStatuses { get; init; } = new();
 
@@ -1957,7 +2280,7 @@ public class HerdrTerminalTests
         public int? ParentOf(int pid) => pid == ShellPid ? (ShellParentIsServer ? ServerPid : 1) : null;
 
         public string? EnvironmentValue(int pid, string name) =>
-            pid == ShellPid && name == HerdrTerminal.BootstrapVariable
+            pid == ShellPid && name == HerdrTerminal.BootstrapVariable && !HideShellEnvironment
                 ? BootstrapFromTab ? TabBootstrap() : ShellBootstrap
                 : null;
 

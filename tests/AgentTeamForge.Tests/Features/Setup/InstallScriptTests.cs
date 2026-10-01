@@ -11,6 +11,9 @@ namespace AgentTeamForge.Tests.Features.Setup;
 public sealed class InstallScriptTests
 {
     static readonly string Script = FindInstallScript();
+    // install.sh picks the bundle and checksum file names from the host it runs on.
+    static readonly string Rid = OperatingSystem.IsMacOS() ? "osx-arm64" : "linux-x64";
+    static readonly string Sums = OperatingSystem.IsMacOS() ? "SHA256SUMS-osx-arm64" : "SHA256SUMS";
 
     [Fact]
     public void WindowsReleaseIncludesInstallerAndChecksumsIt()
@@ -115,11 +118,102 @@ public sealed class InstallScriptTests
     {
         using var temp = new TempStateDir();
         var home = temp.File("home");
+        var archive = Bundle(temp, "0.0.1");
+        var (fixture, tools, env) = CurlFixture(temp, archive);
+
+        Assert.Equal(0, RunWith(home, [], env).Code);
+        Assert.Equal(0, RunWith(home, ["--version", "v0.0.1"], env).Code);
+        var urls = File.ReadAllLines(Path.Combine(fixture, "urls"));
+        Assert.Contains("https://fixture/releases/latest", urls);
+        Assert.Equal(4, urls.Count(url => url.StartsWith("https://fixture/releases/download/v0.0.1/", StringComparison.Ordinal)));
+        File.WriteAllText(Path.Combine(fixture, "no-release"), "");
+        Assert.Contains("no release is published yet", RunWith(temp.File("absent-home"), [], env).Error);
+        File.Delete(Path.Combine(fixture, "no-release"));
+        File.Delete(Path.Combine(fixture, Path.GetFileName(archive)));
+        Assert.Contains("missing release asset", RunWith(temp.File("missing-home"), [], env).Error);
+        File.Copy(archive, Path.Combine(fixture, Path.GetFileName(archive)));
+        File.Delete(Path.Combine(fixture, Sums));
+        Assert.Contains("missing release asset", RunWith(temp.File("missing-hash-home"), [], env).Error);
+        File.WriteAllText(Path.Combine(fixture, Sums), new string('0', 64) + "  " + Path.GetFileName(archive));
+        Assert.Contains("archive checksum mismatch", RunWith(temp.File("bad-hash-home"), [], env).Error);
+        File.WriteAllText(Path.Combine(fixture, "network"), "");
+        Assert.Contains("network error resolving latest release", RunWith(temp.File("network-home"), [], env).Error);
+        var uname = Path.Combine(tools, "uname");
+        File.WriteAllText(uname, "#!/bin/sh\ncase \"$1\" in -s) echo FreeBSD;; -m) echo amd64;; esac\n");
+        File.SetUnixFileMode(uname, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        Assert.Contains("unsupported platform FreeBSD-amd64", RunWith(temp.File("unsupported-home"), [], env).Error);
+    }
+
+    [Fact]
+    public void LatestNeverDowngradesButExplicitVersionsSwitchBetweenKeptReleases()
+    {
+        using var temp = new TempStateDir();
+        var home = temp.File("home");
+        Directory.CreateDirectory(Path.Combine(home, "state dir", "agentteamforge"));
+        var older = Bundle(temp, "0.0.2");
+        var prerelease = Bundle(temp, "0.0.3-rc10");
+        var current = Path.Combine(home, ".local", "share", "agentteamforge", "current");
+        var (_, _, env) = CurlFixture(temp, older);
+
+        Assert.Equal(0, Run(home, "--archive", prerelease));
+        var (code, output, _) = RunWith(home, [], env);
+        Assert.Equal(0, code);
+        Assert.Contains("nothing changed", output);
+        Assert.Equal("releases/0.0.3-rc10", new DirectoryInfo(current).LinkTarget);
+
+        (code, output, _) = RunWith(home, ["--archive", older]);
+        Assert.Equal(0, code);
+        Assert.Contains("downgraded from atf 0.0.3-rc10", output);
+        Assert.Equal("releases/0.0.2", new DirectoryInfo(current).LinkTarget);
+
+        // The kept prerelease is reactivated in place, and the daemon is stopped for each switch.
+        Assert.Equal(0, Run(home, "--archive", prerelease));
+        Assert.Equal("releases/0.0.3-rc10", new DirectoryInfo(current).LinkTarget);
+        Assert.Equal(2, File.ReadAllLines(Path.Combine(home, "stops")).Length);
+    }
+
+    [Fact]
+    public void UninstallStopsTheDaemonAgainAfterClientTeardown()
+    {
+        using var temp = new TempStateDir();
+        var home = temp.File("home");
+        var state = Path.Combine(home, "state dir", "agentteamforge");
+        Directory.CreateDirectory(state);
+        Assert.Equal(0, Run(home, "--archive", Bundle(temp, "0.0.1")));
+
+        Assert.Equal(0, Run(home, "--uninstall"));
+
+        // Teardown's `claude mcp get` health check starts the daemon again through `atf mcp`.
+        Assert.Equal(["stop", "teardown", "stop"], File.ReadAllLines(Path.Combine(home, "stops")).Select(line => line.Split(' ')[0]));
+    }
+
+    [Fact]
+    public void QuarantinedArchiveInstallsWithoutQuarantinedFiles()
+    {
+        if (!OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+        using var temp = new TempStateDir();
+        var home = temp.File("home");
+        var archive = Bundle(temp, "0.0.1");
+        Assert.Equal(0, Tool("xattr", "-w", "com.apple.quarantine", "0083;00000000;Safari;", archive).Code);
+
+        Assert.Equal(0, Run(home, "--archive", archive));
+
+        var release = Path.Combine(home, ".local", "share", "agentteamforge", "releases", "0.0.1");
+        var (code, output) = Tool("xattr", "-r", release);
+        Assert.Equal(0, code);
+        Assert.DoesNotContain("com.apple.quarantine", output);
+    }
+
+    static (string Fixture, string Tools, Dictionary<string, string> Env) CurlFixture(TempStateDir temp, string archive)
+    {
         var fixture = temp.File("curl fixture");
         Directory.CreateDirectory(fixture);
-        var archive = Bundle(temp, "0.0.1");
         File.Copy(archive, Path.Combine(fixture, Path.GetFileName(archive)));
-        File.Copy(Path.Combine(Path.GetDirectoryName(archive)!, "SHA256SUMS"), Path.Combine(fixture, "SHA256SUMS"));
+        File.Copy(Path.Combine(Path.GetDirectoryName(archive)!, Sums), Path.Combine(fixture, Sums));
+        var version = Path.GetFileName(archive)["atf-".Length..^$"-{Rid}.tar.gz".Length];
         var tools = temp.File("tools");
         Directory.CreateDirectory(tools);
         var curl = Path.Combine(tools, "curl");
@@ -132,7 +226,7 @@ public sealed class InstallScriptTests
             case "$url" in
               */latest)
                 [ ! -f "$ATF_FIXTURE/network" ] || exit 7
-                if [ -f "$ATF_FIXTURE/no-release" ]; then printf '404 %s' "$url"; else printf '200 https://fixture/releases/tag/v0.0.1'; fi;;
+                if [ -f "$ATF_FIXTURE/no-release" ]; then printf '404 %s' "$url"; else printf '200 https://fixture/releases/tag/v%s' "$ATF_LATEST"; fi;;
               */download/*)
                 file=${url##*/}
                 [ -f "$ATF_FIXTURE/$file" ] || { printf '404'; exit 0; }
@@ -146,30 +240,10 @@ public sealed class InstallScriptTests
         {
             ["PATH"] = tools + ":" + Environment.GetEnvironmentVariable("PATH"),
             ["ATF_RELEASES_URL"] = "https://fixture/releases",
-            ["ATF_FIXTURE"] = fixture
+            ["ATF_FIXTURE"] = fixture,
+            ["ATF_LATEST"] = version
         };
-
-        Assert.Equal(0, RunWith(home, [], env).Code);
-        Assert.Equal(0, RunWith(home, ["--version", "v0.0.1"], env).Code);
-        var urls = File.ReadAllLines(Path.Combine(fixture, "urls"));
-        Assert.Contains("https://fixture/releases/latest", urls);
-        Assert.Equal(4, urls.Count(url => url.StartsWith("https://fixture/releases/download/v0.0.1/", StringComparison.Ordinal)));
-        File.WriteAllText(Path.Combine(fixture, "no-release"), "");
-        Assert.Contains("no release is published yet", RunWith(temp.File("absent-home"), [], env).Error);
-        File.Delete(Path.Combine(fixture, "no-release"));
-        File.Delete(Path.Combine(fixture, Path.GetFileName(archive)));
-        Assert.Contains("missing release asset", RunWith(temp.File("missing-home"), [], env).Error);
-        File.Copy(archive, Path.Combine(fixture, Path.GetFileName(archive)));
-        File.Delete(Path.Combine(fixture, "SHA256SUMS"));
-        Assert.Contains("missing release asset", RunWith(temp.File("missing-hash-home"), [], env).Error);
-        File.WriteAllText(Path.Combine(fixture, "SHA256SUMS"), new string('0', 64) + "  " + Path.GetFileName(archive));
-        Assert.Contains("archive checksum mismatch", RunWith(temp.File("bad-hash-home"), [], env).Error);
-        File.WriteAllText(Path.Combine(fixture, "network"), "");
-        Assert.Contains("network error resolving latest release", RunWith(temp.File("network-home"), [], env).Error);
-        var uname = Path.Combine(tools, "uname");
-        File.WriteAllText(uname, "#!/bin/sh\ncase \"$1\" in -s) echo FreeBSD;; -m) echo amd64;; esac\n");
-        File.SetUnixFileMode(uname, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        Assert.Contains("unsupported platform FreeBSD-amd64", RunWith(temp.File("unsupported-home"), [], env).Error);
+        return (fixture, tools, env);
     }
 
     [Fact]
@@ -221,21 +295,36 @@ public sealed class InstallScriptTests
         var home = temp.File("home");
         var binary = Path.Combine(home, ".local", "bin", "atf");
         var state = Path.Combine(home, "state");
-        var unit = LoginAutostart.FilePath(home, "linux");
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var mac = OperatingSystem.IsMacOS();
+        var unit = LoginAutostart.FilePath(home, mac ? "macos" : "linux");
         Directory.CreateDirectory(Path.GetDirectoryName(unit)!);
         var calls = new List<string>();
         (int, string) Runner(string tool, IReadOnlyList<string> args)
         {
             calls.Add(tool + " " + string.Join(' ', args));
-            return (0, "");
+            return (0, tool == "id" ? "501\n" : args[0] == "print" ? LaunchdOwnershipTests.Print(binary, state) : "");
         }
-        File.WriteAllText(unit, LoginAutostart.LinuxUnit("/other/atf", state, "/usr/bin"));
+        string Content(string owner) => mac ? LoginAutostart.MacPlist(owner, state, "/usr/bin") : LoginAutostart.LinuxUnit(owner, state, "/usr/bin");
+        File.WriteAllText(unit, Content("/other/atf"));
         Assert.True(LoginAutostart.RemoveOwned(home, binary, state, Runner));
         Assert.True(File.Exists(unit));
-        File.WriteAllText(unit, LoginAutostart.LinuxUnit(binary, state, "/usr/bin"));
+        Assert.Empty(calls);
+        File.WriteAllText(unit, Content(binary));
         Assert.True(LoginAutostart.RemoveOwned(home, binary, state, Runner));
         Assert.False(File.Exists(unit));
-        Assert.Contains("systemctl --user disable agentteamforge.service", calls);
+        Assert.Contains(mac ? "launchctl bootout gui/501/com.agentteamforge.daemon" : "systemctl --user disable agentteamforge.service", calls);
+
+        // A file that spells the same paths through a symlinked HOME is still owned.
+        var linked = temp.File("linked home");
+        Directory.CreateSymbolicLink(linked, home);
+        File.WriteAllText(unit, mac ? LoginAutostart.MacPlist(binary.Replace(home, linked), state.Replace(home, linked), "/usr/bin")
+            : LoginAutostart.LinuxUnit(binary.Replace(home, linked), state.Replace(home, linked), "/usr/bin"));
+        Assert.True(LoginAutostart.RemoveOwned(home, binary, state, Runner));
+        Assert.False(File.Exists(unit));
     }
 
     static string Bundle(TempStateDir temp, string version)
@@ -244,21 +333,34 @@ public sealed class InstallScriptTests
         var payload = Path.Combine(dir, "payload");
         Directory.CreateDirectory(Path.Combine(payload, "sub dir"));
         File.WriteAllText(Path.Combine(payload, "atf"),
-            $"#!/bin/sh\ncase \"$1\" in --version) echo 'atf {version}';; stop) echo \"$*\" >> \"$HOME/stops\"; [ -z \"${{ATF_STOP_FAIL:-}}\" ];; esac\n");
+            $"#!/bin/sh\ncase \"$1\" in --version) echo 'atf {version}';; stop) echo \"$*\" >> \"$HOME/stops\"; [ -z \"${{ATF_STOP_FAIL:-}}\" ];; uninstall) echo teardown >> \"$HOME/stops\";; esac\n");
         File.SetUnixFileMode(Path.Combine(payload, "atf"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         File.Copy(Script, Path.Combine(payload, "install.sh"));
         File.WriteAllText(Path.Combine(payload, "sub dir", "a b.txt"), "x");
-        var archive = Path.Combine(dir, $"atf-{version}-linux-x64.tar.gz");
+        var archive = Path.Combine(dir, $"atf-{version}-{Rid}.tar.gz");
         using (var gz = new GZipStream(File.Create(archive), CompressionLevel.Fastest))
         {
             TarFile.CreateFromDirectory(payload, gz, includeBaseDirectory: false);
         }
         var hash = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(archive)));
-        File.WriteAllText(Path.Combine(dir, "SHA256SUMS"), $"{hash}  {Path.GetFileName(archive)}\n");
+        File.WriteAllText(Path.Combine(dir, Sums), $"{hash}  {Path.GetFileName(archive)}\n");
         return archive;
     }
 
     static int Run(string home, params string[] args) => RunWith(home, args).Code;
+
+    static (int Code, string Output) Tool(string tool, params string[] args)
+    {
+        var start = new ProcessStartInfo(tool) { UseShellExecute = false, RedirectStandardOutput = true };
+        foreach (var arg in args)
+        {
+            start.ArgumentList.Add(arg);
+        }
+        using var process = Process.Start(start)!;
+        var output = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        return (process.ExitCode, output);
+    }
 
     static (int Code, string Output, string Error) RunWith(string home, string[] args, Dictionary<string, string>? env = null)
     {

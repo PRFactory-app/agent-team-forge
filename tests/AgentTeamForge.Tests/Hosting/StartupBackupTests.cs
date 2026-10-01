@@ -66,6 +66,26 @@ public sealed class StartupBackupTests
         Assert.Contains(second, remaining);
     }
 
+    [Fact]
+    public void Damaged_database_never_rotates_out_a_good_backup()
+    {
+        using var dir = new TempStateDir();
+        var state = CreateState(dir);
+        StartupBackup.Run(state, BusyTimeout, _ => { }, () => "boot-one");
+        StartupBackup.Run(state, BusyTimeout, _ => { }, () => "boot-two");
+        var good = Backups(state).Order(StringComparer.Ordinal).ToArray();
+        StateIntegrityTests.DamagePages(state.Database);
+        var log = new List<string>();
+
+        StartupBackup.Run(state, BusyTimeout, log.Add, () => "boot-three");
+        StartupBackup.Run(state, BusyTimeout, log.Add, () => "boot-four");
+
+        Assert.Equal(good, Backups(state).Order(StringComparer.Ordinal).ToArray());
+        Assert.All(good, backup => JobDatabase.Verify(backup, BusyTimeout));
+        Assert.Equal(2, log.Count(line => line.StartsWith("backup failed:", StringComparison.Ordinal)));
+        Assert.Empty(Directory.GetFiles(Path.Combine(state.Path, "backups"), "*-wal"));
+    }
+
     static StateDirectory CreateState(TempStateDir dir)
     {
         var state = StateDirectory.Open(dir.Path);

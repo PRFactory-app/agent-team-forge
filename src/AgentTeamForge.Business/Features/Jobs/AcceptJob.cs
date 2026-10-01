@@ -29,16 +29,23 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         {
             return JobResult.Fail(instructionError);
         }
-        if (!IsValid(request.IdempotencyKey, request.Instruction)
-            || !FakeBehavior.All.Contains(behavior)
-            || ((request.Hold || behavior != FakeBehavior.Complete) && !testProfile)
-            || !ValidLimits(request.TimeoutSeconds, request.QueueTtlSeconds)
-            || request.ExpectedOutputs is { } outputs && (outputs.Length > 100 || outputs.Any(p => string.IsNullOrWhiteSpace(p) || p.Length > 4096))
-            || !ValidOption(request.Model) || !ValidOption(request.Effort)
-            || request.TargetAgent is not null && !ValidAgentName(request.TargetAgent)
-            || !TryNormalizeCwd(request.Cwd, out var cwd))
+        var invalid = KeyOrInstructionError(request.IdempotencyKey, request.Instruction)
+            ?? (!FakeBehavior.All.Contains(behavior) || ((request.Hold || behavior != FakeBehavior.Complete) && !testProfile)
+                ? "Invalid behavior: fake behaviors and hold are test-profile controls." : null)
+            ?? LimitsError(request.TimeoutSeconds, request.QueueTtlSeconds)
+            ?? (request.ExpectedOutputs is { } outputs && (outputs.Length > 100 || outputs.Any(p => string.IsNullOrWhiteSpace(p) || p.Length > 4096))
+                ? "Invalid expected_outputs: at most 100 non-blank paths of at most 4096 characters." : null)
+            ?? OptionError("model", request.Model) ?? OptionError("effort", request.Effort)
+            ?? (request.TargetAgent is not null && !ValidAgentName(request.TargetAgent)
+                ? "Invalid name: 1 to 64 letters, digits, '-' or '_', starting with a letter or digit." : null);
+        string? cwd = null;
+        if (invalid is null && !TryNormalizeCwd(request.Cwd, out cwd))
         {
-            return JobResult.Fail(JobErrors.InvalidRequest);
+            invalid = "Invalid cwd: must be an existing absolute directory of at most 4096 characters.";
+        }
+        if (invalid is not null)
+        {
+            return JobResult.Fail(JobErrors.InvalidRequest, invalid);
         }
 
         if (!_backends.Contains(backend))
@@ -102,11 +109,16 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
             targetAgent: request.TargetAgent, defaultAgent: backend + "-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(request.IdempotencyKey)))[..8]);
     }
 
-    /// <summary>Optional job timeout and queue TTL: whole seconds, at most one day.</summary>
-    internal static bool ValidLimits(int? timeoutSeconds, int? queueTtlSeconds) =>
-        timeoutSeconds is null or (>= 1 and <= MaxLimitSeconds) && queueTtlSeconds is null or (>= 1 and <= MaxLimitSeconds);
+    /// <summary>Optional job timeout and queue TTL: whole seconds, at most one day. Named as the MCP tools name them.</summary>
+    internal static string? LimitsError(int? timeoutSeconds, int? queueTtlSeconds) =>
+        timeoutSeconds is not (null or (>= 1 and <= MaxLimitSeconds)) ? "Invalid timeout_s: must be an integer from 1 to 86400."
+        : queueTtlSeconds is not (null or (>= 1 and <= MaxLimitSeconds)) ? "Invalid queue_ttl_s: must be an integer from 1 to 86400."
+        : null;
 
     const int MaxLimitSeconds = 86_400;
+
+    internal static string? OptionError(string field, string? value) => ValidOption(value) ? null
+        : $"Invalid {field}: 1 to 128 characters, not starting with '-', without control or shell metacharacters.";
 
     // These values become CLI arguments (and on Windows may pass through a command shim).
     public static bool ValidOption(string? value) => value is null ||
@@ -118,9 +130,11 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
     internal (string? model, string? effort) ResolveModel(string backend, string? model, string? effort) =>
         ModelSelection.Resolve(backend, model, effort, discoverModels, tierMap);
 
-    internal bool IsValid(string? key, string? instruction) =>
-        !string.IsNullOrWhiteSpace(key) && key.Length <= limits.MaxIdempotencyKeyChars
-        && !string.IsNullOrEmpty(instruction);
+    internal string? KeyOrInstructionError(string? key, string? instruction) =>
+        string.IsNullOrWhiteSpace(key) || key.Length > limits.MaxIdempotencyKeyChars
+            ? $"Invalid idempotency_key: must be 1 to {limits.MaxIdempotencyKeyChars} characters and not blank."
+        : string.IsNullOrEmpty(instruction) ? "Invalid instruction: must not be empty."
+        : null;
 
     internal string? InstructionError(string instruction, string? backend)
     {

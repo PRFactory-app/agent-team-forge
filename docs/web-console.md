@@ -34,7 +34,9 @@ it in that tab's session storage and removes it from the address bar.
   result and live activity transcript. **Raw logs** shows the full output
   stream. An absent result is shown differently from an empty one.
 - **Follow-up.** Type in the card's composer; Enter sends, Shift+Enter adds a
-  newline. Check **Interrupt** to replace a running turn. A lead card lets you
+  newline. A message to a running agent queues behind its current turn, as
+  `atf client follow-up` and MCP `follow_up` do; check **Interrupt** to
+  replace the running turn instead. A lead card lets you
   choose which of its member agents to message; the lead itself is an MCP
   binding, not a managed agent.
 - **Stop.** **Stop job** cancels a queued or running job. In interactive
@@ -42,8 +44,9 @@ it in that tab's session storage and removes it from the address bar.
   closes that owned tab. Stopping asks for confirmation.
 - **New agent.** Submit a prompt to a configured Claude Code, Codex or Pi
   backend with an existing absolute working directory and, optionally, model,
-  effort and lead session. The daemon validates the directory and options
-  before accepting the job.
+  effort and lead session. The model and effort lists come from the daemon's
+  catalog. The console and the daemon validate the directory and options
+  before accepting the job; a rejection names the field at fault.
 - **Join ticket.** Expand a lead card to create a ten-minute join ticket for a
   Claude Desktop or Codex Desktop external member and copy the `join_team`
   instructions into that session ([usage](usage.md#external-members)).
@@ -65,6 +68,10 @@ remove overrides.
 - When the daemon has a cached model catalog from the backend CLI, Settings
   offers a dropdown and rejects unavailable models with a CLI upgrade hint.
   Otherwise enter a model slug; admission checks it once a catalog is known.
+- The effort list is the one the daemon validates against. For Codex it is
+  the reasoning levels the catalog reports for the row's model (so `ultra`
+  is offered only where the model supports it); a rejected save marks the
+  model or effort control and shows why.
 - Settings also holds the Herdr placement choice (own ATF session or an
   existing session).
 
@@ -72,6 +79,12 @@ API: `GET /api/settings/tiers` returns effective and default tables plus cached
 catalogs. `PUT /api/settings/tiers` accepts
 `{ "backend": "codex", "tier": "xhigh", "model": "…", "effort": "xhigh" }`;
 omit `model` to reset one tier, or send `{ "reset_all": true }`.
+
+A write rejected as invalid (`web_bad_request` from the console,
+`invalid_request` from the daemon) returns HTTP 400 with `error_detail` and,
+when one field is at fault, `field` (for example `"field": "effort"`). Other
+daemon refusals, such as an unavailable model on submit, keep HTTP 200 with
+`ok: false` and the reason in `error`.
 
 ## Security
 

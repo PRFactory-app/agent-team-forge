@@ -196,12 +196,41 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
         if (launch.Kind == InteractiveAgentKind.Claude)
         {
             var cwd = Path.GetFullPath(launch.WorkingDirectory);
-            var encoded = new string([.. cwd.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-')]);
-            var dir = Path.Combine(ClaudeConfigRoot.Resolve(environment, cwd), "projects", encoded);
-            return Directory.Exists(dir) ? Directory.EnumerateFiles(dir, "*.jsonl") : [];
+            var projects = Path.Combine(ClaudeConfigRoot.Resolve(environment, cwd), "projects");
+            return ClaudeProjectDirectories(projects, cwd).SelectMany(dir => Directory.EnumerateFiles(dir, "*.jsonl"));
         }
         var sessions = Path.Combine(_codexHome, "sessions");
         return Directory.Exists(sessions) ? Directory.EnumerateFiles(sessions, "rollout-*.jsonl", SearchOption.AllDirectories) : [];
+    }
+
+    const int ClaudeSlugLimit = 200;
+
+    /// <summary>
+    /// Claude's project directories for a cwd. Claude names them after its process cwd, which is
+    /// the physical path on Linux/macOS (getcwd: /tmp/x is /private/tmp/x) but the path as given on
+    /// Windows (junctions stay unresolved), so both spellings are tried. Every non-alphanumeric UTF-16
+    /// unit becomes '-'; a slug over 200 characters is cut to 200 plus '-' and a hash, which Claude
+    /// itself matches by that prefix. Real entries are returned so a case-insensitive file system
+    /// never yields the same directory twice.
+    /// </summary>
+    internal static List<string> ClaudeProjectDirectories(string projects, string cwd)
+    {
+        string? physical = null;
+        try { physical = PhysicalPath.Resolve(cwd); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        var slugs = new[] { physical, cwd }.OfType<string>()
+            .Select(path => new string([.. Path.TrimEndingDirectorySeparator(path).Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-')]))
+            .Distinct().ToList();
+        var comparison = OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        try
+        {
+            return Directory.Exists(projects)
+                ? [.. Directory.EnumerateDirectories(projects).Where(dir => slugs.Any(slug => Path.GetFileName(dir) is var name
+                    && (slug.Length <= ClaudeSlugLimit ? string.Equals(name, slug, comparison)
+                        : name.StartsWith(slug[..ClaudeSlugLimit] + "-", comparison))))]
+                : [];
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return []; }
     }
 
     static DateTime Modified(string path)
@@ -360,7 +389,11 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                             apiError = apiError with { TurnEnded = true };
                         }
                     }
-                    else { completed |= CompletedTurn(root, kind); }
+                    else
+                    {
+                        completed |= CompletedTurn(root, kind);
+                        if (kind == InteractiveAgentKind.Codex && CodexLoginError(root) is { } login) { apiError = login; }
+                    }
                     if (AssistantText(root, kind) is { } text)
                     {
                         last = text;
@@ -402,6 +435,41 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             ? new("agent_login_required", "Claude is not logged in; run `claude` and /login."
                 + (string.IsNullOrWhiteSpace(text) ? "" : " " + text))
             : new("agent_api_error", string.IsNullOrWhiteSpace(text) ? $"Claude API error: {error ?? "unknown"}" : text);
+    }
+
+    /// <summary>
+    /// A turn Codex ended on a definite 401 (an expired or revoked login): the error its task_complete
+    /// (or a final error event) records, with the structured HTTP status when Codex gives one.
+    /// Retries ("Reconnecting...") are not final, and other failures are not a login problem.
+    /// </summary>
+    static InteractiveApiError? CodexLoginError(JsonElement root)
+    {
+        if (Str(root, "type") != "event_msg" || !root.TryGetProperty("payload", out var payload)) { return null; }
+        var (message, info) = Str(payload, "type") switch
+        {
+            "task_complete" when payload.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object
+                => (Str(error, "message"), error.TryGetProperty("codex_error_info", out var details) ? details : default),
+            "error" => (Str(payload, "message"), payload.TryGetProperty("codex_error_info", out var details) ? details : default),
+            _ => (null, default),
+        };
+        if (message is null || message.StartsWith("Reconnecting", StringComparison.Ordinal)
+            || !message.Contains("401 Unauthorized", StringComparison.Ordinal)) { return null; }
+        // The text alone suffices only when Codex gives no structured status to contradict it.
+        if (info.ValueKind == JsonValueKind.Object && HttpStatus(info) is { } status && status != 401) { return null; }
+        return BackendLoginErrors.Inspect("codex", message) is { } login ? new(login.Code, login.Details, TurnEnded: true) : null;
+    }
+
+    static int? HttpStatus(JsonElement info)
+    {
+        foreach (var variant in info.EnumerateObject())
+        {
+            if (variant.Value.ValueKind == JsonValueKind.Object && variant.Value.TryGetProperty("http_status_code", out var code)
+                && code.ValueKind == JsonValueKind.Number && code.TryGetInt32(out var status))
+            {
+                return status;
+            }
+        }
+        return null;
     }
 
     static DateTimeOffset? LocalReset(string? text, DateTimeOffset observed)

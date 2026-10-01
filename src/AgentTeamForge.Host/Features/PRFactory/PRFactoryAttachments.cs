@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
@@ -134,7 +135,7 @@ internal static class PRFactoryAttachments
         }
         finally
         {
-            if (!process.HasExited) { process.Kill(entireProcessTree: true); await process.WaitForExitAsync(CancellationToken.None); }
+            if (!process.HasExited) { OwnedProcessTermination.Kill(process); await process.WaitForExitAsync(CancellationToken.None); }
         }
     }
 

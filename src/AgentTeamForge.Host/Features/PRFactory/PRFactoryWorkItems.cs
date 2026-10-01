@@ -803,6 +803,7 @@ public sealed partial class PRFactoryWorkItems(
             var member = teams.ManagedMembers(server, item.Id).Last(m => m.JobId == job.JobId);
             var resumed = JobResult.Fail(JobErrors.DaemonUnhealthy);
             // A fixed key makes a crash between acceptance and ResumeRecorded resolve to the same turn.
+            // No Defer: a park is recorded after its turn ended, and parent_not_ready retries via RetryResume.
             await Guard(item.Id, () =>
             {
                 resumed = followUp?.Invoke(new FollowUpRequest(job.JobId,
@@ -1099,6 +1100,7 @@ public sealed partial class PRFactoryWorkItems(
         var result = JobResult.Fail(JobErrors.DaemonUnhealthy);
         await Guard(item.Id, () =>
         {
+            // No Defer: finalization starts only after every turn, the lead's included, has completed.
             result = followUp?.Invoke(new FollowUpRequest(lead.JobId, instruction, $"prf-finalize:{item.Id:N}"))
                 ?? JobResult.Fail(JobErrors.DaemonUnhealthy);
             if (result.Error is null) { teams.RecordMember(server, item.Id, "lead", FinalizeTurn, result.Job!.JobId); }

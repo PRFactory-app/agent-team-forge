@@ -62,6 +62,12 @@ public interface IBackendRun : IAsyncDisposable
 {
     int? ProcessId { get; }
 
+    /// <summary>
+    /// Where this run's process tree hangs, under which run marker; null means <see cref="ProcessId"/> under the
+    /// attempt's correlation (headless runs). Used by <see cref="RunProcessSnapshots"/> on macOS.
+    /// </summary>
+    ProcessSnapshotRoot? SnapshotRoot => null;
+
     /// <summary>Whether this run's held process handle still identifies a live child.</summary>
     bool OwnedChildAlive => false;
 

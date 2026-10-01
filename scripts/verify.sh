@@ -23,7 +23,12 @@ if [[ -z "${DOTNET:-}" ]]; then
 fi
 if [[ "$DOTNET" == */* ]]; then export DOTNET_ROOT="$(dirname "$DOTNET")"; fi
 PIN="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' global.json)"
-RID="${RID:-linux-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')}"
+if [[ -z "${RID:-}" ]]; then
+  case "$(uname -s)" in Linux) os=linux ;; Darwin) os=osx ;; *) os= ;; esac
+  case "$(uname -m)" in x86_64|amd64) arch=x64 ;; aarch64|arm64) arch=arm64 ;; *) arch= ;; esac
+  [[ -n "$os" && -n "$arch" ]] || { echo "BLOCKED: no default RID for $(uname -s) $(uname -m); set RID=" >&2; exit 2; }
+  RID="$os-$arch"
+fi
 
 actual="$("$DOTNET" --version 2>/dev/null || true)"
 if [[ "$actual" != "$PIN" ]]; then
@@ -33,6 +38,10 @@ fi
 
 step() { echo "== $*"; }
 MSBUILD_ARGS=(-m:1 -nodeReuse:false -p:UseSharedCompilation=false)
+PUBLISH_ARGS=()
+# On a Mac with only the Command Line Tools, the ILCompiler's `xcodebuild -version`
+# probe prints an error that fails the publish; skip it (it only selects -ld_classic for Xcode 15/16).
+if [[ "$RID" == osx-* ]] && ! xcodebuild -version >/dev/null 2>&1; then PUBLISH_ARGS=(-p:UseLdClassicXCodeLinker=false); fi
 step "sdk $actual rid $RID dotnet $DOTNET"
 step restore;  "$DOTNET" restore AgentTeamForge.slnx "${MSBUILD_ARGS[@]}"
 step format;   "$DOTNET" format AgentTeamForge.slnx --verify-no-changes --no-restore
@@ -49,12 +58,12 @@ cleanup_tmp() {
   exit "$status"
 }
 trap 'cleanup_tmp $?' EXIT
-step test;     "$DOTNET" test AgentTeamForge.slnx -c Release --no-build --blame-hang --blame-hang-timeout 10m
+step test;     "$DOTNET" test AgentTeamForge.slnx -c Release --no-build --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type none
 step publish-aot
 mkdir -p artifacts
 PUBLISH_DIR="$(mktemp -d "$ROOT/artifacts/$RID-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
 "$DOTNET" publish src/AgentTeamForge.Host/AgentTeamForge.Host.csproj -c Release -r "$RID" \
-  --self-contained true -p:PublishAot=true -p:TreatWarningsAsErrors=true -o "$PUBLISH_DIR" "${MSBUILD_ARGS[@]}"
+  --self-contained true -p:PublishAot=true -p:TreatWarningsAsErrors=true -o "$PUBLISH_DIR" "${MSBUILD_ARGS[@]}" ${PUBLISH_ARGS[@]+"${PUBLISH_ARGS[@]}"}
 step "published $PUBLISH_DIR/atf"
 step published-smoke
 DOTNET="$DOTNET" "$ROOT/scripts/published-smoke.sh" "$PUBLISH_DIR/atf"

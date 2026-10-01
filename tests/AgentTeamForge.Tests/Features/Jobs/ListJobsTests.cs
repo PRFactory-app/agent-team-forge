@@ -247,13 +247,13 @@ public sealed class ListJobsTests
     }
 
     [Theory]
-    [InlineData(null, 0, null)]
-    [InlineData(null, ListJobs.MaxPageSize + 1, null)]
-    [InlineData("done", null, null)]
-    [InlineData("QUEUED", null, null)]
-    [InlineData(null, null, "not-a-job")]
-    [InlineData(null, null, "")]
-    public void Out_of_contract_requests_are_rejected(string? status, int? limit, string? cursor)
+    [InlineData(null, 0, null, "limit")]
+    [InlineData(null, ListJobs.MaxPageSize + 1, null, "limit")]
+    [InlineData("done", null, null, "status")]
+    [InlineData("QUEUED", null, null, "status")]
+    [InlineData(null, null, "not-a-job", "cursor")]
+    [InlineData(null, null, "", "cursor")]
+    public void Out_of_contract_requests_are_rejected(string? status, int? limit, string? cursor, string field)
     {
         using var f = new JobFixture();
         f.Submit("k");
@@ -261,6 +261,7 @@ public sealed class ListJobsTests
         var result = f.List().Execute(new ListJobsRequest(status, limit, cursor));
 
         Assert.Equal(JobErrors.InvalidRequest, result.Error);
+        Assert.StartsWith($"Invalid {field}: ", result.Detail);
         Assert.Null(result.Page);
     }
 
@@ -343,7 +344,10 @@ public sealed class ListJobsTests
             codex.Jobs.Concat(next.Jobs).Select(j => j.JobId));
         Assert.DoesNotContain(fake.JobId, codex.Jobs.Concat(next.Jobs).Select(j => j.JobId));
         Assert.Equal([recent.JobId], f.List().Execute(new ListJobsRequest(Backend: BackendCatalog.Codex, Since: cutoff)).Page!.Jobs.Select(j => j.JobId));
-        Assert.Equal(JobErrors.InvalidRequest, f.List().Execute(new ListJobsRequest(Since: "not-a-date")).Error);
+        var badSince = f.List().Execute(new ListJobsRequest(Since: "not-a-date"));
+        Assert.Equal(JobErrors.InvalidRequest, badSince.Error);
+        Assert.StartsWith("Invalid since: ", badSince.Detail);
+        Assert.StartsWith("Invalid backend: ", f.List().Execute(new ListJobsRequest(Backend: "gemini")).Detail);
     }
 
     [Fact]

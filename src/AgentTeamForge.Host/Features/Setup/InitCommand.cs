@@ -34,6 +34,13 @@ public static class InitCommand
             return 2;
         }
 
+        // Before creating anything, so a refused path leaves no empty directory behind.
+        if (StateDirectory.SocketPathProblem(stateDir) is { } pathProblem)
+        {
+            Console.Error.WriteLine($"error: {StateDirectory.PathTooLong}: {pathProblem}");
+            return 78;
+        }
+
         if (OperatingSystem.IsWindows())
         {
             Directory.CreateDirectory(stateDir);

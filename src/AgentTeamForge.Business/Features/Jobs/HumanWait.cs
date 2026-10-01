@@ -2,7 +2,10 @@ using AgentTeamForge.DAL.Features.Jobs;
 
 namespace AgentTeamForge.Business.Features.Jobs;
 
-public sealed record HumanInputRequestResult(HumanWaitRecord? Wait, string? Error, string? Instruction = null);
+public sealed record HumanInputRequestResult(HumanWaitRecord? Wait, string? Error, string? Instruction = null)
+{
+    public string? Detail { get; init; }
+}
 
 /// <summary>Job-scoped tool semantics. The endpoint supplies the authenticated managed job identity.</summary>
 public sealed class HumanWait(HumanWaitStore waits, JobStore jobs, PRFactoryTeamStore teams, BoundPrincipal principal)
@@ -12,9 +15,10 @@ public sealed class HumanWait(HumanWaitStore waits, JobStore jobs, PRFactoryTeam
     public HumanInputRequestResult Request(string authenticatedJobId, string server, Guid workItemId,
         string question, string idempotencyKey, DateTimeOffset? deadline = null)
     {
-        if (string.IsNullOrWhiteSpace(question) || question.Length > 16000
-            || string.IsNullOrWhiteSpace(idempotencyKey) || idempotencyKey.Length > 128)
-        { return new(null, JobErrors.InvalidRequest); }
+        if (string.IsNullOrWhiteSpace(question) || question.Length > 16000)
+        { return new(null, JobErrors.InvalidRequest) { Detail = "Invalid question: must be 1 to 16000 characters and not blank." }; }
+        if (string.IsNullOrWhiteSpace(idempotencyKey) || idempotencyKey.Length > 128)
+        { return new(null, JobErrors.InvalidRequest) { Detail = "Invalid idempotency_key: must be 1 to 128 characters and not blank." }; }
         var job = jobs.GetJob(authenticatedJobId);
         if (job is null || job.Principal != principal.Principal || job.Team != principal.Team)
         { return new(null, JobErrors.NotFound); }

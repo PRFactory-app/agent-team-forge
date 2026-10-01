@@ -73,6 +73,7 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
             }
         }
 
+        args.AddRange(["-c", OrphanedBackendProcess.CodexShellMarker(request.Correlation)]);
         if (request.ResumeSessionId is { } id)
         {
             args.Add(id);
@@ -128,9 +129,14 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
 
                 foreach (var evidence in parser.Parse(line))
                 {
-                    if (evidence is BackendEvidence.ProtocolError)
+                    if (evidence is BackendEvidence.ProtocolError or BackendEvidence.AgentError { Code: BackendLoginErrors.Code })
                     {
+                        // A signed-out codex keeps retrying the 401; the turn is already lost.
                         TerminateOwnedChild();
+                        if (evidence is BackendEvidence.AgentError login)
+                        {
+                            BackendLoginErrors.Report(output, login);
+                        }
                         yield return evidence;
                         yield break;
                     }
@@ -147,6 +153,10 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
 
             if (parser.Finish() is { } error)
             {
+                if (error is BackendEvidence.AgentError { Code: BackendLoginErrors.Code } login)
+                {
+                    BackendLoginErrors.Report(output, login);
+                }
                 yield return error;
                 yield break;
             }
@@ -282,7 +292,8 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
 /// Maps <c>codex exec --json</c> events to evidence: thread.started → Ack +
 /// Session; the last agent_message item is the turn result, emitted on
 /// turn.completed; turn.failed is fatal; a stream error without a completed
-/// turn is fatal at end of output. Unknown events are ignored.
+/// turn is fatal at end of output, and a 401 with no credential at all is fatal
+/// at once. Unknown events are ignored.
 /// </summary>
 internal sealed class CodexEventParser(string correlation)
 {
@@ -340,9 +351,14 @@ internal sealed class CodexEventParser(string correlation)
                     {
                         return [new BackendEvidence.AgentError("agent_rate_limited", failure!)];
                     }
-                    return [new BackendEvidence.ProtocolError("codex_turn_failed")];
+                    return [BackendLoginErrors.Inspect("codex", failure) ?? (BackendEvidence)new BackendEvidence.ProtocolError("codex_turn_failed")];
                 case "error":
                     _error = String(root, "message") ?? "error";
+                    if (!_completed && BackendLoginErrors.IsCodexMissingCredential(_error))
+                    {
+                        _completed = true;
+                        return [BackendLoginErrors.Inspect("codex", _error)!];
+                    }
                     return [];
                 default:
                     return [];
@@ -354,7 +370,7 @@ internal sealed class CodexEventParser(string correlation)
     public BackendEvidence? Finish() => !_completed && _error is not null
         ? AccountLimitDetector.Inspect("codex", "default", "cli_nonzero_exit", _error, DateTimeOffset.UtcNow) is not null
             ? new BackendEvidence.AgentError("agent_rate_limited", _error)
-            : new BackendEvidence.ProtocolError("codex_error")
+            : BackendLoginErrors.Inspect("codex", _error) ?? (BackendEvidence)new BackendEvidence.ProtocolError("codex_error")
         : null;
 
     static string? String(JsonElement element, string name) =>

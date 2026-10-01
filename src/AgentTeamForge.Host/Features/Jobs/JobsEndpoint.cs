@@ -1,3 +1,4 @@
+using System.Globalization;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Features.Setup;
 using AgentTeamForge.Business.Features.Agents.Terminals;
@@ -125,7 +126,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 var name = sessionName.Trim();
                 if (name.Length > 64 || sessionName.Any(char.IsControl))
                 {
-                    return new IpcResponse(false, JobErrors.InvalidRequest);
+                    return new IpcResponse(false, JobErrors.InvalidRequest, ErrorDetail: "Invalid name: at most 64 characters without control characters.");
                 }
                 if (!sessions.Rename(request.LeadSessionId, request.Workspace, name.Length == 0 ? null : name))
                 {
@@ -204,7 +205,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             case IpcProtocol.HerdrPlacementPut:
                 if (herdrPlacement is null || request.HerdrPlacement is null) { return new IpcResponse(false, JobErrors.InvalidRequest); }
                 try { herdrPlacement.Change(request.HerdrPlacement); return new IpcResponse(true, Outcome: "herdr_placement", HerdrPlacement: herdrPlacement.Default, HerdrMode: true); }
-                catch (ArgumentException e) { return new IpcResponse(false, e.Message); }
+                catch (ArgumentException e) { return new IpcResponse(false, JobErrors.InvalidRequest, ErrorDetail: "Invalid herdr_placement: " + e.Message); }
             case IpcProtocol.RetentionSettingsGet:
             case IpcProtocol.RetentionSettingsPut:
                 return retentionSettings?.Handle(request) ?? new IpcResponse(false, JobErrors.InvalidRequest);
@@ -217,7 +218,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                             ["codex"] = modelDiscovery?.CachedModels("codex") ?? [],
                             ["pi"] = modelDiscovery?.CachedModels("pi") ?? [],
                             ["cursor"] = modelDiscovery?.CachedModels("cursor") ?? []
-                        });
+                        }, ModelEfforts: tierMap.ModelEfforts());
             case IpcProtocol.TierSettingsPut:
                 if (tierMap is null)
                 {
@@ -229,7 +230,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     tierMap.Change(request.Backend, request.Tier, request.Model, request.Effort, request.ResetAllTiers);
                     return new IpcResponse(true, Outcome: "tiers", Tiers: tierMap.Settings());
                 }
-                catch (ArgumentException ex) { return new IpcResponse(false, ex.Message); }
+                catch (TierSettingException ex) { return new IpcResponse(false, JobErrors.InvalidRequest, ErrorDetail: ex.Detail); }
             case IpcProtocol.ExternalTicket:
                 return external is null ? new IpcResponse(false, JobErrors.InvalidRequest)
                     : MapExternal(external.CreateTicket(request.LeadSessionId, request.Workspace, request.MemberName, request.Note));
@@ -295,16 +296,24 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 return Map(stoppedAgent);
             case IpcProtocol.JobRemoveWorktree:
                 if (removeWorktree is null) { return new IpcResponse(false, JobErrors.BackendUnavailable); }
-                var removal = removeWorktree.ExecuteAsync(request.JobId ?? string.Empty, request.Force, request.DryRun, CancellationToken.None).GetAwaiter().GetResult();
-                return removal is null ? new IpcResponse(false, JobErrors.NotFound)
+                var (removal, removalError) = removeWorktree.ExecuteAsync(request.JobId ?? string.Empty, request.Force, request.DryRun, CancellationToken.None).GetAwaiter().GetResult();
+                return removal is null ? new IpcResponse(false, removalError)
                     : new IpcResponse(true, Outcome: removal.Outcome, Worktrees: [removal]);
             case IpcProtocol.JobPruneWorktrees:
                 if (worktreeCleanup is null || request.Force && request.JobId is null) { return new IpcResponse(false, JobErrors.InvalidRequest); }
-                var targets = request.JobId is null ? worktreeCleanup.ListWorktrees() : [Path.Combine(worktreeCleanup.Root, request.JobId)];
                 var results = new List<WorktreeCleanupResult>();
-                foreach (var target in targets)
+                if (request.JobId is not null)
                 {
-                    results.Add(worktreeCleanup.RemoveAsync(target, request.Force, request.DryRun, auto: false, CancellationToken.None).GetAwaiter().GetResult());
+                    var (single, singleError) = worktreeCleanup.RemoveJobAsync(request.JobId, request.Force, request.DryRun, CancellationToken.None).GetAwaiter().GetResult();
+                    if (single is null) { return new IpcResponse(false, singleError); }
+                    results.Add(single);
+                }
+                else
+                {
+                    foreach (var target in worktreeCleanup.ListWorktrees())
+                    {
+                        results.Add(worktreeCleanup.RemoveAsync(target, request.Force, request.DryRun, auto: false, CancellationToken.None).GetAwaiter().GetResult());
+                    }
                 }
                 return new IpcResponse(true, Outcome: request.DryRun ? "dry_run" : "pruned", Worktrees: results);
             case IpcProtocol.JobGet:
@@ -321,22 +330,28 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 var outputJob = ReadJob(request);
                 if (outputJob.Error is not null)
                 {
-                    return new IpcResponse(false, outputJob.Error);
+                    return new IpcResponse(false, outputJob.Error, ErrorDetail: outputJob.Detail);
                 }
-                if (logs is null || request.Offset is < 0 || request.MaxBytes is < 1 or > JobLogs.MaxReadBytes)
+                if (logs is null) { return new IpcResponse(false, JobErrors.InvalidRequest); }
+                if (request.Offset is < 0) { return new IpcResponse(false, JobErrors.InvalidRequest, ErrorDetail: "Invalid offset: must be nonnegative."); }
+                if (request.MaxBytes is < 1 or > JobLogs.MaxReadBytes)
                 {
-                    return new IpcResponse(false, JobErrors.InvalidRequest);
+                    return new IpcResponse(false, JobErrors.InvalidRequest,
+                        ErrorDetail: string.Create(CultureInfo.InvariantCulture, $"Invalid max_bytes: must be an integer from 1 to {JobLogs.MaxReadBytes}."));
                 }
                 return new IpcResponse(true, Outcome: "output", Output: logs.Read(request.JobId!, request.Offset ?? 0, request.MaxBytes ?? JobLogs.MaxReadBytes));
             case IpcProtocol.JobActivity:
                 var activityJob = ReadJob(request);
                 if (activityJob.Error is not null)
                 {
-                    return new IpcResponse(false, activityJob.Error);
+                    return new IpcResponse(false, activityJob.Error, ErrorDetail: activityJob.Detail);
                 }
-                if (logs is null || request.AfterCursor is < 0 || request.Limit is < 1 or > JobActivity.MaxPageSize)
+                if (logs is null) { return new IpcResponse(false, JobErrors.InvalidRequest); }
+                if (request.AfterCursor is < 0) { return new IpcResponse(false, JobErrors.InvalidRequest, ErrorDetail: "Invalid after_cursor: must be nonnegative."); }
+                if (request.Limit is < 1 or > JobActivity.MaxPageSize)
                 {
-                    return new IpcResponse(false, JobErrors.InvalidRequest);
+                    return new IpcResponse(false, JobErrors.InvalidRequest,
+                        ErrorDetail: string.Create(CultureInfo.InvariantCulture, $"Invalid limit: must be an integer from 1 to {JobActivity.MaxPageSize}."));
                 }
                 return new IpcResponse(true, Outcome: "activity", Activity: logs.ReadActivity(request.JobId!, activityJob.Job!.Backend ?? "", request.AfterCursor ?? 0, request.Limit ?? 20));
             case IpcProtocol.JobList:
@@ -348,14 +363,15 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     OrderByActivity = request.OrderByActivity,
                     IncludeConnector = request.IncludeConnector && request.LeadSessionId is null,
                 });
-                if (listed.Error is not null) { return new IpcResponse(false, listed.Error); }
+                if (listed.Error is not null) { return new IpcResponse(false, listed.Error, ErrorDetail: listed.Detail); }
                 foreach (var job in listed.Page!.Jobs) { MarkWakeRead(request, job.JobId, job.Status); }
                 return new IpcResponse(true, Outcome: "listed", Page: WithUsage(WithLocations(listed.Page), request.IncludeUsage), LeadTokens: request.IncludeUsage ? LeadUsage(listed.Page) : null,
                     ExternalMembers: request.IncludeConnector ? externalMembers?.ActiveMcpMembers() : null);
             case IpcProtocol.JobPrune:
-                if (prune is null || request.OlderThanDays is not (>= 1 and <= 36500))
+                if (prune is null) { return new IpcResponse(false, JobErrors.InvalidRequest); }
+                if (request.OlderThanDays is not (>= 1 and <= 36500))
                 {
-                    return new IpcResponse(false, JobErrors.InvalidRequest);
+                    return new IpcResponse(false, JobErrors.InvalidRequest, ErrorDetail: "Invalid older_than_days: must be an integer from 1 to 36500.");
                 }
                 return new IpcResponse(true, Outcome: request.DryRun ? "dry_run" : "pruned",
                     PrunedJobs: prune.Execute(request.OlderThanDays.Value, request.DryRun));
@@ -413,7 +429,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     // Authenticated by the managed child's private member token, never by a caller-supplied job ID.
                     var asked = humanInput?.Invoke(request.MemberToken, request.Text, request.IdempotencyKey)
                         ?? new HumanInputRequestResult(null, IpcProtocol.UnknownOp);
-                    return asked.Error is { } error ? new IpcResponse(false, error)
+                    return asked.Error is { } error ? new IpcResponse(false, error, ErrorDetail: asked.Detail)
                         : new IpcResponse(true, Outcome: asked.Wait!.QuestionId, Instruction: asked.Instruction);
                 }
             default:

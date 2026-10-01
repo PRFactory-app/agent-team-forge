@@ -16,7 +16,11 @@ namespace AgentTeamForge.Host.Transport;
 /// Once any request byte may have been written, the daemon may have accepted the
 /// job, so every failure, deadline or caller cancellation is reported as
 /// <see cref="IpcProtocol.OutcomeUnknown"/>. Recovery is the caller's explicit
-/// same-key retry or job_get; this client never retries or mints a new key.
+/// same-key retry or job_get; this client never mints a new key. The one retry it
+/// does itself is a <see cref="IpcProtocol.DaemonBusy"/> hello reply, which the daemon
+/// sends before any request byte: it backs off and reconnects within the same budget,
+/// and returns <see cref="IpcProtocol.DaemonBusy"/> (never daemon_unavailable) if the
+/// budget runs out while the daemon keeps answering busy.
 /// Caller cancellation only abandons this connection; the daemon does not tie
 /// accepted work to it.
 /// </remarks>
@@ -49,6 +53,34 @@ public sealed class IpcClient
         var credential = Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(_state.CredentialFile)).Trim();
         using var budget = new CancellationTokenSource(_budget, _timeProvider);
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, budget.Token);
+        var backoff = TimeSpan.FromMilliseconds(20);
+        var sawBusy = false;
+        while (true)
+        {
+            var response = await SendOnceAsync(request, credential, deadline.Token, cancellationToken);
+            if (sawBusy && response.Error == IpcProtocol.DaemonUnavailable && budget.IsCancellationRequested)
+            {
+                return new IpcResponse(false, IpcProtocol.DaemonBusy); // Our budget, not the daemon, ended this retry.
+            }
+            if (response.Error != IpcProtocol.DaemonBusy)
+            {
+                return response;
+            }
+
+            sawBusy = true;
+
+            try { await Task.Delay(backoff + TimeSpan.FromMilliseconds(Random.Shared.Next(0, 20)), _timeProvider, deadline.Token); }
+            catch (OperationCanceledException)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return response; // Budget spent while the live daemon stayed busy.
+            }
+            backoff = TimeSpan.FromMilliseconds(Math.Min(backoff.TotalMilliseconds * 2, 500));
+        }
+    }
+
+    async Task<IpcResponse> SendOnceAsync(IpcRequest request, string credential, CancellationToken deadlineToken, CancellationToken cancellationToken)
+    {
         var windowsPipe = OperatingSystem.IsWindows();
         var requestWriteStarted = false;
         try
@@ -56,25 +88,25 @@ public sealed class IpcClient
             if (windowsPipe)
             {
                 // ConnectAsync polls an absent pipe until the deadline; a missing daemon must fail fast.
-                if (!await WindowsPipe.AppearsAsync(() => WindowsPipe.Exists(_state.Socket), TimeSpan.FromMilliseconds(250), deadline.Token))
+                if (!await WindowsPipe.AppearsAsync(() => WindowsPipe.Exists(_state.Socket), TimeSpan.FromMilliseconds(250), deadlineToken))
                 {
                     return new IpcResponse(false, IpcProtocol.DaemonUnavailable);
                 }
-                await using var pipe = await WindowsPipe.ConnectAsync(_state.Socket, deadline.Token);
-                using var abort = deadline.Token.Register(pipe.Dispose);
+                await using var pipe = await WindowsPipe.ConnectAsync(_state.Socket, deadlineToken);
+                using var abort = deadlineToken.Register(pipe.Dispose);
                 return await ExchangeAsync(pipe);
             }
             using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            using var socketAbort = deadline.Token.Register(socket.Dispose);
-            await socket.ConnectAsync(new UnixDomainSocketEndPoint(_state.Socket), deadline.Token);
+            using var socketAbort = deadlineToken.Register(socket.Dispose);
+            await socket.ConnectAsync(new UnixDomainSocketEndPoint(_state.Socket), deadlineToken);
             await using var stream = new NetworkStream(socket, ownsSocket: false);
             return await ExchangeAsync(stream);
 
             async Task<IpcResponse> ExchangeAsync(Stream connection)
             {
                 await Frames.WriteAsync(connection, new IpcRequest { ProtocolVersion = IpcProtocol.Version, Op = IpcProtocol.Hello, Credential = credential },
-                    IpcJson.Default.IpcRequest, deadline.Token);
-                var hello = await Frames.ReadAsync(connection, IpcJson.Default.IpcResponse, _limits.MaxFrameBytes, Timeout.InfiniteTimeSpan, deadline.Token);
+                    IpcJson.Default.IpcRequest, deadlineToken);
+                var hello = await Frames.ReadAsync(connection, IpcJson.Default.IpcResponse, _limits.MaxFrameBytes, Timeout.InfiniteTimeSpan, deadlineToken);
                 if (hello is null || !hello.Ok)
                 {
                     return hello ?? new IpcResponse(false, IpcProtocol.DaemonUnavailable);
@@ -82,8 +114,8 @@ public sealed class IpcClient
 
                 requestWriteStarted = true;
                 await Frames.WriteAsync(connection, request with { ProtocolVersion = request.ProtocolVersion == 0 ? IpcProtocol.Version : request.ProtocolVersion },
-                    IpcJson.Default.IpcRequest, deadline.Token);
-                return await Frames.ReadAsync(connection, IpcJson.Default.IpcResponse, _limits.MaxFrameBytes, Timeout.InfiniteTimeSpan, deadline.Token)
+                    IpcJson.Default.IpcRequest, deadlineToken);
+                return await Frames.ReadAsync(connection, IpcJson.Default.IpcResponse, _limits.MaxFrameBytes, Timeout.InfiniteTimeSpan, deadlineToken)
                     ?? new IpcResponse(false, IpcProtocol.OutcomeUnknown);
             }
         }

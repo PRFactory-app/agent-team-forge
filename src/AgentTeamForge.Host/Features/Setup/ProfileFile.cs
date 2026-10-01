@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.Json.Serialization;
 using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.Jobs;
@@ -53,23 +52,11 @@ public sealed record ProfileFile
 
     public static ProfileFile Load(StateDirectory state)
     {
-        ProfileFile? profile;
-        try
-        {
-            profile = JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(state.ProfileFile), SetupJson.Default.ProfileFile);
-        }
-        catch (JsonException)
-        {
-            throw new StateDirectoryException("profile_invalid", $"invalid JSON in {state.ProfileFile}; run atf setup or atf doctor to inspect configuration");
-        }
-        if (profile is null)
-        {
-            throw new StateDirectoryException("profile_invalid", $"invalid JSON in {state.ProfileFile}; run atf setup or atf doctor to inspect configuration");
-        }
+        var profile = StateJson.Read(state.ProfileFile, "profile_invalid", SetupJson.Default.ProfileFile, "principal", "team", "agent", "backend");
         if (profile.Backend is not (FakeBackends or AgentBackends))
         {
             // Explicit selection only: there is no fallback from a real backend to fake.
-            throw new StateDirectoryException("backend_unsupported");
+            throw new StateDirectoryException("backend_unsupported", $"{state.ProfileFile} has backend \"{profile.Backend}\"; expected \"{FakeBackends}\" or \"{AgentBackends}\"");
         }
 
         if (!LimitsAreValid(profile.QueueLimit, profile.MaxFakeRuntimeSeconds)
@@ -77,7 +64,8 @@ public sealed record ProfileFile
             || profile.PruneOlderThanDays is < 1 or > 36500)
         {
             // Refused before the daemon binds or reports readiness.
-            throw new StateDirectoryException("profile_invalid_limits");
+            throw new StateDirectoryException("profile_invalid_limits", $"{state.ProfileFile}: queue_limit must be 1-{MaxQueueLimit}, "
+                + $"max_fake_runtime_seconds 1-{(int)DispatchJob.MaxAllowedRuntime.TotalSeconds}, max_concurrent_jobs 1-{MaxConcurrencyLimit}, prune_older_than_days 1-36500");
         }
 
         return profile;
