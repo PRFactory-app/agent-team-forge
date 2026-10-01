@@ -18,7 +18,7 @@ public sealed partial class PRFactoryWorkItems(
     PRFactoryInteraction? interaction = null, HumanWaitStore? humanWaits = null,
     bool allowRepoLess = false, PRFactoryHandoverStore? handovers = null,
     PRFactoryRepositorySet? repositorySets = null, Action<PRFactoryServerLimit?>? onLimit = null,
-    PRFactoryPullRequests? pullRequests = null)
+    PRFactoryPullRequests? pullRequests = null, Func<JobRecord, bool>? reconcileIdleInteractive = null)
 {
     // Parked turns share one account binding per backend until configured accounts exist.
     public const string DefaultAccount = "default";
@@ -648,6 +648,17 @@ public sealed partial class PRFactoryWorkItems(
         if (accounts is not null && await ResumeParkedAsync(item, allJobs, ct))
         {
             return; // An account-parked member holds completion until it resumes in the same session.
+        }
+        // A turn that ended unobserved on an idle pane would park the team forever: settle it as interrupted so the item reports failed.
+        var settledIdle = false;
+        foreach (var unobserved in allJobs.Where(j => j is { Status: JobStatus.NeedsReconciliation, ReasonCode: "interactive_completion_unobserved" }))
+        {
+            settledIdle |= reconcileIdleInteractive?.Invoke(unobserved) == true;
+        }
+        if (settledIdle)
+        {
+            allJobs = [.. allJobs.Select(j => getJob(j.JobId) ?? j)];
+            lead = allJobs.First(j => j.JobId == lead.JobId);
         }
         var waitForManaged = managedMembers.Length > 0 || externalNames.Length == 0;
         if (allJobs.Count != managedMembers.Length + 1 || !externalRepliesDrained || !outputDrained

@@ -391,6 +391,43 @@ public sealed class ExternalJoinTests
     }
 
     [Fact]
+    public async Task Idle_unobserved_lead_is_settled_so_the_work_item_reports_failed()
+    {
+        using var dir = new TempStateDir();
+        var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var server = new FakeServer();
+        server.Item.TeamPlan = null;
+        var store = new PRFactoryTeamStore(db);
+        var jobs = new Dictionary<string, JobRecord>();
+        JobResult Submit(SubmitJobRequest request)
+        {
+            jobs["job-1"] = new JobRecord("job-1", "prfactory", "connector", "connector-lead", "job-1", "prompt", "",
+                JobStatus.NeedsReconciliation, "interactive_completion_unobserved", null, 0, "codex", null, null, null);
+            return JobResult.Ok(new JobView("job-1", JobStatus.NeedsReconciliation, null, null, 0), "accepted");
+        }
+        var idle = false;
+        var adapter = new PRFactoryWorkItems("https://example.test",
+            [new(server.Item.RepositoryId!.Value, dir.Path)], store,
+            new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
+            Submit, id => jobs.GetValueOrDefault(id), () => { },
+            reconcileIdleInteractive: job =>
+            {
+                if (!idle) { return false; }
+                jobs[job.JobId] = job with { Status = JobStatus.Failed, ReasonCode = "interactive_turn_interrupted" };
+                return true;
+            });
+
+        await adapter.TickAsync(null, CancellationToken.None);
+        await adapter.TickAsync(null, CancellationToken.None);
+        Assert.DoesNotContain("fail", server.Calls); // Pane still busy: keep waiting.
+
+        idle = true;
+        await adapter.TickAsync(null, CancellationToken.None);
+        Assert.Contains("fail", server.Calls);
+        Assert.Equal("failed", store.Get("https://example.test", server.Item.Id)!.State);
+    }
+
+    [Fact]
     public async Task Recipe_member_mapped_external_without_external_team_fails_with_accurate_reason()
     {
         using var dir = new TempStateDir();

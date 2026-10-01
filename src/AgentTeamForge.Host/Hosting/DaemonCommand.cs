@@ -358,6 +358,7 @@ public static class DaemonCommand
                         publications: connectorPublications, interaction: connectorInteraction, humanWaits: humanWaits,
                         allowRepoLess: settings.TenantWideToken && settings.RepoLess,
                         handovers: connectorHandovers, repositorySets: connectorRepositorySets,
+                        reconcileIdleInteractive: dispatcher.ReconcileIdleInteractive,
                         onLimit: limit => PRFactoryConnection.PublishLimit(state, limit),
                         pullRequests: new PRFactoryPullRequests(settings.Url, settings.Repositories, settings.GitHubUser, client,
                             connectorPublications, Log)).TickAsync(machineId, ct);
