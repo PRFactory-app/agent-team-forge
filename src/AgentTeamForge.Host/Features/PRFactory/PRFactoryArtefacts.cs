@@ -189,7 +189,7 @@ internal static partial class PRFactoryArtefacts
         return path;
     }
 
-    static string Kind(string file, string? type)
+    internal static string Kind(string file, string? type)
     {
         if (type == "CustomStep") { return "custom-step"; }
         var name = Path.GetFileNameWithoutExtension(file).ToLowerInvariant();
