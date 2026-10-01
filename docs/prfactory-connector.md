@@ -37,6 +37,15 @@ The PRFactory server-side durable ATF acceptance is merged
 3. `atf prfactory status` shows the URL, the CA file, mappings, pending join prompts and
    whether the token was rejected. `atf prfactory disconnect` removes the
    settings and token.
+4. A work item the connector fenced (`reconciliation needed` in the status
+   output) is never re-claimed on its own. `atf prfactory release WORK_ITEM_ID`
+   forgets that team, so the next poll can claim the item afresh. It works while
+   the daemon runs (one database transaction; a late authority write for the
+   released item is ignored) and refuses an unfenced or unknown team, or one
+   whose execution is still being stopped. Worktrees, artefacts, jobs and logs
+   are kept. It does not call PRFactory: also release the acceptance there
+   (`POST /api/work-items/{id}/atf-acceptance/release`), otherwise the server
+   still answers `accepted` for the old job.
 
 Settings and token are stored owner-only in the state directory. The local IPC
 credential is never sent to the server.

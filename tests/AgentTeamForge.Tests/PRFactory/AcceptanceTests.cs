@@ -173,6 +173,69 @@ public sealed class AcceptanceTests
         Assert.Equal("reconciliation_needed", teams.Get(ServerUrl, server.Item.Id)!.AcceptanceState);
     }
 
+    [Fact]
+    public async Task Release_refuses_an_active_or_unknown_team()
+    {
+        using var dir = new TempStateDir();
+        var teams = new PRFactoryTeamStore(JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2)));
+        var server = new FakeServer(NewItem()) { Status = 1 };
+        await Adapter(dir, teams, server, () => { }).TickAsync(Machine, CancellationToken.None);
+        Assert.Equal("accepted", teams.Get(ServerUrl, server.Item.Id)!.AcceptanceState);
+        Assert.Equal(PRFactoryReleaseResult.NotFenced, teams.ReleaseFenced(ServerUrl, server.Item.Id));
+        Assert.NotNull(teams.Get(ServerUrl, server.Item.Id));
+        Assert.Equal(PRFactoryReleaseResult.NotFound, teams.ReleaseFenced(ServerUrl, Guid.NewGuid()));
+    }
+
+    [Fact]
+    public async Task Release_forgets_a_fenced_team_and_the_next_poll_claims_it_again()
+    {
+        using var dir = new TempStateDir();
+        var database = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var teams = new PRFactoryTeamStore(database);
+        var server = new FakeServer(NewItem());
+        var adapter = Adapter(dir, teams, server, () => { });
+        server.Status = 1;
+        await adapter.TickAsync(Machine, CancellationToken.None);
+        server.Status = 6;
+        await adapter.TickAsync(Machine, CancellationToken.None);
+        Assert.Equal("reconciliation_needed", teams.Get(ServerUrl, server.Item.Id)!.AcceptanceState);
+        teams.RecordExternal(ServerUrl, server.Item.Id, "reviewer", "reviewer", "team-1", "t", DateTimeOffset.UtcNow.AddHours(1));
+        var authority = new PRFactoryAuthorityStore(database);
+        authority.Set(ServerUrl, server.Item.Id, "accepted", null);
+        authority.Set(ServerUrl, server.Item.Id, "reconciliation-needed", "test");
+        authority.Stopped(ServerUrl, server.Item.Id);
+        Assert.NotEmpty(authority.Read(ServerUrl));
+
+        var oldJob = teams.Get(ServerUrl, server.Item.Id)!.AtfJobId;
+        Assert.Equal(PRFactoryReleaseResult.Released, teams.ReleaseFenced(ServerUrl, server.Item.Id));
+        Assert.Null(teams.Get(ServerUrl, server.Item.Id));
+        Assert.Empty(authority.Read(ServerUrl));
+        // A stale fenced poll racing the release must not resurrect the authority row.
+        authority.Set(ServerUrl, server.Item.Id, "reconciliation-needed", "late");
+        Assert.Empty(authority.Read(ServerUrl));
+
+        server.Status = 1;
+        await adapter.TickAsync(Machine, CancellationToken.None);
+        var reclaimed = teams.Get(ServerUrl, server.Item.Id);
+        Assert.NotNull(reclaimed);
+        Assert.NotEqual(oldJob, reclaimed.AtfJobId); // A fresh claim with its own acceptance identity.
+    }
+
+    [Fact]
+    public async Task Status_hints_how_to_release_a_fenced_team()
+    {
+        using var dir = new TempStateDir();
+        var teams = new PRFactoryTeamStore(JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2)));
+        var server = new FakeServer(NewItem());
+        var adapter = Adapter(dir, teams, server, () => { });
+        server.Status = 1;
+        await adapter.TickAsync(Machine, CancellationToken.None);
+        server.Status = 6;
+        await adapter.TickAsync(Machine, CancellationToken.None);
+        PRFactoryConnection.PublishJoinTickets(StateDirectory.Open(dir.Path), teams, ServerUrl);
+        Assert.Contains($"atf prfactory release {server.Item.Id:D}", File.ReadAllText(dir.File("prfactory-joins.json")), StringComparison.Ordinal);
+    }
+
     static PRFactoryWorkItem NewItem() => new()
     {
         Id = Guid.NewGuid(),

@@ -16,6 +16,7 @@ internal static class CommandLine
         ("prfactory connect", "prfactory connect --url HTTPS_URL [--repo ID=DIR]... [--external ID:MEMBER]... [--token-scope tenant-wide|repository] [--repo-less true|false] [--ca-file PEM_FILE] [--github-user LOGIN] [--state-dir DIR] (token prompted on a terminal, or on stdin)",
             ["url", "repo", "external", "token", "token-scope", "repo-less", "ca-file", "github-user", "state-dir"]),
         ("prfactory disconnect", "prfactory disconnect [--state-dir DIR]", ["state-dir"]),
+        ("prfactory release", "prfactory release WORK_ITEM_ID [--state-dir DIR] (forget a fenced team so the next poll re-claims it)", ["state-dir", "@arg"]),
         ("prfactory status", "prfactory status [--state-dir DIR]", ["state-dir"]),
         ("worktrees prune", "worktrees prune [--job ID] [--dry-run] [--force (needs --job)] [--state-dir DIR]", ["job", "+dry-run", "+force", "state-dir"]),
         ("prune", "prune [--older-than 30d] [--dry-run] [--state-dir DIR]", ["older-than", "+dry-run", "state-dir"]),
@@ -73,6 +74,7 @@ internal static class CommandLine
             return null;
         }
 
+        var positionalTaken = !entry.Options.Contains("@arg"); // "@arg" allows one bare argument
         for (var i = 0; i < rest.Length; i++)
         {
             var token = rest[i];
@@ -99,6 +101,10 @@ internal static class CommandLine
                 {
                     i++;
                 }
+            }
+            else if (!positionalTaken && !token.StartsWith('-'))
+            {
+                positionalTaken = true;
             }
             else
             {
