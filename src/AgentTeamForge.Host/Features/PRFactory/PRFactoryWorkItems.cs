@@ -348,6 +348,7 @@ public sealed partial class PRFactoryWorkItems(
                 log?.Invoke($"PRFactory work item {id:D} {acceptance.Disposition} by server; local execution stopped");
                 return false;
             default:
+                if (team.AcceptanceState == "reconciliation_needed") { return false; } // fenced and logged once already
                 await FenceAsync(id, acceptance.Reason ?? "reconciliation_needed", ct);
                 return false;
         }
@@ -1254,9 +1255,11 @@ public sealed partial class PRFactoryWorkItems(
                 {
                     var planRepositories = repositorySets?.Get(WorkspaceKey(item.Id)) is { } planSet
                         ? planSet.Members.Select(entry => (Guid.Parse(entry.Id), entry.Name,
-                            workspaces!.Get(entry.WorkspaceKey)!.LeadPath)).ToArray() : null;
+                            workspaces!.Get(entry.WorkspaceKey)!.LeadPath,
+                            workspaces.Get(entry.WorkspaceKey)!.BaseSha, workspaces.Get(entry.WorkspaceKey)!.BaseBranch)).ToArray() : null;
                     var artefacts = await PRFactoryArtefacts.CollectAsync(item,
-                        cwd ?? throw new InvalidDataException("Missing lead worktree"), result, ct, planRepositories);
+                        cwd ?? throw new InvalidDataException("Missing lead worktree"), result, ct, planRepositories,
+                        workspace?.BaseSha, workspace?.BaseBranch);
                     payload = JsonSerializer.Serialize(new PRFactoryArtefactRequest(artefacts, item.LeaseToken), PRFactoryWorkItemJson.Default.PRFactoryArtefactRequest);
                 }
                 catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException)
