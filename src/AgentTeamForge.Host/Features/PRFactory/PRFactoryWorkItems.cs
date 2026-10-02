@@ -628,11 +628,15 @@ public sealed partial class PRFactoryWorkItems(
                 }
                 catch (WipPushException ex)
                 {
+                    // Back off and log first, independent of report delivery: a failed or unreachable report
+                    // must not bring the push+report retry back on the next heartbeat.
+                    var retry = wipBackoff.Failed(backoffKey, tip, DateTimeOffset.UtcNow);
+                    log?.Invoke($"PRFactory work item {item.Id:D} WIP publication failed; no receipt recorded; retry in {retry.TotalSeconds:0}s: {ex.Message}");
                     // Reported, not rethrown: a failed WIP push leaves no receipt (so no release), but must not
                     // stall the lead's completion and final publication.
-                    var countText = await TeamWorkspace.Git(workspace.LeadPath, "rev-list", "--count", workspace.BaseSha + ".." + ex.HeadSha);
                     try
                     {
+                        var countText = await TeamWorkspace.Git(workspace.LeadPath, "rev-list", "--count", workspace.BaseSha + ".." + ex.HeadSha);
                         await Guard(item.Id, () => client.ReportWipFailureAsync(item.Id,
                             new(wipLease, machine, atfJob, wipRepo, workspace.BaseSha!, ex.Branch, ex.HeadSha,
                                 int.Parse(countText, System.Globalization.CultureInfo.InvariantCulture), false, ex.Message,
@@ -642,8 +646,11 @@ public sealed partial class PRFactoryWorkItems(
                     {
                         log?.Invoke($"PRFactory work item {item.Id:D} WIP failure report rejected ({rejected.Status}: {rejected.Error})");
                     }
-                    var retry = wipBackoff.Failed(backoffKey, tip, DateTimeOffset.UtcNow);
-                    log?.Invoke($"PRFactory work item {item.Id:D} WIP publication failed; no receipt recorded; retry in {retry.TotalSeconds:0}s: {ex.Message}");
+                    catch (Exception report) when (report is HttpRequestException or InvalidOperationException
+                        || report is OperationCanceledException && !ct.IsCancellationRequested)
+                    {
+                        log?.Invoke($"PRFactory work item {item.Id:D} WIP failure report not delivered: {report.Message}");
+                    }
                 }
                 catch (PRFactoryWipRejectedException ex)
                 {

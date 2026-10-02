@@ -64,6 +64,46 @@ public sealed class BaseWipHandoverTests
     }
 
     [Fact]
+    public async Task Failed_wip_push_with_unreachable_failure_report_backs_off_instead_of_retrying_every_tick()
+    {
+        var item = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            TicketKey = "PRF-42",
+            Type = "Implementation",
+            RepositoryId = Guid.NewGuid(),
+            LeaseToken = Guid.NewGuid(),
+            AgentType = PRFactoryAgentType.Codex,
+            Prompt = "Work"
+        };
+        using var h = new ChainHarness(item);
+        h.Server.BaseWipSupported = true;
+        h.Server.WipFailureReportStatus = System.Net.HttpStatusCode.InternalServerError;
+        var hook = Path.Combine(h.Remote, "hooks", "pre-receive");
+        File.WriteAllText(hook, "#!/bin/sh\nexit 1\n");
+        File.SetUnixFileMode(hook, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        var (lead, _) = h.StartOne();
+        ChainHarness.Commit(lead.Cwd!, "work.txt", "committed");
+
+        // A new head retries at once: the push fails and its failure report gets a 500.
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        var reports = h.Server.WipReports.Count;
+        var logged = h.Logs.Count(line => line.Contains("WIP publication failed"));
+        Assert.True(logged >= 1);
+        Assert.Contains(h.Logs, line => line.Contains("WIP failure report not delivered"));
+
+        // The same head is then deferred by the backoff: no push, no report, no log per tick.
+        for (var tick = 0; tick < 3; tick++)
+        {
+            await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        }
+
+        Assert.Equal(reports, h.Server.WipReports.Count);
+        Assert.Equal(logged, h.Logs.Count(line => line.Contains("WIP publication failed")));
+    }
+
+    [Fact]
     public async Task Request_waits_for_active_lead_and_dirty_files_then_releases_exact_receipt()
     {
         var item = new PRFactoryWorkItem
