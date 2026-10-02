@@ -162,7 +162,7 @@ public sealed partial class PRFactoryPullRequests(
             throw new Failure($"gh has no login for {login}; run gh auth login on this machine.");
         }
         // Never let anything but a plain token become a header value.
-        if (token.Any(c => char.IsWhiteSpace(c) || char.IsControl(c) || c > 126))
+        if (!WholeToken().IsMatch(token))
         {
             throw new Failure($"gh auth token for {login} did not end with a plain token on stdout (unexpected output from gh or a gh shim); run gh directly or fix the shim.");
         }
@@ -260,5 +260,6 @@ public sealed partial class PRFactoryPullRequests(
     [GeneratedRegex("^[A-Za-z0-9._-]{1,100}$")] private static partial Regex RepoPart();
     [GeneratedRegex("^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$")] private static partial Regex BranchPattern();
     [GeneratedRegex("^[0-9a-fA-F]{40}$")] private static partial Regex Sha();
+    [GeneratedRegex("^(?:gh[opsur]_|github_pat_)[A-Za-z0-9_]+$")] private static partial Regex WholeToken();
     [GeneratedRegex("(gh[opsu]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})")] private static partial Regex TokenPattern();
 }

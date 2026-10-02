@@ -186,6 +186,16 @@ public sealed class PullRequestTests
     }
 
     [Fact]
+    public async Task A_plain_word_as_the_last_stdout_line_is_not_accepted_as_a_token()
+    {
+        using var f = new Fixture { TokenOverride = "done" };
+        await f.Handle();
+
+        Assert.DoesNotContain(f.Calls, c => c.Args.Take(1).SequenceEqual(["pr"]) || c.Args.Take(1).SequenceEqual(["api"]));
+        Assert.Contains("plain token", Assert.Single(f.Failures).GetProperty("errorMessage").GetString());
+    }
+
+    [Fact]
     public async Task An_existing_open_pull_request_is_returned_without_creating_another()
     {
         using var f = new Fixture { ExistingPr = true };
