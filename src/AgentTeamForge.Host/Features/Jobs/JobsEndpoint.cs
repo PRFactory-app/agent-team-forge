@@ -299,8 +299,14 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 return Map(stoppedAgent);
             case IpcProtocol.JobStopIdle:
                 if (stopIdle is null || request.LeadSessionId is not null) { return new IpcResponse(false, JobErrors.BackendUnavailable, ErrorDetail: "Stop idle agents is not available here."); }
-                var idle = stopIdle.ExecuteAsync(request.DryRun).GetAwaiter().GetResult();
-                return new IpcResponse(true, Outcome: request.DryRun ? "dry_run" : "idle_stopped", Counts: idle.ToMap());
+                if (request.DryRun) { return new IpcResponse(true, Outcome: "dry_run", Counts: stopIdle.ExecuteAsync(true).GetAwaiter().GetResult().ToMap()); }
+                // Closing panes can take longer than the console's IPC deadline, so it runs in the background and is polled.
+                var began = stopIdle.Start();
+                return new IpcResponse(true, Outcome: began ? "started" : "running", Counts: stopIdle.Status().Counts.ToMap());
+            case IpcProtocol.JobStopIdleStatus:
+                if (stopIdle is null || request.LeadSessionId is not null) { return new IpcResponse(false, JobErrors.BackendUnavailable, ErrorDetail: "Stop idle agents is not available here."); }
+                var (isRunning, progress) = stopIdle.Status();
+                return new IpcResponse(true, Outcome: isRunning ? "running" : "done", Counts: progress.ToMap());
             case IpcProtocol.JobArchiveFinished:
                 if (archive is null || request.LeadSessionId is not null) { return new IpcResponse(false, JobErrors.BackendUnavailable, ErrorDetail: "Clear finished is not available here."); }
                 try

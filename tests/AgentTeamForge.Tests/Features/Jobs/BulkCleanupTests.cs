@@ -119,6 +119,27 @@ public sealed class BulkCleanupTests
         Assert.Equal((0, 1), (counts.Stopped, counts.SkippedBusy));
         Assert.Empty(backend.Stopped);
         Assert.False(f.Store.IsSessionFenced(job.JobId));
+        // No durable residue: a later restart fence of the same job is still releasable by recovery.
+        Assert.DoesNotContain(f.Store.GetEvents(job.JobId), e => e.Kind == "stop_fenced");
+        f.Store.FenceSession(job.JobId);
+        Assert.True(f.Store.ReleaseRestartFence(job.JobId, "s-flip"));
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+    }
+
+    [Fact]
+    public async Task The_console_pass_runs_in_the_background_one_at_a_time_and_reports_progress()
+    {
+        using var f = new JobFixture();
+        Finished(f, "bg", "s-bg");
+        var backend = new ProbedBackend(new() { ["s-bg"] = SessionIdleState.Idle }) { Delay = TimeSpan.FromMilliseconds(300) };
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var bulk = new StopIdleAgents(f.Store, JobFixture.Operator, catalog, new StopAgent(f.Store, JobFixture.Operator, catalog));
+
+        Assert.True(bulk.Start());
+        Assert.False(bulk.Start());
+        Assert.True(bulk.Status().Running);
+        var counts = await Bounded.Until(() => Task.FromResult(bulk.Status() is { Running: false } status ? status.Counts : null), "background pass");
+        Assert.Equal((1, 0), (counts.Stopped, counts.Remaining));
     }
 
     [Fact]

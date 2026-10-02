@@ -27,11 +27,36 @@ public sealed record BulkCounts(int Stopped, int SkippedBusy, int SkippedUnverif
 public sealed class StopIdleAgents(JobStore store, BoundPrincipal principal, BackendCatalog backends, StopAgent stopAgent, TimeSpan? budget = null)
 {
     const int MaxJobsScanned = 5000;
-    readonly TimeSpan budget = budget ?? TimeSpan.FromSeconds(10);
+    // The production pass runs in the background and is polled, so it has no request deadline; tests pass a small budget.
+    readonly TimeSpan budget = budget ?? TimeSpan.FromDays(1);
+    readonly Lock gate = new();
+    Task? running;
+    BulkCounts progress = new(0, 0, 0, 0, 0);
+
+    /// <summary>Starts one background pass (the console polls <see cref="Status"/>); false when one is already running.</summary>
+    public bool Start()
+    {
+        lock (gate)
+        {
+            if (running is { IsCompleted: false }) { return false; }
+            progress = new BulkCounts(0, 0, 0, 0, 0);
+            running = Task.Run(async () =>
+            {
+                try { await ExecuteAsync(false, counts => { lock (gate) { progress = counts; } }); }
+                catch (Exception ex) when (ex is not OutOfMemoryException) { /* The next pass starts clean; fences are released per candidate. */ }
+            });
+            return true;
+        }
+    }
+
+    public (bool Running, BulkCounts Counts) Status()
+    {
+        lock (gate) { return (running is { IsCompleted: false }, progress); }
+    }
 
     static bool Finished(string? status) => status is JobStatus.Completed or JobStatus.Failed or JobStatus.Cancelled;
 
-    public async Task<BulkCounts> ExecuteAsync(bool dryRun)
+    public async Task<BulkCounts> ExecuteAsync(bool dryRun, Action<BulkCounts>? report = null)
     {
         var seen = new HashSet<string>();
         var candidates = new List<(JobRecord Job, string SessionId, IInteractiveSessionStop Backend)>();
@@ -44,6 +69,7 @@ public sealed class StopIdleAgents(JobStore store, BoundPrincipal principal, Bac
         }
         if (dryRun) { return new BulkCounts(0, 0, 0, candidates.Count, 0); }
 
+        report?.Invoke(new BulkCounts(0, 0, 0, candidates.Count, 0, candidates.Count));
         var clock = System.Diagnostics.Stopwatch.StartNew();
         int stopped = 0, busy = 0, unverified = 0, handled = 0;
         foreach (var (job, sessionId, backend) in candidates)
@@ -64,6 +90,7 @@ public sealed class StopIdleAgents(JobStore store, BoundPrincipal principal, Bac
             if (result.Error is null && result.Outcome == "agent_stopped") { stopped++; }
             else if (result.Error == JobErrors.ParentNotReady) { busy++; }
             else { unverified++; }
+            report?.Invoke(new BulkCounts(stopped, busy, unverified, candidates.Count, 0, candidates.Count - handled));
         }
         return new BulkCounts(stopped, busy, unverified, candidates.Count, 0, candidates.Count - handled);
     }

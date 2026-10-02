@@ -301,6 +301,15 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Stop_idle_progress_is_polled_with_the_bearer()
+    {
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Send(Api(HttpMethod.Get, "/api/jobs/stop-idle-agents", WebConsoleServer.NewToken()))).Status);
+        Assert.Empty(_forwarded);
+        Assert.Equal(HttpStatusCode.OK, (await Send(Api(HttpMethod.Get, "/api/jobs/stop-idle-agents"))).Status);
+        Assert.Equal(IpcProtocol.JobStopIdleStatus, Assert.Single(_forwarded).Op);
+    }
+
+    [Fact]
     public async Task Job_list_hides_archived_jobs_unless_asked_to_show_them()
     {
         await Send(Api(HttpMethod.Get, "/api/jobs"));

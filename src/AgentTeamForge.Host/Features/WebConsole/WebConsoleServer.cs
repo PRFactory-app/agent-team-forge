@@ -226,6 +226,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
             ("POST", ["jobs", var id, "follow-up"]) when ValidId(id) => await ReadFollowUpAsync(ctx, id),
             ("POST", ["jobs", var id, "stop"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStop, JobId = id },
             ("POST", ["jobs", var id, "stop-agent"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStopAgent, JobId = id },
+            ("GET", ["jobs", "stop-idle-agents"]) => new IpcRequest { Op = IpcProtocol.JobStopIdleStatus },
             ("POST", ["jobs", "stop-idle-agents"]) => await ReadBulkAsync(ctx, IpcProtocol.JobStopIdle),
             ("POST", ["jobs", "archive-finished"]) => await ReadBulkAsync(ctx, IpcProtocol.JobArchiveFinished),
             ("POST", ["leads", var id, "join-ticket"]) when Guid.TryParseExact(id, "D", out _) => await ReadJoinTicketAsync(ctx, id),

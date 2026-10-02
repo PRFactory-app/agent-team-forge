@@ -2197,11 +2197,34 @@
     }
   }
 
-  const stopIdleAgents = () => bulkAction('/api/jobs/stop-idle-agents',
-    n => 'Stop the agents of ' + plural(n, 'finished job session') + '? Only panes proven idle are closed; busy or unverifiable panes are skipped.',
-    c => c ? 'Stopped ' + c.stopped + ' · skipped busy ' + c.skipped_busy + ' · skipped unverified ' + c.skipped_unverified
-      + (c.remaining ? ' · ' + c.remaining + ' remaining — click again' : '')
-      : 'No finished job has a live agent to stop.');
+  // Closing panes outlives a request, so the daemon runs it in the background and the console polls its progress.
+  async function stopIdleAgents() {
+    if (bulk.busy) return;
+    bulk.busy = true;
+    bulkResult('');
+    try {
+      const preview = await api('POST', '/api/jobs/stop-idle-agents', { dry_run: true });
+      if (!preview) return;
+      if (!preview.ok) { bulkResult((preview.error_detail || preview.error) + '', true); return; }
+      const n = preview.counts?.candidates ?? 0;
+      if (!n) { bulkResult('No finished job has a live agent to stop.'); return; }
+      if (!window.confirm('Stop the agents of ' + plural(n, 'finished job session') + '? Only panes proven idle are closed; busy or unverifiable panes are skipped.')) return;
+      let r = await api('POST', '/api/jobs/stop-idle-agents', { dry_run: false });
+      while (r && r.ok && r.outcome !== 'done') {
+        const c = r.counts || {};
+        bulkResult('Stopping… stopped ' + (c.stopped || 0) + ' · skipped ' + ((c.skipped_busy || 0) + (c.skipped_unverified || 0)) + ' · ' + (c.remaining || 0) + ' remaining');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        r = await api('GET', '/api/jobs/stop-idle-agents');
+      }
+      if (!r) return;
+      const c = r.counts || {};
+      bulkResult(r.ok ? 'Stopped ' + c.stopped + ' · skipped busy ' + c.skipped_busy + ' · skipped unverified ' + c.skipped_unverified
+        : r.lost ? 'Outcome unknown; refresh before trying again.' : (r.error_detail || r.error) + '', !r.ok);
+      await poll();
+    } finally {
+      bulk.busy = false;
+    }
+  }
 
   const clearFinished = () => bulkAction('/api/jobs/archive-finished',
     n => 'Hide ' + plural(n, 'finished job') + ' from the console? Nothing is deleted; a follow-up brings a chain back.',

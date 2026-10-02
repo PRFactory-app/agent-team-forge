@@ -101,10 +101,9 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         {
             return false;
         }
-        Execute(connection, tx, """
-            UPDATE jobs SET session_fenced=1 WHERE job_id=$id;
-            INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'stop_fenced', $now);
-            """, ("$id", jobId), ("$now", Now()));
+        // No stop_fenced event: that marks a committed stop. A reservation that is skipped (or lost in a crash) must leave
+        // nothing behind, so a later restart fence of the same job can still be released by recovery.
+        Execute(connection, tx, "UPDATE jobs SET session_fenced=1 WHERE job_id=$id", ("$id", jobId));
         tx.Commit();
         return true;
     });
