@@ -442,6 +442,28 @@ public sealed class BaseWipHandoverTests
     }
 
     [Fact]
+    public async Task Unverifiable_handover_holds_once_then_the_quiescent_phase_still_completes()
+    {
+        using var h = new ChainHarness(Work("Implementation"));
+        h.Server.BaseWipSupported = true;
+        h.Server.WipRejection = System.Net.HttpStatusCode.UnprocessableEntity;
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        var (lead, run) = h.StartOne();
+        ChainHarness.Commit(lead.Cwd!, "feature.txt", "work");
+        h.Server.HandoverRequested = true;
+        Assert.True(h.Store.Complete(run, "done"));
+        for (var i = 0; i < 3; i++)
+        {
+            await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        }
+        Assert.Empty(h.Server.Releases);
+        Assert.Single(h.Server.Completions);
+        Assert.Empty(h.Server.Failures);
+        Assert.Contains("release impossible", Assert.Single(h.Server.Lines, line => line.RecordKind == "handover-held").Text, StringComparison.Ordinal);
+        Assert.Single(h.Logs, l => l.Contains("handover held", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Lead_instruction_states_the_primary_path_and_the_job_is_named_after_the_work()
     {
         using var h = new ChainHarness(Work("TicketRefinement"));

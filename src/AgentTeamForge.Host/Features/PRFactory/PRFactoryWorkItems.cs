@@ -454,7 +454,7 @@ public sealed partial class PRFactoryWorkItems(
         if (handoverRequest is { } request)
         {
             if (await HandleHandoverAsync(team, item, workspace, request, ct)) { return; }
-            // A phase that publishes no branch has nothing to hand over; its request is moot, so finish normally.
+            // A phase that publishes no branch, or whose WIP the server refused, cannot hand over: finish normally.
         }
         if ((baseWip || multiRepo) && workspace is { RepositoryPath: not null }
             && teams.MemberJob(server, item.Id, "lead", 0) is null)
@@ -1135,6 +1135,13 @@ public sealed partial class PRFactoryWorkItems(
             {
                 log?.Invoke($"PRFactory work item {item.Id:D} released; cleanup retained workspace: {ex.Message}");
             }
+        }
+        catch (Exception ex) when (ex is PRFactoryWipRejectedException or WipPushException)
+        {
+            // No receipt means no release, and the team is quiescent: holding would wedge the phase forever
+            // (e.g. 422 remote_unverifiable). Say why once, then let the caller finish or fail the phase normally.
+            await HeldOnceAsync(item, request.RequestId, $"{ex.Message}; release impossible, finishing the phase without handover", ct);
+            return false;
         }
         catch (InvalidOperationException ex)
         {
