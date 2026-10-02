@@ -563,8 +563,12 @@ public sealed partial class PRFactoryWorkItems(
                 continue;
             }
 
-            var memberInstruction = $"{Instruction(member.Name)}\n\nRole: {member.Role}\nMember: {member.Name}"
-                + (string.IsNullOrWhiteSpace(member.Notes) ? "" : $"\nNotes: {member.Notes}");
+            // The lead implements; a managed member gets a role brief, with the phase prompt only as context.
+            var memberInstruction = $"You are team member {member.Name}, role {member.Role}. The lead implements this phase in its own checkout. "
+                + "Do NOT implement the task and do NOT commit. "
+                + (string.IsNullOrWhiteSpace(member.Notes) ? "Do your role" : $"Do your role ({member.Notes})")
+                + " and end your turn with your findings as plain text.\n\nLead's task (context only):\n"
+                + Instruction(member.Name);
             JobRecord? child;
             try
             {
@@ -721,7 +725,7 @@ public sealed partial class PRFactoryWorkItems(
         if (failed is null && workspace is { RepositoryPath: not null, ReadOnly: false } && managedMembers.Length > 0
             && teams.MemberJob(server, item.Id, "lead", FinalizeTurn) is null)
         {
-            await IntegrateAndFinalizeAsync(team, item, workspace, lead, ct);
+            await IntegrateAndFinalizeAsync(team, item, workspace, lead, MemberFindings(item, managedMembers), ct);
             return;
         }
         await FinishAsync(team, item, failed is null || !waitForManaged && lead.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation,
@@ -1229,7 +1233,7 @@ public sealed partial class PRFactoryWorkItems(
 
     /// <summary>Children are quiescent and succeeded: integrate their commits, stage their documents, then one lead pass.</summary>
     async Task IntegrateAndFinalizeAsync(PRFactoryTeamRecord team, PRFactoryWorkItem item, WorkspaceSnapshot workspace,
-        JobRecord lead, CancellationToken ct)
+        JobRecord lead, string findings, CancellationToken ct)
     {
         try
         {
@@ -1264,7 +1268,8 @@ public sealed partial class PRFactoryWorkItems(
         }
         var instruction = "All team members finished and their commits are now integrated into your branch. "
             + $"Their documents are staged (read-only copies) under {workspace.StagingPath}. Review and test the integrated code, "
-            + "choose the canonical phase documents in the ticket folder, and commit every intended change before ending your turn.";
+            + "choose the canonical phase documents in the ticket folder, and commit every intended change before ending your turn."
+            + findings;
         var result = JobResult.Fail(JobErrors.DaemonUnhealthy);
         await Guard(item.Id, () =>
         {
@@ -1282,6 +1287,26 @@ public sealed partial class PRFactoryWorkItems(
         {
             await FinishAsync(team, item, false, $"lead finalization could not resume: {result.Error}", workspace.LeadPath, ct);
         }
+    }
+
+    const int MaxFindingChars = 4000;
+
+    /// <summary>Each managed member's result text, capped and labeled, for the lead's finalize pass.</summary>
+    string MemberFindings(PRFactoryWorkItem item, PRFactoryTeamMember[] members)
+    {
+        var text = new System.Text.StringBuilder();
+        var recorded = teams.ManagedMembers(server, item.Id);
+        foreach (var member in members)
+        {
+            // Latest recorded turn: a revived or followed-up member's findings come from its current job.
+            var latest = recorded.Where(m => m.Member == member.Name).MaxBy(m => m.Turn);
+            var result = latest is null ? null : getJob(latest.JobId)?.ResultText;
+            if (string.IsNullOrWhiteSpace(result)) { continue; }
+            result = result.Trim();
+            if (result.Length > MaxFindingChars) { result = result[..MaxFindingChars] + " [truncated]"; }
+            text.Append($"\n\nFindings from {member.Name} (role {member.Role}):\n{result}");
+        }
+        return text.ToString();
     }
 
     async Task<bool> AdvanceExternalAsync(PRFactoryWorkItem item, string[] names, CancellationToken ct)
