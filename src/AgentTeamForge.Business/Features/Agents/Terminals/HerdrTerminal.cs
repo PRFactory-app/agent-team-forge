@@ -287,8 +287,10 @@ public sealed class HerdrTerminal
                     throw new HerdrLaunchException($"bootstrap proof failed for tab {tab}: its shell is not a child of the recorded server; the tab is left open");
                 }
                 var carried = _runner.EnvironmentValue(shellPid, BootstrapVariable);
-                var awaitingShell = carried is null && _runner.EnvironmentMayBeHidden;
-                if (awaitingShell)
+                // An absent variable means "not yet": between the server's fork and the shell's exec the child still
+                // carries the server's environment. Only a present, different value is a foreign shell.
+                var awaitingShell = carried is null;
+                if (awaitingShell && _runner.EnvironmentMayBeHidden)
                 {
                     // macOS hides a platform shell's (/bin/zsh) environment: a child of the shell reports what it inherited.
                     if (!shellProofRequested)
