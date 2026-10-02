@@ -276,6 +276,11 @@ public sealed class HerdrInteractiveBackendTests
         {
             await Task.Delay(10, deadline.Token);
         }
+        // The job state is visible before AgentErrorObserved blocks the account, so wait for the block.
+        while (accounts.CanStart("claude", "default", DateTimeOffset.UtcNow))
+        {
+            await Task.Delay(10, deadline.Token);
+        }
         await Task.Delay(100, deadline.Token); // Longer than the ordinary idle settle timeout.
         Assert.Equal(JobStatus.Running, f.Store.GetJob(job.JobId)!.Status);
         Assert.False(control.Stopped);
