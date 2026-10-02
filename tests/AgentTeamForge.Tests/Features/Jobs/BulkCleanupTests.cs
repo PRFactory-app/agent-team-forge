@@ -143,6 +143,42 @@ public sealed class BulkCleanupTests
     }
 
     [Fact]
+    public async Task The_final_background_counts_include_candidates_skipped_at_the_first_probe()
+    {
+        using var f = new JobFixture();
+        Finished(f, "busy-bg", "s-busy-bg");
+        var backend = new ProbedBackend(new() { ["s-busy-bg"] = SessionIdleState.Busy });
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var bulk = new StopIdleAgents(f.Store, JobFixture.Operator, catalog, new StopAgent(f.Store, JobFixture.Operator, catalog));
+
+        Assert.True(bulk.Start());
+        var counts = await Bounded.Until(() => Task.FromResult(bulk.Status() is { Running: false } status ? status.Counts : null), "background pass");
+
+        Assert.Equal((0, 1, 0), (counts.Stopped, counts.SkippedBusy, counts.Remaining));
+    }
+
+    [Fact]
+    public void A_released_bulk_reservation_keeps_no_committed_stop_marker_so_restart_recovery_can_release_the_job()
+    {
+        using var f = new JobFixture();
+        var job = Finished(f, "failed-close", "s-fc");
+        var before = f.Store.GetEvents(job.JobId).Max(e => e.Seq);
+        Assert.True(f.Store.TryFenceSessionForBulkStop(job.JobId));
+        // The ordinary stop path commits its marker before it touches the pane...
+        Assert.True(f.Store.TryFenceSessionForStop(job.JobId));
+        // ...and the close then fails: the reservation is released.
+        f.Store.ReleaseBulkFence(job.JobId, before);
+
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+        Assert.DoesNotContain(f.Store.GetEvents(job.JobId), e => e.Kind == "stop_fenced");
+        // Simulated restart: the surviving ownership record fences the job again, and recovery can release it.
+        f.Store.FenceSession(job.JobId);
+        Assert.True(f.Store.ReleaseRestartFence(job.JobId, "s-fc"));
+        var follow = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept()).Execute(new FollowUpRequest(job.JobId, "again", "again"));
+        Assert.Null(follow.Error);
+    }
+
+    [Fact]
     public async Task Slow_probes_stop_at_the_budget_and_report_what_remains()
     {
         using var f = new JobFixture();

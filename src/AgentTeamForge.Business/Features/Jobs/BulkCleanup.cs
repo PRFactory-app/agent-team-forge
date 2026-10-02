@@ -42,7 +42,11 @@ public sealed class StopIdleAgents(JobStore store, BoundPrincipal principal, Bac
             progress = new BulkCounts(0, 0, 0, 0, 0);
             running = Task.Run(async () =>
             {
-                try { await ExecuteAsync(false, counts => { lock (gate) { progress = counts; } }); }
+                try
+                {
+                    var final = await ExecuteAsync(false, counts => { lock (gate) { progress = counts; } });
+                    lock (gate) { progress = final; }
+                }
                 catch (Exception ex) when (ex is not OutOfMemoryException) { /* The next pass starts clean; fences are released per candidate. */ }
             });
             return true;

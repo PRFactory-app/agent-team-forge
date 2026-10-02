@@ -21,11 +21,12 @@ public sealed class StopAgent(JobStore store, BoundPrincipal principal, BackendC
         {
             var job = store.GetJob(jobId);
             if (job is null || job.Principal != principal.Principal || job.Team != principal.Team) { return JobResult.Fail(JobErrors.NotFound, $"No job {jobId} for this principal/team."); }
+            var before = store.GetEvents(jobId).Select(e => e.Seq).DefaultIfEmpty(0).Max();
             if (!store.TryFenceSessionForBulkStop(jobId)) { return JobResult.Fail(JobErrors.ParentNotReady, "The session has unfinished or fenced work; nothing was stopped."); }
             JobResult result;
             try { result = finalIdleCheck() ? Execute(jobId) : JobResult.Fail(JobErrors.ParentNotReady, "The pane is no longer proven idle; nothing was stopped."); }
             catch (Exception ex) when (ex is not OutOfMemoryException) { result = JobResult.Fail(JobErrors.BackendUnavailable, ex.Message); }
-            if (result.Outcome != "agent_stopped") { store.ReconcileStoppedJob(jobId); }
+            if (result.Outcome != "agent_stopped") { store.ReleaseBulkFence(jobId, before); }
             return result;
         }
         catch (StorageException ex)
