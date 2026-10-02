@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Runtime.InteropServices;
 using AgentTeamForge.Business.Features.Agents.Backends;
 
 namespace AgentTeamForge.Tests.Features.Agents.Backends;
@@ -38,6 +39,8 @@ public sealed class DarwinProcessTests
     {
         Assert.Throws<IOException>(() => DarwinProcess.DescriptorTable(1, (buffer, size) => buffer is null ? 8 : size));
         Assert.Throws<IOException>(() => DarwinProcess.DescriptorTable(1, (buffer, _) => buffer is null ? 8 : 0));
+        // The fake list makes no P/Invoke, so clear the thread's last error left by earlier native calls.
+        Marshal.SetLastPInvokeError(0);
         Assert.Empty(DarwinProcess.DescriptorTable(1, (_, _) => 0));
     }
 
