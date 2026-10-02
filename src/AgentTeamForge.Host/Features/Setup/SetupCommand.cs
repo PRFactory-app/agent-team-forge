@@ -465,14 +465,20 @@ public static class SetupCommand
         // Its stderr is this log already; naming it keeps the daemon from writing each line twice.
         info.Environment["ATF_DAEMON_LOG"] = logPath;
         SystemdUser.EnsureRuntimeDir(info.Environment);
-        // A scope execs in place (same PID, fds, env) but leaves the caller's cgroup, so its
-        // teardown cannot SIGKILL the daemon. Test profiles never create scopes.
-        var scope = !testProfile && SystemdUser.ScopeAvailable(
+        // A transient service leaves the caller's cgroup, so its teardown cannot SIGKILL the daemon, and
+        // systemd records the exit status. Test profiles never create units.
+        var asService = !testProfile && SystemdUser.ServiceAvailable(
             name => info.Environment.TryGetValue(name, out var value) ? value : null, FindExecutable);
-        if (scope)
+        var envFile = Path.Combine(state.Path, SystemdUser.EnvFile);
+        if (asService)
         {
+            // A service inherits nothing from this process: hand the scrubbed environment over in a 0600 file.
+            var unit = SystemdUser.NewUnitName();
+            File.WriteAllText(Path.Combine(state.Path, SystemdUser.UnitFile), unit);
+            File.Delete(Path.Combine(state.Path, SystemdUser.ExitFile));
+            SystemdUser.WriteEnvironmentFile(envFile, info.Environment);
             info.FileName = "systemd-run";
-            foreach (var arg in SystemdUser.ScopePrefix(state.Path)) { info.ArgumentList.Add(arg); }
+            foreach (var arg in SystemdUser.ServicePrefix(state.Path, unit, logPath)) { info.ArgumentList.Add(arg); }
             info.ArgumentList.Add(binary);
         }
         info.ArgumentList.Add("daemon");
@@ -481,7 +487,8 @@ public static class SetupCommand
         // The scope leaves the cgroup but the daemon stays a child of this process, so a host that tree-kills
         // by ppid (Claude Code does) would take it down. `setsid --fork` makes it a grandchild whose parent exits
         // at once, so it is reparented to the subreaper. Without setsid the launch stays a direct child.
-        var detached = false;
+        // systemd-run returns as soon as the unit is queued, so a service launch has no daemon handle to follow.
+        var detached = asService;
         string? detachWarning = null;
         if (OperatingSystem.IsLinux())
         {
@@ -489,7 +496,7 @@ public static class SetupCommand
             {
                 detached = Detach(info, setsid);
             }
-            else
+            else if (!asService)
             {
                 const string warning = "warning: setsid (util-linux) not found; the daemon stays attached to its starter and can be killed with it";
                 Console.Error.WriteLine(warning);
@@ -498,9 +505,17 @@ public static class SetupCommand
         }
         var logOffset = RandomAccess.GetLength(log.Handle);
         using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
-        var ready = detached
-            ? await WaitForReadyAsync(state, quiet, null, logOffset)
-            : await WaitForReadyAsync(state, quiet, process);
+        int ready;
+        try
+        {
+            ready = detached
+                ? await WaitForReadyAsync(state, quiet, null, logOffset)
+                : await WaitForReadyAsync(state, quiet, process);
+        }
+        finally
+        {
+            if (asService) { File.Delete(envFile); }
+        }
         if (detachWarning is not null)
         {
             // Logged after the launch so it follows the daemon's own start record.
@@ -762,7 +777,7 @@ public static class SetupCommand
     }
 
     /// <summary>Dates a silent death: the last logged daemon reported ready and never logged a stop, yet the lock is free.</summary>
-    static void NoteVanishedDaemon(StateDirectory state)
+    internal static void NoteVanishedDaemon(StateDirectory state)
     {
         try
         {
@@ -797,7 +812,9 @@ public static class SetupCommand
             if (live is not null)
             {
                 using var log = AppendOnlyFile.Open(path);
-                log.WriteLine($"[atf-daemon] {DateTime.UtcNow:yyyy-MM-dd'T'HH:mm:ss.fff'Z'} previous daemon {live} gone without stop");
+                var result = SystemdUser.LastExitResult(state.Path);
+                log.WriteLine($"[atf-daemon] {DateTime.UtcNow:yyyy-MM-dd'T'HH:mm:ss.fff'Z'} previous daemon {live} gone without stop"
+                    + (result is null ? "" : " " + result));
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }

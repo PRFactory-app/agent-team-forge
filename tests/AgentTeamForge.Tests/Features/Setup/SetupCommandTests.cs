@@ -740,7 +740,8 @@ public sealed class SetupCommandTests
         Assert.Equal(log, new FileInfo(Path.Combine(fdDir, "1")).LinkTarget);
         Assert.Equal(log, new FileInfo(Path.Combine(fdDir, "2")).LinkTarget);
         Assert.Equal(StateDirectory.PrivateFile, File.GetUnixFileMode(log));
-        Assert.DoesNotContain("agentteamforge-daemon-", File.ReadAllText($"/proc/{pid}/cgroup"));
+        // A test profile never creates a unit: the daemon stays in the cgroup it was started from.
+        Assert.Equal(File.ReadAllText("/proc/self/cgroup"), File.ReadAllText($"/proc/{pid}/cgroup"));
         Assert.DoesNotContain(Directory.EnumerateFileSystemEntries(fdDir),
             fd => new FileInfo(fd).LinkTarget == sentinelPath);
     }

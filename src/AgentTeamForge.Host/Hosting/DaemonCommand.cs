@@ -43,6 +43,7 @@ public static class DaemonCommand
         Console.SetError(new DaemonLogWriter(starterLog is null ? Console.Error : null, log));
         AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) => Log($"fatal: unhandled exception: {eventArgs.ExceptionObject}");
         TaskScheduler.UnobservedTaskException += (_, eventArgs) => Log($"error: unobserved task exception: {eventArgs.Exception}");
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => Log($"process exit code={Environment.ExitCode}");
         Log($"starting pid={Environment.ProcessId}");
         var profile = ProfileFile.Load(state);
         var launchMode = SetupCommand.ConfiguredMode(state);
@@ -439,8 +440,9 @@ public static class DaemonCommand
             Log("warning: admitted submissions still in flight at exit");
         }
 
-        Log($"stopped reason={(halted ? dispatcher.HaltReason ?? "service_fault" : "requested_shutdown")}");
-        return halted ? 70 : 0;
+        var exitCode = halted ? 70 : 0;
+        Log($"stopped reason={(halted ? dispatcher.HaltReason ?? "service_fault" : "requested_shutdown")} code={exitCode}");
+        return exitCode;
     }
 
     static readonly string[] CatalogBackends = ["codex", "pi", "cursor"];

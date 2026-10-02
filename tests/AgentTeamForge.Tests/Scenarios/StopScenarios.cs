@@ -38,7 +38,7 @@ public sealed class StopScenarios
 
         Assert.True(exit == 0, stderr);
         Assert.Contains($"Stopped daemon {daemon.Id}.", stdout);
-        Assert.True(daemon.HasExited);
+        await Bounded.Until(() => daemon.HasExited, "daemon process to exit after releasing the lock");
         Assert.NotNull(held);
     }
 }

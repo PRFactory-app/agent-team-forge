@@ -33,8 +33,14 @@ those machines).
 ## Linux daemon lifetime
 
 A lazily started Linux daemon runs in its own transient
-`agentteamforge-daemon-*.scope` (`KillMode=process`), so closing the launching
-terminal or app does not kill it or its Herdr sessions. In Herdr mode a missing
+`agentteamforge-daemon-*.service` (`KillMode=process`, `Restart=no`, `--collect`),
+so closing the launching terminal or app does not kill it or its Herdr sessions.
+Its environment reaches the service through a 0600 `daemon.env` in the state
+directory, deleted once the daemon is ready. Every exit is logged
+(`stopped reason=… code=N`, `process exit code=N`); a death with no log line is
+recorded by systemd (`journalctl --user -u agentteamforge-daemon-*`) and by an
+`ExecStopPost` result in `daemon.exit`, which the next start appends to its
+`previous daemon N gone without stop` line. In Herdr mode a missing
 `WAYLAND_DISPLAY`/`DISPLAY` is filled in from `systemctl --user show-environment`
 when a session starts; without one there, the launch still fails clearly.
 Re-run `atf setup --autostart` to add `KillMode=process` to an existing login unit.

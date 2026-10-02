@@ -38,7 +38,8 @@ public sealed partial class DaemonLogAppendTests
         Assert.Equal(Enumerable.Range(0, written).Select(n => n.ToString(System.Globalization.CultureInfo.InvariantCulture)),
             lines.Where(line => line.StartsWith("other ", StringComparison.Ordinal)).Select(line => line.Split(' ')[1]));
         Assert.Contains(lines, line => line.Contains(" ready pid=", StringComparison.Ordinal));
-        Assert.Contains(lines, line => line.EndsWith(" stopped reason=requested_shutdown", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.EndsWith(" stopped reason=requested_shutdown code=0", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.EndsWith(" process exit code=0", StringComparison.Ordinal));
     }
 
     [Fact]
