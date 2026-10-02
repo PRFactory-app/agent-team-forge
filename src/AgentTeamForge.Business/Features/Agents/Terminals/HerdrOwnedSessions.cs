@@ -59,7 +59,8 @@ public static class HerdrOwnedSessions
     {
         foreach (var (path, session) in Read(stateRoot, log))
         {
-            if (session.JobId is { } jobId) { fence(jobId); }
+            // A cleanup-only record (stop_agent completed, pane maybe restored later) only feeds the sweep.
+            if (session.JobId is { } jobId && !File.Exists(path + ".cleanup")) { fence(jobId); }
             log($"recovery: preserved owned Herdr session {session.SessionName} ({path})");
         }
     }
@@ -184,6 +185,7 @@ public static class HerdrOwnedSessions
                 DeleteLaunchFiles(BootstrapForRecord(path));
                 File.Delete(path + ".gone");
                 File.Delete(path + ".deferred");
+                File.Delete(path + ".cleanup");
                 File.Delete(path);
             }
         }
@@ -211,8 +213,12 @@ public static class HerdrOwnedSessions
         {
             if (session.JobId is null || !jobIds.Contains(session.JobId)) { continue; }
             // Verifies server start time and owner label; never falls back to a PID.
-            if (stop(session)) { File.Delete(path + ".deferred"); }
-            else { File.WriteAllText(path + ".deferred", "pane not closed"); }
+            if (stop(session)) { File.Delete(path + ".deferred"); File.Delete(path + ".cleanup"); }
+            else
+            {
+                File.WriteAllText(path + ".deferred", "pane not closed");
+                File.WriteAllText(path + ".cleanup", "logical stop completed");
+            }
             stopped = true; // Keep proof until the caller commits fence release.
         }
         return stopped;

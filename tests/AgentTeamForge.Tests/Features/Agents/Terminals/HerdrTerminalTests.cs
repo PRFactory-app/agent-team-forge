@@ -753,13 +753,13 @@ public class HerdrTerminalTests
         Assert.False(File.Exists(HerdrOwnedSessions.PathFor(launch)));
     }
 
-    static async Task<(FakeHerdr Fake, HerdrTerminal Terminal, HerdrAgentControl Control, InteractiveLaunch Launch)> StartedRestoredLaunch(string state)
+    static async Task<(FakeHerdr Fake, HerdrTerminal Terminal, HerdrAgentControl Control, InteractiveLaunch Launch)> StartedRestoredLaunch(string state, string jobId = "job-leak")
     {
         var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, SharedWorkspaceLabel = Path.GetFileName(state) };
         var terminal = Terminal(fake);
         var control = new HerdrAgentControl(terminal);
         var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, RestoredAgent, state, null, null, Path.Combine(state, "herdr", RestoredAgent + ".bootstrap"))
-        { JobId = "job-leak", HerdrPlacement = "herdr-session:default" };
+        { JobId = jobId, HerdrPlacement = "herdr-session:default" };
         await control.StartAsync(launch, CancellationToken.None);
         return (fake, terminal, control, launch);
     }
@@ -821,6 +821,42 @@ public class HerdrTerminalTests
         Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
         Assert.False(File.Exists(record));
         Assert.False(File.Exists(record + ".deferred"));
+    }
+
+    [Fact]
+    public async Task CleanupOnlyRecord_AfterStopAgentDoesNotFenceTheJobAtRecovery()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        using var f = new AgentTeamForge.Tests.Support.JobFixture();
+        var job = f.Submit("done");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        f.Store.RecordSession(run, "native-cleanup");
+        f.Store.Complete(run, "done");
+        var (fake, terminal, control, launch) = await StartedRestoredLaunch(state.Path, job.JobId);
+        var record = HerdrOwnedSessions.PathFor(launch);
+        fake.Replace(Replacement.ServerRestarted);
+        fake.DefaultRunning = false;
+
+        // stop_agent: logical stop succeeds while herdr is down, so only the pane cleanup is deferred.
+        Assert.True(f.Store.TryFenceSessionForStop(job.JobId));
+        Assert.True(control.StopJobs(state.Path, [job.JobId]));
+        f.Store.ReconcileStoppedSession(job.JobId);
+        HerdrOwnedSessions.Forget(state.Path, [job.JobId]);
+        Assert.True(File.Exists(record));
+
+        // Daemon restart: the cleanup-only record must not fence the job again.
+        HerdrOwnedSessions.Recover(state.Path, f.Store.FenceSession, _ => { });
+        var followUp = new FollowUpJob(f.Store, AgentTeamForge.Tests.Support.JobFixture.Operator, f.Accept())
+            .Execute(new FollowUpRequest(job.JobId, "next", "cleanup-key"));
+        Assert.NotEqual(JobErrors.ParentNotReady, followUp.Error);
+
+        fake.DefaultRunning = true;
+        fake.ListedAgentName = RestoredAgent;
+        Assert.Equal(1, Sweep(terminal, state.Path));
+        Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
+        Assert.False(File.Exists(record));
+        Assert.False(File.Exists(record + ".cleanup"));
     }
 
     [Fact]
