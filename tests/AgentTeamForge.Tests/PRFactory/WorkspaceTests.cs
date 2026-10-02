@@ -174,6 +174,34 @@ public sealed class WorkspaceTests
     }
 
     [Fact]
+    public async Task Retry_from_plan_base_replaces_stale_wip_under_lease()
+    {
+        using var f = new WorkspaceFixture();
+        var store = new PRFactoryHandoverStore(f.Db);
+        var publisher = new WipPublisher(store, async (_, effect, _) => { await effect(); return true; });
+        var branch = WipPublisher.BranchName("Machine One", "PRF-7");
+        var cancelled = await f.Workspaces.PrepareAsync(f.Request);
+        var stale = Commit(cancelled.LeadPath, "work.txt", "attempt one");
+        await publisher.PublishAsync(Guid.NewGuid(), cancelled, branch, (_, sha) => Task.FromResult("receipt:" + sha),
+            ct: TestContext.Current.CancellationToken);
+        // Retry: a new acceptance of the same ticket starts again from the plan base, not from the WIP.
+        var retry = await f.Workspaces.PrepareAsync(f.Request with { Key = "server:retry" });
+        Assert.Equal(f.BaseSha, retry.StartingSha);
+        var fresh = Commit(retry.LeadPath, "work.txt", "attempt two");
+        var published = await publisher.PublishAsync(Guid.NewGuid(), retry, branch, (_, sha) => Task.FromResult("receipt:" + sha),
+            ct: TestContext.Current.CancellationToken);
+        Assert.Equal(fresh, published.HeadSha);
+        Assert.Equal(stale, published.RemoteOldSha);
+        Assert.StartsWith(fresh, Git(f.Repo, "ls-remote", "origin", "refs/heads/" + branch));
+        // The cancelled attempt keeps its commit locally but can no longer move the replaced ref.
+        Assert.Equal(stale, JobWorktree.Head(cancelled.LeadPath));
+        Commit(cancelled.LeadPath, "more.txt", "late");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => publisher.PublishAsync(Guid.NewGuid(), cancelled, branch,
+            (_, sha) => Task.FromResult("receipt:" + sha), ct: TestContext.Current.CancellationToken));
+        Assert.StartsWith(fresh, Git(f.Repo, "ls-remote", "origin", "refs/heads/" + branch));
+    }
+
+    [Fact]
     public async Task Dirty_release_is_refused_and_old_server_without_capability_is_not_called()
     {
         using var f = new WorkspaceFixture();
