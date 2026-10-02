@@ -158,24 +158,41 @@ public sealed class BulkCleanupTests
     }
 
     [Fact]
-    public void A_released_bulk_reservation_keeps_no_committed_stop_marker_so_restart_recovery_can_release_the_job()
+    public async Task A_close_that_fails_after_it_was_issued_keeps_the_marker_and_the_fence()
     {
         using var f = new JobFixture();
-        var job = Finished(f, "failed-close", "s-fc");
-        var before = f.Store.GetEvents(job.JobId).Max(e => e.Seq);
-        Assert.True(f.Store.TryFenceSessionForBulkStop(job.JobId));
-        // The ordinary stop path commits its marker before it touches the pane...
-        Assert.True(f.Store.TryFenceSessionForStop(job.JobId));
-        // ...and the close then fails: the reservation is released.
-        f.Store.ReleaseBulkFence(job.JobId, before);
+        var job = Finished(f, "post-close", "s-pc");
+        var backend = new ProbedBackend(new() { ["s-pc"] = SessionIdleState.Idle })
+        {
+            // Like the ordinary Herdr stop: commit the marker, then the close itself fails.
+            OnStop = _ => { Assert.True(f.Store.TryFenceSessionForStop(job.JobId)); throw new IOException("close failed"); },
+        };
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var bulk = new StopIdleAgents(f.Store, JobFixture.Operator, catalog, new StopAgent(f.Store, JobFixture.Operator, catalog));
 
-        Assert.False(f.Store.IsSessionFenced(job.JobId));
-        Assert.DoesNotContain(f.Store.GetEvents(job.JobId), e => e.Kind == "stop_fenced");
-        // Simulated restart: the surviving ownership record fences the job again, and recovery can release it.
-        f.Store.FenceSession(job.JobId);
-        Assert.True(f.Store.ReleaseRestartFence(job.JobId, "s-fc"));
-        var follow = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept()).Execute(new FollowUpRequest(job.JobId, "again", "again"));
-        Assert.Null(follow.Error);
+        var counts = await bulk.ExecuteAsync(dryRun: false);
+
+        Assert.Equal(0, counts.Stopped);
+        Assert.True(f.Store.IsSessionFenced(job.JobId));
+        Assert.Contains(f.Store.GetEvents(job.JobId), e => e.Kind == "stop_fenced");
+    }
+
+    [Fact]
+    public async Task A_session_an_ordinary_stop_already_fenced_is_never_unfenced_by_bulk()
+    {
+        using var f = new JobFixture();
+        var job = Finished(f, "ordinary", "s-ord");
+        var backend = new ProbedBackend(new() { ["s-ord"] = SessionIdleState.Idle });
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var bulk = new StopIdleAgents(f.Store, JobFixture.Operator, catalog, new StopAgent(f.Store, JobFixture.Operator, catalog));
+        Assert.True(f.Store.TryFenceSessionForStop(job.JobId));
+
+        var counts = await bulk.ExecuteAsync(dryRun: false);
+
+        Assert.Equal(0, counts.Stopped);
+        Assert.True(f.Store.IsSessionFenced(job.JobId));
+        Assert.Contains(f.Store.GetEvents(job.JobId), e => e.Kind == "stop_fenced");
+        Assert.Empty(backend.Stopped);
     }
 
     [Fact]
@@ -212,7 +229,8 @@ public sealed class BulkCleanupTests
             if (Delay > TimeSpan.Zero) { await Task.Delay(Delay); }
             return Sequence is { } sequence ? sequence[Math.Min(call, sequence.Length - 1)] : states[sessionId];
         }
-        public bool StopIdleSession(string sessionId) { Stopped.Add(sessionId); return true; }
+        public Action<string>? OnStop { get; init; }
+        public bool StopIdleSession(string sessionId) { OnStop?.Invoke(sessionId); Stopped.Add(sessionId); return true; }
         public void StopAllIdleSessions() { }
     }
 }

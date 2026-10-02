@@ -108,21 +108,6 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return true;
     });
 
-    /// <summary>
-    /// Releases a bulk reservation whose close did not happen. A stop_fenced event the ordinary stop wrote after
-    /// <paramref name="afterSeq"/> is renamed (kept for history and revision order) so it cannot block a later restart-fence release.
-    /// </summary>
-    public void ReleaseBulkFence(string jobId, long afterSeq) => Write(connection =>
-    {
-        using var tx = connection.BeginTransaction(deferred: false);
-        Execute(connection, tx, """
-            UPDATE events SET kind='stop_fence_released' WHERE job_id=$id AND kind='stop_fenced' AND seq>$seq;
-            UPDATE jobs SET session_fenced=0 WHERE job_id=$id;
-            """, ("$id", jobId), ("$seq", afterSeq));
-        tx.Commit();
-        return 0;
-    });
-
     public void ReconcileStoppedJob(string jobId) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
