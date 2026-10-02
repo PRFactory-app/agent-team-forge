@@ -8,7 +8,7 @@ public sealed partial class PRFactoryTeamStore
     /// Forgets a fenced team so the next poll can claim the item afresh. One immediate transaction, so it is
     /// race-free with a running daemon: a later authority write for the released item is a no-op (see
     /// <see cref="PRFactoryAuthorityStore.Set"/>). Jobs, worktrees, artefacts and logs are untouched; only the
-    /// ownership rows that block re-claim go.
+    /// ownership and workspace identity rows that block a fresh re-claim go.
     /// </summary>
     public PRFactoryReleaseResult ReleaseFenced(string server, Guid id)
     {
@@ -42,6 +42,14 @@ public sealed partial class PRFactoryTeamStore
                 "prfactory_artefact_delivery", "prfactory_human_stream", "human_waits", "prfactory_killed_members", "prfactory_teams" })
             {
                 Exec(connection, $"DELETE FROM {table} WHERE server=$server AND work_item_id=$id", (server, id));
+            }
+            // The re-claim must prepare a fresh workspace: the kept one may hold the old run's uncommitted output,
+            // which the phase-start base refresh refuses forever. Its files stay on disk; only the identity rows go
+            // (secondary repositories are keyed "<key>|<repository>").
+            foreach (var table in new[] { "prfactory_workspace_integrations", "prfactory_base_refresh", "prfactory_wip",
+                "prfactory_wip_releases", "prfactory_multi_refresh", "prfactory_repository_sets", "prfactory_workspaces" })
+            {
+                Exec(connection, $"DELETE FROM {table} WHERE workspace_key=$server||'|'||$id OR substr(workspace_key,1,length($server||'|'||$id)+1)=$server||'|'||$id||'|'", (server, id));
             }
             Exec(connection, "COMMIT", null);
             return PRFactoryReleaseResult.Released;

@@ -35,6 +35,9 @@ sealed class ChainServer(PRFactoryWorkItem item)
     public bool ReleaseRequeues { get; set; }
     /// <summary>Pin: only this machine is offered the item once claimed. A release clears it.</summary>
     public Guid? Owner { get; private set; }
+
+    /// <summary>The operator released the server acceptance; the item is offered afresh.</summary>
+    public void Requeue() => (AcceptedJobId, AcceptedMachineId, Owner, Status, Offered) = (null, null, null, 1, true);
     public Guid? AcceptedMachineId { get; private set; }
     public List<Guid?> PollMachines { get; } = [];
     public List<Guid?> ClaimMachines { get; } = [];
