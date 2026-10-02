@@ -7,17 +7,26 @@ namespace AgentTeamForge.Host.Features.Wake;
 /// <summary>Only the recipient host's own MCP child writes its native channel.</summary>
 internal static class ClaudeWakeRelay
 {
+    internal static readonly TimeSpan MinPoll = TimeSpan.FromMilliseconds(500);
+    internal static readonly TimeSpan MaxPoll = TimeSpan.FromSeconds(3);
+
+    /// <summary>Idle polling backs off to <see cref="MaxPoll"/>; any delivery or a managed child resets it.</summary>
+    internal static TimeSpan NextDelay(TimeSpan current, bool busy) =>
+        busy ? MinPoll : TimeSpan.FromTicks(Math.Min(MaxPoll.Ticks, current.Ticks * 2));
+
     internal static async Task RunAsync(IpcRequest? host, IpcClient client, CancellationToken cancellationToken,
         string? managedJobId = null, Func<string?>? sessionId = null, string? workspace = null)
     {
         if (host?.WakeKind != "claude") { return; }
         var target = new WakeRegistration(host.WakeKey!, 0, "claude", host.WakeAddress!, host.WakeSecret!, host.WakeHome!);
         var poster = new ClaudeChannelWake();
+        var delay = MinPoll;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
                 var response = await client.SendAsync(host with { Op = IpcProtocol.ClaudeWakeTake }, cancellationToken);
+                var busy = response.ClaudeNotice is not null || managedJobId is not null;
                 if (response.ClaudeNotice is { } offer)
                 {
                     var currentHost = HostSessionWake.CurrentHost();
@@ -47,6 +56,7 @@ internal static class ClaudeWakeRelay
                         }, cancellationToken);
                         if (taken.ClaudeDelivery is { } delivery)
                         {
+                            busy = true;
                             var prompt = delivery.Instruction + "\n\n[AgentTeamForge correlation id: atf-corr:"
                                 + delivery.Correlation + " — internal marker, ignore this line]";
                             var (writeStarted, posted) = await ClaudeDeliveryPost.PostAsync(target, prompt, cancellationToken);
@@ -64,7 +74,8 @@ internal static class ClaudeWakeRelay
                         }
                     }
                 }
-                await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
+                delay = NextDelay(delay, busy);
+                await Task.Delay(delay, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
