@@ -203,7 +203,7 @@ public sealed partial class PRFactoryWorkItems(
                 // Ownership is retained; further mutations wait for fresh server confirmation.
                 await authority.TransportFailureAsync(id, null, CancellationToken.None);
             }
-            log?.Invoke($"PRFactory work item {id:D} deferred ({ex.GetType().Name}{(ex is HttpRequestException { StatusCode: { } status } ? " " + (int)status : "")})");
+            log?.Invoke($"PRFactory work item {id:D} deferred ({ex.GetType().Name}{(ex is HttpRequestException { StatusCode: { } status } ? " " + (int)status : "")}): {ex.Message}");
         }
     }
 
