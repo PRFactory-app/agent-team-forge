@@ -41,7 +41,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
             // unread=true is "everything I have not read", so a since window must not hide it.
             var since = request.Since is null || request.Unread ? null : DateTimeOffset.Parse(request.Since, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind).ToUniversalTime().ToString("O");
             rows = store.ListJobs(principal.Principal, principal.Team, request.Status, request.Backend, since, request.Cursor, limit + 1,
-                request.LeadSessionId, request.AllWorkspace ? request.Workspace : null, request.OrderByActivity, request.IncludeConnector, request.Unread);
+                request.LeadSessionId, request.AllWorkspace ? request.Workspace : null, request.OrderByActivity, request.IncludeConnector, request.Unread, request.ExcludeArchived);
         }
         catch (StorageException ex)
         {
@@ -68,6 +68,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
             Connector = r.Connector,
             WorkItemId = r.WorkItemId,
             Unread = r.Unread,
+            Archived = r.Archived,
             Revision = r.Revision,
             LastActivity = logs?.LastActivity(r.JobId, r.Backend ?? ""),
         }).ToList();
@@ -84,6 +85,8 @@ public sealed record ListJobsRequest(string? Status = null, int? Limit = null, s
     public bool OrderByActivity { get; init; }
     public bool IncludeConnector { get; init; }
     public bool Unread { get; init; }
+    /// <summary>Console only: hide jobs archived by "clear finished". MCP/CLI listings leave this off.</summary>
+    public bool ExcludeArchived { get; init; }
 }
 
 /// <summary>Inspection view of a job; use job_get for its result.</summary>
@@ -113,6 +116,8 @@ public sealed record JobSummary(string JobId, string Status, string? ReasonCode,
     public string? WorkItemId { get; init; }
     public bool Connector { get; init; }
     public bool Unread { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Archived { get; init; }
     [System.Text.Json.Serialization.JsonIgnore]
     public long Revision { get; init; }
     public string Light => Status switch

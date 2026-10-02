@@ -167,46 +167,86 @@ public sealed class WebConsoleScenarios
                   draft.value = 'composer follow-up';
                   draft.dispatchEvent(new Event('input', { bubbles: true }));
                   document.getElementById('send').click();
-                  return await wait(() => /^Queued/.test(document.getElementById('composer-status').textContent) && document.getElementById('composer-status').textContent) || 'not queued: ' + document.getElementById('composer-status').textContent;
+                  const queued = await wait(() => /^Queued/.test(document.getElementById('composer-status').textContent) && document.getElementById('composer-status').textContent) || 'not queued: ' + document.getElementById('composer-status').textContent;
+                  return queued;
                 })()
                 """;
-            string? status = null;
+            var requestId = 0;
             var buffer = new byte[64 * 1024];
-            // The first navigation may still be settling; retry while the execution context is replaced.
-            for (var attempt = 1; status is null; attempt++)
+            async Task<string> EvaluateAsync(string expression)
             {
-                var request = $$$$"""{"id":{{{{attempt}}}},"method":"Runtime.evaluate","params":{"expression":"{{{{JsonEncodedText.Encode(script)}}}}","awaitPromise":true,"returnByValue":true}}""";
-                await socket.SendAsync(Encoding.UTF8.GetBytes(request), System.Net.WebSockets.WebSocketMessageType.Text, true, TestContext.Current.CancellationToken);
-                while (status is null)
+                string? result = null;
+                // The first navigation may still be settling; retry while the execution context is replaced.
+                for (var attempt = 1; result is null; attempt++)
                 {
-                    using var message = new MemoryStream();
-                    System.Net.WebSockets.WebSocketReceiveResult received;
-                    do
+                    var currentId = ++requestId;
+                    var request = $$$$"""{"id":{{{{currentId}}}},"method":"Runtime.evaluate","params":{"expression":"{{{{JsonEncodedText.Encode(expression)}}}}","awaitPromise":true,"returnByValue":true}}""";
+                    await socket.SendAsync(Encoding.UTF8.GetBytes(request), System.Net.WebSockets.WebSocketMessageType.Text, true, TestContext.Current.CancellationToken);
+                    while (result is null)
                     {
-                        received = await socket.ReceiveAsync(buffer, TestContext.Current.CancellationToken);
-                        message.Write(buffer, 0, received.Count);
-                    }
-                    while (!received.EndOfMessage);
-                    var reply = JsonDocument.Parse(message.ToArray()).RootElement;
-                    if (!reply.TryGetProperty("id", out var id) || id.GetInt32() != attempt)
-                    {
-                        continue;
-                    }
+                        using var message = new MemoryStream();
+                        System.Net.WebSockets.WebSocketReceiveResult received;
+                        do
+                        {
+                            received = await socket.ReceiveAsync(buffer, TestContext.Current.CancellationToken);
+                            message.Write(buffer, 0, received.Count);
+                        }
+                        while (!received.EndOfMessage);
+                        var reply = JsonDocument.Parse(message.ToArray()).RootElement;
+                        if (!reply.TryGetProperty("id", out var id) || id.GetInt32() != currentId)
+                        {
+                            continue;
+                        }
 
-                    if (!reply.TryGetProperty("result", out var evaluated))
-                    {
-                        Assert.True(attempt < 20, "protocol error: " + reply.GetRawText());
-                        await Task.Delay(250, TestContext.Current.CancellationToken);
-                        break;
-                    }
+                        if (!reply.TryGetProperty("result", out var evaluated))
+                        {
+                            Assert.True(attempt < 20, "protocol error: " + reply.GetRawText());
+                            await Task.Delay(250, TestContext.Current.CancellationToken);
+                            break;
+                        }
 
-                    status = evaluated.GetProperty("result").TryGetProperty("value", out var value) && value.ValueKind == JsonValueKind.String
-                        ? value.GetString()
-                        : "evaluate failed: " + reply.GetRawText();
+                        result = evaluated.GetProperty("result").TryGetProperty("value", out var value) && value.ValueKind == JsonValueKind.String
+                            ? value.GetString()
+                            : "evaluate failed: " + reply.GetRawText();
+                    }
                 }
+
+                return result;
             }
 
+            var status = await EvaluateAsync(script);
             Assert.True(status.StartsWith("Queued", StringComparison.Ordinal), status);
+            // The composer is done; now finish one more job and clear it from the same page with the bulk buttons.
+            var finished = await SpikeRig.CallAsync(first, "submit_job", new()
+            {
+                ["backend"] = "fake",
+                ["idempotency_key"] = "web-finished",
+                ["instruction"] = "web-finished",
+            });
+            var finishedId = finished.Job!.JobId;
+            await rig.WaitForStatusAsync(finishedId, JobStatus.Completed);
+            var bulkScript = """
+                (async () => {
+                  const wait = async (ok) => { for (let i = 0; i < 150; i++) { const v = ok(); if (v) return v; await new Promise(r => setTimeout(r, 100)); } return null; };
+                  const result = () => document.getElementById('bulk-result').textContent;
+                  window.confirm = () => true;
+                  document.getElementById('stop-idle').click();
+                  const idle = await wait(result) || 'no stop-idle result';
+                  document.getElementById('clear-finished').click();
+                  const cleared = await wait(() => /^Archived/.test(result()) && result()) || 'no clear result: ' + result();
+                  return [idle, cleared].join('\n');
+                })()
+                """;
+            var lines = (await EvaluateAsync(bulkScript)).Split('\n');
+            // Stop idle found no live fake agent; Clear finished archives finished chains only.
+            Assert.Equal("No finished job has a live agent to stop.", lines[0]);
+            Assert.Matches(@"^Archived [12] jobs?\.$", lines[1]);
+            var hidden = await http.GetStringAsync("api/jobs", TestContext.Current.CancellationToken);
+            var shown = await http.GetStringAsync("api/jobs?archived=show", TestContext.Current.CancellationToken);
+            Assert.DoesNotContain(finishedId, hidden, StringComparison.Ordinal);
+            Assert.Contains(finishedId, shown, StringComparison.Ordinal);
+            // The held (running) jobs are never archived.
+            foreach (var held in listed.Jobs.Where(j => j.LeadSessionId is not null)) { Assert.Contains(held.JobId, hidden, StringComparison.Ordinal); }
             // The follow-up reached the daemon as a new job chained to the held one.
             await Bounded.Until(async () =>
             {

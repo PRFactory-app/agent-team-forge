@@ -16,10 +16,13 @@
     <span class="bar-stat">RUNNING <strong id="bar-running">0</strong></span>
     <span class="bar-stat hide-sm">TOKENS <strong id="bar-tokens">—</strong></span>
     <label class="bar-theme" for="theme-select">Theme<select id="theme-select"><option value="auto">Auto</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+    <button id="stop-idle" type="button" title="Close the idle agent panes of finished jobs; busy or unverifiable panes are left alone">Stop idle agents</button>
+    <button id="clear-finished" type="button" title="Hide finished jobs from the console (nothing is deleted)">Clear finished</button>
+    <label class="bar-theme" for="show-archived"><input id="show-archived" type="checkbox"> Show archived</label>
     <button id="sound-toggle" type="button" aria-pressed="true" title="Sounds for finished and attention-needing agents">Sound on</button>
     <button id="settings-toggle" type="button" aria-controls="settings-view" aria-expanded="false">Settings</button>
   </span>
-  <span id="status" role="status"></span></div>
+  <span id="bulk-result" role="status"></span><span id="status" role="status"></span></div>
 
 <section id="login">
   <form id="login-form" autocomplete="off">

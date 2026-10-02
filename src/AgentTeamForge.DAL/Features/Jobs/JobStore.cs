@@ -89,6 +89,25 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return true;
     });
 
+    /// <summary>
+    /// Bulk-cleanup fence: in one immediate transaction, refuses a session that has any queued, running or
+    /// needs_reconciliation peer (or is already fenced) and otherwise installs the fence, before anything is cancelled or closed.
+    /// </summary>
+    public bool TryFenceSessionForBulkStop(string jobId) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        if (Scalar(connection, tx, $"SELECT count(*) FROM jobs WHERE status NOT IN ('completed','failed','cancelled') AND job_id IN ({SessionPeers})", ("$id", jobId)) > 0
+            || SessionFenced(connection, tx, jobId))
+        {
+            return false;
+        }
+        // No stop_fenced event: that marks a committed stop. A reservation that is skipped (or lost in a crash) must leave
+        // nothing behind, so a later restart fence of the same job can still be released by recovery.
+        Execute(connection, tx, "UPDATE jobs SET session_fenced=1 WHERE job_id=$id", ("$id", jobId));
+        tx.Commit();
+        return true;
+    });
+
     public void ReconcileStoppedJob(string jobId) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
@@ -229,6 +248,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 WHERE target_key=$key AND generation=$generation AND active=1
                 """, ("$id", jobId), ("$key", job.WakeTargetKey), ("$generation", job.WakeGeneration.Value));
         }
+        if (job.ParentJobId is { } chained) { UnarchiveChain(connection, tx, chained); }
         var interrupted = job.InterruptParent && parent?.Status == JobStatus.Running ? parent.JobId : null;
         if (interrupted is not null)
         {
@@ -1086,6 +1106,53 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         Scalar(connection, null, "SELECT count(*) FROM jobs WHERE parent_job_id=$id AND status='queued'", ("$id", parentJobId)) > 0);
 
     /// <summary>Newest first, scoped to one principal/team.</summary>
+    static readonly string[] FinishedStatuses = ["completed", "failed", "cancelled"];
+
+    /// <summary>
+    /// Console "clear finished": marks archived every job of a follow-up chain whose members are all
+    /// completed/failed/cancelled. A chain with any queued, running or needs_reconciliation member stays visible.
+    /// Returns the number of jobs newly archived (or that would be, for a dry run).
+    /// </summary>
+    public int ArchiveFinished(string principal, string team, bool dryRun) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        var rows = new List<(string Id, string? Parent, string Status, bool Archived)>();
+        using (var command = Command(connection, tx, """
+            SELECT job_id, parent_job_id, status, archived_at IS NOT NULL FROM jobs
+            WHERE (principal=$p AND team=$t) OR (principal='prfactory' AND team='connector')
+            """, ("$p", principal), ("$t", team)))
+        using (var reader = command.ExecuteReader())
+        {
+            while (reader.Read()) { rows.Add((reader.GetString(0), NullableText(reader, 1), reader.GetString(2), reader.GetBoolean(3))); }
+        }
+        var parents = rows.ToDictionary(r => r.Id, r => r.Parent);
+        string RootOf(string id)
+        {
+            for (var hops = 0; hops < 10_000 && parents.TryGetValue(id, out var parent) && parent is not null && parents.ContainsKey(parent); hops++) { id = parent; }
+            return id;
+        }
+        var chains = rows.GroupBy(r => RootOf(r.Id)).Where(g => g.All(r => FinishedStatuses.Contains(r.Status)));
+        var ids = chains.SelectMany(g => g).Where(r => !r.Archived).Select(r => r.Id).ToArray();
+        if (!dryRun && ids.Length > 0)
+        {
+            var now = DateTimeOffset.UtcNow.ToString("O");
+            foreach (var id in ids) { Execute(connection, tx, "UPDATE jobs SET archived_at=$now WHERE job_id=$id AND archived_at IS NULL", ("$now", now), ("$id", id)); }
+        }
+        tx.Commit();
+        return ids.Length;
+    });
+
+    /// <summary>A new follow-up un-archives its whole chain, so a revived conversation reappears with its history.</summary>
+    static void UnarchiveChain(SqliteConnection connection, SqliteTransaction tx, string jobId) => Execute(connection, tx, """
+        WITH RECURSIVE up(id, parent) AS (
+            SELECT job_id, parent_job_id FROM jobs WHERE job_id=$id
+            UNION SELECT j.job_id, j.parent_job_id FROM jobs j JOIN up ON j.job_id=up.parent),
+        down(id) AS (
+            SELECT id FROM up WHERE parent IS NULL
+            UNION SELECT j.job_id FROM jobs j JOIN down ON j.parent_job_id=down.id)
+        UPDATE jobs SET archived_at=NULL WHERE archived_at IS NOT NULL AND job_id IN (SELECT id FROM down)
+        """, ("$id", jobId));
+
     public IReadOnlyList<JobRecord> ListJobs(string principal, string team, int limit) => Read(connection =>
     {
         using var command = Command(connection, null,
@@ -1164,7 +1231,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     /// work still grows with the caller's total jobs; only the returned rows are capped.
     /// </summary>
     public IReadOnlyList<JobSummaryRecord> ListJobs(string principal, string team, string? status, string? backend, string? since, string? beforeJobId, int take,
-        string? leadSessionId = null, string? workspace = null, bool orderByActivity = false, bool includeConnector = false, bool unreadOnly = false) => Read(connection =>
+        string? leadSessionId = null, string? workspace = null, bool orderByActivity = false, bool includeConnector = false, bool unreadOnly = false, bool excludeArchived = false) => Read(connection =>
     {
         using var command = Command(connection, null, """
             SELECT j.job_id, j.status, j.reason_code, (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id), j.accepted_at, j.updated_at, j.worktree_path, j.worktree_branch,
@@ -1174,9 +1241,11 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                    (SELECT m.work_item_id FROM prfactory_members m WHERE m.job_id=j.job_id LIMIT 1),
                    j.status IN ('completed','failed','needs_reconciliation','cancelled')
                        AND EXISTS (SELECT 1 FROM wake_jobs w WHERE w.job_id=j.job_id AND w.read_at IS NULL),
-                   (SELECT coalesce(max(e.seq),0) FROM events e WHERE e.job_id=j.job_id)
+                   (SELECT coalesce(max(e.seq),0) FROM events e WHERE e.job_id=j.job_id),
+                   j.archived_at IS NOT NULL
             FROM jobs j
             WHERE ((j.principal=$p AND j.team=$t) OR ($connector=1 AND j.principal='prfactory' AND j.team='connector'))
+              AND ($archived=0 OR j.archived_at IS NULL)
               -- A malformed pre-release row must not break this page or its cursor.
               AND typeof(j.job_id)='text' AND typeof(j.status)='text'
               AND typeof(j.accepted_at)='text' AND typeof(j.updated_at)='text'
@@ -1194,7 +1263,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             ORDER BY CASE WHEN $activity=1 THEN j.updated_at ELSE j.job_id END DESC, j.job_id DESC
             LIMIT $take
             """,
-            ("$p", principal), ("$t", team), ("$connector", includeConnector ? 1 : 0), ("$lead", leadSessionId), ("$workspace", workspace), ("$status", status), ("$backend", backend), ("$since", since), ("$unread", unreadOnly ? 1 : 0), ("$before", beforeJobId), ("$activity", orderByActivity ? 1 : 0), ("$take", take));
+            ("$p", principal), ("$t", team), ("$connector", includeConnector ? 1 : 0), ("$lead", leadSessionId), ("$workspace", workspace), ("$status", status), ("$backend", backend), ("$since", since), ("$unread", unreadOnly ? 1 : 0), ("$archived", excludeArchived ? 1 : 0), ("$before", beforeJobId), ("$activity", orderByActivity ? 1 : 0), ("$take", take));
         using var reader = command.ExecuteReader();
         var jobs = new List<JobSummaryRecord>();
         while (reader.Read())
@@ -1217,6 +1286,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 WorkItemId = NullableText(reader, 18),
                 Unread = reader.GetBoolean(19),
                 Revision = reader.GetInt64(20),
+                Archived = reader.GetBoolean(21),
             });
         }
 

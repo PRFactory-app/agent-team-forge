@@ -88,6 +88,25 @@ internal sealed class RetainedSessions : IDisposable
         catch (Exception ex) when (ex is not OutOfMemoryException) { return false; }
     }
 
+    /// <summary>Probes a retained, unreserved session's pane; a session mid-turn is busy, an unknown one unverified.</summary>
+    internal async Task<SessionIdleState> ProbeAsync(string sessionId, Func<InteractiveLaunch, Task<SessionIdleState>> probe)
+    {
+        InteractiveLaunch launch;
+        lock (_gate)
+        {
+            if (_reserved.ContainsKey(sessionId)) { return SessionIdleState.Busy; }
+            if (!_sessions.TryGetValue(sessionId, out var entry)) { return SessionIdleState.Unverified; }
+            launch = entry.Launch;
+        }
+        try { return await probe(launch); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { return SessionIdleState.Unverified; }
+    }
+
+    internal object? Identity(string sessionId)
+    {
+        lock (_gate) { return _sessions.TryGetValue(sessionId, out var entry) ? entry.Launch : null; }
+    }
+
     public int Count { get { lock (_gate) { return _sessions.Count; } } }
 
     public bool IsAlive(string sessionId, Func<InteractiveLaunch, bool> isAlive)

@@ -11,6 +11,42 @@ public sealed class StopAgent(JobStore store, BoundPrincipal principal, BackendC
 {
     readonly TimeSpan settleWait = settleWait ?? TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// Bulk-cleanup stop: under the same gate ordinary stop uses, fences the session atomically (refused if any peer is
+    /// not finished or the session is already fenced), re-proves the pane idle, then runs the ordinary stop.
+    /// If no close was attempted (the ordinary stop writes its stop_fenced marker just before issuing one) the
+    /// reservation is released; once a close was attempted the marker and fence stay, whatever the outcome.
+    /// </summary>
+    public JobResult ExecuteBulk(string jobId, Func<bool> finalIdleCheck)
+    {
+        try
+        {
+            var job = store.GetJob(jobId);
+            if (job is null || job.Principal != principal.Principal || job.Team != principal.Team) { return JobResult.Fail(JobErrors.NotFound, $"No job {jobId} for this principal/team."); }
+            if (backends.Resolve(job.Backend) is HerdrInteractiveBackend herdr)
+            {
+                lock (herdr.SessionStopGate) { return Bulk(job, finalIdleCheck); }
+            }
+            return Bulk(job, finalIdleCheck);
+        }
+        catch (StorageException ex)
+        {
+            return JobResult.Fail(JobErrors.FromStorage(ex), JobErrors.StorageDetail(ex));
+        }
+    }
+
+    JobResult Bulk(JobRecord job, Func<bool> finalIdleCheck)
+    {
+        var before = store.GetEvents(job.JobId).Select(e => e.Seq).DefaultIfEmpty(0).Max();
+        if (!store.TryFenceSessionForBulkStop(job.JobId)) { return JobResult.Fail(JobErrors.ParentNotReady, "The session has unfinished or fenced work; nothing was stopped."); }
+        JobResult result;
+        try { result = finalIdleCheck() ? Execute(job.JobId) : JobResult.Fail(JobErrors.ParentNotReady, "The pane is no longer proven idle; nothing was stopped."); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { result = JobResult.Fail(JobErrors.BackendUnavailable, ex.Message); }
+        var closeAttempted = store.GetEvents(job.JobId).Any(e => e.Seq > before && e.Kind == "stop_fenced");
+        if (result.Outcome != "agent_stopped" && !closeAttempted) { store.ReconcileStoppedJob(job.JobId); }
+        return result;
+    }
+
     public JobResult Execute(string jobId)
     {
         if (string.IsNullOrWhiteSpace(jobId) || jobId.Length > 64)

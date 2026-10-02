@@ -24,6 +24,8 @@ public sealed class SchemaTests
             using var command = connection.CreateCommand();
             command.CommandText = """
                 DROP INDEX events_job_seq;
+                ALTER TABLE jobs DROP COLUMN archived_at;
+                DELETE FROM schema_migrations WHERE version=32;
                 DELETE FROM schema_migrations WHERE version=31;
                 ALTER TABLE lead_sessions DROP COLUMN native_kind;
                 ALTER TABLE lead_sessions DROP COLUMN native_session_id;
@@ -71,6 +73,29 @@ public sealed class SchemaTests
         query.CommandText = "PRAGMA foreign_key_check";
         using var violations = query.ExecuteReader();
         Assert.False(violations.Read());
+    }
+
+    [Fact]
+    public void Version_32_adds_a_nullable_archive_mark_and_keeps_existing_jobs_visible()
+    {
+        using var dir = new TempStateDir();
+        var path = dir.File("jobs.db");
+        var database = JobDatabase.Create(path, TimeSpan.FromSeconds(1));
+        using (var connection = database.OpenConnection())
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE jobs DROP COLUMN archived_at; DELETE FROM schema_migrations WHERE version=32;";
+            command.ExecuteNonQuery();
+        }
+        var upgraded = JobDatabase.Open(path, TimeSpan.FromSeconds(1));
+        using var check = upgraded.OpenConnection();
+        using var query = check.CreateCommand();
+        query.CommandText = "SELECT max(version) FROM schema_migrations";
+        Assert.Equal(32L, query.ExecuteScalar());
+        query.CommandText = "SELECT type, \"notnull\" FROM pragma_table_info('jobs') WHERE name='archived_at'";
+        using var column = query.ExecuteReader();
+        Assert.True(column.Read());
+        Assert.Equal(("TEXT", 0L), (column.GetString(0), column.GetInt64(1)));
     }
 
     [Fact]
@@ -194,6 +219,8 @@ public sealed class SchemaTests
             using var command = connection.CreateCommand();
             command.CommandText = """
                 DROP INDEX events_job_seq;
+                ALTER TABLE jobs DROP COLUMN archived_at;
+                DELETE FROM schema_migrations WHERE version=32;
                 DELETE FROM schema_migrations WHERE version=31;
                 ALTER TABLE lead_sessions DROP COLUMN native_kind;
                 ALTER TABLE lead_sessions DROP COLUMN native_session_id;
@@ -302,6 +329,8 @@ public sealed class SchemaTests
             using var command = connection.CreateCommand();
             command.CommandText = """
                 DROP INDEX events_job_seq;
+                ALTER TABLE jobs DROP COLUMN archived_at;
+                DELETE FROM schema_migrations WHERE version=32;
                 DELETE FROM schema_migrations WHERE version=31;
                 ALTER TABLE lead_sessions DROP COLUMN native_kind;
                 ALTER TABLE lead_sessions DROP COLUMN native_session_id;
