@@ -43,6 +43,10 @@ recorded by systemd (`journalctl --user -u agentteamforge-daemon-*`) and by an
 `previous daemon N gone without stop` line. In Herdr mode a missing
 `WAYLAND_DISPLAY`/`DISPLAY` is filled in from `systemctl --user show-environment`
 when a session starts; without one there, the launch still fails clearly.
+Claude Desktop starts its children with `RLIMIT_RTTIME` 0, which makes the kernel
+SIGKILL a process that runs on the CPU for a moment without blocking; a daemon
+launched from such a caller inherits it (a service gets unlimited). The daemon
+raises the soft limit when it can and otherwise logs a warning at start.
 Re-run `atf setup --autostart` to add `KillMode=process` to an existing login unit.
 
 ## macOS results (2026-10-01)

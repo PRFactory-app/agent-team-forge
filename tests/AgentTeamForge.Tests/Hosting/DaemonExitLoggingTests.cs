@@ -41,4 +41,12 @@ public sealed class DaemonExitLoggingTests
 
         Assert.EndsWith(" previous daemon 4242 gone without stop result=signal code=killed status=PWR", File.ReadAllLines(log)[^1], StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Realtime_limit_warns_only_for_a_finite_limit()
+    {
+        Assert.Null(RealtimeLimit.Warning(ulong.MaxValue, ulong.MaxValue));
+        Assert.Equal("RLIMIT_RTTIME is 0 us (inherited); the kernel may SIGKILL this daemon — start it via systemd service", RealtimeLimit.Warning(0, 0));
+        Assert.Contains("is 500 us", RealtimeLimit.Warning(500, ulong.MaxValue), StringComparison.Ordinal);
+    }
 }

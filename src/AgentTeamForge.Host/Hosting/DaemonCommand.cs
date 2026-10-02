@@ -45,6 +45,7 @@ public static class DaemonCommand
         TaskScheduler.UnobservedTaskException += (_, eventArgs) => Log($"error: unobserved task exception: {eventArgs.Exception}");
         AppDomain.CurrentDomain.ProcessExit += (_, _) => Log($"process exit code={Environment.ExitCode}");
         Log($"starting pid={Environment.ProcessId}");
+        if (RealtimeLimit.CheckAndRaise() is { } rttimeWarning) { Log("warning: " + rttimeWarning); }
         var profile = ProfileFile.Load(state);
         var launchMode = SetupCommand.ConfiguredMode(state);
         if (launchMode is "herdr" or "terminal" or "wt" && !profile.RealAgents)
