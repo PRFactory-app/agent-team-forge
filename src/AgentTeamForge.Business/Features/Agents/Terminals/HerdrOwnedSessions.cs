@@ -33,6 +33,13 @@ public static class HerdrOwnedSessions
 
     internal static void Delete(InteractiveLaunch launch) => File.Delete(PathFor(launch));
 
+    /// <summary>Keeps the record for the restored-pane sweep; the marker tells recovery the job is already released.</summary>
+    internal static void MarkGone(InteractiveLaunch launch)
+    {
+        try { File.WriteAllText(PathFor(launch) + ".gone", "released"); }
+        catch (IOException) { } // Best effort: the next start logs the release again.
+    }
+
     /// <summary>The bootstrap file and the macOS shell proof beside it, once no live pane can still be proven by them.</summary>
     internal static void DeleteLaunchFiles(string bootstrapPath)
     {
@@ -151,15 +158,27 @@ public static class HerdrOwnedSessions
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
     }
 
-    /// <summary>Close restored bare-resume panes per session. Records are never edited: they fence their jobs.</summary>
-    public static int SweepRestored(string stateRoot, Func<string, IReadOnlyList<OwnedHerdrSession>, int> closeInSession, Action<string> log)
+    /// <summary>
+    /// Close restored bare-resume panes per session. A record is deleted once its pane was closed or herdr is
+    /// live with agents and none carries its name; otherwise records are kept: they fence their jobs.
+    /// </summary>
+    public static int SweepRestored(string stateRoot, Func<string, IReadOnlyList<OwnedHerdrSession>, ICollection<OwnedHerdrSession>, int> closeInSession, Action<string> log)
     {
         var closed = 0;
-        var groups = Read(stateRoot, log)
-            .Select(r => r.Session)
-            .Where(s => s.Shared && s.PaneId is not null && s.TabId is not null && s.AgentName is not null)
-            .GroupBy(s => s.SessionName);
-        foreach (var group in groups) { closed += closeInSession(group.Key, [.. group]); }
+        var entries = Read(stateRoot, log)
+            .Where(r => r.Session.Shared && r.Session.PaneId is not null && r.Session.TabId is not null && r.Session.AgentName is not null)
+            .ToList();
+        foreach (var group in entries.GroupBy(r => r.Session.SessionName))
+        {
+            var settled = new List<OwnedHerdrSession>();
+            closed += closeInSession(group.Key, [.. group.Select(r => r.Session)], settled);
+            foreach (var (path, session) in group.Where(r => settled.Contains(r.Session)))
+            {
+                DeleteLaunchFiles(BootstrapForRecord(path));
+                File.Delete(path + ".gone");
+                File.Delete(path);
+            }
+        }
         return closed;
     }
 

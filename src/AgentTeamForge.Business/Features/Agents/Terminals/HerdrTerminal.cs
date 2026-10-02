@@ -567,13 +567,15 @@ public sealed class HerdrTerminal
         catch (InvalidOperationException) { return true; }
     }
 
-    /// <summary>Stops and deletes the session only after proving ownership; refuses otherwise.</summary>
-    public async Task StopOwnedSessionAsync(OwnedHerdrSession session, CancellationToken cancellationToken)
+    /// <summary>
+    /// Stops and deletes the session only after proving ownership; refuses otherwise. False only when a shared
+    /// pane could not be closed because its server is gone and no restored pane was found yet.
+    /// </summary>
+    public async Task<bool> StopOwnedSessionAsync(OwnedHerdrSession session, CancellationToken cancellationToken)
     {
         if (session.Shared)
         {
-            await StopSharedTabAsync(session, cancellationToken);
-            return;
+            return await StopSharedTabAsync(session, cancellationToken);
         }
         var sessions = await GlobalAsync(cancellationToken, "session", "list", "--json");
         var identityMatches = ServerProblem(session) is null;
@@ -588,6 +590,7 @@ public sealed class HerdrTerminal
             await GlobalAsync(cancellationToken, "session", "stop", session.SessionName, "--json");
             await GlobalAsync(cancellationToken, "session", "delete", session.SessionName, "--json");
         }
+        return true;
     }
 
     /// <summary>Explicit cleanup: a recorded session already absent or stopped needs no teardown.</summary>
@@ -603,9 +606,10 @@ public sealed class HerdrTerminal
 
     /// <summary>
     /// Herdr resumes agents in restored panes as bare CLIs. Closes a recorded root pane only when its server is gone
-    /// and the live session lists an agent with the recorded name on the recorded pane and tab.
+    /// and the live session lists an agent with the recorded name on the recorded pane and tab. Records that need
+    /// no further sweeping (pane closed, or agents listed and none carries the name) are added to <paramref name="settled"/>.
     /// </summary>
-    public async Task<int> CloseRestoredPanesAsync(string sessionName, IReadOnlyList<OwnedHerdrSession> records, CancellationToken cancellationToken, Action<string>? log = null)
+    public async Task<int> CloseRestoredPanesAsync(string sessionName, IReadOnlyList<OwnedHerdrSession> records, CancellationToken cancellationToken, Action<string>? log = null, ICollection<OwnedHerdrSession>? settled = null)
     {
         var candidates = records.Where(r => r.SessionName == sessionName && r.Shared && HerdrOwnedSessions.ValidAgentName(r.AgentName)
             && r.PaneId is not null && r.TabId is not null
@@ -621,15 +625,22 @@ public sealed class HerdrTerminal
         {
             var proven = agents.Any(a => a is JsonObject && Text(a["name"]) is { } name && name == record.AgentName
                 && Text(a["pane_id"]) == record.PaneId && Text(a["tab_id"]) == record.TabId);
-            if (!proven) { continue; }
+            if (!proven)
+            {
+                // Herdr did not restore this pane: nothing left to close, so the record has no more work.
+                if (agents.Count > 0 && !agents.Any(a => a is JsonObject && Text(a["name"]) == record.AgentName)) { settled?.Add(record); }
+                continue;
+            }
             await RunOwnedAsync(live, cancellationToken, "pane", "close", record.PaneId!);
+            settled?.Add(record);
             closed++;
             log?.Invoke($"recovery: closed restored Herdr pane {record.PaneId} ({record.AgentName}, job {record.JobId}) in {sessionName}");
         }
         return closed;
     }
 
-    async Task StopSharedTabAsync(OwnedHerdrSession session, CancellationToken cancellationToken)
+    /// <summary>True when the pane is closed or provably absent on a live server; false when nothing could be closed yet.</summary>
+    async Task<bool> StopSharedTabAsync(OwnedHerdrSession session, CancellationToken cancellationToken)
     {
         if (session.TabId is null || session.PaneId is null || session.TerminalId is null)
         {
@@ -641,9 +652,8 @@ public sealed class HerdrTerminal
             // its recorded agent name may be closed. A live server with a changed identity is refused.
             if (_runner.Identity(session.ServerPid)?.StartTicks != session.ServerStartTicks)
             {
-                try { await CloseRestoredPanesAsync(session.SessionName, [session], cancellationToken); }
-                catch (Exception e) when (e is HerdrLaunchException or InteractiveTerminalUnavailableException or OperationCanceledException) { }
-                return;
+                try { return await CloseRestoredPanesAsync(session.SessionName, [session], cancellationToken) > 0; }
+                catch (Exception e) when (e is HerdrLaunchException or InteractiveTerminalUnavailableException or OperationCanceledException) { return false; }
             }
             throw new HerdrLaunchException("teardown refused: " + problem);
         }
@@ -654,7 +664,7 @@ public sealed class HerdrTerminal
             tab = await OwnedAsync(session.SocketPath, cancellationToken, "tab", "get", session.TabId);
             pane = await OwnedAsync(session.SocketPath, cancellationToken, "pane", "get", session.PaneId);
         }
-        catch (HerdrLaunchException e) when (e.Message.Contains("not_found", StringComparison.Ordinal)) { return; }
+        catch (HerdrLaunchException e) when (e.Message.Contains("not_found", StringComparison.Ordinal)) { return true; }
         var tabFacts = tab["result"]?["tab"];
         var paneFacts = pane["result"]?["pane"];
         if (Text(tabFacts?["tab_id"]) != session.TabId || Text(tabFacts?["workspace_id"]) != session.WorkspaceId
@@ -665,6 +675,7 @@ public sealed class HerdrTerminal
         }
         // Closing a tab could also close panes another client added later. Target only our recorded root pane.
         await OwnedAsync(session.SocketPath, cancellationToken, "pane", "close", session.PaneId);
+        return true;
     }
 
     /// <summary>A raw command against the owned server, after re-proving its identity.</summary>

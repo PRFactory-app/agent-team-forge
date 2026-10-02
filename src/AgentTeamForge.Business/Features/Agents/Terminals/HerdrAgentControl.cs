@@ -278,13 +278,14 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         if (_runs.TryGetValue(launch.AgentName, out var run))
         {
             var tree = PaneTree(run.Binding.ShellPid, run.Binding.ShellStartTicks);
-            terminal.StopOwnedSessionAsync(run.Session, CancellationToken.None).GetAwaiter().GetResult();
+            var closed = terminal.StopOwnedSessionAsync(run.Session, CancellationToken.None).GetAwaiter().GetResult();
             TerminateLeftovers(launch.AgentName, tree);
             _runs.TryRemove(launch.AgentName, out _);
             _piLoginAnchorBeforePrompt.TryRemove(launch.AgentName, out _);
             // The bootstrap files proved this pane's ownership; the record goes last, as it fences the job.
             HerdrOwnedSessions.DeleteLaunchFiles(launch.BootstrapPath);
-            HerdrOwnedSessions.Delete(launch);
+            if (closed) { HerdrOwnedSessions.Delete(launch); }
+            else { HerdrOwnedSessions.MarkGone(launch); } // Herdr may still restore the pane: the sweep closes it, then drops the record.
         }
     }
 

@@ -722,7 +722,7 @@ public class HerdrTerminalTests
     }
 
     static int Sweep(HerdrTerminal terminal, string state) =>
-        HerdrOwnedSessions.SweepRestored(state, (name, records) => terminal.CloseRestoredPanesAsync(name, records, CancellationToken.None).GetAwaiter().GetResult(), _ => { });
+        HerdrOwnedSessions.SweepRestored(state, (name, records, settled) => terminal.CloseRestoredPanesAsync(name, records, CancellationToken.None, null, settled).GetAwaiter().GetResult(), _ => { });
 
     [Fact]
     public async Task Restored_pane_with_recorded_agent_name_is_closed()
@@ -736,7 +736,82 @@ public class HerdrTerminalTests
         Assert.Equal(1, Sweep(terminal, state.Path));
         Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
         Assert.DoesNotContain(fake.Calls, c => c.Args is ["tab", "close", ..] or ["session", "stop", ..]);
-        Assert.True(File.Exists(HerdrOwnedSessions.PathFor(launch)));
+        Assert.False(File.Exists(HerdrOwnedSessions.PathFor(launch)));
+    }
+
+    [Fact]
+    public async Task Restored_pane_with_unlisted_agent_name_drops_its_record_without_closing()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true };
+        var terminal = Terminal(fake);
+        var (_, launch) = await SavedSharedRecord(terminal, state.Path);
+        fake.Replace(Replacement.ServerRestarted);
+        fake.ListedAgentName = "otherName";
+        Assert.Equal(0, Sweep(terminal, state.Path));
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane", "close", ..]);
+        Assert.False(File.Exists(HerdrOwnedSessions.PathFor(launch)));
+    }
+
+    static async Task<(FakeHerdr Fake, HerdrTerminal Terminal, HerdrAgentControl Control, InteractiveLaunch Launch)> StartedRestoredLaunch(string state)
+    {
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, SharedWorkspaceLabel = Path.GetFileName(state) };
+        var terminal = Terminal(fake);
+        var control = new HerdrAgentControl(terminal);
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, RestoredAgent, state, null, null, Path.Combine(state, "herdr", RestoredAgent + ".bootstrap"))
+        { JobId = "job-leak", HerdrPlacement = "herdr-session:default" };
+        await control.StartAsync(launch, CancellationToken.None);
+        return (fake, terminal, control, launch);
+    }
+
+    [Fact]
+    public async Task StopOwned_KeepsTheRecordWhenTheServerIsGoneAndNothingWasClosed()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var (fake, _, control, launch) = await StartedRestoredLaunch(state.Path);
+        var record = HerdrOwnedSessions.PathFor(launch);
+        fake.Replace(Replacement.ServerRestarted);
+        fake.DefaultRunning = false;
+
+        control.StopOwned(launch);
+
+        Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane", "close", ..]);
+        Assert.True(File.Exists(record));
+        Assert.True(File.Exists(record + ".gone"));
+        Assert.False(File.Exists(launch.BootstrapPath));
+        Assert.False(control.IsBound(launch));
+    }
+
+    [Fact]
+    public async Task Sweep_closes_the_restored_pane_of_a_kept_record_then_deletes_it()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var (fake, terminal, control, launch) = await StartedRestoredLaunch(state.Path);
+        var record = HerdrOwnedSessions.PathFor(launch);
+        fake.Replace(Replacement.ServerRestarted);
+        fake.DefaultRunning = false;
+        control.StopOwned(launch);
+
+        fake.DefaultRunning = true;
+        fake.ListedAgentName = RestoredAgent;
+        Assert.Equal(1, Sweep(terminal, state.Path));
+
+        Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
+        Assert.False(File.Exists(record));
+        Assert.False(File.Exists(record + ".gone"));
+    }
+
+    [Fact]
+    public async Task StopOwned_DeletesTheRecordWhenThePaneIsAbsentOnALiveServer()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var (fake, _, control, launch) = await StartedRestoredLaunch(state.Path);
+        fake.Replace(Replacement.PaneGone);
+
+        control.StopOwned(launch);
+
+        Assert.False(File.Exists(HerdrOwnedSessions.PathFor(launch)));
+        Assert.False(File.Exists(HerdrOwnedSessions.PathFor(launch) + ".gone"));
     }
 
     [Theory]
@@ -2149,7 +2224,7 @@ public class HerdrTerminalTests
         public TimeSpan WorkspaceListDelay { get; init; }
         public string SharedWorkspaceLabel { get; init; } = "work";
         public bool TabReplaced { get; set; }
-        public bool DefaultRunning { get; init; } = true;
+        public bool DefaultRunning { get; set; } = true;
         public string? ListedAgentName { get; set; }
         public string ListedAgentPane { get; set; } = "w1:p2";
         public string ListedAgentTab { get; set; } = "w1:t2";

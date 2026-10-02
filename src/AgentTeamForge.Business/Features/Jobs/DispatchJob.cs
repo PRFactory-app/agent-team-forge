@@ -228,8 +228,8 @@ public sealed class DispatchJob : IDisposable
             lock (herdr.SessionStopGate)
             {
                 var peers = store.GetSessionJobs(job.JobId);
-                // Records are deleted only after ATF closed the pane or saw the agent exit, so with
-                // none left nothing owned remains to stop. A launching peer is refused by the cancel itself.
+                // Records are deleted only after ATF closed the pane, saw it absent on a live server, or
+                // the restored-pane sweep dealt with it, so with none left nothing owned remains to stop. A launching peer is refused by the cancel itself.
                 if (!herdr.HasOwnedJobs(peers)) { noRecord = true; return true; }
                 return herdr.StopOwnedJobs(peers);
             }
