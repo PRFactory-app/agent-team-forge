@@ -151,6 +151,42 @@ public sealed class LeadSessionStore(JobDatabase database)
         return true;
     }
 
+    /// <summary>
+    /// Close leads that can no longer be resumed or used: no jobs (so not in recoverable_sessions),
+    /// idle for <paramref name="minAge"/>, and a recorded parent pid that is dead. Sessions with jobs
+    /// stay open because closing makes them unresumable. A reused pid only keeps a row alive.
+    /// </summary>
+    public int CloseAbandoned(Func<int, bool> parentAlive, TimeSpan minAge)
+    {
+        var cutoff = DateTimeOffset.UtcNow - minAge;
+        var candidates = new List<(string Id, string Workspace, int Pid)>();
+        using (var connection = database.OpenConnection())
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                SELECT s.session_id,s.workspace,s.binding_key,s.updated_at FROM lead_sessions s
+                WHERE s.closed_at IS NULL AND s.binding_key LIKE 'identity=%'
+                AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.lead_session_id=s.session_id)
+                """;
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                if (!DateTimeOffset.TryParse(reader.GetString(3), out var updated) || updated > cutoff) { continue; }
+                var parent = reader.GetString(2).Split('\n').FirstOrDefault(l => l.StartsWith("parent=", StringComparison.Ordinal));
+                if (parent is not null && int.TryParse(parent.AsSpan(7), out var pid) && pid > 0)
+                {
+                    candidates.Add((reader.GetString(0), reader.GetString(1), pid));
+                }
+            }
+        }
+        var closed = 0;
+        foreach (var (id, workspace, pid) in candidates.Where(c => !parentAlive(c.Pid)))
+        {
+            if (Close(id, workspace)) { closed++; }
+        }
+        return closed;
+    }
+
     /// <summary>Move unread notices to the current bridge after a restart or late wake registration.</summary>
     public void BindWake(string id, string key, long generation)
     {

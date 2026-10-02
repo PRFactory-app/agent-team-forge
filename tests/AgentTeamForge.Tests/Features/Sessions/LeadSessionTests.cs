@@ -23,6 +23,29 @@ public sealed class LeadSessionTests
     }
 
     [Fact]
+    public void CloseAbandoned_closes_only_idle_empty_sessions_with_a_dead_parent()
+    {
+        using var f = new JobFixture();
+        var sessions = new LeadSessionStore(f.Database);
+        static string Binding(int pid) => $"identity=team-lead\nparent={pid}\ncwd=/workspace/shared";
+        var dead = sessions.Start("/workspace/shared", Binding(111));
+        var alive = sessions.Start("/workspace/shared", Binding(222));
+        var withJob = sessions.Start("/workspace/shared", Binding(333));
+        Submit(Endpoint(f, sessions), withJob, "job-key");
+
+        Assert.Equal(0, sessions.CloseAbandoned(_ => false, TimeSpan.FromHours(1)));
+        Assert.Equal(1, sessions.CloseAbandoned(pid => pid is 222 or 333, TimeSpan.Zero));
+
+        Assert.Null(sessions.Info(dead.SessionId, dead.Workspace));
+        Assert.NotNull(sessions.Info(alive.SessionId, alive.Workspace));
+        var resumed = sessions.Resume(withJob.SessionId, withJob.Workspace, Binding(444));
+        Assert.NotNull(resumed);
+        // Even with every parent dead, the session that has a job is never closed, so it stays resumable.
+        Assert.Equal(1, sessions.CloseAbandoned(_ => false, TimeSpan.Zero));
+        Assert.NotNull(sessions.Info(withJob.SessionId, withJob.Workspace));
+    }
+
+    [Fact]
     public void Session_info_renames_validates_and_clears_name()
     {
         using var f = new JobFixture();
