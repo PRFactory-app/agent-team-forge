@@ -662,7 +662,12 @@ public sealed partial class PRFactoryWorkItems(
             allJobs = [.. allJobs.Select(j => getJob(j.JobId) ?? j)];
             lead = allJobs.First(j => j.JobId == lead.JobId);
         }
-        if (await ReviveDeadMembersAsync(item, allJobs, ct))
+        var (revivedOrStopped, holdForRevive) = await ReviveDeadMembersAsync(item, ct);
+        if (holdForRevive)
+        {
+            return; // A revive is pending (follow-up not yet accepted): never report failure meanwhile.
+        }
+        if (revivedOrStopped)
         {
             allJobs = [.. teams.ManagedMembers(server, item.Id).GroupBy(m => m.Member)
                 .Select(g => getJob(g.Last().JobId)!)];
@@ -805,46 +810,73 @@ public sealed partial class PRFactoryWorkItems(
         return getJob(jobId);
     }
 
+    internal const string RevivePrompt = "Your terminal was killed by the OS, not by you. Check the worktree (git status/log) and continue your task where you left off.";
+
     static readonly string[] DeadAgentReasons = ["interactive_agent_exited", "backend_eof", "backend_not_started"];
 
-    /// <summary>A quarantined member whose agent is provably gone (stop's NoRecord proof) is cancelled and resumed once in its
-    /// session (follow-up keyed prf-revive:). A member already revived stays cancelled, so the item reports failure instead of parking.</summary>
-    async Task<bool> ReviveDeadMembersAsync(PRFactoryWorkItem item, IReadOnlyList<JobRecord> latest, CancellationToken ct)
+    /// <summary>A quarantined member whose agent is provably gone (the stop reports NoRecord) is cancelled and resumed once in its
+    /// session (follow-up keyed prf-revive:). The intent is persisted before the stop and replayed every tick until the successor is
+    /// mapped. A member with any earlier revive in its history, or whose stop closed something live, is left cancelled so the item fails.</summary>
+    async Task<(bool Changed, bool Hold)> ReviveDeadMembersAsync(PRFactoryWorkItem item, CancellationToken ct)
     {
         var changed = false;
-        foreach (var job in latest.Where(j => j is { Status: JobStatus.NeedsReconciliation } && DeadAgentReasons.Contains(j.ReasonCode)))
+        foreach (var turns in teams.ManagedMembers(server, item.Id).GroupBy(m => m.Member).Select(g => g.OrderBy(m => m.Turn).ToList()))
         {
-            var member = teams.ManagedMembers(server, item.Id).Last(m => m.JobId == job.JobId);
-            var reason = job.ReasonCode;
-            var stopped = stopJob?.Invoke(job.JobId);
-            if (stopped is null || stopped.Error is not null)
+            var member = turns[0].Member;
+            var last = turns[^1];
+            var job = getJob(last.JobId);
+            if (job is null) { continue; }
+            if (job.Status == JobStatus.NeedsReconciliation && DeadAgentReasons.Contains(job.ReasonCode)
+                && !turns.Any(t => t.JobId != job.JobId && teams.HasReviveIntent(t.JobId)))
             {
-                continue; // Ownership not proven (a pane or marked process may remain): leave it to the operator.
+                teams.SetReviveIntent(job.JobId, true);
+                var stopped = stopJob?.Invoke(job.JobId);
+                if (stopped is null || stopped.Error is not null)
+                {
+                    teams.SetReviveIntent(job.JobId, false);
+                    continue; // Ownership not proven (a pane or marked process may remain): leave it to the operator.
+                }
+                changed = true;
+                if (stopped.Outcome != StopJob.AbsentOutcome)
+                {
+                    teams.SetReviveIntent(job.JobId, false);
+                    log?.Invoke($"PRFactory work item {item.Id:D} member {member} agent was live ({job.ReasonCode}); stopped, reporting failure");
+                    continue;
+                }
+                job = getJob(job.JobId)!;
             }
-            changed = true;
-            if (job.IdempotencyKey?.StartsWith("prf-revive:", StringComparison.Ordinal) == true)
+            else if (job.Status == JobStatus.NeedsReconciliation && DeadAgentReasons.Contains(job.ReasonCode))
             {
-                log?.Invoke($"PRFactory work item {item.Id:D} member {member.Member} agent gone ({reason}); reporting failure");
+                changed |= stopJob?.Invoke(job.JobId) is { Error: null }; // Revive already used for this member: let the gate fail it.
+                log?.Invoke($"PRFactory work item {item.Id:D} member {member} agent gone ({job.ReasonCode}); reporting failure");
                 continue;
             }
+            if (job.Status != JobStatus.Cancelled || !teams.HasReviveIntent(job.JobId)) { continue; }
             var revived = JobResult.Fail(JobErrors.DaemonUnhealthy);
             await Guard(item.Id, () =>
             {
-                revived = followUp?.Invoke(new FollowUpRequest(job.JobId,
-                    "Your terminal was killed by the OS, not by you. Check the worktree (git status/log) and continue your task where you left off.",
+                revived = followUp?.Invoke(new FollowUpRequest(job.JobId, RevivePrompt,
                     "prf-revive:" + job.JobId)) ?? JobResult.Fail(JobErrors.DaemonUnhealthy);
-                if (revived.Error is null && !teams.ManagedMembers(server, item.Id).Any(m => m.JobId == revived.Job!.JobId))
+                if (revived.Error is null)
                 {
-                    teams.RecordMember(server, item.Id, member.Member,
-                        teams.ManagedMembers(server, item.Id).Where(m => m.Member == member.Member).Max(m => m.Turn) + 1, revived.Job!.JobId);
+                    teams.RecordMember(server, item.Id, member, last.Turn + 1, revived.Job!.JobId);
                 }
                 return Task.CompletedTask;
             }, ct);
-            log?.Invoke($"PRFactory work item {item.Id:D} member {member.Member} agent gone ({reason}); "
-                + (revived.Error is null ? "revived once" : $"reporting failure (revive refused: {revived.Error})"));
-            if (revived.Error is null) { onAccepted(); }
+            if (revived.Error is JobErrors.DaemonUnhealthy) { return (changed, true); }
+            changed = true;
+            if (revived.Error is null)
+            {
+                log?.Invoke($"PRFactory work item {item.Id:D} member {member} agent gone; revived once");
+                onAccepted();
+            }
+            else
+            {
+                teams.SetReviveIntent(job.JobId, false);
+                log?.Invoke($"PRFactory work item {item.Id:D} member {member} agent gone; reporting failure (revive refused: {revived.Error})");
+            }
         }
-        return changed;
+        return (changed, false);
     }
 
     /// <summary>Resumes due parks as a same-session follow-up; returns true while any member park is open.</summary>

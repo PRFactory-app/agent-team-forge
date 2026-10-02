@@ -162,6 +162,28 @@ public sealed partial class PRFactoryTeamStore(JobDatabase database)
         return jobs;
     }
 
+    /// <summary>Durable "revive this job's agent" intent, written before the stop so a restart can replay the follow-up.</summary>
+    public void SetReviveIntent(string jobId, bool pending)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = pending
+            ? "INSERT INTO events(job_id, kind, created_at) SELECT $job, 'prf_revive_intent', $now WHERE NOT EXISTS (SELECT 1 FROM events WHERE job_id=$job AND kind='prf_revive_intent')"
+            : "DELETE FROM events WHERE job_id=$job AND kind='prf_revive_intent'";
+        command.Parameters.AddWithValue("$job", jobId);
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.ExecuteNonQuery();
+    }
+
+    public bool HasReviveIntent(string jobId)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM events WHERE job_id=$job AND kind='prf_revive_intent'";
+        command.Parameters.AddWithValue("$job", jobId);
+        return Convert.ToInt32(command.ExecuteScalar()) > 0;
+    }
+
     public void RecordMember(string server, Guid id, string member, int turn, string jobId)
     {
         using var connection = database.OpenConnection();

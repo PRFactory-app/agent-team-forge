@@ -10,6 +10,8 @@ public enum ReconcileStop { Refused, Stopped, NoRecord }
 /// <summary>Commits cancellation before asking the dispatcher to stop its owned backend run.</summary>
 public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<string> cancelRunning, Action<string>? closeUnclaimedFollowUp = null, Func<JobRecord, ReconcileStop>? stopReconciled = null, Action<JobRecord>? forgetReconciledOwnership = null, Action<string>? interruptRunning = null, Func<JobRecord, bool>? releaseNative = null)
 {
+    public const string AbsentOutcome = "stopped_absent";
+
     public JobResult Execute(string jobId) => Execute(jobId, false);
 
     public JobResult Execute(string jobId, bool interrupt)
@@ -48,7 +50,8 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
                         "Another turn on this agent session was admitted while it was being stopped; nothing was cancelled or forgotten. Stop that job (stop_job) or retry after it ends.");
                 }
                 if (stopped.Changed) { forgetReconciledOwnership?.Invoke(current); }
-                return JobResult.Ok(GetJob.ToView(stopped.Job!), stopped.Changed ? "stopped" : "unchanged");
+                // "stopped_absent": the stop only cancelled the row because no owned pane or marked process remained (NoRecord).
+                return JobResult.Ok(GetJob.ToView(stopped.Job!), !stopped.Changed ? "unchanged" : observed == ReconcileStop.NoRecord ? AbsentOutcome : "stopped");
             }
             if (interrupt && interruptRunning is null) { return JobResult.Fail(JobErrors.BackendUnavailable, "interrupt_job is not supported for this job; use stop_job."); }
             var outcome = store.Cancel(jobId, principal.Principal, principal.Team, interrupt);
