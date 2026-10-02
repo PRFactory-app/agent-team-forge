@@ -206,6 +206,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
             ("GET", ["settings", "herdr-placement"]) => new IpcRequest { Op = IpcProtocol.HerdrPlacementGet },
             ("PUT", ["settings", "herdr-placement"]) => await ReadHerdrPlacementAsync(ctx),
             ("POST", ["jobs"]) => await ReadSubmitAsync(ctx),
+            ("GET", ["jobs", "stop-idle-agents"]) => new IpcRequest { Op = IpcProtocol.JobStopIdleStatus },
             ("GET", ["jobs", var id]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobGet, JobId = id, IncludeConnector = true, IncludeInstruction = true },
             ("GET", ["jobs", var id, "output"]) when ValidId(id) => new IpcRequest
             {
@@ -226,7 +227,6 @@ public sealed class WebConsoleServer : IAsyncDisposable
             ("POST", ["jobs", var id, "follow-up"]) when ValidId(id) => await ReadFollowUpAsync(ctx, id),
             ("POST", ["jobs", var id, "stop"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStop, JobId = id },
             ("POST", ["jobs", var id, "stop-agent"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStopAgent, JobId = id },
-            ("GET", ["jobs", "stop-idle-agents"]) => new IpcRequest { Op = IpcProtocol.JobStopIdleStatus },
             ("POST", ["jobs", "stop-idle-agents"]) => await ReadBulkAsync(ctx, IpcProtocol.JobStopIdle),
             ("POST", ["jobs", "archive-finished"]) => await ReadBulkAsync(ctx, IpcProtocol.JobArchiveFinished),
             ("POST", ["leads", var id, "join-ticket"]) when Guid.TryParseExact(id, "D", out _) => await ReadJoinTicketAsync(ctx, id),
