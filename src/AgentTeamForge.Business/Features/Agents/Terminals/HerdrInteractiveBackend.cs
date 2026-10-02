@@ -349,6 +349,8 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { return SessionIdleState.Unverified; }
     }
 
+    public object? LaunchIdentity(string sessionId) => _liveSessions.Identity(sessionId);
+
     public Task<SessionIdleState> ProbeIdleAsync(string sessionId) => _liveSessions.ProbeAsync(sessionId, PaneIdleStateAsync);
 
     public bool HasIdleJob(JobRecord job)

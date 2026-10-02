@@ -89,6 +89,26 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return true;
     });
 
+    /// <summary>
+    /// Bulk-cleanup fence: in one immediate transaction, refuses a session that has any queued, running or
+    /// needs_reconciliation peer (or is already fenced) and otherwise installs the fence, before anything is cancelled or closed.
+    /// </summary>
+    public bool TryFenceSessionForBulkStop(string jobId) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        if (Scalar(connection, tx, $"SELECT count(*) FROM jobs WHERE status NOT IN ('completed','failed','cancelled') AND job_id IN ({SessionPeers})", ("$id", jobId)) > 0
+            || SessionFenced(connection, tx, jobId))
+        {
+            return false;
+        }
+        Execute(connection, tx, """
+            UPDATE jobs SET session_fenced=1 WHERE job_id=$id;
+            INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'stop_fenced', $now);
+            """, ("$id", jobId), ("$now", Now()));
+        tx.Commit();
+        return true;
+    });
+
     public void ReconcileStoppedJob(string jobId) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);

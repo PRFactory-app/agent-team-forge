@@ -11,6 +11,29 @@ public sealed class StopAgent(JobStore store, BoundPrincipal principal, BackendC
 {
     readonly TimeSpan settleWait = settleWait ?? TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// Bulk-cleanup stop: fences the session atomically (refused if any peer is not finished), re-proves the pane idle
+    /// while fenced, then runs the ordinary stop. Any outcome other than a stop releases the fence.
+    /// </summary>
+    public JobResult ExecuteBulk(string jobId, Func<bool> finalIdleCheck)
+    {
+        try
+        {
+            var job = store.GetJob(jobId);
+            if (job is null || job.Principal != principal.Principal || job.Team != principal.Team) { return JobResult.Fail(JobErrors.NotFound, $"No job {jobId} for this principal/team."); }
+            if (!store.TryFenceSessionForBulkStop(jobId)) { return JobResult.Fail(JobErrors.ParentNotReady, "The session has unfinished or fenced work; nothing was stopped."); }
+            JobResult result;
+            try { result = finalIdleCheck() ? Execute(jobId) : JobResult.Fail(JobErrors.ParentNotReady, "The pane is no longer proven idle; nothing was stopped."); }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { result = JobResult.Fail(JobErrors.BackendUnavailable, ex.Message); }
+            if (result.Outcome != "agent_stopped") { store.ReconcileStoppedJob(jobId); }
+            return result;
+        }
+        catch (StorageException ex)
+        {
+            return JobResult.Fail(JobErrors.FromStorage(ex), JobErrors.StorageDetail(ex));
+        }
+    }
+
     public JobResult Execute(string jobId)
     {
         if (string.IsNullOrWhiteSpace(jobId) || jobId.Length > 64)

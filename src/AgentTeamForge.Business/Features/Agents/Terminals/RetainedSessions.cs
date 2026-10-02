@@ -102,6 +102,11 @@ internal sealed class RetainedSessions : IDisposable
         catch (Exception ex) when (ex is not OutOfMemoryException) { return SessionIdleState.Unverified; }
     }
 
+    internal object? Identity(string sessionId)
+    {
+        lock (_gate) { return _sessions.TryGetValue(sessionId, out var entry) ? entry.Launch : null; }
+    }
+
     public int Count { get { lock (_gate) { return _sessions.Count; } } }
 
     public bool IsAlive(string sessionId, Func<InteractiveLaunch, bool> isAlive)

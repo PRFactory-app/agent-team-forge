@@ -84,13 +84,77 @@ public sealed class BulkCleanupTests
         Assert.DoesNotContain(failed.JobId, Visible(f));
     }
 
+    [Fact]
+    public async Task A_follow_up_accepted_before_the_fence_is_never_stopped_or_cancelled()
+    {
+        using var f = new JobFixture();
+        var job = Finished(f, "raced", "s-race");
+        JobView? follow = null;
+        var backend = new ProbedBackend(new() { ["s-race"] = SessionIdleState.Idle })
+        {
+            OnProbe = (_, _) => follow ??= new FollowUpJob(f.Store, JobFixture.Operator, f.Accept()).Execute(new FollowUpRequest(job.JobId, "late", "late")).Job,
+        };
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var bulk = new StopIdleAgents(f.Store, JobFixture.Operator, catalog, new StopAgent(f.Store, JobFixture.Operator, catalog));
+
+        var counts = await bulk.ExecuteAsync(dryRun: false);
+
+        Assert.Equal(0, counts.Stopped);
+        Assert.Empty(backend.Stopped);
+        Assert.Equal(JobStatus.Queued, f.Store.GetJob(follow!.JobId)!.Status);
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+    }
+
+    [Fact]
+    public async Task A_pane_that_turns_busy_after_its_first_proof_is_not_closed_and_its_fence_is_released()
+    {
+        using var f = new JobFixture();
+        var job = Finished(f, "flip", "s-flip");
+        var backend = new ProbedBackend(new() { ["s-flip"] = SessionIdleState.Idle }) { Sequence = [SessionIdleState.Idle, SessionIdleState.Busy] };
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var bulk = new StopIdleAgents(f.Store, JobFixture.Operator, catalog, new StopAgent(f.Store, JobFixture.Operator, catalog));
+
+        var counts = await bulk.ExecuteAsync(dryRun: false);
+
+        Assert.Equal((0, 1), (counts.Stopped, counts.SkippedBusy));
+        Assert.Empty(backend.Stopped);
+        Assert.False(f.Store.IsSessionFenced(job.JobId));
+    }
+
+    [Fact]
+    public async Task Slow_probes_stop_at_the_budget_and_report_what_remains()
+    {
+        using var f = new JobFixture();
+        var states = new Dictionary<string, SessionIdleState>();
+        for (var i = 0; i < 3; i++) { Finished(f, "slow" + i, "s-slow" + i); states["s-slow" + i] = SessionIdleState.Idle; }
+        var backend = new ProbedBackend(states) { Delay = TimeSpan.FromMilliseconds(200) };
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var bulk = new StopIdleAgents(f.Store, JobFixture.Operator, catalog, new StopAgent(f.Store, JobFixture.Operator, catalog), TimeSpan.FromMilliseconds(300));
+
+        var counts = await bulk.ExecuteAsync(dryRun: false);
+
+        Assert.Equal((1, 2, 3), (counts.Stopped, counts.Remaining, counts.Candidates));
+        Assert.Single(backend.Stopped);
+    }
+
     sealed class ProbedBackend(Dictionary<string, SessionIdleState> states) : IJobBackend, IInteractiveSessionStop
     {
+        int _calls;
         public List<string> Stopped { get; } = [];
+        public Action<string, int>? OnProbe { get; init; }
+        public SessionIdleState[]? Sequence { get; init; }
+        public TimeSpan Delay { get; init; }
         public IBackendRun Start(BackendRequest request) => throw new InvalidOperationException("not dispatched");
         public bool HasIdleSession(string sessionId) => !Stopped.Contains(sessionId);
         public bool? HasLiveSession(string sessionId) => !Stopped.Contains(sessionId);
-        public Task<SessionIdleState> ProbeIdleAsync(string sessionId) => Task.FromResult(states[sessionId]);
+        public object? LaunchIdentity(string sessionId) => sessionId;
+        public async Task<SessionIdleState> ProbeIdleAsync(string sessionId)
+        {
+            var call = _calls++;
+            OnProbe?.Invoke(sessionId, call);
+            if (Delay > TimeSpan.Zero) { await Task.Delay(Delay); }
+            return Sequence is { } sequence ? sequence[Math.Min(call, sequence.Length - 1)] : states[sessionId];
+        }
         public bool StopIdleSession(string sessionId) { Stopped.Add(sessionId); return true; }
         public void StopAllIdleSessions() { }
     }

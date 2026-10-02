@@ -5,7 +5,7 @@ using AgentTeamForge.DAL.Features.Jobs;
 namespace AgentTeamForge.Business.Features.Jobs;
 
 /// <summary>Counts reported to the console; <c>Candidates</c> is what a dry run would act on.</summary>
-public sealed record BulkCounts(int Stopped, int SkippedBusy, int SkippedUnverified, int Candidates, int Archived)
+public sealed record BulkCounts(int Stopped, int SkippedBusy, int SkippedUnverified, int Candidates, int Archived, int Remaining = 0)
 {
     public IReadOnlyDictionary<string, int> ToMap() => new Dictionary<string, int>
     {
@@ -14,18 +14,22 @@ public sealed record BulkCounts(int Stopped, int SkippedBusy, int SkippedUnverif
         ["skipped_unverified"] = SkippedUnverified,
         ["candidates"] = Candidates,
         ["archived"] = Archived,
+        ["remaining"] = Remaining,
     };
 }
 
 /// <summary>
 /// Console "Stop idle agents": closes the retained agent of every finished job whose pane a multi-sample probe proves idle.
-/// A session with any queued/running/needs_reconciliation job, a busy pane or an unprovable pane is never touched.
-/// Each pane is closed through the ordinary <see cref="StopAgent"/> path.
+/// Candidates are handled one at a time: probe, atomic fence (refused if any peer is unfinished), final re-probe of the
+/// same pane, close. A busy, unverifiable or replaced pane is skipped and its fence released. The pass stops at
+/// <c>budget</c> (below the console's IPC deadline) and reports how many candidates remain for another click.
 /// </summary>
-public sealed class StopIdleAgents(JobStore store, BoundPrincipal principal, BackendCatalog backends, StopAgent stopAgent)
+public sealed class StopIdleAgents(JobStore store, BoundPrincipal principal, BackendCatalog backends, StopAgent stopAgent, TimeSpan? budget = null)
 {
     const int MaxJobsScanned = 5000;
-    const int ProbeParallelism = 8;
+    readonly TimeSpan budget = budget ?? TimeSpan.FromSeconds(10);
+
+    static bool Finished(string? status) => status is JobStatus.Completed or JobStatus.Failed or JobStatus.Cancelled;
 
     public async Task<BulkCounts> ExecuteAsync(bool dryRun)
     {
@@ -33,41 +37,41 @@ public sealed class StopIdleAgents(JobStore store, BoundPrincipal principal, Bac
         var candidates = new List<(JobRecord Job, string SessionId, IInteractiveSessionStop Backend)>();
         foreach (var job in store.ListJobs(principal.Principal, principal.Team, MaxJobsScanned))
         {
-            if (job.SessionId is not { } sessionId || job.Status is not (JobStatus.Completed or JobStatus.Failed or JobStatus.Cancelled)
+            if (job.SessionId is not { } sessionId || !Finished(job.Status)
                 || backends.Resolve(job.Backend) is not IInteractiveSessionStop backend || !seen.Add(job.Backend + "/" + sessionId)) { continue; }
-            var peers = store.GetSessionJobs(job.JobId);
-            if (peers.Any(id => store.GetJob(id)?.Status is not (JobStatus.Completed or JobStatus.Failed or JobStatus.Cancelled))
-                || backend.HasLiveSession(sessionId) != true) { continue; }
+            if (store.GetSessionJobs(job.JobId).Any(id => !Finished(store.GetJob(id)?.Status)) || backend.HasLiveSession(sessionId) != true) { continue; }
             candidates.Add((job, sessionId, backend));
         }
         if (dryRun) { return new BulkCounts(0, 0, 0, candidates.Count, 0); }
 
-        using var gate = new SemaphoreSlim(ProbeParallelism);
-        var probed = await Task.WhenAll(candidates.Select(async c =>
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        int stopped = 0, busy = 0, unverified = 0, handled = 0;
+        foreach (var (job, sessionId, backend) in candidates)
         {
-            await gate.WaitAsync();
-            try { return await c.Backend.ProbeIdleAsync(c.SessionId); }
-            catch (Exception ex) when (ex is not OutOfMemoryException) { return SessionIdleState.Unverified; }
-            finally { gate.Release(); }
-        }));
-
-        int stopped = 0, busy = 0, unverified = 0;
-        for (var i = 0; i < candidates.Count; i++)
-        {
-            if (probed[i] == SessionIdleState.Busy) { busy++; continue; }
-            if (probed[i] != SessionIdleState.Idle) { unverified++; continue; }
-            // Re-check right before the close: a follow-up may have been accepted while other panes were probed.
-            if (store.GetSessionJobs(candidates[i].Job.JobId).Any(id => store.GetJob(id)?.Status is not (JobStatus.Completed or JobStatus.Failed or JobStatus.Cancelled)))
+            if (clock.Elapsed >= budget) { break; }
+            handled++;
+            var state = await Probe(backend, sessionId, budget - clock.Elapsed);
+            if (state == SessionIdleState.Busy) { busy++; continue; }
+            if (state != SessionIdleState.Idle) { unverified++; continue; }
+            var identity = backend.LaunchIdentity(sessionId);
+            var result = stopAgent.ExecuteBulk(job.JobId, () =>
             {
-                busy++;
-                continue;
-            }
-            var result = stopAgent.Execute(candidates[i].Job.JobId);
+                // Under the fence, the same pane must still prove idle; a replaced pane or a slow probe skips it.
+                var final = Probe(backend, sessionId, TimeSpan.FromSeconds(2) + (budget - clock.Elapsed > TimeSpan.Zero ? budget - clock.Elapsed : TimeSpan.Zero))
+                    .GetAwaiter().GetResult();
+                return final == SessionIdleState.Idle && Equals(identity, backend.LaunchIdentity(sessionId));
+            });
             if (result.Error is null && result.Outcome == "agent_stopped") { stopped++; }
             else if (result.Error == JobErrors.ParentNotReady) { busy++; }
             else { unverified++; }
         }
-        return new BulkCounts(stopped, busy, unverified, candidates.Count, 0);
+        return new BulkCounts(stopped, busy, unverified, candidates.Count, 0, candidates.Count - handled);
+    }
+
+    static async Task<SessionIdleState> Probe(IInteractiveSessionStop backend, string sessionId, TimeSpan limit)
+    {
+        try { return await backend.ProbeIdleAsync(sessionId).WaitAsync(limit > TimeSpan.Zero ? limit : TimeSpan.FromMilliseconds(1)); }
+        catch (Exception ex) when (ex is TimeoutException or InvalidOperationException or IOException) { return SessionIdleState.Unverified; }
     }
 }
 

@@ -11,6 +11,8 @@ public interface IInteractiveSessionStop
     void ReleaseNativeTurn(string sessionId) { }
     /// <summary>Multi-sample idle proof for bulk cleanup. Backends that cannot prove idleness never report <see cref="SessionIdleState.Idle"/>.</summary>
     Task<SessionIdleState> ProbeIdleAsync(string sessionId) => Task.FromResult(SessionIdleState.Unverified);
+    /// <summary>The pane/launch currently retained for the session, to detect a replaced pane between probes.</summary>
+    object? LaunchIdentity(string sessionId) => null;
     bool StopIdleSession(string sessionId);
     void StopAllIdleSessions();
 }

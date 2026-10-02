@@ -2200,6 +2200,7 @@
   const stopIdleAgents = () => bulkAction('/api/jobs/stop-idle-agents',
     n => 'Stop the agents of ' + plural(n, 'finished job session') + '? Only panes proven idle are closed; busy or unverifiable panes are skipped.',
     c => c ? 'Stopped ' + c.stopped + ' · skipped busy ' + c.skipped_busy + ' · skipped unverified ' + c.skipped_unverified
+      + (c.remaining ? ' · ' + c.remaining + ' remaining — click again' : '')
       : 'No finished job has a live agent to stop.');
 
   const clearFinished = () => bulkAction('/api/jobs/archive-finished',
