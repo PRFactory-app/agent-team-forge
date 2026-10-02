@@ -286,6 +286,28 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
         Assert.Equal((IpcProtocol.JobStopAgent, "j1"), (Assert.Single(_forwarded).Op, _forwarded[0].JobId));
     }
 
+    [Theory]
+    [InlineData("/api/jobs/stop-idle-agents", IpcProtocol.JobStopIdle)]
+    [InlineData("/api/jobs/archive-finished", IpcProtocol.JobArchiveFinished)]
+    public async Task Bulk_cleanup_uses_the_same_bearer_and_origin_checks_and_forwards_dry_run(string path, string op)
+    {
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Send(Api(HttpMethod.Post, path, WebConsoleServer.NewToken(), Origin, "{}"))).Status);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Send(Api(HttpMethod.Post, path, origin: "http://attacker.example", json: "{}"))).Status);
+        Assert.Empty(_forwarded);
+
+        Assert.Equal(HttpStatusCode.OK, (await Send(Api(HttpMethod.Post, path, origin: Origin, json: """{"dry_run":true}"""))).Status);
+        Assert.Equal(HttpStatusCode.OK, (await Send(Api(HttpMethod.Post, path, origin: Origin, json: """{"dry_run":false}"""))).Status);
+        Assert.Equal([(op, true), (op, false)], _forwarded.Select(r => (r.Op, r.DryRun)));
+    }
+
+    [Fact]
+    public async Task Job_list_hides_archived_jobs_unless_asked_to_show_them()
+    {
+        await Send(Api(HttpMethod.Get, "/api/jobs"));
+        await Send(Api(HttpMethod.Get, "/api/jobs?archived=show"));
+        Assert.Equal([true, false], _forwarded.Select(r => r.ExcludeArchived));
+    }
+
     async Task<(HttpStatusCode Status, IpcResponse Body)> Send(HttpRequestMessage request)
     {
         using var response = await _http.SendAsync(request, TestContext.Current.CancellationToken);

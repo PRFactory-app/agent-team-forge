@@ -326,7 +326,9 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
 
     // Idle must hold across several samples: one can fall between steps of a turn that is still working.
     // A vanished pane is safe to close; an unreadable one is kept.
-    async Task<bool> PaneIsIdleAsync(InteractiveLaunch launch)
+    async Task<bool> PaneIsIdleAsync(InteractiveLaunch launch) => await PaneIdleStateAsync(launch) == SessionIdleState.Idle;
+
+    async Task<SessionIdleState> PaneIdleStateAsync(InteractiveLaunch launch)
     {
         try
         {
@@ -335,16 +337,19 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                 switch (await _control.StatusAsync(launch, timeout.Token))
                 {
-                    case InteractiveAgentStatus.Gone: return true;
+                    case InteractiveAgentStatus.Gone: return SessionIdleState.Idle;
                     case InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done: break;
-                    default: return false;
+                    case InteractiveAgentStatus.Working or InteractiveAgentStatus.Blocked: return SessionIdleState.Busy;
+                    default: return SessionIdleState.Unverified;
                 }
                 if (sample < 4) { await Task.Delay(250); }
             }
-            return true;
+            return SessionIdleState.Idle;
         }
-        catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { return false; }
+        catch (Exception error) when (error is HerdrLaunchException or IOException or OperationCanceledException) { return SessionIdleState.Unverified; }
     }
+
+    public Task<SessionIdleState> ProbeIdleAsync(string sessionId) => _liveSessions.ProbeAsync(sessionId, PaneIdleStateAsync);
 
     public bool HasIdleJob(JobRecord job)
     {

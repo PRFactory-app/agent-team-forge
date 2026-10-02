@@ -111,6 +111,7 @@ public sealed record RunRecord(string RunId, long Generation, string Correlation
 public sealed record JobSummaryRecord(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)
 {
     public bool Unread { get; init; }
+    public bool Archived { get; init; }
     public long Revision { get; init; }
     public string? Options { get; init; }
     public string? Backend { get; init; }

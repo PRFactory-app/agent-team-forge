@@ -235,10 +235,12 @@ public static class DaemonCommand
         dispatcher.ClaudeBridgeReady = claudeMailbox.HasRecentRelay;
         var worktreeCleanup = new WorktreeCleanup(store, backends);
         var interactiveLaunch = launchMode is "herdr" or "terminal" or "wt";
+        var stopAgent = new StopAgent(store, profile.Bound, backends, dispatcher.SettleCompletedInteractive);
+        var stopIdleAgents = new StopIdleAgents(store, profile.Bound, backends, stopAgent);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound, interactiveLaunch), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning, reconcileIdleInteractive: dispatcher.ReconcileIdleInteractive, hasIdleInteractive: dispatcher.HasIdleInteractive, settleCompletedInteractive: dispatcher.SettleCompletedInteractive),
             new ListJobs(store, profile.Bound, jobLogs, interactiveLaunch),
             new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning, dispatcher.ReleaseNative), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
-            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, new StopAgent(store, profile.Bound, backends, dispatcher.SettleCompletedInteractive), backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
+            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, stopAgent, backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
             (token, _, _) => PRFactoryInteraction.RequestFromManagedChild(externalTeam.ManagedChildName(token)),
             externalMembers, new GetJob(store, connectorPrincipal), dispatcher.TakeNativeClaude,
             new RemoveWorktree(store, profile.Bound, worktreeCleanup), worktreeCleanup,
@@ -247,7 +249,8 @@ public static class DaemonCommand
                 if (backend is null || session is null
                     || backends.Resolve(backend) is not IInteractiveSessionStop interactive) { return null; }
                 return interactive.HasLiveSession(session);
-            }, retentionSettings, dispatcher.ReleaseNativeTurn, new AgentTeamForge.Business.Features.Usage.SessionTokenUsage());
+            }, retentionSettings, dispatcher.ReleaseNativeTurn, new AgentTeamForge.Business.Features.Usage.SessionTokenUsage(),
+            stopIdleAgents, new ArchiveJobs(store, profile.Bound));
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         // The socket serves before dispatch resolves restart candidates; a request must not

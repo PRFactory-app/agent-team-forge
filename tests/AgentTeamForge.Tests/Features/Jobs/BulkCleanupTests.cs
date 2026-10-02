@@ -1,0 +1,97 @@
+using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Agents.Terminals;
+using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.Tests.Support;
+
+namespace AgentTeamForge.Tests.Features.Jobs;
+
+public sealed class BulkCleanupTests
+{
+    static JobView Finished(JobFixture f, string key, string session, bool complete = true)
+    {
+        var job = f.Submit(key);
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        f.Store.RecordSession(run, session);
+        if (complete) { f.Store.Complete(run, "done"); }
+        return job;
+    }
+
+    static string[] Visible(JobFixture f) =>
+        [.. f.Store.ListJobs("local-operator", "spike-team", null, null, null, null, 50, excludeArchived: true).Select(j => j.JobId)];
+
+    [Fact]
+    public async Task Stop_idle_closes_only_finished_sessions_proven_idle()
+    {
+        using var f = new JobFixture();
+        var idle = Finished(f, "idle", "s-idle");
+        var busy = Finished(f, "busy", "s-busy");
+        var unknown = Finished(f, "unknown", "s-unknown");
+        var running = Finished(f, "running", "s-running", complete: false);
+        var backend = new ProbedBackend(new() { ["s-idle"] = SessionIdleState.Idle, ["s-busy"] = SessionIdleState.Busy, ["s-unknown"] = SessionIdleState.Unverified, ["s-running"] = SessionIdleState.Idle });
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var bulk = new StopIdleAgents(f.Store, JobFixture.Operator, catalog, new StopAgent(f.Store, JobFixture.Operator, catalog));
+
+        var preview = await bulk.ExecuteAsync(dryRun: true);
+        Assert.Equal((3, 0), (preview.Candidates, backend.Stopped.Count));
+
+        var counts = await bulk.ExecuteAsync(dryRun: false);
+
+        Assert.Equal((1, 1, 1), (counts.Stopped, counts.SkippedBusy, counts.SkippedUnverified));
+        Assert.Equal(["s-idle"], backend.Stopped);
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(running.JobId)!.Status);
+        foreach (var skipped in (JobView[])[busy, unknown]) { Assert.Equal(JobStatus.Completed, f.Store.GetJob(skipped.JobId)!.Status); }
+        Assert.NotNull(idle);
+    }
+
+    [Fact]
+    public void Archive_hides_finished_chains_only_and_a_follow_up_brings_the_chain_back()
+    {
+        using var f = new JobFixture();
+        var done = Finished(f, "done", "s1");
+        var failed = f.Submit("failed");
+        var failedClaim = f.Store.BeginNextAttempt()!;
+        Assert.True(f.Store.EndUnsuccessfully(new RunRef(failed.JobId, failedClaim.RunId, failedClaim.Generation, failedClaim.Correlation), JobStatus.Failed, "boom"));
+        var reconciling = f.Submit("reconcile");
+        var reconcileClaim = f.Store.BeginNextAttempt()!;
+        Assert.True(f.Store.EndUnsuccessfully(new RunRef(reconciling.JobId, reconcileClaim.RunId, reconcileClaim.Generation, reconcileClaim.Correlation), JobStatus.NeedsReconciliation, "unobserved"));
+        var running = Finished(f, "running", "s2", complete: false);
+        // A finished parent whose follow-up is still queued is part of an unfinished chain.
+        var parent = Finished(f, "parent", "s3");
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept()).Execute(new FollowUpRequest(parent.JobId, "next", "child")).Job!;
+        var queued = f.Submit("queued");
+        var archive = new ArchiveJobs(f.Store, JobFixture.Operator);
+
+        Assert.Equal(2, archive.Execute(dryRun: true));
+        Assert.Equal(7, Visible(f).Length);
+        Assert.Equal(2, archive.Execute(dryRun: false));
+        Assert.Equal(0, archive.Execute(dryRun: false));
+
+        var visible = Visible(f);
+        Assert.DoesNotContain(done.JobId, visible);
+        Assert.DoesNotContain(failed.JobId, visible);
+        foreach (var id in (string[])[reconciling.JobId, running.JobId, queued.JobId, parent.JobId, child.JobId]) { Assert.Contains(id, visible); }
+        // MCP-style listing (no archive filter) still returns everything, flagged.
+        var all = f.Store.ListJobs("local-operator", "spike-team", null, null, null, null, 50);
+        Assert.Equal(7, all.Count);
+        Assert.Equal([done.JobId, failed.JobId], all.Where(j => j.Archived).Select(j => j.JobId).Order());
+
+        // Follow-up on an archived chain un-hides the whole chain.
+        var revived = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept()).Execute(new FollowUpRequest(done.JobId, "again", "again")).Job!;
+        Assert.Contains(done.JobId, Visible(f));
+        Assert.Contains(revived.JobId, Visible(f));
+        Assert.DoesNotContain(failed.JobId, Visible(f));
+    }
+
+    sealed class ProbedBackend(Dictionary<string, SessionIdleState> states) : IJobBackend, IInteractiveSessionStop
+    {
+        public List<string> Stopped { get; } = [];
+        public IBackendRun Start(BackendRequest request) => throw new InvalidOperationException("not dispatched");
+        public bool HasIdleSession(string sessionId) => !Stopped.Contains(sessionId);
+        public bool? HasLiveSession(string sessionId) => !Stopped.Contains(sessionId);
+        public Task<SessionIdleState> ProbeIdleAsync(string sessionId) => Task.FromResult(states[sessionId]);
+        public bool StopIdleSession(string sessionId) { Stopped.Add(sessionId); return true; }
+        public void StopAllIdleSessions() { }
+    }
+}

@@ -26,6 +26,7 @@ public sealed record WebLeadMessageBody(string? Text, string? Workspace, string?
 public sealed record WebRetentionBody(int? MaxRetainedSessions, JsonElement IdleCloseMinutes);
 public sealed record WebTierBody(string? Backend, string? Tier, string? Model, string? Effort, bool ResetAll = false);
 public sealed record WebHerdrPlacementBody(string? HerdrPlacement);
+public sealed record WebBulkBody(bool DryRun);
 public sealed record WebDirectoryEntry(string Name, string Path);
 public sealed record WebDirectoryList(string Path, string? Parent, IReadOnlyList<WebDirectoryEntry> Directories);
 
@@ -38,6 +39,7 @@ public sealed record WebDirectoryList(string Path, string? Parent, IReadOnlyList
 [JsonSerializable(typeof(WebRetentionBody))]
 [JsonSerializable(typeof(WebHerdrPlacementBody))]
 [JsonSerializable(typeof(WebDirectoryList))]
+[JsonSerializable(typeof(WebBulkBody))]
 public sealed partial class WebConsoleJson : JsonSerializerContext;
 
 /// <summary>
@@ -194,6 +196,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
                 IncludeUsage = true,
                 IncludeConnector = true,
                 Limit = ListJobs.MaxPageSize,
+                ExcludeArchived = request.Query["archived"] != "show",
             },
             ("GET", ["config"]) => new IpcRequest { Op = IpcProtocol.JobCapabilities },
             ("GET", ["settings", "retention"]) => new IpcRequest { Op = IpcProtocol.RetentionSettingsGet },
@@ -223,6 +226,8 @@ public sealed class WebConsoleServer : IAsyncDisposable
             ("POST", ["jobs", var id, "follow-up"]) when ValidId(id) => await ReadFollowUpAsync(ctx, id),
             ("POST", ["jobs", var id, "stop"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStop, JobId = id },
             ("POST", ["jobs", var id, "stop-agent"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStopAgent, JobId = id },
+            ("POST", ["jobs", "stop-idle-agents"]) => await ReadBulkAsync(ctx, IpcProtocol.JobStopIdle),
+            ("POST", ["jobs", "archive-finished"]) => await ReadBulkAsync(ctx, IpcProtocol.JobArchiveFinished),
             ("POST", ["leads", var id, "join-ticket"]) when Guid.TryParseExact(id, "D", out _) => await ReadJoinTicketAsync(ctx, id),
             ("POST", ["leads", var id, "messages"]) when Guid.TryParseExact(id, "D", out _) => await ReadLeadMessageAsync(ctx, id),
             _ => null,
@@ -309,6 +314,13 @@ public sealed class WebConsoleServer : IAsyncDisposable
         {
             await Reject(ctx, StatusCodes.Status400BadRequest, BadRequest);
         }
+    }
+
+    // Optional body {"dry_run": true} previews the count the confirm dialog shows; an empty body acts.
+    static async Task<IpcRequest?> ReadBulkAsync(HttpContext ctx, string op)
+    {
+        var body = ctx.Request.ContentLength is 0 ? new WebBulkBody(false) : await ReadBodyAsync(ctx, WebConsoleJson.Default.WebBulkBody);
+        return body is null ? null : new IpcRequest { Op = op, DryRun = body.DryRun };
     }
 
     static async Task<IpcRequest?> ReadFollowUpAsync(HttpContext ctx, string jobId)

@@ -1194,6 +1194,7 @@
     const params = new URLSearchParams();
     if ($('status-filter').value) params.set('status', $('status-filter').value);
     if (pageCursors[pageIndex]) params.set('cursor', pageCursors[pageIndex]);
+    if (bulk.showArchived) params.set('archived', 'show');
     const seq = ++listSeq;
     const r = await api('GET', '/api/jobs' + (params.size ? '?' + params : ''));
     // Overlapping polls and actions: only the newest list request may render.
@@ -1529,7 +1530,7 @@
 
   async function loadChat() {
     const seq = ++chat.seq;
-    const r = await api('GET', '/api/jobs');
+    const r = await api('GET', '/api/jobs' + (bulk.showArchived ? '?archived=show' : ''));
     if (!r || seq !== chat.seq) return;
     if (!r.ok) { setStatus('list failed: ' + r.error, 'error'); return; }
     setStatus('updated ' + new Date().toLocaleTimeString());
@@ -2162,6 +2163,49 @@
     } catch { /* Sound is best effort. */ }
   }
 
+  // ---- Bulk cleanup: stop idle agents of finished jobs; archive (hide, never delete) finished chains ----
+  const bulk = { showArchived: false, busy: false };
+  try { bulk.showArchived = localStorage.getItem('atf.web.showArchived') === 'on'; } catch { /* Default hidden. */ }
+
+  const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
+
+  // Poll updates overwrite #status every few seconds, so bulk outcomes get their own line.
+  function bulkResult(text, error) {
+    const target = $('bulk-result');
+    target.textContent = text;
+    target.className = error ? 'error' : '';
+  }
+
+  async function bulkAction(path, ask, done) {
+    if (bulk.busy) return;
+    bulk.busy = true;
+    bulkResult('');
+    try {
+      const preview = await api('POST', path, { dry_run: true });
+      if (!preview) return;
+      if (!preview.ok) { bulkResult((preview.error_detail || preview.error) + '', true); return; }
+      const n = preview.counts?.candidates ?? 0;
+      if (!n) { bulkResult(done(null)); return; }
+      if (!window.confirm(ask(n))) return;
+      const r = await api('POST', path, { dry_run: false });
+      if (!r) return;
+      const lost = r.lost || r.error === 'outcome_unknown';
+      bulkResult(lost ? 'Outcome unknown; refresh before trying again.' : r.ok ? done(r.counts || {}) : (r.error_detail || r.error) + '', !r.ok);
+      await poll();
+    } finally {
+      bulk.busy = false;
+    }
+  }
+
+  const stopIdleAgents = () => bulkAction('/api/jobs/stop-idle-agents',
+    n => 'Stop the agents of ' + plural(n, 'finished job session') + '? Only panes proven idle are closed; busy or unverifiable panes are skipped.',
+    c => c ? 'Stopped ' + c.stopped + ' · skipped busy ' + c.skipped_busy + ' · skipped unverified ' + c.skipped_unverified
+      : 'No finished job has a live agent to stop.');
+
+  const clearFinished = () => bulkAction('/api/jobs/archive-finished',
+    n => 'Hide ' + plural(n, 'finished job') + ' from the console? Nothing is deleted; a follow-up brings a chain back.',
+    c => c ? 'Archived ' + plural(c.archived, 'job') + '.' : 'No finished jobs to clear.');
+
   async function stopJob(jobId, status, cardKey) {
     const active = status === 'queued' || status === 'running' || status === 'needs_reconciliation';
     const action = active ? 'Stop job ' : 'Stop agent for job ';
@@ -2186,6 +2230,14 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     wireComposer();
+    $('stop-idle').addEventListener('click', stopIdleAgents);
+    $('clear-finished').addEventListener('click', clearFinished);
+    $('show-archived').checked = bulk.showArchived;
+    $('show-archived').addEventListener('change', () => {
+      bulk.showArchived = $('show-archived').checked;
+      try { localStorage.setItem('atf.web.showArchived', bulk.showArchived ? 'on' : 'off'); } catch { /* Keep the in-tab choice. */ }
+      poll();
+    });
     syncSoundToggle();
     $('sound-toggle').addEventListener('click', () => {
       sound.on = !sound.on;

@@ -20,7 +20,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     BackendModelDiscovery? modelDiscovery = null, HerdrPlacement? herdrPlacement = null, ClaudeWakeMailbox? claudeMailbox = null, string? launchMode = null,
     Func<string?, string?, string?, HumanInputRequestResult>? humanInput = null, ExternalMemberStore? externalMembers = null,
     GetJob? connectorGet = null, Func<string, string, AttemptClaim?>? takeNativeClaude = null,
-    RemoveWorktree? removeWorktree = null, WorktreeCleanup? worktreeCleanup = null, Func<string?, string?, string, bool?>? agentLive = null, InteractiveRetentionConfiguration? retentionSettings = null, Action<string, string>? releaseNativeTurn = null, AgentTeamForge.Business.Features.Usage.SessionTokenUsage? usage = null)
+    RemoveWorktree? removeWorktree = null, WorktreeCleanup? worktreeCleanup = null, Func<string?, string?, string, bool?>? agentLive = null, InteractiveRetentionConfiguration? retentionSettings = null, Action<string, string>? releaseNativeTurn = null, AgentTeamForge.Business.Features.Usage.SessionTokenUsage? usage = null,
+    StopIdleAgents? stopIdle = null, ArchiveJobs? archive = null)
 {
     JobResult ReadJob(IpcRequest request)
     {
@@ -296,6 +297,18 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 var stoppedAgent = stopAgent.Execute(request.JobId ?? string.Empty);
                 if (stoppedAgent.Error is null && stoppedAgent.Job is not null) { MarkWakeRead(request, stoppedAgent.Job.JobId, stoppedAgent.Job.Status, stoppedAgent.Job.Revision); }
                 return Map(stoppedAgent);
+            case IpcProtocol.JobStopIdle:
+                if (stopIdle is null || request.LeadSessionId is not null) { return new IpcResponse(false, JobErrors.BackendUnavailable, ErrorDetail: "Stop idle agents is not available here."); }
+                var idle = stopIdle.ExecuteAsync(request.DryRun).GetAwaiter().GetResult();
+                return new IpcResponse(true, Outcome: request.DryRun ? "dry_run" : "idle_stopped", Counts: idle.ToMap());
+            case IpcProtocol.JobArchiveFinished:
+                if (archive is null || request.LeadSessionId is not null) { return new IpcResponse(false, JobErrors.BackendUnavailable, ErrorDetail: "Clear finished is not available here."); }
+                try
+                {
+                    var archived = archive.Execute(request.DryRun);
+                    return new IpcResponse(true, Outcome: request.DryRun ? "dry_run" : "archived", Counts: new BulkCounts(0, 0, 0, archived, request.DryRun ? 0 : archived).ToMap());
+                }
+                catch (StorageException ex) { return new IpcResponse(false, JobErrors.FromStorage(ex), ErrorDetail: JobErrors.StorageDetail(ex)); }
             case IpcProtocol.JobRemoveWorktree:
                 if (removeWorktree is null) { return new IpcResponse(false, JobErrors.BackendUnavailable); }
                 var (removal, removalError) = removeWorktree.ExecuteAsync(request.JobId ?? string.Empty, request.Force, request.DryRun, CancellationToken.None).GetAwaiter().GetResult();
@@ -365,6 +378,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     OrderByActivity = request.OrderByActivity,
                     IncludeConnector = request.IncludeConnector && request.LeadSessionId is null,
                     Unread = request.Unread,
+                    ExcludeArchived = request.ExcludeArchived,
                 });
                 if (listed.Error is not null) { return new IpcResponse(false, listed.Error, ErrorDetail: listed.Detail); }
                 foreach (var job in listed.Page!.Jobs) { MarkWakeRead(request, job.JobId, job.Status, job.Revision); }

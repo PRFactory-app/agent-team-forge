@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 31;
+    public const int CurrentVersion = 32;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -371,7 +371,10 @@ static class Schema
     /// <summary>The job revision subquery (max event seq per job) runs per row in get_job/list_jobs.</summary>
     internal const string V31 = "CREATE INDEX IF NOT EXISTS events_job_seq ON events(job_id, seq);";
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31];
+    /// <summary>v32: console-only archive mark; nothing is deleted and MCP/IPC job reads ignore it.</summary>
+    internal const string V32 = "ALTER TABLE jobs ADD COLUMN archived_at TEXT;";
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused
