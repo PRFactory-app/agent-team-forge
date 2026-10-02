@@ -38,7 +38,8 @@ sealed class ChainHarness : IDisposable
         var accept = new AcceptJob(Store, Connector, new SpikeLimits(), true, new AdmissionGate(), ["codex"]);
         Accept = accept;
         FollowUp = new FollowUpJob(Store, Connector, accept);
-        Stop = new StopJob(Store, Connector, _ => { });
+        Stop = new StopJob(Store, Connector, _ => { },
+            stopReconciled: _ => Reconcile);
         var stopAgent = new StopAgent(Store, Connector, new BackendCatalog().Register("codex", () => new ScriptedBackend(_ => [])));
         Authority = new PRFactoryAuthority(ChainServer.Url, Authorities, Teams, Stop.Execute, stopAgent.Execute,
             (_, _) => true, id => Store.GetJob(id)?.Status is not (JobStatus.Queued or JobStatus.Running));
@@ -61,7 +62,8 @@ sealed class ChainHarness : IDisposable
         var accept = new AcceptJob(Store, Connector, new SpikeLimits(), true, new AdmissionGate(), ["codex"]);
         Accept = accept;
         FollowUp = new FollowUpJob(Store, Connector, accept);
-        Stop = new StopJob(Store, Connector, _ => { });
+        Stop = new StopJob(Store, Connector, _ => { },
+            stopReconciled: _ => Reconcile);
         var stopAgent = new StopAgent(Store, Connector, new BackendCatalog().Register("codex", () => new ScriptedBackend(_ => [])));
         Authority = new PRFactoryAuthority(ChainServer.Url, Authorities, Teams, Stop.Execute, stopAgent.Execute,
             (_, _) => true, id => Store.GetJob(id)?.Status is not (JobStatus.Queued or JobStatus.Running));
@@ -85,6 +87,8 @@ sealed class ChainHarness : IDisposable
     public StopJob Stop { get; }
     public PRFactoryAuthority Authority { get; }
     public string WorkspaceRoot => root.File("workspaces");
+    /// <summary>What the dispatcher's StopReconciled reports: NoRecord is the proof that no owned pane or marked process is left.</summary>
+    public ReconcileStop Reconcile { get; set; } = ReconcileStop.Refused;
     public AccountAdmission? Accounts { get; set; }
     public string[]? ExternalMembers { get; set; }
     public bool AllowRepoLess { get; set; }

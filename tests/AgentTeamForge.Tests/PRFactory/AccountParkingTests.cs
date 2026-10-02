@@ -56,4 +56,116 @@ public sealed class AccountParkingTests
         Assert.Single(h.Server.Completions);
         Assert.Empty(h.Server.Failures);
     }
+
+    static PRFactoryWorkItem PlanItem() => new()
+    {
+        Id = Guid.NewGuid(),
+        Type = "Planning",
+        RepositoryId = Guid.NewGuid(),
+        ReadOnly = true,
+        LeaseToken = Guid.NewGuid(),
+        AgentType = PRFactoryAgentType.Codex,
+        Prompt = "Plan",
+        TicketArtefactFolder = "docs",
+    };
+
+    static void KillTerminal(ChainHarness h, RunRef run) =>
+        Assert.True(h.Store.EndUnsuccessfully(run, JobStatus.NeedsReconciliation, "interactive_agent_exited"));
+
+    [Fact]
+    public async Task Dead_lead_is_revived_once_then_reported_failed()
+    {
+        using var h = new ChainHarness(PlanItem()) { Reconcile = ReconcileStop.NoRecord };
+        await h.TickAsync();
+        var (lead, run) = h.StartOne();
+        KillTerminal(h, run);
+
+        await h.TickAsync();
+        var turns = h.Teams.MemberJobs(ChainServer.Url, h.Server.Item.Id);
+        Assert.Equal(2, turns.Count);
+        Assert.Equal(lead.JobId, h.Store.GetJob(turns.Single(id => id != lead.JobId))!.ParentJobId);
+        Assert.Empty(h.Server.Failures);
+        await h.TickAsync(); // Idempotent while the revived turn is queued.
+        Assert.Equal(2, h.Teams.MemberJobs(ChainServer.Url, h.Server.Item.Id).Count);
+
+        var (revived, secondRun) = h.StartOne();
+        KillTerminal(h, secondRun);
+        await h.TickAsync();
+        Assert.Equal(2, h.Teams.MemberJobs(ChainServer.Url, h.Server.Item.Id).Count); // No second revive.
+        Assert.Equal(JobStatus.Cancelled, h.Store.GetJob(revived.JobId)!.Status);
+        await h.TickAsync();
+        Assert.Contains("agent_gone", Assert.Single(h.Server.Failures), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Live_agent_stopped_by_the_proof_is_not_revived_and_fails()
+    {
+        using var h = new ChainHarness(PlanItem()) { Reconcile = ReconcileStop.Stopped };
+        await h.TickAsync();
+        var (_, run) = h.StartOne();
+        KillTerminal(h, run);
+
+        await h.TickAsync();
+        Assert.Single(h.Teams.MemberJobs(ChainServer.Url, h.Server.Item.Id));
+        await h.TickAsync();
+        Assert.Single(h.Server.Failures);
+    }
+
+    [Fact]
+    public async Task Revive_accepted_before_the_member_mapping_survives_a_restart_without_failing()
+    {
+        using var h = new ChainHarness(PlanItem()) { Reconcile = ReconcileStop.NoRecord };
+        await h.TickAsync();
+        var (lead, run) = h.StartOne();
+        KillTerminal(h, run);
+        // Daemon died after the intent, the stop and the accepted follow-up, before RecordMember.
+        h.Teams.SetReviveIntent(lead.JobId, true);
+        Assert.Null(h.Stop.Execute(lead.JobId).Error);
+        var accepted = h.FollowUp.Execute(new(lead.JobId, PRFactoryWorkItems.RevivePrompt, "prf-revive:" + lead.JobId));
+        Assert.Null(accepted.Error);
+
+        await h.TickAsync();
+        Assert.Empty(h.Server.Failures);
+        var turns = h.Teams.MemberJobs(ChainServer.Url, h.Server.Item.Id);
+        Assert.Equal(2, turns.Count);
+        Assert.Contains(accepted.Job!.JobId, turns);
+    }
+
+    [Fact]
+    public async Task Crash_after_intent_and_stop_replays_the_revive()
+    {
+        using var h = new ChainHarness(PlanItem()) { Reconcile = ReconcileStop.NoRecord };
+        await h.TickAsync();
+        var (lead, run) = h.StartOne();
+        KillTerminal(h, run);
+        h.Teams.SetReviveIntent(lead.JobId, true);
+        Assert.Null(h.Stop.Execute(lead.JobId).Error);
+
+        await h.TickAsync();
+        Assert.Empty(h.Server.Failures);
+        Assert.Equal(2, h.Teams.MemberJobs(ChainServer.Url, h.Server.Item.Id).Count);
+    }
+
+    [Fact]
+    public async Task A_later_turn_dying_after_a_revive_fails_instead_of_reviving_again()
+    {
+        using var h = new ChainHarness(PlanItem()) { Reconcile = ReconcileStop.NoRecord };
+        await h.TickAsync();
+        var (lead, run) = h.StartOne();
+        KillTerminal(h, run);
+        await h.TickAsync();
+        var (revived, secondRun) = h.StartOne();
+        h.Store.Complete(secondRun, "done");
+        // A normal follow-up turn (not a revive) on the same member, then it dies.
+        var next = h.FollowUp.Execute(new(revived.JobId, "continue", "prf-command:1"));
+        Assert.Null(next.Error);
+        h.Teams.RecordMember(ChainServer.Url, h.Server.Item.Id, "lead", 2, next.Job!.JobId);
+        var (_, thirdRun) = h.StartOne();
+        KillTerminal(h, thirdRun);
+
+        await h.TickAsync();
+        Assert.Equal(3, h.Teams.MemberJobs(ChainServer.Url, h.Server.Item.Id).Count);
+        await h.TickAsync();
+        Assert.Single(h.Server.Failures);
+    }
 }

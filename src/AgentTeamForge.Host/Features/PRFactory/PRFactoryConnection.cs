@@ -296,7 +296,7 @@ public static class PRFactoryConnection
                 return 1;
             case PRFactoryReleaseResult.NeedsReconciliation:
                 Console.Error.WriteLine($"error: work item {id:D} has a job in needs_reconciliation that may still have a live process; "
-                    + "stop or cancel that job (atf client stop JOB) and retry");
+                    + "cancel the team in PRFactory (connector jobs cannot be stopped with atf client stop) and retry");
                 return 1;
             case PRFactoryReleaseResult.ExternalMemberOpen:
                 Console.Error.WriteLine($"error: work item {id:D} still has an unclosed external member; let the daemon revoke it "

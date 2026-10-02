@@ -189,4 +189,60 @@ public sealed class WorkspaceWiringTests
         Assert.Equal("completed", h.Teams.Get(ChainServer.Url, h.Server.Item.Id)!.State);
         Assert.Equal("user's dirty checkout", File.ReadAllText(Path.Combine(h.Repo, "base.txt")));
     }
+
+    static PRFactoryWorkItem PairItem() => new()
+    {
+        Id = Guid.NewGuid(),
+        Type = "Implementation",
+        RepositoryId = Guid.NewGuid(),
+        LeaseToken = Guid.NewGuid(),
+        AgentType = PRFactoryAgentType.Codex,
+        Prompt = "Implement the plan",
+        TicketArtefactFolder = "ticket",
+        TeamPlan = new PRFactoryTeamPlan
+        {
+            RecipeName = "pair",
+            MaxConcurrentChildren = 1,
+            Members =
+            [
+                new PRFactoryTeamMember { Name = "lead", IsLead = true },
+                new PRFactoryTeamMember { Name = "qa", Role = "qa", Order = 1 }
+            ]
+        }
+    };
+
+    [Fact]
+    public async Task Member_without_commits_is_not_merged_and_lead_still_finalizes()
+    {
+        using var h = new ChainHarness(PairItem());
+        await h.TickAsync();
+        var workspace = h.Workspaces.Get($"{ChainServer.Url}|{h.Server.Item.Id:D}")!;
+        h.RunQueued(job =>
+        {
+            if (job.Cwd == workspace.LeadPath) { ChainHarness.Commit(job.Cwd!, "lead.txt", "work"); }
+        });
+
+        await h.TickAsync();
+        var parents = ChainHarness.Git(workspace.LeadPath, "rev-list", "--parents", "-n", "1", "HEAD").Trim().Split(' ');
+        Assert.Equal(2, parents.Length); // The lead's own commit only; no merge commit for the idle child.
+        Assert.Empty(h.Server.Completions);
+        var finalization = Assert.Single(h.RunQueued(job => ChainHarness.Commit(job.Cwd!, "final.txt", "reviewed")));
+        Assert.Contains("Findings from qa", h.Store.GetJob(finalization.JobId)!.Instruction);
+
+        await h.TickAsync();
+        Assert.Single(h.Server.Completions);
+    }
+
+    [Fact]
+    public async Task Member_instruction_is_a_role_brief_not_the_phase_prompt()
+    {
+        using var h = new ChainHarness(PairItem());
+        await h.TickAsync();
+        var jobs = h.RunQueued(_ => { });
+
+        var lead = Assert.Single(jobs, j => j.Instruction.StartsWith("Implement the plan", StringComparison.Ordinal));
+        var member = Assert.Single(jobs, j => j.JobId != lead.JobId);
+        Assert.StartsWith("You are team member qa", member.Instruction);
+        Assert.Contains("Do NOT implement", member.Instruction);
+    }
 }

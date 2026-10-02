@@ -257,7 +257,7 @@ public sealed class TeamWorkspace(PRFactoryWorkspaceStore store) : IDisposable
                 {
                     throw new WorkspaceConflictException([.. lines.Skip(1)]);
                 }
-                var after = head == child ? head : await Git(workspace.LeadPath, "-c", "user.name=ATF", "-c", "user.email=atf@localhost",
+                var after = head == child || child == workspace.StartingSha ? head : await Git(workspace.LeadPath, "-c", "user.name=ATF", "-c", "user.email=atf@localhost",
                     "commit-tree", lines[0], "-p", head, "-p", child, "-m", $"Integrate child {memberOrder}");
                 intent = new(memberOrder, child, head, after, false);
                 store.SaveIntent(key, intent);
