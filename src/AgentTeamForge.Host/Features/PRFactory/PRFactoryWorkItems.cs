@@ -662,6 +662,12 @@ public sealed partial class PRFactoryWorkItems(
             allJobs = [.. allJobs.Select(j => getJob(j.JobId) ?? j)];
             lead = allJobs.First(j => j.JobId == lead.JobId);
         }
+        if (await ReviveDeadMembersAsync(item, allJobs, ct))
+        {
+            allJobs = [.. teams.ManagedMembers(server, item.Id).GroupBy(m => m.Member)
+                .Select(g => getJob(g.Last().JobId)!)];
+            lead = allJobs.First(j => j.JobId == teams.ManagedMembers(server, item.Id).Last(m => m.Member == "lead").JobId);
+        }
         var waitForManaged = managedMembers.Length > 0 || externalNames.Length == 0;
         if (allJobs.Count != managedMembers.Length + 1 || !externalRepliesDrained || !outputDrained
             || (workspace is { ReadOnly: false } && allJobs.Any(j => j.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation))
@@ -715,6 +721,8 @@ public sealed partial class PRFactoryWorkItems(
         }
         await FinishAsync(team, item, failed is null || !waitForManaged && lead.Status is JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation,
             failed?.ReasonCode == "agent_rate_limited" ? "agent_rate_limited: " + failed.ResultText
+                : failed is { Status: JobStatus.Cancelled, IdempotencyKey: { } key } && key.StartsWith("prf-revive:", StringComparison.Ordinal)
+                    ? "agent_gone: the agent exited again after one revive"
                 : failed?.ReasonCode ?? "job failed", repo?.Directory, ct,
             lead.ResultText ?? (!waitForManaged ? "External members completed their work; replies are in the agent stream." : null));
     }
@@ -795,6 +803,48 @@ public sealed partial class PRFactoryWorkItems(
         }
 
         return getJob(jobId);
+    }
+
+    static readonly string[] DeadAgentReasons = ["interactive_agent_exited", "backend_eof", "backend_not_started"];
+
+    /// <summary>A quarantined member whose agent is provably gone (stop's NoRecord proof) is cancelled and resumed once in its
+    /// session (follow-up keyed prf-revive:). A member already revived stays cancelled, so the item reports failure instead of parking.</summary>
+    async Task<bool> ReviveDeadMembersAsync(PRFactoryWorkItem item, IReadOnlyList<JobRecord> latest, CancellationToken ct)
+    {
+        var changed = false;
+        foreach (var job in latest.Where(j => j is { Status: JobStatus.NeedsReconciliation } && DeadAgentReasons.Contains(j.ReasonCode)))
+        {
+            var member = teams.ManagedMembers(server, item.Id).Last(m => m.JobId == job.JobId);
+            var reason = job.ReasonCode;
+            var stopped = stopJob?.Invoke(job.JobId);
+            if (stopped is null || stopped.Error is not null)
+            {
+                continue; // Ownership not proven (a pane or marked process may remain): leave it to the operator.
+            }
+            changed = true;
+            if (job.IdempotencyKey?.StartsWith("prf-revive:", StringComparison.Ordinal) == true)
+            {
+                log?.Invoke($"PRFactory work item {item.Id:D} member {member.Member} agent gone ({reason}); reporting failure");
+                continue;
+            }
+            var revived = JobResult.Fail(JobErrors.DaemonUnhealthy);
+            await Guard(item.Id, () =>
+            {
+                revived = followUp?.Invoke(new FollowUpRequest(job.JobId,
+                    "Your terminal was killed by the OS, not by you. Check the worktree (git status/log) and continue your task where you left off.",
+                    "prf-revive:" + job.JobId)) ?? JobResult.Fail(JobErrors.DaemonUnhealthy);
+                if (revived.Error is null && !teams.ManagedMembers(server, item.Id).Any(m => m.JobId == revived.Job!.JobId))
+                {
+                    teams.RecordMember(server, item.Id, member.Member,
+                        teams.ManagedMembers(server, item.Id).Where(m => m.Member == member.Member).Max(m => m.Turn) + 1, revived.Job!.JobId);
+                }
+                return Task.CompletedTask;
+            }, ct);
+            log?.Invoke($"PRFactory work item {item.Id:D} member {member.Member} agent gone ({reason}); "
+                + (revived.Error is null ? "revived once" : $"reporting failure (revive refused: {revived.Error})"));
+            if (revived.Error is null) { onAccepted(); }
+        }
+        return changed;
     }
 
     /// <summary>Resumes due parks as a same-session follow-up; returns true while any member park is open.</summary>
@@ -969,7 +1019,14 @@ public sealed partial class PRFactoryWorkItems(
         bool Quiescent() => teams.MemberJobs(server, item.Id).All(id => getJob(id)?.Status is not
                 (JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation))
             && teams.ExternalMembers(server, item.Id).All(member => member.Closed);
-        if (!Quiescent()) { return true; } // Let active turns reach a terminal state; never interrupt dirty buffers.
+        if (!Quiescent())
+        {
+            if (teams.MemberJobs(server, item.Id).Select(getJob).FirstOrDefault(j => j?.Status == JobStatus.NeedsReconciliation) is { } stuck)
+            {
+                await HeldOnceAsync(item, request.RequestId, $"lead needs reconciliation ({stuck.ReasonCode})", ct);
+            }
+            return true; // Let active turns reach a terminal state; never interrupt dirty buffers.
+        }
         if (PRFactoryRepositorySet.HasSecondaries(item))
         {
             // Only the primary lead is published and released; secondary checkouts would be left behind.

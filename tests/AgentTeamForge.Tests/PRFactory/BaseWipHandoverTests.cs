@@ -467,4 +467,28 @@ public sealed class BaseWipHandoverTests
         Assert.True(AgentTeamForge.Business.Features.Jobs.AcceptJob.ValidAgentName(a), a);
         Assert.True(AgentTeamForge.Business.Features.Jobs.AcceptJob.ValidAgentName(b), b);
     }
+
+    [Fact]
+    public async Task Request_while_a_member_needs_reconciliation_posts_a_held_notice()
+    {
+        var item = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            TicketKey = "PRF-43",
+            Type = "Implementation",
+            RepositoryId = Guid.NewGuid(),
+            LeaseToken = Guid.NewGuid(),
+            AgentType = PRFactoryAgentType.Codex,
+            Prompt = "Work",
+        };
+        using var h = new ChainHarness(item);
+        h.Server.BaseWipSupported = true;
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        var (_, run) = h.StartOne();
+        Assert.True(h.Store.EndUnsuccessfully(run, JobStatus.NeedsReconciliation, "interactive_agent_exited"));
+        h.Server.HandoverRequested = true;
+
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        Assert.Contains("interactive_agent_exited", Assert.Single(h.Server.Lines, line => line.RecordKind == "handover-held").Text, StringComparison.Ordinal);
+    }
 }

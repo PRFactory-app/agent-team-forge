@@ -56,4 +56,44 @@ public sealed class AccountParkingTests
         Assert.Single(h.Server.Completions);
         Assert.Empty(h.Server.Failures);
     }
+
+    static PRFactoryWorkItem PlanItem() => new()
+    {
+        Id = Guid.NewGuid(),
+        Type = "Planning",
+        RepositoryId = Guid.NewGuid(),
+        ReadOnly = true,
+        LeaseToken = Guid.NewGuid(),
+        AgentType = PRFactoryAgentType.Codex,
+        Prompt = "Plan",
+        TicketArtefactFolder = "docs",
+    };
+
+    static void KillTerminal(ChainHarness h, RunRef run) =>
+        Assert.True(h.Store.EndUnsuccessfully(run, JobStatus.NeedsReconciliation, "interactive_agent_exited"));
+
+    [Fact]
+    public async Task Dead_lead_is_revived_once_then_reported_failed()
+    {
+        using var h = new ChainHarness(PlanItem()) { AgentGone = true };
+        await h.TickAsync();
+        var (lead, run) = h.StartOne();
+        KillTerminal(h, run);
+
+        await h.TickAsync();
+        var turns = h.Teams.MemberJobs(ChainServer.Url, h.Server.Item.Id);
+        Assert.Equal(2, turns.Count);
+        Assert.Equal(lead.JobId, h.Store.GetJob(turns.Single(id => id != lead.JobId))!.ParentJobId);
+        Assert.Empty(h.Server.Failures);
+        await h.TickAsync(); // Idempotent while the revived turn is queued.
+        Assert.Equal(2, h.Teams.MemberJobs(ChainServer.Url, h.Server.Item.Id).Count);
+
+        var (revived, secondRun) = h.StartOne();
+        KillTerminal(h, secondRun);
+        await h.TickAsync();
+        Assert.Equal(2, h.Teams.MemberJobs(ChainServer.Url, h.Server.Item.Id).Count); // No second revive.
+        Assert.Equal(JobStatus.Cancelled, h.Store.GetJob(revived.JobId)!.Status);
+        await h.TickAsync();
+        Assert.Contains("agent_gone", Assert.Single(h.Server.Failures), StringComparison.Ordinal);
+    }
 }
