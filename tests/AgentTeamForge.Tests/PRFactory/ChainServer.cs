@@ -43,6 +43,7 @@ sealed class ChainServer(PRFactoryWorkItem item)
     public List<Guid?> ClaimMachines { get; } = [];
     public List<JsonElement> WipReports { get; } = [];
     public HttpStatusCode? WipRejection { get; set; }
+    public HttpStatusCode? WipFailureReportStatus { get; set; }
     public List<JsonElement> Releases { get; } = [];
     public List<JsonElement> RepositoryResults { get; } = [];
     public Action? OnBlobUpload { get; set; }
@@ -145,6 +146,10 @@ sealed class ChainServer(PRFactoryWorkItem item)
             {
                 var report = JsonElement.Parse(body!);
                 WipReports.Add(report);
+                if (WipFailureReportStatus is { } failing && !report.GetProperty("succeeded").GetBoolean())
+                {
+                    return new HttpResponseMessage(failing);
+                }
                 if (WipRejection is { } rejected)
                 {
                     return new HttpResponseMessage(rejected) { Content = new StringContent("{\"error\":\"Invalid GitHub URL format\"}") };

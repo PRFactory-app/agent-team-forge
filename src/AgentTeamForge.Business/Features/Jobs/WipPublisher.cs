@@ -88,12 +88,17 @@ public sealed class WipPublisher(PRFactoryHandoverStore store, PublicationAuthor
 
         var intent = prior is { State: "pending" } && prior.HeadSha == head ? prior : new WipRecord(workspace.Key, branch, head, remote, "pending", null);
         store.SaveWip(intent);
+        // PRFactory only names a start branch for a released handover; any other acceptance (e.g. a Retry)
+        // starts from the plan base. When that start does not descend from the remote WIP, this acceptance
+        // replaces the stale WIP ref under a lease on the value it observed and recorded, never blindly.
+        var replace = remote is not null && remote == intent.RemoteOldSha && workspace.StartingSha is { } start
+            && await JobWorktree.RunAsync(cwd, Timeout, CancellationToken.None, "merge-base", "--is-ancestor", remote, start) is { ExitCode: not 0 };
         if (remote != head)
         {
             var allowed = await authority(workItemId, async () =>
             {
                 var args = new List<string> { "push", "--no-follow-tags" };
-                if (allowRewrite)
+                if (allowRewrite || replace)
                 {
                     args.Add("--force-with-lease=" + remoteRef + ":" + (intent.RemoteOldSha ?? ""));
                 }

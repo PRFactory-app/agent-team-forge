@@ -607,45 +607,61 @@ public sealed partial class PRFactoryWorkItems(
             });
             var branch = WipPublisher.BranchName(Environment.MachineName,
                 item.TicketKey ?? throw new InvalidOperationException("WIP ticket key missing."));
-            try
+            var backoffKey = $"{server}|{item.Id:D}";
+            var tip = JobWorktree.Head(workspace.LeadPath) ?? "";
+            // A persistent failure for this head waits out its backoff step; a new head retries at once.
+            if (wipBackoff.Due(backoffKey, tip, DateTimeOffset.UtcNow))
             {
-                await publisher.PublishAsync(item.Id, workspace, branch, async (wipBranch, head) =>
-                {
-                    var countText = await TeamWorkspace.Git(workspace.LeadPath, "rev-list", "--count", workspace.BaseSha + ".." + head);
-                    var report = new PRFactoryWipReport(wipLease, machine, atfJob, wipRepo, workspace.BaseSha!,
-                        wipBranch, head, int.Parse(countText, System.Globalization.CultureInfo.InvariantCulture), true, null,
-                        $"{item.Id:D}:{head}");
-                    string? receipt = null;
-                    await Guard(item.Id, async () => receipt = await client.ReportWipAsync(item.Id, report, ct), ct);
-                    return receipt!;
-                }, allowRewrite: handovers.Refresh(workspace.Key)?.Action == "Rebased", ct: ct);
-            }
-            catch (WipPushException ex)
-            {
-                // Reported, not rethrown: a failed WIP push leaves no receipt (so no release), but must not
-                // stall the lead's completion and final publication.
-                var countText = await TeamWorkspace.Git(workspace.LeadPath, "rev-list", "--count", workspace.BaseSha + ".." + ex.HeadSha);
                 try
                 {
-                    await Guard(item.Id, () => client.ReportWipFailureAsync(item.Id,
-                        new(wipLease, machine, atfJob, wipRepo, workspace.BaseSha!, ex.Branch, ex.HeadSha,
-                            int.Parse(countText, System.Globalization.CultureInfo.InvariantCulture), false, ex.Message,
-                            $"{item.Id:D}:{ex.HeadSha}"), ct), ct);
+                    await publisher.PublishAsync(item.Id, workspace, branch, async (wipBranch, head) =>
+                    {
+                        var countText = await TeamWorkspace.Git(workspace.LeadPath, "rev-list", "--count", workspace.BaseSha + ".." + head);
+                        var report = new PRFactoryWipReport(wipLease, machine, atfJob, wipRepo, workspace.BaseSha!,
+                            wipBranch, head, int.Parse(countText, System.Globalization.CultureInfo.InvariantCulture), true, null,
+                            $"{item.Id:D}:{head}");
+                        string? receipt = null;
+                        await Guard(item.Id, async () => receipt = await client.ReportWipAsync(item.Id, report, ct), ct);
+                        return receipt!;
+                    }, allowRewrite: handovers.Refresh(workspace.Key)?.Action == "Rebased", ct: ct);
+                    wipBackoff.Succeeded(backoffKey);
                 }
-                catch (PRFactoryWipRejectedException rejected)
+                catch (WipPushException ex)
                 {
-                    log?.Invoke($"PRFactory work item {item.Id:D} WIP failure report rejected ({rejected.Status}: {rejected.Error})");
+                    // Back off and log first, independent of report delivery: a failed or unreachable report
+                    // must not bring the push+report retry back on the next heartbeat.
+                    var retry = wipBackoff.Failed(backoffKey, tip, DateTimeOffset.UtcNow);
+                    log?.Invoke($"PRFactory work item {item.Id:D} WIP publication failed; no receipt recorded; retry in {retry.TotalSeconds:0}s: {ex.Message}");
+                    // Reported, not rethrown: a failed WIP push leaves no receipt (so no release), but must not
+                    // stall the lead's completion and final publication.
+                    try
+                    {
+                        var countText = await TeamWorkspace.Git(workspace.LeadPath, "rev-list", "--count", workspace.BaseSha + ".." + ex.HeadSha);
+                        await Guard(item.Id, () => client.ReportWipFailureAsync(item.Id,
+                            new(wipLease, machine, atfJob, wipRepo, workspace.BaseSha!, ex.Branch, ex.HeadSha,
+                                int.Parse(countText, System.Globalization.CultureInfo.InvariantCulture), false, ex.Message,
+                                $"{item.Id:D}:{ex.HeadSha}"), ct), ct);
+                    }
+                    catch (PRFactoryWipRejectedException rejected)
+                    {
+                        log?.Invoke($"PRFactory work item {item.Id:D} WIP failure report rejected ({rejected.Status}: {rejected.Error})");
+                    }
+                    catch (Exception report) when (report is HttpRequestException or InvalidOperationException
+                        || report is OperationCanceledException && !ct.IsCancellationRequested)
+                    {
+                        log?.Invoke($"PRFactory work item {item.Id:D} WIP failure report not delivered: {report.Message}");
+                    }
                 }
-                log?.Invoke($"PRFactory work item {item.Id:D} WIP publication failed; no receipt recorded");
-            }
-            catch (PRFactoryWipRejectedException ex)
-            {
-                // Recorded as rejected for this head by the publisher: no re-report until the head changes.
-                log?.Invoke($"PRFactory work item {item.Id:D} WIP publication rejected ({ex.Status}: {ex.Error}); no receipt, handover disabled");
-            }
-            catch (InvalidOperationException ex)
-            {
-                log?.Invoke($"PRFactory work item {item.Id:D} WIP publication deferred: {ex.Message}");
+                catch (PRFactoryWipRejectedException ex)
+                {
+                    // Recorded as rejected for this head by the publisher: no re-report until the head changes.
+                    log?.Invoke($"PRFactory work item {item.Id:D} WIP publication rejected ({ex.Status}: {ex.Error}); no receipt, handover disabled");
+                }
+                catch (InvalidOperationException ex)
+                {
+                    var retry = wipBackoff.Failed(backoffKey, tip, DateTimeOffset.UtcNow);
+                    log?.Invoke($"PRFactory work item {item.Id:D} WIP publication deferred; retry in {retry.TotalSeconds:0}s: {ex.Message}");
+                }
             }
         }
         allJobs = [.. teams.ManagedMembers(server, item.Id).GroupBy(m => m.Member)
@@ -1157,6 +1173,9 @@ public sealed partial class PRFactoryWorkItems(
     // Daemon-lived: the adapter is rebuilt every heartbeat, and a held request must not repost its notice each time.
     // Only the latest notice per work item is kept, and it is dropped once the request is gone, so this stays bounded by active holds.
     static readonly System.Collections.Concurrent.ConcurrentDictionary<(string, Guid), (string RequestId, string Reason)> heldReasons = [];
+
+    // Daemon-lived for the same reason: a WIP push that keeps failing backs off up to 5 minutes instead of every heartbeat.
+    static readonly WipBackoff wipBackoff = new(TimeSpan.FromSeconds(15), TimeSpan.FromMinutes(5));
 
     internal static bool HasHeldNotice(string server, Guid itemId) => heldReasons.ContainsKey((server, itemId));
 
