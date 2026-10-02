@@ -1508,7 +1508,8 @@ public class HerdrTerminalTests
         var result = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
             stopReconciled: dispatcher.StopReconciled, forgetReconciledOwnership: dispatcher.ForgetReconciledOwnership).Execute(job.JobId);
 
-        Assert.Equal("stopped", result.Outcome);
+        // No ownership record: the stop only cancelled the row, which the outcome reports as absent.
+        Assert.Equal(StopJob.AbsentOutcome, result.Outcome);
         var stopped = f.Store.GetJob(job.JobId)!;
         Assert.Equal((JobStatus.Cancelled, "stopped"), (stopped.Status, stopped.ReasonCode));
         Assert.False(f.Store.IsSessionFenced(job.JobId));
