@@ -63,11 +63,14 @@ public sealed class PullRequestTests
             };
         }
 
+        public string TokenStdoutPrefix = "";
+        public string TokenStderr = "";
+
         public Task<ProcessResult> Gh(ProcessSpec spec, CancellationToken ct)
         {
             Calls.Add(spec);
             var args = string.Join(' ', spec.Args);
-            if (args.StartsWith("auth token", StringComparison.Ordinal)) { return Task.FromResult(new ProcessResult(0, Token + "\n", "")); }
+            if (args.StartsWith("auth token", StringComparison.Ordinal)) { return Task.FromResult(new ProcessResult(0, TokenStdoutPrefix + Token + "\n", TokenStderr)); }
             if (args.StartsWith("api ", StringComparison.Ordinal)) { return Task.FromResult(new ProcessResult(0, RemoteHead + "\n", "")); }
             if (args.StartsWith("pr list", StringComparison.Ordinal))
             {
@@ -146,6 +149,29 @@ public sealed class PullRequestTests
         Assert.Equal(7, result.GetProperty("number").GetInt32());
         Assert.True(result.GetProperty("created").GetBoolean());
         Assert.Empty(f.Failures);
+    }
+
+    [Fact]
+    public async Task Noise_on_gh_stderr_does_not_affect_the_token()
+    {
+        using var f = new Fixture { TokenStderr = "mise by @jdx - installing 1 tool\nmise gh@2.102.0 already installed\n" };
+        await f.Handle();
+
+        Assert.Equal(Token, Assert.Single(f.Calls, c => c.Args.Take(2).SequenceEqual(["pr", "create"])).Env!["GH_TOKEN"]);
+        Assert.Empty(f.Failures);
+    }
+
+    [Fact]
+    public async Task Noise_before_the_token_on_gh_stdout_fails_clearly_without_echoing_it()
+    {
+        using var f = new Fixture { TokenStdoutPrefix = "mise by @jdx - installing 1 tool\n" };
+        await f.Handle();
+
+        Assert.DoesNotContain(f.Calls, c => c.Args.Take(1).SequenceEqual(["pr"]) || c.Args.Take(1).SequenceEqual(["api"]));
+        var message = Assert.Single(f.Failures).GetProperty("errorMessage").GetString()!;
+        Assert.Contains("single-line token", message);
+        Assert.DoesNotContain("mise", message);
+        Assert.DoesNotContain(Token, message);
     }
 
     [Fact]

@@ -159,6 +159,11 @@ public sealed partial class PRFactoryPullRequests(
         {
             throw new Failure($"gh has no login for {login}; run gh auth login on this machine.");
         }
+        // Stdout only; a shim that prints progress noise there must fail clearly, never become a header value.
+        if (token.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)))
+        {
+            throw new Failure($"gh auth token for {login} did not print a single-line token (extra output on stdout, e.g. from a gh shim); run gh directly or fix the shim.");
+        }
         return token;
     }
 
