@@ -593,15 +593,18 @@ public sealed class HerdrTerminal
         return true;
     }
 
-    /// <summary>Explicit cleanup: a recorded session already absent or stopped needs no teardown.</summary>
-    public async Task RecoverOwnedSessionAsync(OwnedHerdrSession session, CancellationToken cancellationToken)
+    /// <summary>
+    /// Explicit cleanup: a recorded session already absent or stopped needs no teardown. False when a shared pane
+    /// could not be closed yet (server not running or pane not restored), so its record must stay for the sweep.
+    /// </summary>
+    public async Task<bool> RecoverOwnedSessionAsync(OwnedHerdrSession session, CancellationToken cancellationToken)
     {
         var listed = HerdrOwnership.Find(await GlobalAsync(cancellationToken, "session", "list", "--json"), session.SessionName);
         if (listed?["running"] is not JsonValue running || !running.TryGetValue<bool>(out var isRunning) || !isRunning)
         {
-            return;
+            return !session.Shared;
         }
-        await StopOwnedSessionAsync(session, cancellationToken);
+        return await StopOwnedSessionAsync(session, cancellationToken);
     }
 
     /// <summary>

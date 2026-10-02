@@ -92,9 +92,10 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
             {
                 if (!session.Shared || session.TabId is not null)
                 {
-                    await terminal.StopOwnedSessionAsync(session, CancellationToken.None);
-                    cleaned = true;
-                    HerdrOwnedSessions.Delete(launch);
+                    cleaned = await terminal.StopOwnedSessionAsync(session, CancellationToken.None);
+                    // Nothing closed (server restarting): keep the record so the restored pane is still swept.
+                    if (cleaned) { HerdrOwnedSessions.Delete(launch); }
+                    else { HerdrOwnedSessions.MarkGone(launch); HerdrOwnedSessions.DeleteLaunchFiles(launch.BootstrapPath); }
                 }
             }
             catch (HerdrLaunchException) { /* The original fault remains uncertain; never touch another session. */ }
@@ -264,8 +265,9 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         HerdrOwnedSessions.Stop(stateRoot, jobIds, session =>
         {
             var tree = PaneTree(session.ShellPid, session.ShellStartTicks);
-            terminal.RecoverOwnedSessionAsync(session, CancellationToken.None).GetAwaiter().GetResult();
+            var closed = terminal.RecoverOwnedSessionAsync(session, CancellationToken.None).GetAwaiter().GetResult();
             if (HerdrOwnedSessions.ValidAgentName(session.AgentName)) { TerminateLeftovers(session.AgentName!, tree); }
+            return closed;
         });
 
     internal bool IsBound(InteractiveLaunch launch) => _runs.ContainsKey(launch.AgentName);

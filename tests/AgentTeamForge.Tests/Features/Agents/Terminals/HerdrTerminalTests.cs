@@ -802,6 +802,43 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task StopAgent_BeforeRestorationKeepsTheRecordThenTheSweepClosesThePane()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var (fake, terminal, control, launch) = await StartedRestoredLaunch(state.Path);
+        var record = HerdrOwnedSessions.PathFor(launch);
+        fake.Replace(Replacement.ServerRestarted);
+        fake.ListedAgentName = RestoredAgent;
+        // The new server is up but has not restored the pane yet: the session list says running, agents are empty.
+        fake.NoAgents = true;
+
+        Assert.True(control.StopJobs(state.Path, ["job-leak"]));
+        HerdrOwnedSessions.Forget(state.Path, ["job-leak"]);
+
+        Assert.True(File.Exists(record));
+        fake.NoAgents = false;
+        Assert.Equal(1, Sweep(terminal, state.Path));
+        Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
+        Assert.False(File.Exists(record));
+        Assert.False(File.Exists(record + ".deferred"));
+    }
+
+    [Fact]
+    public async Task LaunchFailure_WithServerGoneKeepsTheRecord()
+    {
+        using var state = new AgentTeamForge.Tests.Support.TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, SharedWorkspaceLabel = Path.GetFileName(state.Path), AgentStartFails = true };
+        var control = new HerdrAgentControl(Terminal(fake));
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, RestoredAgent, state.Path, null, null, Path.Combine(state.Path, "herdr", RestoredAgent + ".bootstrap"))
+        { JobId = "job-fail", HerdrPlacement = "herdr-session:default" };
+        fake.OnAgentStart = () => { fake.Replace(Replacement.ServerRestarted); fake.DefaultRunning = false; };
+
+        await Assert.ThrowsAnyAsync<Exception>(() => control.StartAsync(launch, CancellationToken.None));
+
+        Assert.True(File.Exists(HerdrOwnedSessions.PathFor(launch)));
+    }
+
+    [Fact]
     public async Task StopOwned_DeletesTheRecordWhenThePaneIsAbsentOnALiveServer()
     {
         using var state = new AgentTeamForge.Tests.Support.TempStateDir();
@@ -1441,7 +1478,7 @@ public class HerdrTerminalTests
         {
             attempts++;
             Assert.Equal(owned.ServerStartTicks, saved.ServerStartTicks);
-            terminal.StopOwnedSessionAsync(saved, CancellationToken.None).GetAwaiter().GetResult();
+            return terminal.StopOwnedSessionAsync(saved, CancellationToken.None).GetAwaiter().GetResult();
         }));
         Assert.Equal(2, attempts);
         // The proof survives even a crash between successful stop and DB reconciliation.
@@ -2225,6 +2262,8 @@ public class HerdrTerminalTests
         public string SharedWorkspaceLabel { get; init; } = "work";
         public bool TabReplaced { get; set; }
         public bool DefaultRunning { get; set; } = true;
+        public bool NoAgents { get; set; }
+        public Action? OnAgentStart { get; set; }
         public string? ListedAgentName { get; set; }
         public string ListedAgentPane { get; set; } = "w1:p2";
         public string ListedAgentTab { get; set; } = "w1:t2";
@@ -2310,6 +2349,7 @@ public class HerdrTerminalTests
                 ["tab", "rename", ..] => Ok("{}"),
                 ["tab", "create", ..] => Ok("""{"result":{"root_pane":{"pane_id":"w1:p2","tab_id":"w1:t2","terminal_id":"term_a"},"tab":{"tab_id":"w1:t2"}}}"""),
                 ["tab", "get", "w1:t2"] => Ok(new JsonObject { ["result"] = new JsonObject { ["tab"] = new JsonObject { ["tab_id"] = "w1:t2", ["workspace_id"] = TabReplaced ? "other" : "w1" } } }.ToJsonString()),
+                ["agent", "list"] when NoAgents => Ok("""{"result":{"agents":[]}}"""),
                 ["agent", "list"] => Ok(new JsonObject
                 {
                     ["result"] = new JsonObject
@@ -2326,6 +2366,7 @@ public class HerdrTerminalTests
                 ["pane", "run", "w1:p2", HerdrTerminal.ShellProofCommand] => RunShellProof(),
                 ["pane", "process-info", "--pane", "w1:p1"] => Ok("""{"result":{"process_info":{"pane_id":"w1:p1","shell_pid":""" + ShellPid + "}}}"),
                 ["session", "stop" or "delete", ..] => Ok("{}"),
+                ["agent", "start", ..] when RunOnAgentStart() => Err("unreachable"),
                 ["agent", "start", ..] => AgentStartFails ? Err("agent_not_ready") : AgentStartBusy-- > 0 ? Err("agent_pane_busy") : Ok("{}"),
                 ["agent", "read", ..] => Ok((_prompted && ScreenAfterPrompt is { } prompted ? prompted : Screen) ?? "› Ask Codex\n? for shortcuts\n❯ Try a task\nbypass permissions on\n──────\n──────\n/tmp/work"),
                 ["agent", "get", ..] => Ok("{\"result\":{\"agent\":{\"status\":\"" + (AgentStatuses.TryDequeue(out var status) ? status : "idle") + "\"}}}"),
@@ -2333,6 +2374,8 @@ public class HerdrTerminalTests
                 _ => Err("unexpected " + string.Join(' ', args)),
             };
         }
+
+        bool RunOnAgentStart() { OnAgentStart?.Invoke(); return false; }
 
         CapturedProcess RunShellProof()
         {
