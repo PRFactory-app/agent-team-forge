@@ -470,58 +470,64 @@ public static class SetupCommand
         var asService = !testProfile && SystemdUser.ServiceAvailable(
             name => info.Environment.TryGetValue(name, out var value) ? value : null, FindExecutable);
         var envFile = Path.Combine(state.Path, SystemdUser.EnvFile);
-        if (asService)
-        {
-            // A service inherits nothing from this process: hand the scrubbed environment over in a 0600 file.
-            var unit = SystemdUser.NewUnitName();
-            File.WriteAllText(Path.Combine(state.Path, SystemdUser.UnitFile), unit);
-            File.Delete(Path.Combine(state.Path, SystemdUser.ExitFile));
-            SystemdUser.WriteEnvironmentFile(envFile, info.Environment);
-            info.FileName = "systemd-run";
-            foreach (var arg in SystemdUser.ServicePrefix(state.Path, unit, logPath)) { info.ArgumentList.Add(arg); }
-            info.ArgumentList.Add(binary);
-        }
-        info.ArgumentList.Add("daemon");
-        info.ArgumentList.Add("--state-dir");
-        info.ArgumentList.Add(state.Path);
-        // The scope leaves the cgroup but the daemon stays a child of this process, so a host that tree-kills
-        // by ppid (Claude Code does) would take it down. `setsid --fork` makes it a grandchild whose parent exits
-        // at once, so it is reparented to the subreaper. Without setsid the launch stays a direct child.
-        // systemd-run returns as soon as the unit is queued, so a service launch has no daemon handle to follow.
-        var detached = asService;
-        string? detachWarning = null;
-        if (OperatingSystem.IsLinux())
-        {
-            if (ResolveSetsid(setsidSearch) is { } setsid)
-            {
-                detached = Detach(info, setsid);
-            }
-            else if (!asService)
-            {
-                const string warning = "warning: setsid (util-linux) not found; the daemon stays attached to its starter and can be killed with it";
-                Console.Error.WriteLine(warning);
-                detachWarning = warning;
-            }
-        }
-        var logOffset = RandomAccess.GetLength(log.Handle);
-        using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
-        int ready;
+        // Any failure from here on (file write, process start, readiness) must not leave credentials behind.
         try
         {
-            ready = detached
+            if (asService)
+            {
+                // A service inherits nothing from this process: hand the scrubbed environment over in a 0600 file.
+                var unit = SystemdUser.NewUnitName();
+                File.WriteAllText(Path.Combine(state.Path, SystemdUser.UnitFile), unit);
+                File.Delete(Path.Combine(state.Path, SystemdUser.ExitFile));
+                SystemdUser.WriteEnvironmentFile(envFile, info.Environment);
+                info.FileName = "systemd-run";
+                foreach (var arg in SystemdUser.ServicePrefix(state.Path, unit, logPath, WorkingDirectory())) { info.ArgumentList.Add(arg); }
+                info.ArgumentList.Add(binary);
+            }
+            info.ArgumentList.Add("daemon");
+            info.ArgumentList.Add("--state-dir");
+            info.ArgumentList.Add(state.Path);
+            // The scope leaves the cgroup but the daemon stays a child of this process, so a host that tree-kills
+            // by ppid (Claude Code does) would take it down. `setsid --fork` makes it a grandchild whose parent exits
+            // at once, so it is reparented to the subreaper. Without setsid the launch stays a direct child.
+            // systemd-run returns as soon as the unit is queued, so a service launch has no daemon handle to follow.
+            var detached = asService;
+            string? detachWarning = null;
+            if (OperatingSystem.IsLinux())
+            {
+                if (ResolveSetsid(setsidSearch) is { } setsid)
+                {
+                    detached = Detach(info, setsid);
+                }
+                else if (!asService)
+                {
+                    const string warning = "warning: setsid (util-linux) not found; the daemon stays attached to its starter and can be killed with it";
+                    Console.Error.WriteLine(warning);
+                    detachWarning = warning;
+                }
+            }
+            var logOffset = RandomAccess.GetLength(log.Handle);
+            using var process = Process.Start(info) ?? throw new InvalidOperationException("Daemon launch failed");
+            var ready = detached
                 ? await WaitForReadyAsync(state, quiet, null, logOffset)
                 : await WaitForReadyAsync(state, quiet, process);
+            if (detachWarning is not null)
+            {
+                // Logged after the launch so it follows the daemon's own start record.
+                log.WriteLine($"[atf-daemon] {DateTime.UtcNow:O} {detachWarning}");
+            }
+            return ready;
         }
         finally
         {
             if (asService) { File.Delete(envFile); }
         }
-        if (detachWarning is not null)
-        {
-            // Logged after the launch so it follows the daemon's own start record.
-            log.WriteLine($"[atf-daemon] {DateTime.UtcNow:O} {detachWarning}");
-        }
-        return ready;
+    }
+
+    static string? WorkingDirectory()
+    {
+        try { return Environment.CurrentDirectory; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
     }
 
     static readonly string[] SetsidLocations = ["/usr/bin/setsid", "/bin/setsid"];

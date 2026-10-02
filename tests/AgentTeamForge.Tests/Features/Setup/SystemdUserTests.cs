@@ -22,18 +22,101 @@ public sealed class SystemdUserTests
         Assert.NotEqual(unit, Assert.Single(second, a => a.StartsWith("--unit=", StringComparison.Ordinal)));
     }
 
-    [Fact]
-    public void EnvironmentFile_QuotesValuesAndSkipsInvalidNames()
+    // Follows systemd's env-file rules: inside double quotes only \" \\ \` \$ are escapes, anything else after a
+    // backslash stays as written, and raw newlines belong to the value.
+    static Dictionary<string, string> ParseEnvironmentFile(string text)
     {
-        var content = SystemdUser.EnvironmentFileContent(new Dictionary<string, string?>
+        var result = new Dictionary<string, string>();
+        var i = 0;
+        while (i < text.Length)
         {
-            ["KEY"] = "a \"b\" \\ c\nd",
+            var eq = text.IndexOf('=', i);
+            var key = text[i..eq];
+            i = eq + 1;
+            Assert.Equal('"', text[i++]);
+            var value = new System.Text.StringBuilder();
+            while (text[i] != '"')
+            {
+                if (text[i] == '\\')
+                {
+                    i++;
+                    if ("\"\\`$".Contains(text[i], StringComparison.Ordinal)) { value.Append(text[i++]); }
+                    else { value.Append('\\'); }
+                    continue;
+                }
+                value.Append(text[i++]);
+            }
+            i++;
+            Assert.Equal('\n', text[i++]);
+            result[key] = value.ToString();
+        }
+        return result;
+    }
+
+    [Fact]
+    public void EnvironmentFile_RoundTripsAwkwardValuesAndSkipsInvalidNames()
+    {
+        var values = new Dictionary<string, string?>
+        {
+            ["PEM"] = "-----BEGIN-----\nabc\r\ndef\n-----END-----",
+            ["QUOTES"] = "a \"b\" \\ c \\n literal $HOME `x` %h",
+            ["EMPTY"] = "",
             ["BAD-NAME"] = "x",
             ["1BAD"] = "x",
             ["NULL"] = null,
-        });
+        };
 
-        Assert.Equal("KEY=\"a \\\"b\\\" \\\\ c\\nd\"\n", content);
+        var parsed = ParseEnvironmentFile(SystemdUser.EnvironmentFileContent(values));
+
+        Assert.Equal(["PEM", "QUOTES", "EMPTY"], parsed.Keys);
+        Assert.Equal(values["PEM"], parsed["PEM"]);
+        Assert.Equal(values["QUOTES"], parsed["QUOTES"]);
+        Assert.Equal("", parsed["EMPTY"]);
+    }
+
+    // Splits an Exec line the way systemd does (double quotes with C escapes) and undoes % and $ doubling.
+    static List<string> SplitExec(string line)
+    {
+        var words = new List<string>();
+        var i = 0;
+        while (i < line.Length)
+        {
+            if (line[i] == ' ') { i++; continue; }
+            var word = new System.Text.StringBuilder();
+            while (i < line.Length && line[i] != ' ')
+            {
+                var quote = line[i] is '\'' or '"' ? line[i++] : '\0';
+                if (quote == '\0') { word.Append(line[i++]); continue; }
+                while (line[i] != quote)
+                {
+                    if (line[i] == '\\' && quote == '"') { i++; word.Append(line[i] == 'n' ? '\n' : line[i]); i++; }
+                    else { word.Append(line[i++]); }
+                }
+                i++;
+            }
+            words.Add(word.ToString().Replace("%%", "%", StringComparison.Ordinal).Replace("$$", "$", StringComparison.Ordinal));
+        }
+        return words;
+    }
+
+    [Fact]
+    public void ServicePrefix_EscapesEachPropertyForItsOwnSyntax()
+    {
+        const string State = "/run/user/1000/it's $x\\dir 100%";
+        var args = SystemdUser.ServicePrefix(State, "agentteamforge-daemon-x", State + "/daemon.log", "/work/it's $y");
+
+        // Plain paths: only % is special.
+        Assert.Contains("EnvironmentFile=-/run/user/1000/it's $x\\dir 100%%/daemon.env", args);
+        Assert.Contains("StandardOutput=append:/run/user/1000/it's $x\\dir 100%%/daemon.log", args);
+        Assert.Contains("WorkingDirectory=-/work/it's $y", args);
+        // The exit path is exactly one Exec argument, outside the shell text.
+        var stop = Assert.Single(args, a => a.StartsWith("ExecStopPost=", StringComparison.Ordinal))["ExecStopPost=".Length..];
+        var words = SplitExec(stop);
+        Assert.Equal(["/bin/sh", "-c"], words[..2]);
+        Assert.DoesNotContain("daemon.exit", words[2], StringComparison.Ordinal);
+        Assert.Equal(State + "/daemon.exit", words[^1]);
+        Assert.Equal("sh", words[3]);
+        Assert.Equal(5, words.Count);
     }
 
     [Fact]

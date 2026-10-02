@@ -40,27 +40,43 @@ internal static class SystemdUser
 
     internal static string NewUnitName() => "agentteamforge-daemon-" + Guid.NewGuid().ToString("N")[..8];
 
-    // systemd expands % specifiers and $VAR in property values; neither may touch our paths.
-    static string Escape(string value) => value.Replace("%", "%%", StringComparison.Ordinal).Replace("$", "$$", StringComparison.Ordinal);
+    // Property values go through % specifier expansion; Exec lines additionally through $VAR expansion.
+    static string Specifiers(string value) => value.Replace("%", "%%", StringComparison.Ordinal);
+
+    // One argument of an Exec line: double-quoted with C-style escapes, plus % and $ doubled.
+    internal static string ExecArgument(string value) =>
+        "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal).Replace("%", "%%", StringComparison.Ordinal)
+            .Replace("$", "$$", StringComparison.Ordinal) + "\"";
 
     // KillMode=process: herdr servers and agent panes started by the daemon must outlive it.
     // The environment is NOT passed on the command line (it is world-readable in /proc and the
     // journal); a service inherits nothing from the caller, so it comes from a 0600 EnvironmentFile.
     // --collect unloads the unit at once even after a failure, so ExecStopPost records the result.
-    internal static IReadOnlyList<string> ServicePrefix(string stateDir, string unit, string logPath) =>
-    [
-        "--user", "--quiet", "--collect", "--unit=" + unit,
-        "--description=AgentTeamForge daemon (" + stateDir + ")",
-        "-p", "Type=exec", "-p", "Restart=no", "-p", "KillMode=process", "-p", "UMask=0077",
-        "-p", "EnvironmentFile=-" + Escape(Path.Combine(stateDir, EnvFile)),
-        "-p", "StandardOutput=append:" + Escape(logPath),
-        "-p", "StandardError=append:" + Escape(logPath),
-        "-p", "ExecStopPost=/bin/sh -c 'echo \"result=$$SERVICE_RESULT code=$$EXIT_CODE status=$$EXIT_STATUS\" > \"$$0\"' "
-            + "'" + Escape(Path.Combine(stateDir, ExitFile)) + "'",
-        "--",
-    ];
+    // The working directory is the starter's, as with the scope: a relative CODEX_HOME resolves against it.
+    internal static IReadOnlyList<string> ServicePrefix(string stateDir, string unit, string logPath, string? workingDirectory = null)
+    {
+        List<string> args =
+        [
+            "--user", "--quiet", "--collect", "--unit=" + unit,
+            "--description=AgentTeamForge daemon (" + stateDir + ")",
+            "-p", "Type=exec", "-p", "Restart=no", "-p", "KillMode=process", "-p", "UMask=0077",
+            "-p", "EnvironmentFile=-" + Specifiers(Path.Combine(stateDir, EnvFile)),
+            "-p", "StandardOutput=append:" + Specifiers(logPath),
+            "-p", "StandardError=append:" + Specifiers(logPath),
+        ];
+        if (workingDirectory is { Length: > 0 })
+        {
+            args.AddRange(["-p", "WorkingDirectory=-" + Specifiers(workingDirectory)]);
+        }
+        // The path is a separate argument ($1), never part of the shell program text.
+        args.AddRange(["-p", "ExecStopPost=/bin/sh -c 'echo \"result=$$SERVICE_RESULT code=$$EXIT_CODE status=$$EXIT_STATUS\" > \"$$1\"' sh "
+            + ExecArgument(Path.Combine(stateDir, ExitFile)), "--"]);
+        return args;
+    }
 
-    // systemd EnvironmentFile: KEY="value" with C-style escapes inside the quotes.
+    // systemd EnvironmentFile: KEY="value"; inside the quotes only \" and \\ (and \` \$) are escapes,
+    // and raw newlines and carriage returns are kept as they are.
     internal static string EnvironmentFileContent(IEnumerable<KeyValuePair<string, string?>> environment)
     {
         var text = new System.Text.StringBuilder();
@@ -71,8 +87,7 @@ internal static class SystemdUser
                 continue;
             }
             text.Append(key).Append("=\"")
-                .Append(value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal)
-                    .Replace("\n", "\\n", StringComparison.Ordinal).Replace("\r", "\\r", StringComparison.Ordinal))
+                .Append(value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal))
                 .Append("\"\n");
         }
         return text.ToString();
