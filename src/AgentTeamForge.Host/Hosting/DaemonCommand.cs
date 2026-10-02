@@ -296,7 +296,7 @@ public static class DaemonCommand
         var dispatching = dispatcher.RunAsync(lifetime.Token);
         var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path, claudeMailbox), Log).RunAsync(lifetime.Token);
         var restoreSweep = herdrTerminal is null ? Task.CompletedTask : RunRestoreSweepAsync(herdrTerminal, state.Path, lifetime.Token);
-        var pruning = profile.AutoPrune ? RunPruneAsync(prune, worktreeCleanup, connectorSessions, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
+        var pruning = profile.AutoPrune ? RunPruneAsync(prune, worktreeCleanup, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
         var connectorStop = new StopJob(store, connectorPrincipal,
             dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership,
             releaseNative: dispatcher.ReleaseNative);
@@ -512,7 +512,7 @@ public static class DaemonCommand
         }
     }
 
-    static async Task RunPruneAsync(PruneJob prune, WorktreeCleanup worktrees, AgentTeamForge.DAL.Features.Sessions.LeadSessionStore sessions, int days, CancellationToken cancellationToken)
+    static async Task RunPruneAsync(PruneJob prune, WorktreeCleanup worktrees, int days, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -544,17 +544,6 @@ public static class DaemonCommand
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 Log($"prune failed: {StorageException.Describe(ex)}");
-            }
-
-            try
-            {
-                var closed = sessions.CloseAbandoned(
-                    pid => !OperatingSystem.IsLinux() || Directory.Exists("/proc/" + pid), TimeSpan.FromHours(1));
-                if (closed > 0) { Log($"closed {closed} abandoned lead session(s)"); }
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException)
-            {
-                Log($"lead session sweep failed: {StorageException.Describe(ex)}");
             }
 
             try { await Task.Delay(TimeSpan.FromDays(1), cancellationToken); }
