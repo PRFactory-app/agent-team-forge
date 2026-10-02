@@ -1140,6 +1140,30 @@ public class HerdrTerminalTests
     }
 
     [Fact]
+    public async Task ShellNotYetExecuted_AbsentBootstrapIsPolledAgain()
+    {
+        var fake = new FakeHerdr { AbsentEnvironmentPolls = 3 };
+        var terminal = Terminal(fake);
+        var session = await terminal.StartSessionAsync(CancellationToken.None);
+
+        var binding = await terminal.OpenAgentTabAsync(session, "agent-a", "/work", Bootstrap, CancellationToken.None);
+
+        Assert.Equal(fake.ShellPid, binding.ShellPid);
+        Assert.True(fake.AbsentEnvironmentPolls == 0);
+    }
+
+    [Fact]
+    public async Task ShellNeverCarriesBootstrap_TimesOut()
+    {
+        var terminal = Terminal(new FakeHerdr { AbsentEnvironmentPolls = int.MaxValue });
+        var session = await terminal.StartSessionAsync(CancellationToken.None);
+
+        var ex = await Assert.ThrowsAsync<HerdrLaunchException>(() => terminal.OpenAgentTabAsync(session, "agent-a", "/work", Bootstrap, CancellationToken.None));
+
+        Assert.Contains("timed out", ex.Message);
+    }
+
+    [Fact]
     public async Task HiddenShellEnvironment_IsProvenByTheShellsOwnChild()
     {
         using var state = new TempStateDir();
@@ -2309,10 +2333,20 @@ public class HerdrTerminalTests
 
         public int? ParentOf(int pid) => pid == ShellPid ? (ShellParentIsServer ? ServerPid : 1) : null;
 
+        /// <summary>The shell has forked but not exec'd yet: this many environment reads see no bootstrap variable.</summary>
+        public int AbsentEnvironmentPolls { get; set; }
+
         public string? EnvironmentValue(int pid, string name) =>
+            pid == ShellPid && name == HerdrTerminal.BootstrapVariable && AbsentEnvironmentPolls > 0 ? Decrement() :
             pid == ShellPid && name == HerdrTerminal.BootstrapVariable && !HideShellEnvironment
                 ? BootstrapFromTab ? TabBootstrap() : ShellBootstrap
                 : null;
+
+        string? Decrement()
+        {
+            if (AbsentEnvironmentPolls != int.MaxValue) { AbsentEnvironmentPolls--; }
+            return null;
+        }
 
         string? TabBootstrap() => Calls.Where(c => c.Args is ["tab", "create", ..]).SelectMany(c => c.Args)
             .LastOrDefault(a => a.StartsWith(HerdrTerminal.BootstrapVariable + "=", StringComparison.Ordinal))?[(HerdrTerminal.BootstrapVariable.Length + 1)..];
