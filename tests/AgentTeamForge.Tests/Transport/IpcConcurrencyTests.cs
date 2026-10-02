@@ -137,8 +137,15 @@ public sealed class IpcConcurrencyTests
         try
         {
             for (var i = 0; i < IpcServer.MaxPendingHandshakes; i++) { silent.Add(await Connect(dir)); }
-            await Bounded.Until(async () => await Hello(dir) is { Error: IpcProtocol.DaemonBusy } busy ? busy : null,
-                "a hello beyond the handshake cap answered busy");
+            // Accepts are not ordered against the probe: a probe handled before the last silent connection takes a
+            // handshake slot, and that silent one is then itself answered busy and closed, leaving the cap unfilled.
+            // Top the silent connections up whenever a probe is not answered busy.
+            await Bounded.Until(async () =>
+            {
+                if (await Hello(dir) is { Error: IpcProtocol.DaemonBusy } busy) { return busy; }
+                silent.Add(await Connect(dir));
+                return null;
+            }, "a hello beyond the handshake cap answered busy");
 
             var response = await new IpcClient(dir, new SpikeLimits(), IpcServer.SlotWait * 2).SendAsync(List, TestContext.Current.CancellationToken);
             Assert.Equal(IpcProtocol.DaemonBusy, response.Error);
