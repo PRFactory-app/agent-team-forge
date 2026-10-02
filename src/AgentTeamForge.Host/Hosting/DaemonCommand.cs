@@ -504,7 +504,7 @@ public static class DaemonCommand
             try
             {
                 HerdrOwnedSessions.SweepRestored(statePath,
-                    (name, records) => terminal.CloseRestoredPanesAsync(name, records, cancellationToken, Log).GetAwaiter().GetResult(), Log);
+                    (name, records, settled) => terminal.CloseRestoredPanesAsync(name, records, cancellationToken, Log, settled).GetAwaiter().GetResult(), Log);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {

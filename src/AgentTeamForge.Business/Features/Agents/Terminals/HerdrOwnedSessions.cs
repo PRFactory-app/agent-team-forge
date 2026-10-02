@@ -33,6 +33,20 @@ public static class HerdrOwnedSessions
 
     internal static void Delete(InteractiveLaunch launch) => File.Delete(PathFor(launch));
 
+    /// <summary>
+    /// Keeps the record for the restored-pane sweep; the .gone marker tells recovery the job is already released
+    /// and the .deferred marker keeps <see cref="Forget"/> from deleting a record whose pane is not closed yet.
+    /// </summary>
+    internal static void MarkGone(InteractiveLaunch launch)
+    {
+        try
+        {
+            File.WriteAllText(PathFor(launch) + ".gone", "released");
+            File.WriteAllText(PathFor(launch) + ".deferred", "pane not closed");
+        }
+        catch (IOException) { } // Best effort: the next start logs the release again.
+    }
+
     /// <summary>The bootstrap file and the macOS shell proof beside it, once no live pane can still be proven by them.</summary>
     internal static void DeleteLaunchFiles(string bootstrapPath)
     {
@@ -45,7 +59,8 @@ public static class HerdrOwnedSessions
     {
         foreach (var (path, session) in Read(stateRoot, log))
         {
-            if (session.JobId is { } jobId) { fence(jobId); }
+            // A cleanup-only record (stop_agent completed, pane maybe restored later) only feeds the sweep.
+            if (session.JobId is { } jobId && !File.Exists(path + ".cleanup")) { fence(jobId); }
             log($"recovery: preserved owned Herdr session {session.SessionName} ({path})");
         }
     }
@@ -151,15 +166,29 @@ public static class HerdrOwnedSessions
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
     }
 
-    /// <summary>Close restored bare-resume panes per session. Records are never edited: they fence their jobs.</summary>
-    public static int SweepRestored(string stateRoot, Func<string, IReadOnlyList<OwnedHerdrSession>, int> closeInSession, Action<string> log)
+    /// <summary>
+    /// Close restored bare-resume panes per session. A record is deleted once its pane was closed or herdr is
+    /// live with agents and none carries its name; otherwise records are kept: they fence their jobs.
+    /// </summary>
+    public static int SweepRestored(string stateRoot, Func<string, IReadOnlyList<OwnedHerdrSession>, ICollection<OwnedHerdrSession>, int> closeInSession, Action<string> log)
     {
         var closed = 0;
-        var groups = Read(stateRoot, log)
-            .Select(r => r.Session)
-            .Where(s => s.Shared && s.PaneId is not null && s.TabId is not null && s.AgentName is not null)
-            .GroupBy(s => s.SessionName);
-        foreach (var group in groups) { closed += closeInSession(group.Key, [.. group]); }
+        var entries = Read(stateRoot, log)
+            .Where(r => r.Session.Shared && r.Session.PaneId is not null && r.Session.TabId is not null && r.Session.AgentName is not null)
+            .ToList();
+        foreach (var group in entries.GroupBy(r => r.Session.SessionName))
+        {
+            var settled = new List<OwnedHerdrSession>();
+            closed += closeInSession(group.Key, [.. group.Select(r => r.Session)], settled);
+            foreach (var (path, session) in group.Where(r => settled.Contains(r.Session)))
+            {
+                DeleteLaunchFiles(BootstrapForRecord(path));
+                File.Delete(path + ".gone");
+                File.Delete(path + ".deferred");
+                File.Delete(path + ".cleanup");
+                File.Delete(path);
+            }
+        }
         return closed;
     }
 
@@ -167,7 +196,7 @@ public static class HerdrOwnedSessions
     {
         foreach (var (path, session) in Read(stateRoot, message => throw new HerdrLaunchException(message)))
         {
-            if (session.JobId is not null && jobIds.Contains(session.JobId))
+            if (session.JobId is not null && jobIds.Contains(session.JobId) && !File.Exists(path + ".deferred"))
             {
                 DeleteLaunchFiles(BootstrapForRecord(path));
                 File.Delete(path + ".gone");
@@ -176,13 +205,20 @@ public static class HerdrOwnedSessions
         }
     }
 
-    internal static bool Stop(string stateRoot, IReadOnlyList<string> jobIds, Action<OwnedHerdrSession> stop)
+    /// <summary>Stops matching sessions. A stop that could not close its pane (false) leaves the record deferred for the sweep.</summary>
+    internal static bool Stop(string stateRoot, IReadOnlyList<string> jobIds, Func<OwnedHerdrSession, bool> stop)
     {
         var stopped = false;
         foreach (var (path, session) in Read(stateRoot, message => throw new HerdrLaunchException(message)))
         {
             if (session.JobId is null || !jobIds.Contains(session.JobId)) { continue; }
-            stop(session); // Verifies server start time and owner label; never falls back to a PID.
+            // Verifies server start time and owner label; never falls back to a PID.
+            if (stop(session)) { File.Delete(path + ".deferred"); File.Delete(path + ".cleanup"); }
+            else
+            {
+                File.WriteAllText(path + ".deferred", "pane not closed");
+                File.WriteAllText(path + ".cleanup", "logical stop completed");
+            }
             stopped = true; // Keep proof until the caller commits fence release.
         }
         return stopped;

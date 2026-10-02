@@ -92,9 +92,10 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
             {
                 if (!session.Shared || session.TabId is not null)
                 {
-                    await terminal.StopOwnedSessionAsync(session, CancellationToken.None);
-                    cleaned = true;
-                    HerdrOwnedSessions.Delete(launch);
+                    cleaned = await terminal.StopOwnedSessionAsync(session, CancellationToken.None);
+                    // Nothing closed (server restarting): keep the record so the restored pane is still swept.
+                    if (cleaned) { HerdrOwnedSessions.Delete(launch); }
+                    else { HerdrOwnedSessions.MarkGone(launch); HerdrOwnedSessions.DeleteLaunchFiles(launch.BootstrapPath); }
                 }
             }
             catch (HerdrLaunchException) { /* The original fault remains uncertain; never touch another session. */ }
@@ -264,8 +265,9 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         HerdrOwnedSessions.Stop(stateRoot, jobIds, session =>
         {
             var tree = PaneTree(session.ShellPid, session.ShellStartTicks);
-            terminal.RecoverOwnedSessionAsync(session, CancellationToken.None).GetAwaiter().GetResult();
+            var closed = terminal.RecoverOwnedSessionAsync(session, CancellationToken.None).GetAwaiter().GetResult();
             if (HerdrOwnedSessions.ValidAgentName(session.AgentName)) { TerminateLeftovers(session.AgentName!, tree); }
+            return closed;
         });
 
     internal bool IsBound(InteractiveLaunch launch) => _runs.ContainsKey(launch.AgentName);
@@ -278,13 +280,14 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
         if (_runs.TryGetValue(launch.AgentName, out var run))
         {
             var tree = PaneTree(run.Binding.ShellPid, run.Binding.ShellStartTicks);
-            terminal.StopOwnedSessionAsync(run.Session, CancellationToken.None).GetAwaiter().GetResult();
+            var closed = terminal.StopOwnedSessionAsync(run.Session, CancellationToken.None).GetAwaiter().GetResult();
             TerminateLeftovers(launch.AgentName, tree);
             _runs.TryRemove(launch.AgentName, out _);
             _piLoginAnchorBeforePrompt.TryRemove(launch.AgentName, out _);
             // The bootstrap files proved this pane's ownership; the record goes last, as it fences the job.
             HerdrOwnedSessions.DeleteLaunchFiles(launch.BootstrapPath);
-            HerdrOwnedSessions.Delete(launch);
+            if (closed) { HerdrOwnedSessions.Delete(launch); }
+            else { HerdrOwnedSessions.MarkGone(launch); } // Herdr may still restore the pane: the sweep closes it, then drops the record.
         }
     }
 
