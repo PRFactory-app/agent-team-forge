@@ -65,12 +65,13 @@ public sealed class PullRequestTests
 
         public string TokenStdoutPrefix = "";
         public string TokenStderr = "";
+        public string? TokenOverride;
 
         public Task<ProcessResult> Gh(ProcessSpec spec, CancellationToken ct)
         {
             Calls.Add(spec);
             var args = string.Join(' ', spec.Args);
-            if (args.StartsWith("auth token", StringComparison.Ordinal)) { return Task.FromResult(new ProcessResult(0, TokenStdoutPrefix + Token + "\n", TokenStderr)); }
+            if (args.StartsWith("auth token", StringComparison.Ordinal)) { return Task.FromResult(new ProcessResult(0, TokenStdoutPrefix + (TokenOverride ?? Token) + "\n", TokenStderr)); }
             if (args.StartsWith("api ", StringComparison.Ordinal)) { return Task.FromResult(new ProcessResult(0, RemoteHead + "\n", "")); }
             if (args.StartsWith("pr list", StringComparison.Ordinal))
             {
@@ -162,14 +163,24 @@ public sealed class PullRequestTests
     }
 
     [Fact]
-    public async Task Noise_before_the_token_on_gh_stdout_fails_clearly_without_echoing_it()
+    public async Task Noise_before_the_token_on_gh_stdout_is_skipped_and_the_last_line_is_the_token()
     {
-        using var f = new Fixture { TokenStdoutPrefix = "mise by @jdx - installing 1 tool\n" };
+        using var f = new Fixture { TokenStdoutPrefix = "mise by @jdx - installing 1 tool\nmise gh@2.102.0 already installed\n" };
+        await f.Handle();
+
+        Assert.Equal(Token, Assert.Single(f.Calls, c => c.Args.Take(2).SequenceEqual(["pr", "create"])).Env!["GH_TOKEN"]);
+        Assert.Empty(f.Failures);
+    }
+
+    [Fact]
+    public async Task A_garbage_last_stdout_line_fails_clearly_without_echoing_it()
+    {
+        using var f = new Fixture { TokenStdoutPrefix = Token + "\n", TokenOverride = "mise done installing" };
         await f.Handle();
 
         Assert.DoesNotContain(f.Calls, c => c.Args.Take(1).SequenceEqual(["pr"]) || c.Args.Take(1).SequenceEqual(["api"]));
         var message = Assert.Single(f.Failures).GetProperty("errorMessage").GetString()!;
-        Assert.Contains("single-line token", message);
+        Assert.Contains("plain token", message);
         Assert.DoesNotContain("mise", message);
         Assert.DoesNotContain(Token, message);
     }
