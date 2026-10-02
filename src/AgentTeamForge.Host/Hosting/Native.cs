@@ -45,6 +45,12 @@ static partial class Native
     [LibraryImport("libc")]
     public static partial uint umask(uint mask);
 
+    [LibraryImport("libc", SetLastError = true)]
+    public static partial int getrlimit(int resource, ref ulong limits);
+
+    [LibraryImport("libc", SetLastError = true)]
+    public static partial int setrlimit(int resource, ref ulong limits);
+
     [LibraryImport("libc", EntryPoint = "open", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int Open(string path, int flags);
 
