@@ -21,7 +21,15 @@ if [[ -z "${DOTNET:-}" ]]; then
   local_sdk="${common:+$common/../.tools/dotnet11/dotnet}"
   if [[ -n "$local_sdk" && -x "$local_sdk" ]]; then DOTNET="$(realpath "$local_sdk")"; else DOTNET=dotnet; fi
 fi
-if [[ "$DOTNET" == */* ]]; then export DOTNET_ROOT="$(dirname "$DOTNET")"; fi
+# Always pin DOTNET_ROOT to the resolved SDK and drop inherited MSBuild/host
+# overrides, so `dotnet format` cannot load the workspace against another SDK.
+if [[ "$DOTNET" != */* ]]; then
+  resolved="$(command -v "$DOTNET" || true)"
+  [[ -n "$resolved" ]] || { echo "BLOCKED: dotnet not found on PATH" >&2; exit 2; }
+  DOTNET="$(realpath "$resolved")"
+fi
+export DOTNET_ROOT="$(dirname "$DOTNET")"
+unset DOTNET_HOST_PATH MSBuildSDKsPath MSBUILD_EXE_PATH
 PIN="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' global.json)"
 if [[ -z "${RID:-}" ]]; then
   case "$(uname -s)" in Linux) os=linux ;; Darwin) os=osx ;; *) os= ;; esac
@@ -44,7 +52,18 @@ PUBLISH_ARGS=()
 if [[ "$RID" == osx-* ]] && ! xcodebuild -version >/dev/null 2>&1; then PUBLISH_ARGS=(-p:UseLdClassicXCodeLinker=false); fi
 step "sdk $actual rid $RID dotnet $DOTNET"
 step restore;  "$DOTNET" restore AgentTeamForge.slnx "${MSBUILD_ARGS[@]}"
-step format;   "$DOTNET" format AgentTeamForge.slnx --verify-no-changes --no-restore
+step format
+# `dotnet format` exits 0 even when the workspace fails to load (it then checks
+# nothing), so require a clean load and a non-zero file count.
+format_log="$("$DOTNET" format AgentTeamForge.slnx --verify-no-changes --no-restore -v diag 2>&1)" || { printf '%s\n' "$format_log"; exit 1; }
+files_checked="$(sed -n 's/.*Formatted [0-9]* of \([0-9]*\) files.*/\1/p' <<<"$format_log" | tail -n1)"
+if grep -qE 'Required references did not load|Warnings were encountered while loading the workspace' <<<"$format_log" \
+  || [[ -z "$files_checked" || "$files_checked" == 0 ]]; then
+  printf '%s\n' "$format_log"
+  echo "FAILED: dotnet format did not load the solution (files checked: ${files_checked:-none})" >&2
+  exit 1
+fi
+echo "   format checked $files_checked files"
 step build;    "$DOTNET" build AgentTeamForge.slnx -c Release --no-restore -warnaserror "${MSBUILD_ARGS[@]}"
 ATF_TEST_TMP_ROOT="${ATF_TEST_TMP_ROOT:-$(mktemp -d /tmp/atf-verify-XXXXXX)}"
 export ATF_TEST_TMP_ROOT
