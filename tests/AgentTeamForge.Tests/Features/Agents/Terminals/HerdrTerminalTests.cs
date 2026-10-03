@@ -333,10 +333,12 @@ public class HerdrTerminalTests
     }
 
     // F-R1-a: a Pi job that completed before the restart must take a follow-up after it.
+    // busy: an operator typed into the pane before recovery; typedLater: after the release, before the follow-up.
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Restart_releases_a_completed_pi_jobs_idle_pane_fence_without_retaining_it_and_keeps_a_busy_one(bool busy)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Restart_releases_a_completed_pi_jobs_idle_pane_fence_and_a_follow_up_retires_that_pane(bool busy, bool typedLater)
     {
         using var state = new TempStateDir();
         using var f = new JobFixture();
@@ -378,9 +380,22 @@ public class HerdrTerminalTests
             var followUp = follow.Execute(new FollowUpRequest(parent.JobId, "draft it", "next"));
             Assert.Equal(busy ? JobErrors.ParentNotReady : null, followUp.Error);
             if (busy) { return; }
+            if (typedLater) { for (var i = 0; i < 8; i++) { fake.AgentStatuses.Enqueue("working"); } }
             dispatcher.Signal();
-            // The follow-up resumes the exact session in a new tab instead of typing into the unproven pane.
+            if (typedLater)
+            {
+                // Never a second Pi on the session: the follow-up fails before anything starts and the busy pane stays.
+                await Bounded.Until(() => f.Store.GetJob(followUp.Job!.JobId)!.Status == JobStatus.Failed, "refused follow-up");
+                Assert.Equal("backend_not_started", f.Store.GetJob(followUp.Job!.JobId)!.ReasonCode);
+                Assert.Single(fake.Snapshot(), c => c.Args is ["tab", "create", ..]);
+                Assert.DoesNotContain(fake.Snapshot(), c => c.Args is ["pane" or "tab", "close", ..] or ["session", "stop" or "delete", ..]);
+                return;
+            }
+            // The follow-up closes the unproven pane, then resumes the exact session in a new tab.
             await Bounded.Until(() => fake.Snapshot().Count(c => c.Args is ["tab", "create", ..]) == 2, "resumed pi tab");
+            var calls = fake.Snapshot().ToList();
+            var closed = calls.FindIndex(c => c.Args is ["pane" or "tab", "close", ..] or ["session", "stop", ..]);
+            Assert.InRange(closed, 0, calls.FindLastIndex(c => c.Args is ["tab", "create", ..]));
         }
         finally
         {
