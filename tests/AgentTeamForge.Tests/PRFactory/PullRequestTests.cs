@@ -15,6 +15,8 @@ public sealed class PullRequestTests
     const string Sha = "0123456789abcdef0123456789abcdef01234567";
     const string Token = "gho_FAKEFAKEFAKEFAKEFAKEFAKEFAKE0123";
     const string Remote = "https://github.com/mikaelliljedahl/atf-demo.git";
+    const string BbRemote = "https://x-token-auth@bitbucket.org/ws/atf-demo.git";
+    const string BbToken = "ATCTT3xFfGN0FAKEFAKEFAKEFAKEFAKEFAKE0123";
 
     sealed class Fixture : IDisposable
     {
@@ -80,6 +82,7 @@ public sealed class PullRequestTests
                 var list = "[" + string.Join(',', ForkEntries.Concat(ExistingPr && !CreateHidden ? [Entry(7, PrHead)] : [])) + "]";
                 return Task.FromResult(new ProcessResult(0, list, ""));
             }
+            if (args == "credential fill") { return Task.FromResult(new ProcessResult(0, "protocol=https\nhost=bitbucket.org\nusername=x-token-auth\npassword=" + BbToken + "\n", "")); }
             if (args.StartsWith("pr create", StringComparison.Ordinal)) { ExistingPr = true; return Task.FromResult(new ProcessResult(0, "https://github.com/x/y/pull/7\n", "")); }
             throw new InvalidOperationException(args);
         }
@@ -113,10 +116,42 @@ public sealed class PullRequestTests
             throw new InvalidOperationException(path);
         }
 
+        public List<(HttpMethod Method, string PathAndQuery, string? Auth, string Body)> BbRequests = [];
+        public HttpStatusCode BbStatus = HttpStatusCode.OK;
+
+        public static string BbEntry(int id, string hash, string repo = "ws/atf-demo") =>
+            "{\"id\":" + id + ",\"links\":{\"html\":{\"href\":\"https://bitbucket.org/ws/atf-demo/pull-requests/" + id + "\"}},"
+            + "\"source\":{\"branch\":{\"name\":\"prfactory/PRF-1\"},\"commit\":{\"hash\":\"" + hash + "\"},\"repository\":{\"full_name\":\"" + repo + "\"}},"
+            + "\"destination\":{\"branch\":{\"name\":\"main\"}}}";
+
+        public HttpResponseMessage Bitbucket(HttpRequestMessage request)
+        {
+            var uri = request.RequestUri!;
+            BbRequests.Add((request.Method, uri.PathAndQuery, request.Headers.Authorization?.ToString(),
+                request.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? ""));
+            if (BbStatus != HttpStatusCode.OK)
+            {
+                return new(BbStatus) { Content = new StringContent("{\"error\":{\"message\":\"Token invalid: " + BbToken + "\"}}") };
+            }
+            Assert.Equal("api.bitbucket.org", uri.Host);
+            if (uri.AbsolutePath == "/2.0/repositories/ws/atf-demo/refs/branches/prfactory/PRF-1") { return Json("{\"target\":{\"hash\":\"" + RemoteHead + "\"}}"); }
+            if (uri.AbsolutePath == "/2.0/repositories/ws/atf-demo/pullrequests" && request.Method == HttpMethod.Get)
+            {
+                var list = ForkEntries.Concat(ExistingPr ? [BbEntry(7, PrHead[..12])] : []);
+                return Json("{\"values\":[" + string.Join(',', list) + "]}");
+            }
+            if (uri.AbsolutePath == "/2.0/repositories/ws/atf-demo/pullrequests" && request.Method == HttpMethod.Post)
+            {
+                ExistingPr = true;
+                return Json(BbEntry(7, Sha[..12]));
+            }
+            throw new InvalidOperationException(uri.ToString());
+        }
+
         public PRFactoryClient Client() => new(PRFactoryClient.CreateHttpClient(Url, "token", new Handler(Reply)));
 
         public PRFactoryPullRequests Executor(string? user = "mikaelliljedahl") =>
-            new(Url, [new RepositoryMapping(Repo, dir.Path)], user, Client(), Publications, Logs.Add, Gh);
+            new(Url, [new RepositoryMapping(Repo, dir.Path)], user, Client(), Publications, Logs.Add, Gh, new Handler(Bitbucket));
 
         public Task Handle(string? user = "mikaelliljedahl") => Executor(user).HandleAsync(Item, CancellationToken.None);
 
@@ -353,5 +388,97 @@ public sealed class PullRequestTests
             await new PRFactoryClient(http).RegisterMachineAsync(CancellationToken.None);
             Assert.Equal(listed, registered.Contains("pull-request-v1"));
         }
+    }
+
+    [Theory]
+    [InlineData("https://github.com/o/r.git", "github.com", "o", "r", null)]
+    [InlineData("git@github.com:o/r.git", "github.com", "o", "r", null)]
+    [InlineData("https://bitbucket.org/ws/repo", "bitbucket.org", "ws", "repo", null)]
+    [InlineData("https://x-token-auth:secret@bitbucket.org/ws/repo.git", "bitbucket.org", "ws", "repo", "x-token-auth")]
+    [InlineData("git@bitbucket.org:ws/repo.git", "bitbucket.org", "ws", "repo", null)]
+    [InlineData("ssh://git@bitbucket.org/ws/repo.git", "bitbucket.org", "ws", "repo", null)]
+    public void Remotes_parse_to_host_owner_and_repository(string remote, string host, string owner, string repo, string? user)
+    {
+        Assert.Equal(new PRFactoryPullRequests.RemoteRepository(host, owner, repo, user), PRFactoryPullRequests.ParseRemote(remote));
+    }
+
+    [Theory]
+    [InlineData("https://gitlab.com/o/r.git")]
+    [InlineData("git@gitlab.com:o/r.git")]
+    [InlineData("https://bitbucket.org/ws/repo/extra")]
+    [InlineData("/home/me/repo")]
+    public void Unsupported_remotes_are_refused(string remote)
+    {
+        Assert.Contains("bitbucket.org", Assert.ThrowsAny<Exception>(() => PRFactoryPullRequests.ParseRemote(remote)).Message);
+    }
+
+    [Fact]
+    public async Task Bitbucket_creates_the_pull_request_with_a_bearer_token_from_git_credentials()
+    {
+        using var f = new Fixture(remote: BbRemote);
+        await f.Handle(user: null);
+
+        var fill = Assert.Single(f.Calls);
+        Assert.Equal(["credential", "fill"], fill.Args);
+        Assert.Equal("protocol=https\nhost=bitbucket.org\nusername=x-token-auth\n\n", fill.Stdin);
+        Assert.Equal("0", fill.Env!["GIT_TERMINAL_PROMPT"]);
+        Assert.All(f.BbRequests, r => Assert.Equal("Bearer " + BbToken, r.Auth));
+        var (_, _, _, createBody) = Assert.Single(f.BbRequests, r => r.Method == HttpMethod.Post);
+        using (var body = JsonDocument.Parse(createBody))
+        {
+            Assert.Equal("PRF-1: Title", body.RootElement.GetProperty("title").GetString());
+            Assert.Equal("Body text", body.RootElement.GetProperty("description").GetString());
+            Assert.Equal("prfactory/PRF-1", body.RootElement.GetProperty("source").GetProperty("branch").GetProperty("name").GetString());
+            Assert.Equal("main", body.RootElement.GetProperty("destination").GetProperty("branch").GetProperty("name").GetString());
+        }
+        Assert.Contains(f.BbRequests, r => r.Method == HttpMethod.Get && r.PathAndQuery.Contains("state%3D%22OPEN%22", StringComparison.Ordinal));
+        Assert.DoesNotContain(f.Logs, l => l.Contains(BbToken, StringComparison.Ordinal));
+
+        var completion = Assert.Single(f.Completions);
+        var result = JsonElement.Parse(completion.GetProperty("resultMarkdown").GetString()!);
+        Assert.Equal(7, result.GetProperty("number").GetInt32());
+        Assert.Equal("https://bitbucket.org/ws/atf-demo/pull-requests/7", result.GetProperty("url").GetString());
+        Assert.Equal(Sha, result.GetProperty("headSha").GetString());
+        Assert.True(result.GetProperty("created").GetBoolean());
+        Assert.Empty(f.Failures);
+    }
+
+    [Fact]
+    public async Task Bitbucket_reuses_an_open_same_repository_pull_request()
+    {
+        using var f = new Fixture(remote: BbRemote) { ExistingPr = true };
+        f.ForkEntries = [Fixture.BbEntry(3, Sha[..12], repo: "someone/atf-demo")];
+        await f.Handle(user: null);
+
+        Assert.DoesNotContain(f.BbRequests, r => r.Method == HttpMethod.Post);
+        var result = JsonElement.Parse(Assert.Single(f.Completions).GetProperty("resultMarkdown").GetString()!);
+        Assert.Equal(7, result.GetProperty("number").GetInt32());
+        Assert.False(result.GetProperty("created").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Bitbucket_moved_branch_fails_without_creating()
+    {
+        using var f = new Fixture(remote: BbRemote) { RemoteHead = "ffffffffffffffffffffffffffffffffffffffff" };
+        await f.Handle(user: null);
+
+        Assert.Contains("moved", Assert.Single(f.Failures).GetProperty("errorMessage").GetString());
+        Assert.DoesNotContain(f.BbRequests, r => r.Method == HttpMethod.Post);
+        Assert.Empty(f.Completions);
+    }
+
+    [Fact]
+    public async Task Bitbucket_401_fails_without_leaking_the_token()
+    {
+        using var f = new Fixture(remote: BbRemote) { BbStatus = HttpStatusCode.Unauthorized };
+        await f.Handle(user: null);
+
+        var failure = Assert.Single(f.Failures);
+        Assert.Contains("HTTP 401", failure.GetProperty("errorMessage").GetString());
+        Assert.False(failure.GetProperty("shouldRetry").GetBoolean());
+        Assert.DoesNotContain(BbToken, failure.GetRawText(), StringComparison.Ordinal);
+        Assert.Contains("Token invalid", failure.GetRawText(), StringComparison.Ordinal);
+        Assert.DoesNotContain(f.Logs, l => l.Contains(BbToken, StringComparison.Ordinal));
+        Assert.Empty(f.Completions);
     }
 }
