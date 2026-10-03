@@ -43,6 +43,29 @@ public sealed class WipPublisher(PRFactoryHandoverStore store, PublicationAuthor
         return branch;
     }
 
+    /// <summary>
+    /// Best-effort delete of a remote WIP ref the server named after ticket completion. Only a wip/ ref on the
+    /// checkout's own origin is touched; returns the reason it was skipped or failed, or null when deleted.
+    /// </summary>
+    public static async Task<string?> DeleteAsync(string checkout, string remote, string branch, CancellationToken ct)
+    {
+        if (!branch.StartsWith("wip/", StringComparison.Ordinal) || branch.Contains(':') || branch.StartsWith('-'))
+        {
+            return "not a wip/ branch";
+        }
+        if (!Directory.Exists(checkout)
+            || await JobWorktree.RunAsync(checkout, Timeout, ct, "check-ref-format", "refs/heads/" + branch) is not { ExitCode: 0 })
+        {
+            return "invalid ref or missing checkout";
+        }
+        if (await JobWorktree.GitAsync(checkout, Timeout, ct, "remote", "get-url", "origin") != remote)
+        {
+            return "remote does not match the repository mapping";
+        }
+        var pushed = await JobWorktree.RunAsync(checkout, Timeout, ct, "push", "--no-follow-tags", "--", remote, ":refs/heads/" + branch);
+        return pushed is { ExitCode: 0 } ? null : "git push --delete failed";
+    }
+
     /// <summary>Push a committed lead tip and save the server's verified receipt. Never includes dirty buffers.</summary>
     public async Task<WipRecord> PublishAsync(Guid workItemId, WorkspaceSnapshot workspace, string branch,
         Func<string, string, Task<string>> report, bool allowRewrite = false, bool forceReport = false,

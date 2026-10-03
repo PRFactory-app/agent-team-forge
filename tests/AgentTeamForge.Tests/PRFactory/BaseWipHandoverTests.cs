@@ -103,6 +103,44 @@ public sealed class BaseWipHandoverTests
         Assert.Equal(logged, h.Logs.Count(line => line.Contains("WIP publication failed")));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Completion_deletes_only_the_wip_branch_the_server_names(bool wip)
+    {
+        var item = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            TicketKey = "PRF-42",
+            Type = "Implementation",
+            RepositoryId = Guid.NewGuid(),
+            LeaseToken = Guid.NewGuid(),
+            AgentType = PRFactoryAgentType.Codex,
+            Prompt = "Work"
+        };
+        using var h = new ChainHarness(item);
+        h.Server.BaseWipSupported = true;
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        var (lead, run) = h.StartOne();
+        ChainHarness.Commit(lead.Cwd!, "work.txt", "committed");
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+        var branch = wip ? h.Server.WipReports.Last().GetProperty("branchName").GetString()! : "keep/PRF-42";
+        if (!wip)
+        {
+            ChainHarness.Git(h.Repo, "push", "origin", h.BaseSha + ":refs/heads/" + branch);
+        }
+        Assert.NotNull(h.RemoteHead(branch));
+
+        h.Server.CleanupWipBranch = branch;
+        Assert.True(h.Store.Complete(run, "done"));
+        await h.Adapter(baseWip: true).TickAsync(ChainHarness.Machine, TestContext.Current.CancellationToken);
+
+        Assert.Single(h.Server.Completions);
+        Assert.Equal("completed", h.Teams.Get(ChainServer.Url, item.Id)!.State);
+        Assert.Equal(wip, h.RemoteHead(branch) is null);
+        Assert.Contains(h.Logs, line => line.Contains(wip ? "deleted remote WIP branch" : "not a wip/ branch"));
+    }
+
     [Fact]
     public async Task Request_waits_for_active_lead_and_dirty_files_then_releases_exact_receipt()
     {
