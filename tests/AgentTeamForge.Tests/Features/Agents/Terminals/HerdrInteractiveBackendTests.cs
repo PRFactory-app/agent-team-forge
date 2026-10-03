@@ -333,6 +333,45 @@ public sealed class HerdrInteractiveBackendTests
     }
 
     [Fact]
+    public async Task Turn_ended_on_a_background_task_is_marked_waiting_and_cleared_when_it_completes()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("herdr-background");
+        var claim = f.Store.BeginNextAttempt()!;
+        var reader = new MutableReader(new InteractiveTranscript("claude-native", "working", ["working"]));
+        var control = new FakeControl { Status = InteractiveAgentStatus.Working };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(),
+            settleTimeout: TimeSpan.FromMilliseconds(20));
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var attempt = dispatcher.RunAttemptAsync(claim, deadline.Token);
+        reader.Output = new InteractiveTranscript("claude-native", "waiting", ["working", "waiting"], PendingBackgroundTasks: true)
+        { WaitingOnBackground = true };
+        control.Status = InteractiveAgentStatus.Idle;
+        while (f.Store.GetJob(job.JobId)?.ReasonCode != JobWaiting.BackgroundTaskReason)
+        {
+            await Task.Delay(10, deadline.Token);
+        }
+        await Task.Delay(100, deadline.Token); // Longer than the ordinary idle settle timeout.
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(job.JobId)!.Status);
+
+        // The task notification resumes the agent: the marker clears while the turn keeps running.
+        reader.Output = new InteractiveTranscript("claude-native", "checking", ["working", "waiting", "checking"]);
+        control.Status = InteractiveAgentStatus.Working;
+        while (f.Store.GetJob(job.JobId)?.ReasonCode is not null)
+        {
+            await Task.Delay(10, deadline.Token);
+        }
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(job.JobId)!.Status);
+
+        reader.Output = new InteractiveTranscript("claude-native", "DONE", ["working", "waiting", "checking", "DONE"], Completed: true);
+        control.Status = InteractiveAgentStatus.Idle;
+        await attempt.WaitAsync(deadline.Token);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(job.JobId)!.Status);
+    }
+
+    [Fact]
     public async Task Blocked_turn_that_completes_while_still_blocked_completes()
     {
         using var f = new JobFixture();

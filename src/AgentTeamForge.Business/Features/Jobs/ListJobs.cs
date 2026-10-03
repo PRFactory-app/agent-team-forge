@@ -92,6 +92,8 @@ public sealed record ListJobsRequest(string? Status = null, int? Limit = null, s
 /// <summary>Inspection view of a job; use job_get for its result.</summary>
 public sealed record JobSummary(string JobId, string Status, string? ReasonCode, int Attempts, string AcceptedAt, string UpdatedAt)
 {
+    /// <summary>"background_task" while a running turn waits on its agent's background task; otherwise null.</summary>
+    public string? Waiting => JobWaiting.From(Status, ReasonCode);
     public bool? AgentLive { get; init; }
     public StartupProgress? Startup { get; init; }
     public string? Backend { get; init; }

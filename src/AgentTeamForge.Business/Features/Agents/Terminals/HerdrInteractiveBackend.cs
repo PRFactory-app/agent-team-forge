@@ -512,6 +512,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             var controlFailures = 0;
             var goneSamples = 0;
             var blocked = false;
+            var backgroundWait = false;
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -626,6 +627,13 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 {
                     blocked = nowBlocked;
                     yield return new BackendEvidence.AgentBlocked(blocked);
+                }
+                // The agent ended its turn on a background task (e.g. a long build) and waits for it to
+                // report back; the turn stays running. Reattach after a restart clears the marker.
+                if (output is not null && output.WaitingOnBackground != backgroundWait)
+                {
+                    backgroundWait = output.WaitingOnBackground;
+                    yield return new BackendEvidence.BackgroundWait(output.WaitingOnBackground);
                 }
                 if (status == InteractiveAgentStatus.Gone)
                 {
@@ -792,6 +800,9 @@ internal sealed record InteractiveTranscript(string SessionId, string? Message, 
     bool PendingBackgroundTasks = false, string? BindingError = null, InteractiveApiError? ApiError = null, IReadOnlyList<string?>? Times = null,
     bool Superseded = false, bool Incomplete = false)
 {
+    /// <summary>The latest assistant record ended the turn while background work is still pending (Claude only).</summary>
+    public bool WaitingOnBackground { get; init; }
+
     public IReadOnlyList<string> Progress => Messages ?? [];
 
     /// <summary>The log line for message i: JSON carrying the native timestamp when the record has one, else plain text.</summary>
