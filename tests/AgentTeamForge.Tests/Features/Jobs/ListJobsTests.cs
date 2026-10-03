@@ -24,6 +24,24 @@ public sealed class ListJobsTests
     }
 
     [Fact]
+    public void Background_task_wait_is_listed_as_waiting_only_while_marked()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("background-wait");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+
+        Assert.True(f.Store.RecordWaiting(run, JobWaiting.BackgroundTaskReason, true));
+        Assert.Equal("background_task", Assert.Single(f.List().Execute(new ListJobsRequest()).Page!.Jobs).Waiting);
+        Assert.Equal("background_task", f.Get().Execute(job.JobId).Job!.Waiting);
+        Assert.False(f.Store.RecordWaiting(run, "interactive_agent_blocked", false)); // Clearing another wait leaves it.
+
+        Assert.True(f.Store.RecordWaiting(run, JobWaiting.BackgroundTaskReason, false));
+        Assert.Null(Assert.Single(f.List().Execute(new ListJobsRequest()).Page!.Jobs).Waiting);
+        Assert.Null(f.Get().Execute(job.JobId).Job!.Waiting);
+    }
+
+    [Fact]
     public void Console_scope_lists_every_lead_and_connector_but_no_unrelated_principal()
     {
         using var f = new JobFixture();

@@ -978,7 +978,11 @@ public sealed class DispatchJob : IDisposable
                             break;
                         case BackendEvidence.AgentBlocked blocked:
                             // Informational only: a prompt wait counts against the turn's runtime/timeout_s.
-                            TryRecordBlocked(run, blocked.Blocked);
+                            TryRecordWaiting(run, "interactive_agent_blocked", blocked.Blocked);
+                            break;
+                        case BackendEvidence.BackgroundWait wait:
+                            // Informational only, like a prompt wait: the turn stays running until the task reports back.
+                            TryRecordWaiting(run, JobWaiting.BackgroundTaskReason, wait.Waiting);
                             break;
                         case BackendEvidence.NotStarted rejected:
                             // Like a failed preflight, a start refused inside the backend names its reason in daemon.log.
@@ -1439,16 +1443,16 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
-    void TryRecordBlocked(RunRef run, bool blocked)
+    void TryRecordWaiting(RunRef run, string reason, bool waiting)
     {
         try
         {
-            store.RecordBlocked(run, blocked);
+            store.RecordWaiting(run, reason, waiting);
         }
         catch (StorageException ex)
         {
             // The marker is informational; the turn itself is unaffected.
-            log($"blocked marker failed for {run.RunId}: {ex.Failure}: {ex.Message}");
+            log($"{reason} marker failed for {run.RunId}: {ex.Failure}: {ex.Message}");
         }
     }
 

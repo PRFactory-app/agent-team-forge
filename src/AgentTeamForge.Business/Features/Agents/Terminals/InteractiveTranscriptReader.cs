@@ -305,6 +305,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             var backgroundTools = new HashSet<string>();
             var backgroundTasks = new HashSet<string>();
             var knownTasks = new HashSet<string>();
+            var endedOnBackground = false;
             foreach (var line in lines ?? LiveFiles.ReadLines(path))
             {
                 JsonDocument json;
@@ -338,7 +339,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                     {
                         // The notification starts a continuation, not a human turn. Its
                         // own final assistant record must arrive before completion.
-                        if (wasPending) { completed = false; }
+                        if (wasPending) { completed = false; endedOnBackground = false; }
                         if (wasPending) { apiError = null; }
                         continue;
                     }
@@ -347,7 +348,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                     if (kind == InteractiveAgentKind.Claude && QueuedCommand(root) is { } queued
                         && TaskNotification(queued, backgroundTasks, knownTasks, out var drainedPending))
                     {
-                        if (drainedPending) { completed = false; apiError = null; }
+                        if (drainedPending) { completed = false; apiError = null; endedOnBackground = false; }
                         continue;
                     }
                     if (userText is not null)
@@ -381,7 +382,9 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                         TrackBackgroundTasks(root, backgroundTools, backgroundTasks, knownTasks);
                         if (Str(root, "type") == "assistant")
                         {
-                            completed = CompletedTurn(root, kind) && backgroundTools.Count == 0 && backgroundTasks.Count == 0;
+                            var turnEnded = CompletedTurn(root, kind);
+                            completed = turnEnded && backgroundTools.Count == 0 && backgroundTasks.Count == 0;
+                            endedOnBackground = turnEnded && !completed;
                             apiError = ApiError(root, rateLimitReset);
                         }
                         else if (apiError is not null && Str(root, "type") == "system" && Str(root, "subtype") == "turn_duration")
@@ -402,9 +405,11 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                     }
                 }
             }
-            return markerSeen ? new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress, completed,
-                !ended && (backgroundTools.Count > 0 || backgroundTasks.Count > 0),
-                ApiError: backgroundTools.Count == 0 && backgroundTasks.Count == 0 ? apiError : null, Times: times, Superseded: ended, Incomplete: incomplete) : null;
+            var pending = !ended && (backgroundTools.Count > 0 || backgroundTasks.Count > 0);
+            if (!markerSeen) { return null; }
+            return new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress, completed, pending,
+                ApiError: backgroundTools.Count == 0 && backgroundTasks.Count == 0 ? apiError : null, Times: times, Superseded: ended, Incomplete: incomplete)
+            { WaitingOnBackground = pending && endedOnBackground };
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
