@@ -6,6 +6,7 @@ using AgentTeamForge.Business.Features.External;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.External;
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.DAL.Features.Sessions;
 using AgentTeamForge.DAL.Features.Wake;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Host.Features.PRFactory;
@@ -148,6 +149,53 @@ public sealed class ExternalJoinTests
         Assert.Contains(kill.CommandId, server.Acknowledged);
         Assert.Equal("membership_revoked", actor.Read(token, null, null).Error);
         Assert.True(new PRFactoryTeamStore(reopened).External("https://example.test", server.Item.Id, "visitor")!.Closed);
+    }
+
+    [Fact]
+    public async Task External_member_and_work_item_lead_session_exchange_messages()
+    {
+        using var dir = new TempStateDir();
+        var database = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
+        var server = new FakeServer();
+        var actor = new ExternalTeam(new ExternalMemberStore(database), new WakeStore(database));
+        var lead = new JobRecord("lead-job", "prfactory", "connector", "connector-lead", "lead-job", "prompt", "",
+            JobStatus.Running, null, null, 0, "codex", null, null, null);
+        PRFactoryWorkItems Adapter() => new("https://example.test",
+            [new RepositoryMapping(server.Item.RepositoryId!.Value, dir.Path, ["visitor"])], new PRFactoryTeamStore(database),
+            new PRFactoryClient(PRFactoryClient.CreateHttpClient("https://example.test", "token", new FakeHandler(server.Reply))),
+            _ => JobResult.Ok(new JobView("lead-job", JobStatus.Running, null, null, 0), "accepted"), _ => lead, () => { },
+            externalTeam: actor);
+        await Adapter().TickAsync(null, CancellationToken.None);
+        var external = new PRFactoryTeamStore(database).External("https://example.test", server.Item.Id, "visitor")!;
+        var token = actor.Join(external.TeamId, external.TicketToken).Member!.MemberToken;
+
+        // The member reports before the lead job's nested MCP session exists: the stream gets it now, the lead later.
+        Assert.True(actor.Send(token, "JOINED visitor").Ok);
+        await Adapter().TickAsync(null, CancellationToken.None);
+        Assert.Equal("JOINED visitor", Assert.Single(server.Lines, l => l.RecordKind == "external-reply").Text);
+        var sessions = new LeadSessionStore(database);
+        var session = sessions.Start(dir.Path, "managed-child:lead-job").SessionId;
+        var wake = new WakeStore(database);
+        var registration = wake.Register("lead-wake", "claude", "127.0.0.1:1", "secret", "1");
+        sessions.BindWake(session, registration.Key, registration.Generation);
+        await Adapter().TickAsync(null, CancellationToken.None);
+        await Adapter().TickAsync(null, CancellationToken.None);
+        Assert.Contains(wake.PendingExternal(), p => p.Target.Key == "lead-wake");
+        var joined = Assert.Single(actor.ReadLead(session, dir.Path, null, null).Inbox!.Messages);
+        Assert.Equal(("visitor", "JOINED visitor"), (joined.From, joined.Text));
+
+        // Once linked, a member reply reaches the lead at once and is still uploaded to the stream, exactly once.
+        Assert.True(actor.Send(token, "finding 1").Ok);
+        Assert.Equal("finding 1", Assert.Single(actor.ReadLead(session, dir.Path, null, null).Inbox!.Messages).Text);
+        await Adapter().TickAsync(null, CancellationToken.None);
+        Assert.Equal(2, server.Lines.Count(l => l.RecordKind == "external-reply"));
+        Assert.Empty(actor.ReadLead(session, dir.Path, null, null).Inbox!.Messages);
+
+        // The lead's send_message(to=member) reaches the member through the actor team.
+        Assert.True(actor.SendFromLead(session, dir.Path, "visitor", "GO").Ok);
+        var go = Assert.Single(actor.Read(token, null, null).Inbox!.Messages);
+        Assert.Equal(("team-lead", "GO"), (go.From, go.Text));
+        Assert.Equal("member_not_found", actor.SendFromLead(session, dir.Path, "nobody", "GO").Error);
     }
 
     [Fact]

@@ -315,8 +315,83 @@ public sealed class ExternalMemberStore(JobDatabase database)
             return false;
         }
 
+        RelayToLinkedLead(db, tx, member.Value.Team, now);
         tx.Commit();
         return true;
+    }
+
+    // A PRFactory work item's actor team and the nested MCP session of its lead job (turn 0 is the follow-up root).
+    const string LinkedLeads = """
+        SELECT DISTINCT x.team_id,s.session_id FROM prfactory_external x
+        JOIN prfactory_members p ON p.server=x.server AND p.work_item_id=x.work_item_id AND p.member='lead' AND p.turn=0
+        JOIN lead_sessions s ON s.binding_key='managed-child:'||p.job_id AND s.closed_at IS NULL
+        """;
+
+    /// <summary>Copy an actor team's member replies into the linked work item lead's inbox, once each.</summary>
+    public void RelayToLinkedLead(string actorTeamId, DateTimeOffset now)
+    {
+        using var db = database.OpenConnection();
+        using var tx = db.BeginTransaction(deferred: false);
+        RelayToLinkedLead(db, tx, actorTeamId, now);
+        tx.Commit();
+    }
+
+    static void RelayToLinkedLead(SqliteConnection db, SqliteTransaction tx, string actorTeamId, DateTimeOffset now)
+    {
+        foreach (var session in Linked(db, tx, "x.team_id", actorTeamId))
+        {
+            using var command = db.CreateCommand();
+            command.Transaction = tx;
+            // The lead's own MCP team, as EnsureMcpTeam creates it; the copy takes its wake key for a native wake.
+            command.CommandText = """
+                INSERT OR IGNORE INTO external_teams(team_id,owner_key,lead_session_id,wake_key,created_at)
+                SELECT session_id,'mcp:'||session_id,session_id,wake_key,$now FROM lead_sessions
+                WHERE session_id=$session AND closed_at IS NULL
+                """;
+            command.Parameters.AddWithValue("$session", session);
+            command.Parameters.AddWithValue("$team", actorTeamId);
+            command.Parameters.AddWithValue("$now", now.ToString("O"));
+            command.ExecuteNonQuery();
+            command.CommandText = """
+                SELECT m.seq,m.sender,m.text FROM external_messages m
+                WHERE m.team_id=$team AND m.recipient='lead' AND NOT EXISTS (SELECT 1 FROM external_delivery_keys k
+                    WHERE k.team_id=$session AND k.command_id='prf-relay:'||m.seq)
+                ORDER BY m.seq
+                """;
+            var pending = new List<(long Seq, string Sender, string Text)>();
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read()) { pending.Add((reader.GetInt64(0), reader.GetString(1), reader.GetString(2))); }
+            }
+            foreach (var (seq, sender, text) in pending)
+            {
+                // A closed lead team takes no copies; the stream upload still carries the reply.
+                if (!InsertLeadMessage(db, tx, session, sender, text, now)) { break; }
+                command.CommandText = "INSERT INTO external_delivery_keys(team_id,command_id) VALUES ($session,$key)";
+                command.Parameters.AddWithValue("$key", "prf-relay:" + seq.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                command.ExecuteNonQuery();
+                command.Parameters.RemoveAt("$key");
+            }
+        }
+    }
+
+    /// <summary>Actor teams whose work item lead runs in this nested MCP session.</summary>
+    public IReadOnlyList<string> LinkedActorTeams(string sessionId)
+    {
+        using var db = database.OpenConnection();
+        return Linked(db, null, "s.session_id", sessionId);
+    }
+
+    static List<string> Linked(SqliteConnection db, SqliteTransaction? tx, string column, string value)
+    {
+        using var command = db.CreateCommand();
+        command.Transaction = tx;
+        command.CommandText = LinkedLeads + $" WHERE {column}=$value";
+        command.Parameters.AddWithValue("$value", value);
+        using var reader = command.ExecuteReader();
+        var linked = new List<string>();
+        while (reader.Read()) { linked.Add(reader.GetString(column == "x.team_id" ? 1 : 0)); }
+        return linked;
     }
 
     public bool SendToLead(string teamId, string sender, string text, DateTimeOffset now, string? commandId)

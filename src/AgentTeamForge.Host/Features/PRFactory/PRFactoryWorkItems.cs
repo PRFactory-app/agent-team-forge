@@ -1402,6 +1402,8 @@ public sealed partial class PRFactoryWorkItems(
             teams.MarkExternalClosed(server, item.Id, external.Member);
         }
 
+        // Catch-up for replies sent before the lead job's MCP session existed; later replies relay on send.
+        actor.RelayToLinkedLead(teamId);
         var cursor = externals.Min(e => e.ReplySeq);
         var inbox = actor.ReadTeam(teamId, cursor, 50).Inbox;
         if (inbox is null && externals.All(e => e.Closed))
