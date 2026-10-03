@@ -31,17 +31,20 @@ public sealed class ClaudeWakeMailbox : IWakePoster
         }
     }
 
-    public async Task<bool> PostAsync(WakeRegistration target, string notice, CancellationToken cancellationToken)
+    public async Task<bool> PostAsync(WakeRegistration target, string notice, CancellationToken cancellationToken) =>
+        await PostWithReasonAsync(target, notice, cancellationToken) == WakePost.Ok;
+
+    public async Task<string> PostWithReasonAsync(WakeRegistration target, string notice, CancellationToken cancellationToken)
     {
         var offer = new Offer(target, notice);
         lock (sync)
         {
             if (!polled.TryGetValue(Channel(target.Address, target.Secret, target.Home), out var seen)
-                || Environment.TickCount64 - seen > RelayFreshMs) { return false; }
+                || Environment.TickCount64 - seen > RelayFreshMs) { return WakePost.NoRelay; }
             offers.Add(offer.Notice.Id, offer);
         }
-        try { return await offer.Posted.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken); }
-        catch (TimeoutException) { return false; }
+        try { return await offer.Posted.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken) ? WakePost.Ok : WakePost.RelayFailed; }
+        catch (TimeoutException) { return WakePost.Timeout; }
         finally { lock (sync) { offers.Remove(offer.Notice.Id); } }
     }
 

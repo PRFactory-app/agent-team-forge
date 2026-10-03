@@ -250,6 +250,87 @@ public sealed class WakeTests
     }
 
     [Fact]
+    public async Task Dead_claude_targets_are_pruned_and_keep_their_unread_rows()
+    {
+        using var fixture = new JobFixture();
+        var store = new WakeStore(fixture.Database);
+        var gone = fixture.DatabasePath + ".gone.sock";
+        var dead = store.Register("claude:dead", "claude", gone, "secret", "2147483647");
+        var legacy = store.Register("claude:" + gone, "claude", gone, "", "");
+        var live = store.Register("claude:live", "claude", fixture.DatabasePath, "secret", Environment.ProcessId.ToString());
+        Finish(fixture, dead, "dead");
+        Finish(fixture, legacy, "legacy");
+        Finish(fixture, live, "live");
+        var logs = new List<string>();
+        var time = DateTimeOffset.UtcNow;
+        await new WakeCoordinator(store, new FakePoster((_, _) => false), logs.Add, () => time, TimeSpan.Zero)
+            .TickAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(3, store.Pending().Count); // registered moments ago: inside the grace period
+
+        time += TimeSpan.FromMinutes(11);
+        await new WakeCoordinator(store, new FakePoster((_, _) => false), logs.Add, () => time, TimeSpan.Zero)
+            .TickAsync(TestContext.Current.CancellationToken);
+        Assert.Equal("claude:live", Assert.Single(store.Pending()).Target.Key);
+        Assert.Contains(logs, line => line.Contains("wake target pruned: target=claude:dead reason=gone"));
+        Assert.Contains(logs, line => line.Contains($"wake target pruned: target={legacy.Key} reason=gone"));
+
+        // Unread work survives the prune and wakes again once the session registers anew.
+        var revived = store.Register("claude:dead", "claude", gone, "secret", "2147483647");
+        Assert.Equal(1, store.Pending().Single(x => x.Target.Key == revived.Key).Unread);
+
+        // A target that never accepts a post for three days is pruned even if it looks alive.
+        time += TimeSpan.FromDays(3);
+        await new WakeCoordinator(store, new FakePoster((_, _) => false), logs.Add, () => time, TimeSpan.Zero, claudeGone: _ => false)
+            .TickAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(store.Pending());
+        Assert.Contains(logs, line => line.Contains("wake target pruned: target=claude:live reason=stale"));
+    }
+
+    [Fact]
+    public async Task Rejected_post_logs_its_reason_once_per_target_and_reason()
+    {
+        using var fixture = new JobFixture();
+        var store = new WakeStore(fixture.Database);
+        var target = store.Register("claude:norelay", "claude", fixture.DatabasePath, "secret", Environment.ProcessId.ToString());
+        Finish(fixture, target, "one");
+        var mailbox = new ClaudeWakeMailbox();
+        var time = DateTimeOffset.UtcNow;
+        var logs = new List<string>();
+        var coordinator = new WakeCoordinator(store, new NativeWakePoster(fixture.DatabasePath + ".state", mailbox), logs.Add, () => time, TimeSpan.Zero);
+        for (var i = 0; i < 5; i++)
+        {
+            await coordinator.TickAsync(TestContext.Current.CancellationToken);
+            time += TimeSpan.FromMinutes(5);
+        }
+        var rejected = Assert.Single(logs, line => line.Contains("wake post rejected:"));
+        Assert.Contains("reason=no_relay", rejected);
+
+        // A live relay that reports a failed delivery is a new reason, again logged once.
+        using var stop = new CancellationTokenSource();
+        var relay = Task.Run(async () =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                if (mailbox.Take(target.Address, target.Secret, target.Home) is { } offer)
+                {
+                    mailbox.Complete(offer.Id, target.Address, target.Secret, target.Home, posted: false);
+                }
+                await Task.Delay(20);
+            }
+        }, TestContext.Current.CancellationToken);
+        mailbox.Take(target.Address, target.Secret, target.Home);
+        for (var i = 0; i < 3; i++)
+        {
+            await coordinator.TickAsync(TestContext.Current.CancellationToken);
+            time += TimeSpan.FromMinutes(5);
+        }
+        await stop.CancelAsync();
+        await relay;
+        Assert.Equal(2, logs.Count(line => line.Contains("wake post rejected:")));
+        Assert.Contains(logs, line => line.Contains("reason=relay_failed"));
+    }
+
+    [Fact]
     public async Task Legacy_lead_wake_is_rebound_to_a_live_bridge_for_external_messages_and_jobs()
     {
         using var fixture = new JobFixture();

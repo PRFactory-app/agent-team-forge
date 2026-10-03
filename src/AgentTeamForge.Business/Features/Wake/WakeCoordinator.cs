@@ -6,6 +6,20 @@ namespace AgentTeamForge.Business.Features.Wake;
 public interface IWakePoster
 {
     Task<bool> PostAsync(WakeRegistration target, string notice, CancellationToken cancellationToken);
+
+    /// <summary>A <see cref="WakePost"/> value: ok, or why the post was rejected.</summary>
+    async Task<string> PostWithReasonAsync(WakeRegistration target, string notice, CancellationToken cancellationToken) =>
+        await PostAsync(target, notice, cancellationToken) ? WakePost.Ok : WakePost.Rejected;
+}
+
+public static class WakePost
+{
+    public const string Ok = "ok";
+    /// <summary>No bridge relay polled the channel recently: the Claude process or its MCP bridge is gone.</summary>
+    public const string NoRelay = "no_relay";
+    public const string Timeout = "timeout";
+    public const string RelayFailed = "relay_failed";
+    public const string Rejected = "rejected";
 }
 
 public sealed class WakeBackoff
@@ -22,7 +36,8 @@ public sealed class WakeBackoff
 
 /// <summary>Polls committed terminal rows and unacknowledged interactive parks.</summary>
 public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<string> log,
-    Func<DateTimeOffset>? clock = null, TimeSpan? coalesce = null, TimeSpan? renotify = null)
+    Func<DateTimeOffset>? clock = null, TimeSpan? coalesce = null, TimeSpan? renotify = null,
+    Func<WakeRegistration, bool>? claudeGone = null)
 {
     sealed class State(long generation)
     {
@@ -37,6 +52,23 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
     readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
     readonly TimeSpan coalesceWindow = coalesce ?? TimeSpan.FromSeconds(2);
     readonly TimeSpan renotifyWindow = renotify ?? TimeSpan.FromMinutes(5);
+    readonly Func<WakeRegistration, bool> gone = claudeGone ?? ClaudeTargetGone;
+    readonly Dictionary<string, string> rejections = [];
+    DateTimeOffset nextPrune;
+
+    /// <summary>Unix: the channel socket is missing and the owning pid (if recorded) has exited.
+    /// Windows pipes rely on the store's stale-rejection rule.</summary>
+    public static bool ClaudeTargetGone(WakeRegistration target)
+    {
+        if (ClaudeChannel.Transport(ClaudeChannel.Platform) != "unix" || File.Exists(target.Address)) { return false; }
+        if (!int.TryParse(target.Home, out var pid)) { return true; }
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById(pid);
+            return process.HasExited;
+        }
+        catch (ArgumentException) { return true; }
+    }
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
@@ -55,13 +87,23 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
 
     public async Task TickAsync(CancellationToken cancellationToken = default)
     {
+        if (now() >= nextPrune)
+        {
+            nextPrune = now() + TimeSpan.FromMinutes(10);
+            foreach (var (key, why) in store.PruneDead(now(), gone))
+            {
+                log($"wake target pruned: target={key} reason={why}");
+            }
+        }
         var pending = store.Pending().Concat(store.PendingExternal()).Concat(store.PendingParks());
         var active = new HashSet<string>(StringComparer.Ordinal);
+        var targets = new HashSet<string>(StringComparer.Ordinal);
         foreach (var snapshot in pending)
         {
             var target = snapshot.Target;
             var stateKey = target.Key + (snapshot.ParkJobId is not null ? ":park:" + snapshot.ParkJobId : snapshot.External ? ":external" : ":jobs");
             active.Add(stateKey);
+            targets.Add(target.Key);
             if (!states.TryGetValue(stateKey, out var state) || state.Generation != target.Generation)
             {
                 state = new State(target.Generation);
@@ -105,13 +147,14 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
                 : snapshot.External
                 ? $"[AgentTeamForge wake] {snapshot.Unread} external message(s) await reading. Call mcp__agentteamforge__external_read or mcp__agentteamforge__read_messages."
                 : $"[AgentTeamForge wake] {snapshot.Unread} job(s) finished or need attention. Call mcp__agentteamforge__list_jobs with unread=true, then get_job.";
-            bool posted;
-            try { posted = await poster.PostAsync(target, notice, cancellationToken); }
+            string reason;
+            try { reason = await poster.PostWithReasonAsync(target, notice, cancellationToken); }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                log($"wake post failed: {ex.GetType().Name}");
-                posted = false;
+                reason = "exception:" + ex.GetType().Name;
             }
+            var posted = reason == WakePost.Ok;
+            if (posted) { rejections.Remove(target.Key); }
             if (posted && store.MarkNotified(snapshot, now()))
             {
                 state.Backoff.Reset();
@@ -120,9 +163,11 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
             }
             else
             {
-                if (!posted)
+                // Logged once per target and reason; the backoff keeps retrying quietly.
+                if (!posted && (!rejections.TryGetValue(target.Key, out var last) || last != reason))
                 {
-                    log($"wake post rejected: kind={target.Kind} target={target.Key} source={(snapshot.ParkJobId is not null ? "park" : snapshot.External ? "external" : "jobs")}");
+                    rejections[target.Key] = reason;
+                    log($"wake post rejected: kind={target.Kind} target={target.Key} source={(snapshot.ParkJobId is not null ? "park" : snapshot.External ? "external" : "jobs")} reason={reason}");
                 }
                 state.Backoff.Failed(now());
             }
@@ -130,6 +175,10 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
         foreach (var key in states.Keys.Except(active).ToArray())
         {
             states.Remove(key);
+        }
+        foreach (var key in rejections.Keys.Except(targets).ToArray())
+        {
+            rejections.Remove(key);
         }
     }
 }
