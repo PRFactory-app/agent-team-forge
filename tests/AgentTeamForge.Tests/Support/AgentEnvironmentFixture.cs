@@ -42,6 +42,7 @@ public sealed class AgentEnvironmentFixture
         name.StartsWith("ATF_TEST_", StringComparison.Ordinal)
         || name.StartsWith("ATF_REAL_", StringComparison.Ordinal)
         || name.StartsWith("ATF_LIVE_", StringComparison.Ordinal)
+        || name.StartsWith("ATF_AZDO_E2E", StringComparison.Ordinal)
         || name.StartsWith("ATF_HERDR_", StringComparison.Ordinal)
         || name.StartsWith("ATF_CLAUDE_PREFLIGHT_", StringComparison.Ordinal)
         || name is "ATF_KEEP_TMP" or "ATF_INTERACTIVE_STARTUP_TIMEOUT_SECONDS" or "ATF_HOST_BINARY" or "ATF_RELEASES_URL" or "ATF_FIXTURE" or "ATF_STOP_FAIL";
