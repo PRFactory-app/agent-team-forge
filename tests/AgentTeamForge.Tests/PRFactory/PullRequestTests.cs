@@ -82,7 +82,7 @@ public sealed class PullRequestTests
                 var list = "[" + string.Join(',', ForkEntries.Concat(ExistingPr && !CreateHidden ? [Entry(7, PrHead)] : [])) + "]";
                 return Task.FromResult(new ProcessResult(0, list, ""));
             }
-            if (args == "credential fill") { return Task.FromResult(new ProcessResult(0, "protocol=https\nhost=bitbucket.org\nusername=x-token-auth\npassword=" + BbToken + "\n", "")); }
+            if (args == "credential fill") { return Task.FromResult(new ProcessResult(0, "protocol=https\r\nhost=bitbucket.org\r\nusername=x-token-auth\r\npassword=" + BbToken + "\r\n", "")); }
             if (args.StartsWith("pr create", StringComparison.Ordinal)) { ExistingPr = true; return Task.FromResult(new ProcessResult(0, "https://github.com/x/y/pull/7\n", "")); }
             throw new InvalidOperationException(args);
         }
@@ -397,6 +397,7 @@ public sealed class PullRequestTests
     [InlineData("https://x-token-auth:secret@bitbucket.org/ws/repo.git", "bitbucket.org", "ws", "repo", "x-token-auth")]
     [InlineData("git@bitbucket.org:ws/repo.git", "bitbucket.org", "ws", "repo", null)]
     [InlineData("ssh://git@bitbucket.org/ws/repo.git", "bitbucket.org", "ws", "repo", null)]
+    [InlineData("https://Bitbucket.org/ws/repo.git", "bitbucket.org", "ws", "repo", null)]
     public void Remotes_parse_to_host_owner_and_repository(string remote, string host, string owner, string repo, string? user)
     {
         Assert.Equal(new PRFactoryPullRequests.RemoteRepository(host, owner, repo, user), PRFactoryPullRequests.ParseRemote(remote));
@@ -407,6 +408,7 @@ public sealed class PullRequestTests
     [InlineData("git@gitlab.com:o/r.git")]
     [InlineData("https://bitbucket.org/ws/repo/extra")]
     [InlineData("/home/me/repo")]
+    [InlineData(@"C:\repos\atf-demo")]
     public void Unsupported_remotes_are_refused(string remote)
     {
         Assert.Contains("bitbucket.org", Assert.ThrowsAny<Exception>(() => PRFactoryPullRequests.ParseRemote(remote)).Message);
@@ -422,6 +424,7 @@ public sealed class PullRequestTests
         Assert.Equal(["credential", "fill"], fill.Args);
         Assert.Equal("protocol=https\nhost=bitbucket.org\nusername=x-token-auth\n\n", fill.Stdin);
         Assert.Equal("0", fill.Env!["GIT_TERMINAL_PROMPT"]);
+        Assert.Equal("never", fill.Env["GCM_INTERACTIVE"]);
         Assert.All(f.BbRequests, r => Assert.Equal("Bearer " + BbToken, r.Auth));
         var (_, _, _, createBody) = Assert.Single(f.BbRequests, r => r.Method == HttpMethod.Post);
         using (var body = JsonDocument.Parse(createBody))

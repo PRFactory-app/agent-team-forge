@@ -17,7 +17,15 @@ public sealed partial class PRFactoryPullRequests
         if (string.IsNullOrEmpty(token))
         {
             var input = "protocol=https\nhost=bitbucket.org\n" + (user is null ? "" : $"username={user}\n") + "\n";
-            var env = new Dictionary<string, string?> { ["GIT_TERMINAL_PROMPT"] = "0", ["GIT_ASKPASS"] = null, ["SSH_ASKPASS"] = null };
+            // Unattended on every platform: no terminal prompt, and no Git Credential Manager sign-in window
+            // (Windows/macOS default helper). Output may end lines with CRLF there.
+            var env = new Dictionary<string, string?>
+            {
+                ["GIT_TERMINAL_PROMPT"] = "0",
+                ["GCM_INTERACTIVE"] = "never",
+                ["GIT_ASKPASS"] = null,
+                ["SSH_ASKPASS"] = null
+            };
             ProcessResult result;
             try { result = await runner(new ProcessSpec("git", ["credential", "fill"], env, input, TokenTimeout), ct); }
             catch (TimeoutException) { throw new Failure($"git credential fill did not finish within {TokenTimeout.TotalSeconds:0} s."); }
