@@ -11,7 +11,7 @@ tabs, or in a small web console.
 
 **Free forever.** Need tickets, shared workflows and teamwork? [PRFactory](https://app.prfactory.dev) is the optional paid companion.
 
-![AgentTeamForge web console showing one lead session and its agents](docs/images/web-console.png)
+![AgentTeamForge web console: one lead session with its agents running, queued, finished and needing attention](docs/images/web-console.png)
 
 ## Quickstart
 
