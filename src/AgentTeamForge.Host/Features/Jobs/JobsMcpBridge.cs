@@ -101,7 +101,7 @@ public static class JobsMcpBridge
           "all_workspace":{"type":"boolean","description":"Include every lead's jobs in this workspace."}}}
         """;
 
-    const string ResumeSchema = """{"type":"object","properties":{"session_id":{"type":"string"}},"required":["session_id"]}""";
+    const string ResumeSchema = """{"type":"object","properties":{"session_id":{"type":"string"},"force":{"type":"boolean","description":"Adopt even if the session is bound to another live native session. Use only when that session is dead."}},"required":["session_id"]}""";
     const string EmptySchema = """{"type":"object","properties":{}}""";
     const string TicketSchema = """{"type":"object","properties":{"name":{"type":"string"},"note":{"type":"string"}},"required":["name"]}""";
     const string JoinSchema = """{"type":"object","properties":{"session_id":{"type":"string"},"token":{"type":"string"}},"required":["session_id","token"]}""";
@@ -260,8 +260,8 @@ public static class JobsMcpBridge
             new() { Name = "get_job_activity", Description = "Read structured progress with a monotonic after_cursor and bounded limit.", InputSchema = Parse("""{"type":"object","properties":{"job_id":{"type":"string"},"after_cursor":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"required":["job_id"]}""") },
             new() { Name = "list_jobs", Description = "List jobs, newest first, one bounded page at a time.", InputSchema = Parse(ListSchema) },
             new() { Name = "set_session_name", Description = "Set a display name for this lead session (shown in the web console). Empty clears it.", InputSchema = Parse("""{"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}""") },
-            new() { Name = "session_info", Description = "Report this lead's session and recoverable sessions in its workspace.", InputSchema = Parse(EmptySchema) },
-            new() { Name = "resume_session", Description = "Adopt a prior lead session and its jobs after a restart.", InputSchema = Parse(ResumeSchema) },
+            new() { Name = "session_info", Description = "Report this lead's session and recoverable sessions in its workspace, with each one's owner_native_id, owner_live and is_current (owned by this native session). Sessions owned by another live native session are not listed.", InputSchema = Parse(EmptySchema) },
+            new() { Name = "resume_session", Description = "Adopt a prior lead session and its jobs after a restart. Refused with session_owned when another live native session owns it.", InputSchema = Parse(ResumeSchema) },
             new() { Name = "close_team", Description = "Close this lead session and revoke all external member tokens.", InputSchema = Parse(EmptySchema) },
             new() { Name = "register_codex_wake", Description = "Register this Codex conversation for native job notices before submitting jobs. Read CODEX_THREAD_ID with a shell tool and pass it here; Codex does not always pass it to MCP servers.", InputSchema = Parse(CodexWakeSchema) },
             new() { Name = "clear_wake", Description = "Clear this lead's native wake registration. Unread jobs remain available and can be rebound later.", InputSchema = Parse(EmptySchema) },
@@ -335,7 +335,7 @@ public static class JobsMcpBridge
                     {
                         var requested = String(args, "session_id");
                         response = requested is null ? new IpcResponse(false, JobErrors.InvalidRequest)
-                            : await SendAsync(new IpcRequest { Op = IpcProtocol.SessionResume, LeadSessionId = requested, Workspace = workspace, BindingKey = bindingKey, NativeKind = nativeKind, NativeSessionId = nativeId, NativeHome = nativeId is null ? null : nativeHome }, cancellationToken);
+                            : await SendAsync(new IpcRequest { Op = IpcProtocol.SessionResume, LeadSessionId = requested, Workspace = workspace, BindingKey = bindingKey, NativeKind = nativeKind, NativeSessionId = nativeId, NativeHome = nativeId is null ? null : nativeHome, Force = Bool(args, "force") }, cancellationToken);
                         if (response.Ok)
                         {
                             // An explicit resume takes over the session's wake, even from another live bridge.

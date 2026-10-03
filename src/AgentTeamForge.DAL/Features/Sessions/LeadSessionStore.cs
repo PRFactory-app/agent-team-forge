@@ -3,7 +3,10 @@ using AgentTeamForge.DAL.Sqlite;
 
 namespace AgentTeamForge.DAL.Features.Sessions;
 
-public sealed record RecoverableLeadSession(string SessionId, int JobCount, string LastActivity);
+public sealed record RecoverableLeadSession(string SessionId, int JobCount, string LastActivity,
+    string? OwnerNativeId = null, bool OwnerLive = false, bool IsCurrent = false);
+/// <summary>The native session a lead row is bound to, with its active wake target if any.</summary>
+public sealed record LeadSessionOwner(string NativeId, string? WakeKey, string? WakeKind, string? WakeAddress, string? WakeSecret, string? WakeHome);
 public sealed record LeadSessionInfo(string SessionId, string Workspace, string LeadToken, int JobCount,
     IReadOnlyList<RecoverableLeadSession> RecoverableSessions)
 {
@@ -16,6 +19,9 @@ public sealed record LeadSessionInfo(string SessionId, string Workspace, string 
 /// <summary>One durable lead per MCP binding. Session IDs are explicit recovery handles.</summary>
 public sealed class LeadSessionStore(JobDatabase database)
 {
+    /// <summary>Whether a bound native session is still running; set by the daemon. Unset means never live.</summary>
+    public Func<LeadSessionOwner, bool>? OwnerLive { get; set; }
+
     public LeadSessionInfo Start(string workspace, string bindingKey, string? nativeKind = null, string? nativeSessionId = null, string? nativeHome = null)
     {
         using var connection = database.OpenConnection();
@@ -45,14 +51,20 @@ public sealed class LeadSessionStore(JobDatabase database)
         return Info(id, workspace)!;
     }
 
-    public LeadSessionInfo? Resume(string id, string workspace, string bindingKey, string? nativeKind = null, string? nativeSessionId = null, string? nativeHome = null)
+    /// <summary>Adopt a session. A session bound to another live native session is refused (LiveOwner set) unless forced.</summary>
+    public (LeadSessionInfo? Session, string? LiveOwner) Resume(string id, string workspace, string bindingKey, string? nativeKind = null, string? nativeSessionId = null, string? nativeHome = null, bool force = false)
     {
         if (!Guid.TryParseExact(id, "D", out var parsed) || parsed.ToString("D") != id)
         {
-            return null;
+            return (null, null);
         }
         using var connection = database.OpenConnection();
         using var tx = connection.BeginTransaction(deferred: false);
+        if (!force && Sessions(connection, workspace).FirstOrDefault(s => s.Id == id) is { Owner: { } owner }
+            && owner.NativeId != nativeSessionId && IsLive(owner))
+        {
+            return (null, owner.NativeId);
+        }
         using var command = connection.CreateCommand();
         command.Transaction = tx;
         // Like the reference's binding prune: this binding now names only the resumed
@@ -71,12 +83,12 @@ public sealed class LeadSessionStore(JobDatabase database)
         command.Parameters.AddWithValue("$workspace", workspace);
         if ((long)command.ExecuteScalar()! != 1)
         {
-            return null;
+            return (null, null);
         }
         command.CommandText = "UPDATE lead_sessions SET binding_key='' WHERE binding_key=$binding AND workspace=$workspace AND session_id<>$id";
         command.ExecuteNonQuery();
         tx.Commit();
-        return Info(id, workspace);
+        return (Info(id, workspace), null);
     }
 
     public LeadSessionInfo? Info(string id, string workspace)
@@ -88,8 +100,12 @@ public sealed class LeadSessionStore(JobDatabase database)
         {
             return null;
         }
+        // Sessions bound to another live native session belong to that lead; never offer them for adoption.
         var recoverable = sessions.Where(s => s.Id != id && s.Count > 0)
-            .Select(s => new RecoverableLeadSession(s.Id, s.Count, s.UpdatedAt)).ToList();
+            .Select(s => (Row: s, IsCurrent: s.Owner is { } owner && owner.NativeId == current.Owner?.NativeId))
+            .Select(x => new RecoverableLeadSession(x.Row.Id, x.Row.Count, x.Row.UpdatedAt, x.Row.Owner?.NativeId,
+                x.Row.Owner is { } owner && IsLive(owner), x.IsCurrent))
+            .Where(s => s.IsCurrent || !s.OwnerLive).ToList();
         return new LeadSessionInfo(id, workspace, current.Token, current.Count, recoverable)
         {
             Name = current.Name,
@@ -108,7 +124,17 @@ public sealed class LeadSessionStore(JobDatabase database)
         return command.ExecuteNonQuery() == 1;
     }
 
-    public bool Exists(string id, string workspace) => Info(id, workspace) is not null;
+    public bool Exists(string id, string workspace)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT count(*) FROM lead_sessions WHERE session_id=$id AND workspace=$workspace AND closed_at IS NULL";
+        command.Parameters.AddWithValue("$id", id);
+        command.Parameters.AddWithValue("$workspace", workspace);
+        return (long)command.ExecuteScalar()! == 1;
+    }
+
+    bool IsLive(LeadSessionOwner owner) => OwnerLive?.Invoke(owner) == true;
 
     public bool IsManagedChild(string id, string workspace, string jobId)
     {
@@ -216,8 +242,10 @@ public sealed class LeadSessionStore(JobDatabase database)
     {
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT s.session_id,s.binding_key,s.lead_token,s.updated_at,count(j.job_id),s.display_name
+            SELECT s.session_id,s.binding_key,s.lead_token,s.updated_at,count(j.job_id),s.display_name,
+                s.native_session_id,t.target_key,t.kind,t.address,t.secret,t.home
             FROM lead_sessions s LEFT JOIN jobs j ON j.lead_session_id=s.session_id
+            LEFT JOIN wake_targets t ON t.target_key=s.wake_key AND t.active=1
             WHERE s.workspace=$workspace AND s.closed_at IS NULL GROUP BY s.session_id ORDER BY s.updated_at DESC
             """;
         command.Parameters.AddWithValue("$workspace", workspace);
@@ -225,12 +253,14 @@ public sealed class LeadSessionStore(JobDatabase database)
         var result = new List<SessionRow>();
         while (reader.Read())
         {
-            result.Add(new SessionRow(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt32(4), reader.IsDBNull(5) ? null : reader.GetString(5)));
+            string? Text(int i) => reader.IsDBNull(i) ? null : reader.GetString(i);
+            var owner = Text(6) is { Length: > 0 } native ? new LeadSessionOwner(native, Text(7), Text(8), Text(9), Text(10), Text(11)) : null;
+            result.Add(new SessionRow(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt32(4), Text(5), owner));
         }
         return result;
     }
 
-    sealed record SessionRow(string Id, string BindingKey, string Token, string UpdatedAt, int Count, string? Name);
+    sealed record SessionRow(string Id, string BindingKey, string Token, string UpdatedAt, int Count, string? Name, LeadSessionOwner? Owner);
 }
 
 public sealed record NativeSessionBinding(string SessionId, string Kind, string NativeId, string? Home);
