@@ -10,7 +10,7 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
 public enum InteractiveAgentKind { Claude, Codex, Pi }
 
-public enum PaneOwnerRecovery { Unverified, Retained, Gone, GoneAgain }
+public enum PaneOwnerRecovery { Unverified, Retained, Released, Gone, GoneAgain }
 
 /// <summary>Runs a real agent TUI in a tab of an ATF-owned Herdr session.</summary>
 public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionStop, IDisposable
@@ -64,6 +64,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             StopLaunch(live);
         }
 
+        if (request.ResumeSessionId is { } resumed) { RetireReleasedPane(resumed); }
         var agentName = "atf" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(10));
         var piDirectory = _kind == InteractiveAgentKind.Pi ? PiDirectory(request) : null;
         var launch = new InteractiveLaunch(_kind, agentName, cwd, request.ResumeSessionId, piDirectory,
@@ -148,8 +149,8 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     /// the job's exact native session live in the pane, and transcript evidence that the newest turn
     /// there is an ATF turn (one of <paramref name="correlations"/>) that completed with no
     /// pending background work. <paramref name="releaseFence"/> revalidates the session and clears the
-    /// fence before the pane is offered. A proven-gone pane only releases the fence: nothing is started
-    /// or closed. Serialized with stop_agent, which must never see its fence cleared.
+    /// fence before the pane is offered. A proven-gone pane, or a verified idle Pi pane, only releases the fence:
+    /// nothing is started or closed. Serialized with stop_agent, which must never see its fence cleared.
     /// </summary>
     public PaneOwnerRecovery RecoverTerminalOwner(JobRecord owner, IReadOnlyList<string> correlations, Func<bool> releaseFence)
     {
@@ -163,11 +164,40 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             {
                 return control.PaneIsGone(owned.Session) ? Gone(owned.Path, owned.Session, releaseFence) : PaneOwnerRecovery.Unverified;
             }
+            // Pi's live session cannot be proven, so its pane is never typed into again. A verified idle pane
+            // only releases the fence; the next follow-up retires it before resuming the session in a new tab.
+            if (_kind == InteractiveAgentKind.Pi)
+            {
+                if (!SettledIdle(launch) || !releaseFence()) { return PaneOwnerRecovery.Unverified; }
+                _releasedPanes[sessionId] = (launch, owned.Session);
+                return PaneOwnerRecovery.Released;
+            }
             if (!BindTranscript(launch, owned.Session, sessionId) || !SettledIdle(launch) || !LatestTurnSettled(launch, correlations)
                 || !releaseFence()) { return PaneOwnerRecovery.Unverified; }
             BindNativeSession(sessionId, launch);
             _liveSessions.Remember(sessionId, launch);
             return PaneOwnerRecovery.Retained;
+        }
+    }
+
+    // Panes whose restart fence was released without retention, by native session. Their agent can still write
+    // the session, so a resume must close them first.
+    readonly ConcurrentDictionary<string, (InteractiveLaunch Launch, OwnedHerdrSession Pane)> _releasedPanes = new();
+
+    // A busy pane (an operator typed into it) or one not proven closed refuses the resume before anything starts.
+    void RetireReleasedPane(string sessionId)
+    {
+        lock (SessionStopGate)
+        {
+            if (!_releasedPanes.TryGetValue(sessionId, out var released) || _control is not HerdrAgentControl control) { return; }
+            if (!control.PaneIsGone(released.Pane))
+            {
+                if (!SettledIdle(released.Launch)) { throw new BackendNotStartedException("the agent's earlier pane is busy; let it finish or stop the agent, then retry"); }
+                StopLaunch(released.Launch);
+                // StopOwned deletes the ownership record only once Herdr confirmed the close.
+                if (File.Exists(HerdrOwnedSessions.PathFor(released.Launch))) { throw new BackendNotStartedException("the agent's earlier pane could not be closed; stop the agent, then retry"); }
+            }
+            _releasedPanes.TryRemove(sessionId, out _);
         }
     }
 
