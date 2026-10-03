@@ -131,6 +131,65 @@ public sealed class JobWorktreeTests
     }
 
     [Fact]
+    public async Task A_job_cancelled_while_waiting_for_another_jobs_checkout_creates_no_worktree_and_starts_no_agent()
+    {
+        using var f = new JobFixture();
+        using var source = new TempStateDir();
+        Git(source.Path, "init");
+        Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+        var backend = new ScriptedBackend(r =>
+        [
+            new BackendEvidence.Session(r.Correlation, "session-1"),
+            new BackendEvidence.Result(r.Correlation, "done"),
+        ]);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, catalog.Names);
+        var slow = accept.Execute(new SubmitJobRequest("slow", "first", null, false) { Cwd = source.Path, Worktree = true }).Job!;
+        var waiting = accept.Execute(new SubmitJobRequest("waiting", "second", null, false)
+        {
+            Cwd = source.Path,
+            Worktree = true,
+            TimeoutSeconds = 1,
+        }).Job!;
+
+        // The slow job's checkout holds the repository until the test releases it.
+        var started = Path.Combine(source.Path, "slow-started");
+        var release = Path.Combine(source.Path, "slow-release");
+        Executable(Path.Combine(source.Path, ".git", "hooks", "post-checkout"),
+            $"case \"$PWD\" in *{slow.JobId}*) touch '{started}'; while [ ! -f '{release}' ]; do sleep 0.05; done;; esac");
+
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+        // Preparation runs synchronously inside the attempt, so each attempt gets its own thread.
+        var slowClaim = f.Store.BeginNextAttempt()!;
+        var slowRun = Task.Run(() => dispatcher.RunAttemptAsync(slowClaim, CancellationToken.None));
+        try
+        {
+            var watch = Stopwatch.StartNew();
+            while (!File.Exists(started))
+            {
+                Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), "the slow checkout never started");
+                await Task.Delay(50, TestContext.Current.CancellationToken);
+            }
+            var waitingClaim = f.Store.BeginNextAttempt()!;
+            var waitingRun = Task.Run(() => dispatcher.RunAttemptAsync(waitingClaim, CancellationToken.None));
+            // Times out behind the held checkout; before the fix it waited for the release instead.
+            await Task.WhenAny(waitingRun, Task.Delay(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+            File.WriteAllText(release, "");
+            await waitingRun.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            File.WriteAllText(release, "");
+            await slowRun.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+        }
+
+        Assert.Equal((JobStatus.Cancelled, "timeout"), (f.Store.GetJob(waiting.JobId)!.Status, f.Store.GetJob(waiting.JobId)!.ReasonCode));
+        Assert.False(Directory.Exists(waiting.WorktreePath));
+        Assert.Equal([slow.WorktreePath], backend.Started.Select(r => r.WorkingDirectory));
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(slow.JobId)!.Status);
+    }
+
+    [Fact]
     public void Worktree_requires_a_git_repository()
     {
         using var f = new JobFixture();
