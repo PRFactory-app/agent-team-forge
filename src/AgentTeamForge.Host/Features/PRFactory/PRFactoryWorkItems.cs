@@ -1560,7 +1560,12 @@ public sealed partial class PRFactoryWorkItems(
                 publication, repositoryResults), ct);
             if (cleanupWip is not null)
             {
-                await CleanupWipAsync(item.Id, workspace?.RepositoryPath, workspace?.Remote, cleanupWip, log, ct);
+                var protectedBranches = item.RepositoryId is { } repositoryId && publications is not null
+                    ? publications.VerifiedFor(server, item.Id, repositoryId).Select(p => p.PublishBranch)
+                    : [];
+                await CleanupWipAsync(item.Id, workspace?.RepositoryPath, workspace?.Remote, cleanupWip,
+                    protectedBranches.Cast<string?>().Append(branch).Append(receipt?.Intent.PublishBranch)
+                        .Concat(repositoryResults?.Select(r => r.BranchName) ?? []), log, ct);
             }
             StopManagedJobs(item.Id);
             teams.Finish(server, item.Id, "completed");
@@ -1579,12 +1584,13 @@ public sealed partial class PRFactoryWorkItems(
 
     /// <summary>Best-effort: the ticket already completed, so a failed delete is logged and never fails the item.</summary>
     internal static async Task CleanupWipAsync(Guid itemId, string? checkout, string? remote, string branch,
-        Action<string>? log, CancellationToken ct)
+        IEnumerable<string?> protectedBranches, Action<string>? log, CancellationToken ct)
     {
         string? skipped;
         try
         {
-            skipped = checkout is null || remote is null ? "no mapped checkout"
+            skipped = protectedBranches.Contains(branch, StringComparer.Ordinal) ? "protected publication or PR head branch"
+                : checkout is null || remote is null ? "no mapped checkout"
                 : await WipPublisher.DeleteAsync(checkout, remote, branch, ct);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)

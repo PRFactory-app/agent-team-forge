@@ -33,6 +33,8 @@ public sealed class PullRequestTests
         public string RemoteHead = Sha;
         public bool ExistingPr;
         public string PrHead = Sha;
+        public string HeadBranch;
+        public string? CleanupWipBranch;
         public string[] ForkEntries = [];
         public bool CreateHidden;
         public string Limits = "";
@@ -47,6 +49,7 @@ public sealed class PullRequestTests
 
         public Fixture(string headBranch = "prfactory/PRF-1", string remote = Remote, bool publish = true)
         {
+            HeadBranch = headBranch;
             var db = JobDatabase.Create(dir.File("jobs.db"), TimeSpan.FromSeconds(2));
             Publications = new PRFactoryPublicationStore(db);
             if (publish)
@@ -80,7 +83,7 @@ public sealed class PullRequestTests
             if (args.StartsWith("pr list", StringComparison.Ordinal))
             {
                 var list = "[" + string.Join(',', ForkEntries.Concat(ExistingPr && !CreateHidden ? [Entry(7, PrHead)] : [])) + "]";
-                return Task.FromResult(new ProcessResult(0, list, ""));
+                return Task.FromResult(new ProcessResult(0, list.Replace("prfactory/PRF-1", HeadBranch, StringComparison.Ordinal), ""));
             }
             if (args == "credential fill") { return Task.FromResult(new ProcessResult(0, "protocol=https\r\nhost=bitbucket.org\r\nusername=x-token-auth\r\npassword=" + BbToken + "\r\n", "")); }
             if (args.StartsWith("pr create", StringComparison.Ordinal)) { ExistingPr = true; return Task.FromResult(new ProcessResult(0, "https://github.com/x/y/pull/7\n", "")); }
@@ -106,7 +109,8 @@ public sealed class PullRequestTests
             if (path.Contains("/complete/", StringComparison.Ordinal))
             {
                 Completions.Add(JsonElement.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult()));
-                return Json("{\"accepted\":true}");
+                return Json(JsonSerializer.Serialize(new PRFactoryCompletionResponse(true, CleanupWipBranch),
+                    PRFactoryWorkItemJson.Default.PRFactoryCompletionResponse));
             }
             if (path.Contains("/fail/", StringComparison.Ordinal))
             {
@@ -163,6 +167,25 @@ public sealed class PullRequestTests
     sealed class Handler(Func<HttpRequestMessage, HttpResponseMessage> reply) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => Task.FromResult(reply(request));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Completion_preserves_the_PR_head_and_other_publication_branches(bool cleanupHead)
+    {
+        const string head = "wip/machine/PRF-1";
+        const string other = "wip/machine/earlier-publication";
+        using var f = new Fixture(head);
+        var receipt = Assert.Single(f.Publications.VerifiedFor(Url, f.Source, f.Repo));
+        f.Publications.Verify(receipt with { PublicationId = "pub-2", PublishBranch = other });
+        f.CleanupWipBranch = cleanupHead ? head : other;
+
+        await f.Handle();
+
+        Assert.Single(f.Completions);
+        Assert.Empty(f.Failures);
+        Assert.Contains(f.Logs, line => line.Contains("protected publication or PR head branch", StringComparison.Ordinal));
     }
 
     [Fact]

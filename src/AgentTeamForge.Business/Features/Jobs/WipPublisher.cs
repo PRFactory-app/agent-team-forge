@@ -58,11 +58,13 @@ public sealed class WipPublisher(PRFactoryHandoverStore store, PublicationAuthor
         {
             return "invalid ref or missing checkout";
         }
-        if (await JobWorktree.GitAsync(checkout, Timeout, ct, "remote", "get-url", "origin") != remote)
+        if (await JobWorktree.GitAsync(checkout, Timeout, ct, "remote", "get-url", "--all", "origin") != remote
+            || await JobWorktree.GitAsync(checkout, Timeout, ct, "remote", "get-url", "--push", "--all", "origin") != remote)
         {
             return "remote does not match the repository mapping";
         }
-        var pushed = await JobWorktree.RunAsync(checkout, Timeout, ct, "push", "--no-follow-tags", "--", remote, ":refs/heads/" + branch);
+        // Push through the origin whose effective destinations we checked, including an explicit pushurl.
+        var pushed = await JobWorktree.RunAsync(checkout, Timeout, ct, "push", "--no-follow-tags", "--", "origin", ":refs/heads/" + branch);
         return pushed is { ExitCode: 0 } ? null : "git push --delete failed";
     }
 

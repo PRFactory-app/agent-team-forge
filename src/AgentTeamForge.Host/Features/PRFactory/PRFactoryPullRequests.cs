@@ -83,7 +83,8 @@ public sealed partial class PRFactoryPullRequests(
             if (cleanupWip is not null)
             {
                 await PRFactoryWorkItems.CleanupWipAsync(item.Id, repositories.First(r => r.Id == request.RepositoryId).Directory,
-                    remote.Url, cleanupWip, log, ct);
+                    remote.Url, cleanupWip, publications.VerifiedFor(server, request.SourceWorkItemId, request.RepositoryId)
+                        .Select(p => p.PublishBranch).Append(request.HeadBranch), log, ct);
             }
         }
         catch (Failure failure)

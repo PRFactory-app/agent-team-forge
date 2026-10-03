@@ -6,6 +6,26 @@ namespace AgentTeamForge.Tests.PRFactory;
 public sealed class BaseWipHandoverTests
 {
     [Fact]
+    public async Task Wip_cleanup_refuses_a_rewritten_push_destination()
+    {
+        using var h = new ChainHarness(new PRFactoryWorkItem { Id = Guid.NewGuid() });
+        const string branch = "wip/machine/PRF-42";
+        ChainHarness.Git(h.Repo, "push", "origin", h.BaseSha + ":refs/heads/" + branch);
+        var rewritten = Path.Combine(Path.GetDirectoryName(h.Remote)!, "rewritten.git");
+        ChainHarness.Git(h.Repo, "clone", "--bare", h.Remote, rewritten);
+        ChainHarness.Git(h.Repo, "config", "url." + rewritten + ".pushInsteadOf", h.Remote);
+        Assert.Equal(h.Remote, ChainHarness.Git(h.Repo, "remote", "get-url", "origin"));
+        Assert.Equal(rewritten, ChainHarness.Git(h.Repo, "remote", "get-url", "--push", "origin"));
+
+        var skipped = await AgentTeamForge.Business.Features.Jobs.WipPublisher.DeleteAsync(
+            h.Repo, h.Remote, branch, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(skipped);
+        Assert.Equal(h.BaseSha, h.RemoteHead(branch));
+        Assert.Equal(h.BaseSha, ChainHarness.Git(h.Repo, "--git-dir=" + rewritten, "rev-parse", "refs/heads/" + branch));
+    }
+
+    [Fact]
     public async Task Adoption_fences_when_acceptance_release_id_differs_from_claim()
     {
         var repository = Guid.NewGuid();
