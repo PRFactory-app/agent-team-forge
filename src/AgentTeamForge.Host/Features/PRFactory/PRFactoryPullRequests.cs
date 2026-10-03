@@ -7,7 +7,7 @@ using AgentTeamForge.DAL.Features.Jobs;
 namespace AgentTeamForge.Host.Features.PRFactory;
 
 /// <summary>One child process call. A null environment value removes the variable.</summary>
-public sealed record ProcessSpec(string File, string[] Args, IReadOnlyDictionary<string, string?>? Env = null, string? Stdin = null);
+public sealed record ProcessSpec(string File, string[] Args, IReadOnlyDictionary<string, string?>? Env = null, string? Stdin = null, TimeSpan? Timeout = null);
 public sealed record ProcessResult(int ExitCode, string Stdout, string Stderr);
 
 /// <summary>
@@ -24,6 +24,11 @@ public sealed partial class PRFactoryPullRequests(
     }
 
     readonly Func<ProcessSpec, CancellationToken, Task<ProcessResult>> runner = run ?? RunProcessAsync;
+    // The default runner resolves the real gh once; an injected runner keeps the plain name.
+    Task<string> GhPath() => run is null ? GhExecutable.ResolveAsync(RunProcessAsync) : Task.FromResult("gh");
+
+    static Failure TimedOut(string what, TimeSpan limit) =>
+        new($"{what} did not finish within {limit.TotalSeconds:0} s; the gh on the daemon PATH may be a looping wrapper.");
 
     public static bool IsGitHubLogin(string value) => LoginPattern().IsMatch(value);
 
@@ -153,7 +158,8 @@ public sealed partial class PRFactoryPullRequests(
     {
         var env = new Dictionary<string, string?> { ["GH_TOKEN"] = null, ["GITHUB_TOKEN"] = null, ["GH_HOST"] = "github.com", ["MISE_QUIET"] = "1" };
         ProcessResult result;
-        try { result = await runner(new ProcessSpec("gh", ["auth", "token", "--user", login], env), ct); }
+        try { result = await runner(new ProcessSpec(await GhPath(), ["auth", "token", "--user", login], env, null, TokenTimeout), ct); }
+        catch (TimeoutException) { throw TimedOut("gh auth token", TokenTimeout); }
         catch (System.ComponentModel.Win32Exception) { throw new Failure("gh is not installed or not on PATH on this machine."); }
         // A gh shim (e.g. mise) may print progress lines before the token; the token is the last non-empty stdout line.
         var token = result.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault() ?? "";
@@ -207,7 +213,8 @@ public sealed partial class PRFactoryPullRequests(
     async Task<string> Gh(IReadOnlyDictionary<string, string?> env, string token, string[] args, string? stdin, CancellationToken ct)
     {
         ProcessResult result;
-        try { result = await runner(new ProcessSpec("gh", args, env, stdin), ct); }
+        try { result = await runner(new ProcessSpec(await GhPath(), args, env, stdin, CallTimeout), ct); }
+        catch (TimeoutException) { throw TimedOut("gh", CallTimeout); }
         catch (System.ComponentModel.Win32Exception) { throw new Failure("gh is not installed or not on PATH on this machine."); }
         if (result.ExitCode != 0)
         {
@@ -217,6 +224,8 @@ public sealed partial class PRFactoryPullRequests(
         }
         return result.Stdout;
     }
+
+    static readonly TimeSpan TokenTimeout = TimeSpan.FromSeconds(20), CallTimeout = TimeSpan.FromMinutes(2);
 
     static string Scrub(string text, string? token)
     {
@@ -250,9 +259,15 @@ public sealed partial class PRFactoryPullRequests(
             process.StandardInput.Close();
         }
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromMinutes(2));
+        var limit = spec.Timeout ?? TimeSpan.FromMinutes(2);
+        timeout.CancelAfter(limit);
         try { await process.WaitForExitAsync(timeout.Token); }
-        catch (OperationCanceledException) { OwnedProcessTermination.Kill(process); throw; }
+        catch (OperationCanceledException)
+        {
+            OwnedProcessTermination.Kill(process);
+            if (ct.IsCancellationRequested) { throw; }
+            throw new TimeoutException($"{spec.File} did not finish within {limit.TotalSeconds:0} s");
+        }
         return new(process.ExitCode, await output, await error);
     }
 

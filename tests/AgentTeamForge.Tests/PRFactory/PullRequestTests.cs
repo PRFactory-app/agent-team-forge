@@ -66,11 +66,13 @@ public sealed class PullRequestTests
         public string TokenStdoutPrefix = "";
         public string TokenStderr = "";
         public string? TokenOverride;
+        public Exception? TokenThrows;
 
         public Task<ProcessResult> Gh(ProcessSpec spec, CancellationToken ct)
         {
             Calls.Add(spec);
             var args = string.Join(' ', spec.Args);
+            if (args.StartsWith("auth token", StringComparison.Ordinal) && TokenThrows is not null) { return Task.FromException<ProcessResult>(TokenThrows); }
             if (args.StartsWith("auth token", StringComparison.Ordinal)) { return Task.FromResult(new ProcessResult(0, TokenStdoutPrefix + (TokenOverride ?? Token) + "\n", TokenStderr)); }
             if (args.StartsWith("api ", StringComparison.Ordinal)) { return Task.FromResult(new ProcessResult(0, RemoteHead + "\n", "")); }
             if (args.StartsWith("pr list", StringComparison.Ordinal))
@@ -126,6 +128,40 @@ public sealed class PullRequestTests
     sealed class Handler(Func<HttpRequestMessage, HttpResponseMessage> reply) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => Task.FromResult(reply(request));
+    }
+
+    [Fact]
+    public async Task A_gh_that_times_out_fails_the_work_item_visibly_instead_of_deferring()
+    {
+        using var f = new Fixture { TokenThrows = new TimeoutException("gh did not finish") };
+        await f.Handle();
+
+        var failure = Assert.Single(f.Failures);
+        Assert.Contains("looping wrapper", failure.GetProperty("errorMessage").GetString());
+        Assert.Empty(f.Completions);
+    }
+
+    [Fact]
+    public async Task The_resolver_prefers_the_mise_gh_over_a_script_on_path()
+    {
+        using var dir = new TempStateDir();
+        var bin = Path.Combine(dir.Path, "bin");
+        Directory.CreateDirectory(bin);
+        var wrapper = Path.Combine(bin, "gh");
+        File.WriteAllText(wrapper, "#!/bin/bash\nexec mise x gh -- gh \"$@\"\n");
+        var real = dir.File("real-gh");
+        File.WriteAllBytes(real, [0x7f, (byte)'E', (byte)'L', (byte)'F', 0]);
+
+        var chosen = await GhExecutable.ResolveAsync(bin, (spec, _) => Task.FromResult(
+            spec.File == "mise" ? new ProcessResult(0, real + "\n", "") : throw new InvalidOperationException()), CancellationToken.None);
+        Assert.Equal(real, chosen);
+
+        // mise pointing back at the wrapper, or failing, falls back to PATH.
+        Assert.Equal(wrapper, await GhExecutable.ResolveAsync(bin, (_, _) => Task.FromResult(new ProcessResult(0, wrapper, "")), CancellationToken.None));
+        Assert.Equal(wrapper, await GhExecutable.ResolveAsync(bin, (_, _) => Task.FromResult(new ProcessResult(1, "", "no")), CancellationToken.None));
+        // A real binary on PATH is used without asking mise.
+        File.WriteAllBytes(wrapper, [0x7f, (byte)'E', (byte)'L', (byte)'F', 0]);
+        Assert.Equal(wrapper, await GhExecutable.ResolveAsync(bin, (_, _) => throw new InvalidOperationException(), CancellationToken.None));
     }
 
     [Fact]
