@@ -286,6 +286,25 @@ public sealed class WakeTests
         Assert.Contains(logs, line => line.Contains("wake target pruned: target=claude:live reason=stale"));
     }
 
+    [Theory]
+    [InlineData("linux")]
+    [InlineData("macos")]
+    [InlineData("windows")]
+    public void Claude_target_is_gone_only_when_its_owner_is_gone(string platform)
+    {
+        var self = Environment.ProcessId.ToString();
+        var missing = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".sock");
+        var existing = typeof(WakeTests).Assembly.Location;
+        Assert.True(WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", missing, "s", "2147483647"), platform));
+        Assert.False(WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", missing, "s", self), platform));
+        Assert.False(WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", existing, "s", self), platform));
+        // Unix: a live socket file keeps the target; a legacy row without a pid goes with its socket.
+        // Windows: pipes cannot be probed, so a row without a pid is never judged gone.
+        Assert.Equal(platform == "windows", WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", existing, "s", "2147483647"), platform));
+        Assert.Equal(platform != "windows", WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", missing, "", ""), platform));
+        Assert.False(WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", missing, "s", self), "unsupported"));
+    }
+
     [Fact]
     public async Task Rejected_post_logs_its_reason_once_per_target_and_reason()
     {

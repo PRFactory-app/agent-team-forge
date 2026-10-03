@@ -52,22 +52,28 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
     readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
     readonly TimeSpan coalesceWindow = coalesce ?? TimeSpan.FromSeconds(2);
     readonly TimeSpan renotifyWindow = renotify ?? TimeSpan.FromMinutes(5);
-    readonly Func<WakeRegistration, bool> gone = claudeGone ?? ClaudeTargetGone;
+    readonly Func<WakeRegistration, bool> gone = claudeGone ?? (target => ClaudeTargetGone(target));
     readonly Dictionary<string, string> rejections = [];
     DateTimeOffset nextPrune;
 
-    /// <summary>Unix: the channel socket is missing and the owning pid (if recorded) has exited.
-    /// Windows pipes rely on the store's stale-rejection rule.</summary>
-    public static bool ClaudeTargetGone(WakeRegistration target)
+    /// <summary>Unix (Linux/macOS): the channel socket file is missing and the owning pid, if recorded, has exited.
+    /// Windows: the owning pid has exited; the named pipe dies with it and posts require that exact server pid.
+    /// Any doubt (access denied, unknown platform, Windows without a pid) counts as alive.</summary>
+    public static bool ClaudeTargetGone(WakeRegistration target, string? platform = null)
     {
-        if (ClaudeChannel.Transport(ClaudeChannel.Platform) != "unix" || File.Exists(target.Address)) { return false; }
-        if (!int.TryParse(target.Home, out var pid)) { return true; }
+        var transport = ClaudeChannel.Transport(platform ?? ClaudeChannel.Platform);
+        if (transport is null || transport == "unix" && File.Exists(target.Address)) { return false; }
+        if (!int.TryParse(target.Home, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var pid) || pid <= 0)
+        {
+            return transport == "unix";
+        }
         try
         {
             using var process = System.Diagnostics.Process.GetProcessById(pid);
             return process.HasExited;
         }
         catch (ArgumentException) { return true; }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { return false; }
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
