@@ -443,7 +443,8 @@ public sealed class HerdrInteractiveBackendTests
         var evidence = await Collect(run);
 
         Assert.Equal("native-1", control.Launch?.ResumeSessionId);
-        Assert.Equal(["--permission-mode", "bypassPermissions", "--settings", "{\"skipDangerousModePermissionPrompt\":true}", "--resume", "native-1"],
+        Assert.Equal(["--permission-mode", "bypassPermissions", "--settings", "{\"skipDangerousModePermissionPrompt\":true}",
+            "--disallowed-tools", "AskUserQuestion", "--resume", "native-1"],
             HerdrAgentControl.AgentArguments(control.Launch!));
         Assert.Contains(evidence, e => e == new BackendEvidence.Session("corr-2", "native-1"));
         Assert.Contains(evidence, e => e == new BackendEvidence.Result("corr-2", "follow-up finished"));
