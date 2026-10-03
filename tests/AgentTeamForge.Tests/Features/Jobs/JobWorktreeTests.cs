@@ -120,7 +120,7 @@ public sealed class JobWorktreeTests
         using var source = new TempStateDir();
         Git(source.Path, "init");
         Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
-        var jobs = Enumerable.Range(0, 6).Select(i => f.Accept().Execute(new SubmitJobRequest($"k{i}", "task", null, false)
+        var jobs = Enumerable.Range(0, 16).Select(i => f.Accept().Execute(new SubmitJobRequest($"k{i}", "task", null, false)
         {
             Cwd = source.Path,
             Worktree = true,

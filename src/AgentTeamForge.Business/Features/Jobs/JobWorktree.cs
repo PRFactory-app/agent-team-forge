@@ -1,4 +1,5 @@
 using AgentTeamForge.DAL.Files;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
@@ -53,14 +54,23 @@ public static class JobWorktree
                 Git(repository, QueryTimeout, "rev-parse", "--path-format=absolute", "--git-common-dir");
         }
         PrivateFiles.CreateDirectory(Path.GetDirectoryName(path)!);
-        // An interrupted worktree add can have already created the branch.
-        var existing = Git(repository, QueryTimeout, "rev-parse", "--verify", "--quiet", $"refs/heads/{branch}");
-        if (existing is not null)
+        var commonDir = Git(repository, QueryTimeout, "rev-parse", "--path-format=absolute", "--git-common-dir");
+        if (commonDir is null) { return false; }
+        lock (AddLocks.GetOrAdd(commonDir, _ => new Lock()))
         {
-            return existing == startingSha && Add(repository, "worktree", "add", path, branch);
+            // An interrupted worktree add can have already created the branch.
+            var existing = Git(repository, QueryTimeout, "rev-parse", "--verify", "--quiet", $"refs/heads/{branch}");
+            if (existing is not null)
+            {
+                return existing == startingSha && Add(repository, "worktree", "add", path, branch);
+            }
+            return Add(repository, "worktree", "add", "-b", branch, path, startingSha);
         }
-        return Add(repository, "worktree", "add", "-b", branch, path, startingSha);
     }
+
+    // Concurrent `git worktree add` in one repository is unsafe: each reads every sibling's admin files and dies
+    // ("failed to read .git/worktrees/<id>/commondir") when another add is still writing them. Serialize per repository.
+    static readonly ConcurrentDictionary<string, Lock> AddLocks = new(StringComparer.Ordinal);
 
     /// <summary>A refused checkout fails the job; keep git's reason in the daemon log rather than on its raw stderr.</summary>
     static bool Add(string repository, params string[] args)
