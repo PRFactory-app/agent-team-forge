@@ -298,7 +298,7 @@ public sealed class WakeTests
     {
         var self = Environment.ProcessId.ToString();
         var missing = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".sock");
-        var existing = typeof(WakeTests).Assembly.Location;
+        var existing = Environment.ProcessPath!;
         Assert.True(WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", missing, "s", "2147483647"), platform));
         Assert.False(WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", missing, "s", self), platform));
         Assert.False(WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", existing, "s", self), platform));
