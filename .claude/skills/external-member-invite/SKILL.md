@@ -39,3 +39,9 @@ ATF MCP entry with `ATF_EXTERNAL_ONLY=1` (exposes only `join_team`,
 The member calls `leave_team(member_token)` when done (revokes its token, does
 not stop its process). `close_team` closes your lead session and revokes all
 member tokens.
+
+## Worked example
+
+[`desktop-visual-qa`](../desktop-visual-qa/SKILL.md) runs a full browser QA
+session on this pattern: a Codex or Claude Desktop tester, a ready gate before
+the ticket is minted, GO/findings over the bus, and fixes routed to ATF jobs.
