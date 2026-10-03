@@ -96,9 +96,9 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
         if (now() >= nextPrune)
         {
             nextPrune = now() + TimeSpan.FromMinutes(10);
-            foreach (var (key, why) in store.PruneDead(now(), gone))
+            foreach (var key in store.PruneDead(now(), gone))
             {
-                log($"wake target pruned: target={key} reason={why}");
+                log($"wake target pruned: target={key}");
             }
         }
         var pending = store.Pending().Concat(store.PendingExternal()).Concat(store.PendingParks());

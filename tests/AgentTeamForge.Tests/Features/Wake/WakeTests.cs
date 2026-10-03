@@ -250,7 +250,7 @@ public sealed class WakeTests
     }
 
     [Fact]
-    public async Task Dead_claude_targets_are_pruned_and_keep_their_unread_rows()
+    public async Task Dead_claude_targets_are_pruned_live_ones_never_and_unread_rows_stay()
     {
         using var fixture = new JobFixture();
         var store = new WakeStore(fixture.Database);
@@ -263,27 +263,31 @@ public sealed class WakeTests
         Finish(fixture, live, "live");
         var logs = new List<string>();
         var time = DateTimeOffset.UtcNow;
-        await new WakeCoordinator(store, new FakePoster((_, _) => false), logs.Add, () => time, TimeSpan.Zero)
-            .TickAsync(TestContext.Current.CancellationToken);
+        // The Unix rule on every OS; per-platform liveness is covered by Claude_target_is_gone_only_when_its_owner_is_gone.
+        async Task Tick() => await new WakeCoordinator(store, new FakePoster((_, _) => false), logs.Add, () => time, TimeSpan.Zero,
+            claudeGone: t => WakeCoordinator.ClaudeTargetGone(t, "linux")).TickAsync(TestContext.Current.CancellationToken);
+        await Tick();
         Assert.Equal(3, store.Pending().Count); // registered moments ago: inside the grace period
 
         time += TimeSpan.FromMinutes(11);
-        await new WakeCoordinator(store, new FakePoster((_, _) => false), logs.Add, () => time, TimeSpan.Zero)
-            .TickAsync(TestContext.Current.CancellationToken);
+        await Tick();
         Assert.Equal("claude:live", Assert.Single(store.Pending()).Target.Key);
-        Assert.Contains(logs, line => line.Contains("wake target pruned: target=claude:dead reason=gone"));
-        Assert.Contains(logs, line => line.Contains($"wake target pruned: target={legacy.Key} reason=gone"));
+        Assert.Contains(logs, line => line.Contains("wake target pruned: target=claude:dead"));
+        Assert.Contains(logs, line => line.Contains($"wake target pruned: target={legacy.Key}"));
 
         // Unread work survives the prune and wakes again once the session registers anew.
-        var revived = store.Register("claude:dead", "claude", gone, "secret", "2147483647");
-        Assert.Equal(1, store.Pending().Single(x => x.Target.Key == revived.Key).Unread);
+        store.Register("claude:dead", "claude", gone, "secret", "2147483647");
+        Assert.Equal(1, store.Pending().Single(x => x.Target.Key == "claude:dead").Unread);
+        store.Invalidate("claude:dead");
 
-        // A target that never accepts a post for three days is pruned even if it looks alive.
-        time += TimeSpan.FromDays(3);
-        await new WakeCoordinator(store, new FakePoster((_, _) => false), logs.Add, () => time, TimeSpan.Zero, claudeGone: _ => false)
-            .TickAsync(TestContext.Current.CancellationToken);
-        Assert.Empty(store.Pending());
-        Assert.Contains(logs, line => line.Contains("wake target pruned: target=claude:live reason=stale"));
+        // A live lead is never pruned: not after days of rejected posts, nor when new work lands after days idle.
+        time += TimeSpan.FromDays(4);
+        await Tick();
+        Finish(fixture, live, "after-idle");
+        time += TimeSpan.FromMinutes(11);
+        await Tick();
+        Assert.Equal(2, Assert.Single(store.Pending()).Unread);
+        Assert.DoesNotContain(logs, line => line.Contains("pruned: target=claude:live"));
     }
 
     [Theory]

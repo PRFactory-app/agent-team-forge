@@ -93,22 +93,18 @@ public sealed class WakeStore(JobDatabase database)
         command.ExecuteNonQuery();
     }
 
-    /// <summary>Deactivates Claude targets that can no longer be woken: <paramref name="gone"/> (socket and pid
-    /// missing) with no registration or successful post for 10 minutes, or unread work and no successful post for
-    /// 3 days. Unread rows stay; resume_session rebinds them to a live target.</summary>
-    public IReadOnlyList<(string Key, string Reason)> PruneDead(DateTimeOffset now, Func<WakeRegistration, bool> gone)
+    /// <summary>Deactivates Claude targets whose owner is provably <paramref name="gone"/>, once nothing registered
+    /// or posted to them for 10 minutes. Targets of uncertain liveness are never pruned. Unread rows stay;
+    /// resume_session rebinds them to a live target.</summary>
+    public IReadOnlyList<string> PruneDead(DateTimeOffset now, Func<WakeRegistration, bool> gone)
     {
         using var connection = database.OpenConnection();
-        var candidates = new List<(WakeRegistration Target, DateTimeOffset LastOk, bool Unread)>();
+        var candidates = new List<(WakeRegistration Target, DateTimeOffset LastOk)>();
         using (var select = connection.CreateCommand())
         {
             select.CommandText = """
                 SELECT t.target_key,t.generation,t.kind,t.address,t.secret,t.home,
-                       t.registered_at,t.last_success,t.last_external_success,
-                       EXISTS (SELECT 1 FROM wake_jobs w JOIN jobs j ON j.job_id=w.job_id
-                               AND j.status IN ('completed','failed','needs_reconciliation','cancelled')
-                               WHERE w.target_key=t.target_key AND w.read_at IS NULL)
-                       OR EXISTS (SELECT 1 FROM external_messages m WHERE m.wake_key=t.target_key AND m.read_at IS NULL)
+                       t.registered_at,t.last_success,t.last_external_success
                 FROM wake_targets t WHERE t.active=1 AND t.kind='claude'
                 """;
             using var reader = select.ExecuteReader();
@@ -117,15 +113,13 @@ public sealed class WakeStore(JobDatabase database)
                 var target = new WakeRegistration(reader.GetString(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetString(5));
                 var lastOk = Enumerable.Range(6, 3).Where(i => !reader.IsDBNull(i))
                     .Max(i => DateTimeOffset.Parse(reader.GetString(i), System.Globalization.CultureInfo.InvariantCulture));
-                candidates.Add((target, lastOk, reader.GetInt64(9) != 0));
+                candidates.Add((target, lastOk));
             }
         }
-        var pruned = new List<(string, string)>();
-        foreach (var (target, lastOk, unread) in candidates)
+        var pruned = new List<string>();
+        foreach (var (target, lastOk) in candidates)
         {
-            var reason = now - lastOk > TimeSpan.FromMinutes(10) && gone(target) ? "gone"
-                : unread && now - lastOk > TimeSpan.FromDays(3) ? "stale" : null;
-            if (reason is null) { continue; }
+            if (now - lastOk <= TimeSpan.FromMinutes(10) || !gone(target)) { continue; }
             using var update = connection.CreateCommand();
             update.CommandText = """
                 UPDATE wake_targets SET active=0,generation=generation+1,notified_seq=0,last_success=NULL,
@@ -134,7 +128,7 @@ public sealed class WakeStore(JobDatabase database)
                 """;
             update.Parameters.AddWithValue("$key", target.Key);
             update.Parameters.AddWithValue("$generation", target.Generation);
-            if (update.ExecuteNonQuery() == 1) { pruned.Add((target.Key, reason)); }
+            if (update.ExecuteNonQuery() == 1) { pruned.Add(target.Key); }
         }
         return pruned;
     }
