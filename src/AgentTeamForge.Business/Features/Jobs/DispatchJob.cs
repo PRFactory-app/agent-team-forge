@@ -550,6 +550,7 @@ public sealed class DispatchJob : IDisposable
                 var correlations = store.GetSessionJobs(jobId).SelectMany(store.GetRuns).Select(run => run.Correlation).ToList();
                 var recovered = herdr.RecoverTerminalOwner(owner, correlations, () => store.ReleaseRestartFence(owner.JobId, owner.SessionId));
                 if (recovered == PaneOwnerRecovery.Retained) { log($"recovery: retained the idle Herdr pane of {jobId} for its next turn"); }
+                if (recovered == PaneOwnerRecovery.Released) { log($"recovery: released the restart fence of {jobId}; its idle Herdr pane is not reused"); }
                 if (recovered == PaneOwnerRecovery.Gone) { log($"recovery: released the restart fence of {jobId}; its Herdr pane is gone"); }
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)

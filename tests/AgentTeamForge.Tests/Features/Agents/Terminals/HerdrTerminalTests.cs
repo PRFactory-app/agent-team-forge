@@ -332,6 +332,63 @@ public class HerdrTerminalTests
         Assert.Single(fake.Calls, c => c.Args is ["tab", "create", ..]);
     }
 
+    // F-R1-a: a Pi job that completed before the restart must take a follow-up after it.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Restart_releases_a_completed_pi_jobs_idle_pane_fence_without_retaining_it_and_keeps_a_busy_one(bool busy)
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr { BootstrapFromTab = true };
+        var terminal = Terminal(fake, new Dictionary<string, string?>(Desktop) { ["HOME"] = state.Path });
+        var backend = new HerdrInteractiveBackend(terminal, InteractiveAgentKind.Pi, state.Path);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Pi, () => backend);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
+        var parent = accept.Execute(new SubmitJobRequest("pi-readme", "review", null, false) { Backend = BackendCatalog.Pi }).Job!;
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(f.Store.RecordSession(run, "pi-native"));
+        Assert.True(f.Store.Complete(run, "three improvements"));
+        var sessionDir = Directory.CreateDirectory(Path.Combine(state.Path, "pi-sessions", "abc")).FullName;
+        File.WriteAllText(Path.Combine(sessionDir, "s.jsonl"), """{"type":"session","id":"pi-native"}""" + "\n");
+        var bootstrap = Path.Combine(state.Path, "herdr", "atftest.bootstrap");
+        Directory.CreateDirectory(Path.GetDirectoryName(bootstrap)!);
+        File.WriteAllText(bootstrap, "atftest");
+        var session = await terminal.StartSessionAsync(CancellationToken.None);
+        var binding = await terminal.OpenAgentTabAsync(session, "pi: pi-readme", state.Path, bootstrap,
+            CancellationToken.None, onCreated: created => session = created);
+        HerdrOwnedSessions.Save(new InteractiveLaunch(InteractiveAgentKind.Pi, "atftest", state.Path, null, sessionDir, bootstrap)
+        { JobId = parent.JobId }, session with { ShellPid = binding.ShellPid, ShellStartTicks = binding.ShellStartTicks });
+        RecoverRecords(f, state);
+        var follow = new FollowUpJob(f.Store, JobFixture.Operator, accept);
+        Assert.Equal(JobErrors.ParentNotReady, follow.Execute(new FollowUpRequest(parent.JobId, "early", "early")).Error);
+        if (busy) { for (var i = 0; i < 8; i++) { fake.AgentStatuses.Enqueue("working"); } } // A human typed into the pane.
+
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        dispatcher.RestoreAfterRestart(f.Store.RestartCandidates());
+        using var lifetime = new CancellationTokenSource();
+        var loop = dispatcher.RunAsync(lifetime.Token);
+        try
+        {
+            Assert.Equal(busy, f.Store.IsSessionFenced(parent.JobId));
+            // Pi's live session cannot be proven, so the old pane is neither retained nor closed.
+            Assert.False(backend.HasIdleSession("pi-native"));
+            Assert.DoesNotContain(fake.Snapshot(), c => c.Args is ["pane" or "tab", "close", ..] or ["session", "stop" or "delete", ..]);
+            var followUp = follow.Execute(new FollowUpRequest(parent.JobId, "draft it", "next"));
+            Assert.Equal(busy ? JobErrors.ParentNotReady : null, followUp.Error);
+            if (busy) { return; }
+            dispatcher.Signal();
+            // The follow-up resumes the exact session in a new tab instead of typing into the unproven pane.
+            await Bounded.Until(() => fake.Snapshot().Count(c => c.Args is ["tab", "create", ..]) == 2, "resumed pi tab");
+        }
+        finally
+        {
+            lifetime.Cancel();
+            await loop;
+        }
+    }
+
     private static async Task RestartDispatcherAsync(JobFixture f, BackendCatalog catalog)
     {
         using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });

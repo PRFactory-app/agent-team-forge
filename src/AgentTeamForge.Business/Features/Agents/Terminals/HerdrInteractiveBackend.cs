@@ -10,7 +10,7 @@ namespace AgentTeamForge.Business.Features.Agents.Terminals;
 
 public enum InteractiveAgentKind { Claude, Codex, Pi }
 
-public enum PaneOwnerRecovery { Unverified, Retained, Gone, GoneAgain }
+public enum PaneOwnerRecovery { Unverified, Retained, Released, Gone, GoneAgain }
 
 /// <summary>Runs a real agent TUI in a tab of an ATF-owned Herdr session.</summary>
 public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionStop, IDisposable
@@ -148,8 +148,8 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     /// the job's exact native session live in the pane, and transcript evidence that the newest turn
     /// there is an ATF turn (one of <paramref name="correlations"/>) that completed with no
     /// pending background work. <paramref name="releaseFence"/> revalidates the session and clears the
-    /// fence before the pane is offered. A proven-gone pane only releases the fence: nothing is started
-    /// or closed. Serialized with stop_agent, which must never see its fence cleared.
+    /// fence before the pane is offered. A proven-gone pane, or a verified idle Pi pane, only releases the fence:
+    /// nothing is started or closed. Serialized with stop_agent, which must never see its fence cleared.
     /// </summary>
     public PaneOwnerRecovery RecoverTerminalOwner(JobRecord owner, IReadOnlyList<string> correlations, Func<bool> releaseFence)
     {
@@ -163,6 +163,9 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             {
                 return control.PaneIsGone(owned.Session) ? Gone(owned.Path, owned.Session, releaseFence) : PaneOwnerRecovery.Unverified;
             }
+            // Pi's live session cannot be proven, so its pane is never typed into again. A verified idle pane
+            // only releases the fence: the next follow-up resumes the exact session in a new tab.
+            if (_kind == InteractiveAgentKind.Pi) { return SettledIdle(launch) && releaseFence() ? PaneOwnerRecovery.Released : PaneOwnerRecovery.Unverified; }
             if (!BindTranscript(launch, owned.Session, sessionId) || !SettledIdle(launch) || !LatestTurnSettled(launch, correlations)
                 || !releaseFence()) { return PaneOwnerRecovery.Unverified; }
             BindNativeSession(sessionId, launch);
