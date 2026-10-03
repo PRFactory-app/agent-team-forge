@@ -763,11 +763,33 @@ public sealed class WakeTests
         Assert.Equal(0, fromA.UnreadCount);
         Assert.Equal(1, Assert.Single(wake.PendingExternal()).Unread);
 
-        // since_seq past an unread message acknowledges it instead of hiding it from every later read.
+        // A global filter must leave messages it did not return unread and retrievable.
         var past = Read(sinceSeq: full.NextSeq + 3);
         Assert.True(past.Ok, past.Error);
         Assert.Empty(past.Messages!);
         Assert.Equal(0, past.UnreadCount);
+        Assert.Equal(1, Assert.Single(wake.PendingExternal()).Unread);
+
+        var remaining = Read();
+        Assert.Equal("b2", Assert.Single(remaining.Messages!).Text);
+        Assert.Equal(0, remaining.UnreadCount);
+        Assert.Empty(wake.PendingExternal());
+
+        Assert.True(team.Send(a, "a5").Ok);
+        Assert.True(team.Send(a, "a6").Ok);
+        Assert.True(team.Send(b, "b3").Ok);
+        var later = Read(sinceSeq: past.NextSeq + 1, limit: 1);
+        Assert.Equal("a6", Assert.Single(later.Messages!).Text);
+        Assert.True(later.HasMore);
+        Assert.Equal(2, Assert.Single(wake.PendingExternal()).Unread);
+        Assert.Empty(Read(sinceSeq: later.NextSeq, limit: 0).Messages!);
+        Assert.Equal(2, Assert.Single(wake.PendingExternal()).Unread);
+        var earlier = Read(limit: 1);
+        Assert.Equal("a5", Assert.Single(earlier.Messages!).Text);
+        Assert.Equal(1, Assert.Single(wake.PendingExternal()).Unread);
+        var last = Read(sinceSeq: later.NextSeq);
+        Assert.Equal("b3", Assert.Single(last.Messages!).Text);
+        Assert.Equal(0, last.UnreadCount);
         Assert.Empty(wake.PendingExternal());
 
         poster.Attempts.Clear();

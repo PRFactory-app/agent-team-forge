@@ -369,10 +369,17 @@ public sealed class ExternalTeamTests
         var memberWatermark = team.Read(a, null, 0).Inbox!;
         Assert.Equal(1, memberWatermark.UnreadCount);
         var memberRead = team.Read(a, 0, 1, fromAgent: "team-lead", maxChars: 2).Inbox!;
+        Assert.Equal(1, memberRead.UnreadCount);
         Assert.Equal(1, memberRead.SenderSeq);
         Assert.Equal(("he", true, 5), (memberRead.Messages[0].Text,
             memberRead.Messages[0].Truncated, memberRead.Messages[0].FullLen));
         Assert.Empty(team.Read(a, null, null).Inbox!.Messages);
+
+        Assert.True(team.SendFromLead(lead.SessionId, lead.Workspace, "a", "one").Ok);
+        Assert.True(team.SendFromLead(lead.SessionId, lead.Workspace, "a", "two").Ok);
+        Assert.Equal(2, team.Read(a, null, 1).Inbox!.UnreadCount);
+        Assert.Equal(1, team.Read(a, null, 1).Inbox!.UnreadCount);
+        Assert.Equal(0, team.Read(a, null, 0).Inbox!.UnreadCount);
     }
 
     [Fact]
