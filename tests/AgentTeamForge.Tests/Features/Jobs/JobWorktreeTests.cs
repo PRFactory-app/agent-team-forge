@@ -120,7 +120,7 @@ public sealed class JobWorktreeTests
         using var source = new TempStateDir();
         Git(source.Path, "init");
         Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
-        var jobs = Enumerable.Range(0, 6).Select(i => f.Accept().Execute(new SubmitJobRequest($"k{i}", "task", null, false)
+        var jobs = Enumerable.Range(0, 16).Select(i => f.Accept().Execute(new SubmitJobRequest($"k{i}", "task", null, false)
         {
             Cwd = source.Path,
             Worktree = true,
@@ -128,6 +128,65 @@ public sealed class JobWorktreeTests
 
         Parallel.ForEach(jobs, job => Assert.True(JobWorktree.Prepare(f.Store.GetJob(job.JobId)!)));
         Assert.All(jobs, job => Assert.Equal("atf/job-" + job.JobId, Git(job.WorktreePath!, "rev-parse", "--abbrev-ref", "HEAD")));
+    }
+
+    [Fact]
+    public async Task A_job_cancelled_while_waiting_for_another_jobs_checkout_creates_no_worktree_and_starts_no_agent()
+    {
+        using var f = new JobFixture();
+        using var source = new TempStateDir();
+        Git(source.Path, "init");
+        Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+        var backend = new ScriptedBackend(r =>
+        [
+            new BackendEvidence.Session(r.Correlation, "session-1"),
+            new BackendEvidence.Result(r.Correlation, "done"),
+        ]);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, catalog.Names);
+        var slow = accept.Execute(new SubmitJobRequest("slow", "first", null, false) { Cwd = source.Path, Worktree = true }).Job!;
+        var waiting = accept.Execute(new SubmitJobRequest("waiting", "second", null, false)
+        {
+            Cwd = source.Path,
+            Worktree = true,
+            TimeoutSeconds = 1,
+        }).Job!;
+
+        // The slow job's checkout holds the repository until the test releases it.
+        var started = Path.Combine(source.Path, "slow-started");
+        var release = Path.Combine(source.Path, "slow-release");
+        Executable(Path.Combine(source.Path, ".git", "hooks", "post-checkout"),
+            $"case \"$PWD\" in *{slow.JobId}*) touch '{started}'; while [ ! -f '{release}' ]; do sleep 0.05; done;; esac");
+
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+        // Preparation runs synchronously inside the attempt, so each attempt gets its own thread.
+        var slowClaim = f.Store.BeginNextAttempt()!;
+        var slowRun = Task.Run(() => dispatcher.RunAttemptAsync(slowClaim, CancellationToken.None), TestContext.Current.CancellationToken);
+        try
+        {
+            var watch = Stopwatch.StartNew();
+            while (!File.Exists(started))
+            {
+                Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), "the slow checkout never started");
+                await Task.Delay(50, TestContext.Current.CancellationToken);
+            }
+            var waitingClaim = f.Store.BeginNextAttempt()!;
+            var waitingRun = Task.Run(() => dispatcher.RunAttemptAsync(waitingClaim, CancellationToken.None), TestContext.Current.CancellationToken);
+            // Times out behind the held checkout; before the fix it waited for the release instead.
+            await Task.WhenAny(waitingRun, Task.Delay(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+            File.WriteAllText(release, "");
+            await waitingRun.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            File.WriteAllText(release, "");
+            await slowRun.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+        }
+
+        Assert.Equal((JobStatus.Cancelled, "timeout"), (f.Store.GetJob(waiting.JobId)!.Status, f.Store.GetJob(waiting.JobId)!.ReasonCode));
+        Assert.False(Directory.Exists(waiting.WorktreePath));
+        Assert.Equal([slow.WorktreePath], backend.Started.Select(r => r.WorkingDirectory));
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(slow.JobId)!.Status);
     }
 
     [Fact]

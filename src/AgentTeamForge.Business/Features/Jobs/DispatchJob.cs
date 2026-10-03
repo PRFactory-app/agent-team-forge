@@ -884,7 +884,7 @@ public sealed class DispatchJob : IDisposable
                     End(run, JobStatus.Failed, notStarted);
                     return;
                 }
-                if (!JobWorktree.Prepare(claim.Job))
+                if (!JobWorktree.Prepare(claim.Job, deadline.Token))
                 {
                     End(run, JobStatus.Failed, "worktree_unavailable");
                     return;
@@ -907,6 +907,8 @@ public sealed class DispatchJob : IDisposable
                     End(run, JobStatus.Failed, "pi_mcp_adapter_missing", PiMcpAdapter.InstallHint);
                     return;
                 }
+                // A stop or timeout during worktree preparation must not launch an agent.
+                deadline.Token.ThrowIfCancellationRequested();
                 var starting = Task.Run(() => backend.Start(request), CancellationToken.None);
                 try { backendRun = await BackendCall(() => starting.WaitAsync(deadline.Token), "launch_failed"); }
                 catch (OperationCanceledException)

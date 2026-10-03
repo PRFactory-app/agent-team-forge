@@ -1,4 +1,5 @@
 using AgentTeamForge.DAL.Files;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
@@ -41,7 +42,7 @@ public static class JobWorktree
     public static bool IsCommitSha(string value) => (value.Length is 40 or 64) && value.All(Uri.IsHexDigit);
 
     /// <summary>Prepare from the persisted SHA, never resolve a moving branch on recovery.</summary>
-    public static bool Prepare(string repository, string path, string branch, string startingSha)
+    public static bool Prepare(string repository, string path, string branch, string startingSha, CancellationToken cancellationToken = default)
     {
         if (!IsCommitSha(startingSha)) { return false; }
         if (Directory.Exists(path))
@@ -53,14 +54,31 @@ public static class JobWorktree
                 Git(repository, QueryTimeout, "rev-parse", "--path-format=absolute", "--git-common-dir");
         }
         PrivateFiles.CreateDirectory(Path.GetDirectoryName(path)!);
-        // An interrupted worktree add can have already created the branch.
-        var existing = Git(repository, QueryTimeout, "rev-parse", "--verify", "--quiet", $"refs/heads/{branch}");
-        if (existing is not null)
+        var commonDir = Git(repository, QueryTimeout, "rev-parse", "--path-format=absolute", "--git-common-dir");
+        if (commonDir is null) { return false; }
+        // Another job's slow checkout must not hold a cancelled attempt: the wait and the add honour its token.
+        var gate = AddLocks.GetOrAdd(commonDir, _ => new SemaphoreSlim(1, 1));
+        gate.Wait(cancellationToken);
+        try
         {
-            return existing == startingSha && Add(repository, "worktree", "add", path, branch);
+            // An interrupted worktree add can have already created the branch.
+            var existing = Git(repository, QueryTimeout, "rev-parse", "--verify", "--quiet", $"refs/heads/{branch}");
+            cancellationToken.ThrowIfCancellationRequested();
+            if (existing is not null)
+            {
+                return existing == startingSha && Add(repository, "worktree", "add", path, branch);
+            }
+            return Add(repository, "worktree", "add", "-b", branch, path, startingSha);
         }
-        return Add(repository, "worktree", "add", "-b", branch, path, startingSha);
+        finally
+        {
+            gate.Release();
+        }
     }
+
+    // Concurrent `git worktree add` in one repository is unsafe: each reads every sibling's admin files and dies
+    // ("failed to read .git/worktrees/<id>/commondir") when another add is still writing them. Serialize per repository.
+    static readonly ConcurrentDictionary<string, SemaphoreSlim> AddLocks = new(StringComparer.Ordinal);
 
     /// <summary>A refused checkout fails the job; keep git's reason in the daemon log rather than on its raw stderr.</summary>
     static bool Add(string repository, params string[] args)
@@ -72,7 +90,7 @@ public static class JobWorktree
         return false;
     }
 
-    public static bool Prepare(JobRecord job)
+    public static bool Prepare(JobRecord job, CancellationToken cancellationToken = default)
     {
         if (job.WorktreePath is null)
         {
@@ -98,7 +116,7 @@ public static class JobWorktree
             var parent = Path.GetDirectoryName(job.WorktreePath)!;
             PrivateFiles.CreateDirectory(parent);
 
-            return Prepare(job.Cwd, job.WorktreePath, job.WorktreeBranch, job.WorktreeBase);
+            return Prepare(job.Cwd, job.WorktreePath, job.WorktreeBranch, job.WorktreeBase, cancellationToken);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

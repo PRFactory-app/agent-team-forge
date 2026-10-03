@@ -453,12 +453,12 @@ public sealed class WorkspaceTests
     {
         using var f = new WorkspaceFixture();
         var path = Path.Combine(f.Root.Path, "job");
-        Assert.False(JobWorktree.Prepare(f.Repo, path, "job", "main"));
-        Assert.True(JobWorktree.Prepare(f.Repo, path, "job", f.BaseSha));
+        Assert.False(JobWorktree.Prepare(f.Repo, path, "job", "main", TestContext.Current.CancellationToken));
+        Assert.True(JobWorktree.Prepare(f.Repo, path, "job", f.BaseSha, TestContext.Current.CancellationToken));
         Commit(f.Repo, "later.txt", "later");
         var job = new JobRecord("job", "p", "t", "a", "key", "i", "{}", "queued", null, null, 0, "fake", f.Repo, null, null)
         { WorktreePath = path, WorktreeBranch = "job", WorktreeBase = f.BaseSha };
-        Assert.True(JobWorktree.Prepare(job));
+        Assert.True(JobWorktree.Prepare(job, TestContext.Current.CancellationToken));
         Assert.Equal(f.BaseSha, JobWorktree.Head(path));
     }
 
