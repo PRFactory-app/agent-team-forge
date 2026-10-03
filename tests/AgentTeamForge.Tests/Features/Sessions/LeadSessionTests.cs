@@ -162,6 +162,39 @@ public sealed class LeadSessionTests
     }
 
     [Fact]
+    public void Pi_lead_is_owned_through_its_live_pi_wake_target()
+    {
+        using var f = new JobFixture();
+        var sessions = new LeadSessionStore(f.Database)
+        {
+            OwnerLive = owner => AgentTeamForge.Business.Features.Wake.LeadOwnerLiveness.IsLive(owner, new AgentTeamForge.Business.Features.Wake.ClaudeWakeMailbox())
+        };
+        var endpoint = Endpoint(f, sessions);
+        var wake = new WakeStore(f.Database);
+        var livePi = "pi:" + Environment.ProcessId;
+        var deadPi = "pi:" + int.MaxValue;
+        var live = sessions.Start("/workspace/shared", "parent=1");
+        Submit(endpoint, live, "live");
+        var liveTarget = wake.Register(livePi, "pi", "/state/pi-wake-live.jsonl", "", "");
+        sessions.BindWake(live.SessionId, liveTarget.Key, liveTarget.Generation);
+        var dead = sessions.Start("/workspace/shared", "parent=2");
+        Submit(endpoint, dead, "dead");
+        var deadTarget = wake.Register(deadPi, "pi", "/state/pi-wake-dead.jsonl", "", "");
+        sessions.BindWake(dead.SessionId, deadTarget.Key, deadTarget.Generation);
+        var caller = sessions.Start("/workspace/shared", "parent=3");
+        var info = sessions.Info(caller.SessionId, caller.Workspace)!;
+        Assert.DoesNotContain(info.RecoverableSessions, s => s.SessionId == live.SessionId);
+        var listedDead = Assert.Single(info.RecoverableSessions, s => s.SessionId == dead.SessionId);
+        Assert.Equal((deadPi, false), (listedDead.OwnerNativeId, listedDead.OwnerLive));
+        var resume = new IpcRequest { Op = IpcProtocol.SessionResume, LeadSessionId = live.SessionId, Workspace = live.Workspace, BindingKey = "parent=3", WakeKey = "pi:1" };
+
+        Assert.Equal(JobErrors.SessionOwned, endpoint.Handle(resume).Error);
+        Assert.True(endpoint.Handle(resume with { LeadSessionId = dead.SessionId }).Ok);
+        // The same Pi process, identified by its wake target, may re-adopt its own session.
+        Assert.True(endpoint.Handle(resume with { BindingKey = "parent=4", WakeKey = livePi }).Ok);
+    }
+
+    [Fact]
     public void Late_wake_binding_covers_jobs_still_running()
     {
         using var f = new JobFixture();

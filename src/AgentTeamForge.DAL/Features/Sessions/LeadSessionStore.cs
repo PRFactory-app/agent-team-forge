@@ -5,8 +5,12 @@ namespace AgentTeamForge.DAL.Features.Sessions;
 
 public sealed record RecoverableLeadSession(string SessionId, int JobCount, string LastActivity,
     string? OwnerNativeId = null, bool OwnerLive = false, bool IsCurrent = false);
-/// <summary>The native session a lead row is bound to, with its active wake target if any.</summary>
-public sealed record LeadSessionOwner(string NativeId, string? WakeKey, string? WakeKind, string? WakeAddress, string? WakeSecret, string? WakeHome);
+/// <summary>The native session a lead row is bound to, with its active wake target if any. Pi bridges report no
+/// native id, so a Pi lead is identified by its active pi:&lt;pid&gt; wake target.</summary>
+public sealed record LeadSessionOwner(string NativeId, string? WakeKey, string? WakeKind, string? WakeAddress, string? WakeSecret, string? WakeHome)
+{
+    public bool Is(string? nativeId, string? wakeKey) => NativeId == nativeId || WakeKey is not null && WakeKey == wakeKey;
+}
 public sealed record LeadSessionInfo(string SessionId, string Workspace, string LeadToken, int JobCount,
     IReadOnlyList<RecoverableLeadSession> RecoverableSessions)
 {
@@ -52,7 +56,7 @@ public sealed class LeadSessionStore(JobDatabase database)
     }
 
     /// <summary>Adopt a session. A session bound to another live native session is refused (LiveOwner set) unless forced.</summary>
-    public (LeadSessionInfo? Session, string? LiveOwner) Resume(string id, string workspace, string bindingKey, string? nativeKind = null, string? nativeSessionId = null, string? nativeHome = null, bool force = false)
+    public (LeadSessionInfo? Session, string? LiveOwner) Resume(string id, string workspace, string bindingKey, string? nativeKind = null, string? nativeSessionId = null, string? nativeHome = null, bool force = false, string? callerWakeKey = null)
     {
         if (!Guid.TryParseExact(id, "D", out var parsed) || parsed.ToString("D") != id)
         {
@@ -61,7 +65,7 @@ public sealed class LeadSessionStore(JobDatabase database)
         using var connection = database.OpenConnection();
         using var tx = connection.BeginTransaction(deferred: false);
         if (!force && Sessions(connection, workspace).FirstOrDefault(s => s.Id == id) is { Owner: { } owner }
-            && owner.NativeId != nativeSessionId && IsLive(owner))
+            && !owner.Is(nativeSessionId, callerWakeKey) && IsLive(owner))
         {
             return (null, owner.NativeId);
         }
@@ -102,7 +106,7 @@ public sealed class LeadSessionStore(JobDatabase database)
         }
         // Sessions bound to another live native session belong to that lead; never offer them for adoption.
         var recoverable = sessions.Where(s => s.Id != id && s.Count > 0)
-            .Select(s => (Row: s, IsCurrent: s.Owner is { } owner && owner.NativeId == current.Owner?.NativeId))
+            .Select(s => (Row: s, IsCurrent: s.Owner is { } owner && current.Owner is { } self && owner.Is(self.NativeId, self.WakeKey)))
             .Select(x => new RecoverableLeadSession(x.Row.Id, x.Row.Count, x.Row.UpdatedAt, x.Row.Owner?.NativeId,
                 x.Row.Owner is { } owner && IsLive(owner), x.IsCurrent))
             .Where(s => s.IsCurrent || !s.OwnerLive).ToList();
@@ -254,7 +258,8 @@ public sealed class LeadSessionStore(JobDatabase database)
         while (reader.Read())
         {
             string? Text(int i) => reader.IsDBNull(i) ? null : reader.GetString(i);
-            var owner = Text(6) is { Length: > 0 } native ? new LeadSessionOwner(native, Text(7), Text(8), Text(9), Text(10), Text(11)) : null;
+            var owner = Text(6) is { Length: > 0 } native ? new LeadSessionOwner(native, Text(7), Text(8), Text(9), Text(10), Text(11))
+                : Text(8) == "pi" ? new LeadSessionOwner(Text(7)!, Text(7), "pi", Text(9), Text(10), Text(11)) : null;
             result.Add(new SessionRow(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt32(4), Text(5), owner));
         }
         return result;

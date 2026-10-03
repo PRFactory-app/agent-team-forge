@@ -122,9 +122,11 @@ leads' jobs in that folder. After a restart, `session_info()` shows the
 current session, its stable `lead_token` and recoverable sessions for the
 folder; `resume_session(session_id=...)` adopts a prior session's jobs and
 unread wake notices. Each recoverable session shows `owner_native_id`,
-`owner_live` and `is_current` (owned by this native session). A session bound
-to another live Claude/pi session is not listed, and resuming it fails with
-`session_owned`; pass `force=true` only if that session is dead. A bridge whose
+`owner_live` and `is_current` (owned by this native session; a Pi lead is
+identified by its `pi:<pid>` wake target). A session bound to another live
+Claude or Pi session is not listed, and resuming it fails with `session_owned`;
+pass `force=true` only if that session is dead. Codex owners are never proven
+live, so their sessions are not guarded. A bridge whose
 parent process and folder survive a restart reconnects to the same session
 automatically.
 

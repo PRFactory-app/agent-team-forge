@@ -335,7 +335,7 @@ public static class JobsMcpBridge
                     {
                         var requested = String(args, "session_id");
                         response = requested is null ? new IpcResponse(false, JobErrors.InvalidRequest)
-                            : await SendAsync(new IpcRequest { Op = IpcProtocol.SessionResume, LeadSessionId = requested, Workspace = workspace, BindingKey = bindingKey, NativeKind = nativeKind, NativeSessionId = nativeId, NativeHome = nativeId is null ? null : nativeHome, Force = Bool(args, "force") }, cancellationToken);
+                            : await SendAsync(new IpcRequest { Op = IpcProtocol.SessionResume, LeadSessionId = requested, Workspace = workspace, BindingKey = bindingKey, NativeKind = nativeKind, NativeSessionId = nativeId, NativeHome = nativeId is null ? null : nativeHome, Force = Bool(args, "force"), WakeKey = wakeTarget?.WakeKey }, cancellationToken);
                         if (response.Ok)
                         {
                             // An explicit resume takes over the session's wake, even from another live bridge.
