@@ -97,7 +97,7 @@ public sealed class DeliveryTests
         var id = f.Teams.MemberJob(Fixture.Url, f.Item.Id, "lead", 0)!;
         var job = f.Jobs.GetJob(id)!;
         Assert.Equal(!readOnly, job.WorktreePath is not null);
-        Assert.True(JobWorktree.Prepare(job));
+        Assert.True(JobWorktree.Prepare(job, TestContext.Current.CancellationToken));
         var cwd = JobWorktree.WorkingDirectory(job)!;
         Git(cwd, "checkout", "-b", "implementation-result");
         Git(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "result");

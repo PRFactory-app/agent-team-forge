@@ -161,7 +161,7 @@ public sealed class JobWorktreeTests
         using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
         // Preparation runs synchronously inside the attempt, so each attempt gets its own thread.
         var slowClaim = f.Store.BeginNextAttempt()!;
-        var slowRun = Task.Run(() => dispatcher.RunAttemptAsync(slowClaim, CancellationToken.None));
+        var slowRun = Task.Run(() => dispatcher.RunAttemptAsync(slowClaim, CancellationToken.None), TestContext.Current.CancellationToken);
         try
         {
             var watch = Stopwatch.StartNew();
@@ -171,7 +171,7 @@ public sealed class JobWorktreeTests
                 await Task.Delay(50, TestContext.Current.CancellationToken);
             }
             var waitingClaim = f.Store.BeginNextAttempt()!;
-            var waitingRun = Task.Run(() => dispatcher.RunAttemptAsync(waitingClaim, CancellationToken.None));
+            var waitingRun = Task.Run(() => dispatcher.RunAttemptAsync(waitingClaim, CancellationToken.None), TestContext.Current.CancellationToken);
             // Times out behind the held checkout; before the fix it waited for the release instead.
             await Task.WhenAny(waitingRun, Task.Delay(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
             File.WriteAllText(release, "");
