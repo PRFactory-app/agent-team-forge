@@ -79,6 +79,7 @@ public static class JobErrors
     public const string SessionExpired = "session_expired";
     public const string CwdNotGitRepo = "cwd_not_git_repo";
     public const string NoWorktree = "no_worktree";
+    public const string SessionOwned = "session_owned";
 
     public static string FromStorage(StorageException ex) => ex.Failure == StorageFailure.Busy ? StorageBusy : StorageUnavailable;
 
@@ -95,12 +96,23 @@ public static class JobErrors
     public static string StorageDetail(StorageException ex) => ex.Failure == StorageFailure.Busy ? "Database busy; retry." : "Job database unavailable.";
 }
 
+/// <summary>Why a running job is not progressing on its own; derived from its informational reason_code.</summary>
+public static class JobWaiting
+{
+    public const string BackgroundTaskReason = "waiting_background_task";
+
+    public static string? From(string status, string? reasonCode) =>
+        status == JobStatus.Running && reasonCode == BackgroundTaskReason ? "background_task" : null;
+}
+
 /// <summary>The public view of a job. Never a raw storage record.</summary>
 public sealed record JobView(string JobId, string Status, string? Result, string? ReasonCode, int Attempts)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public long Revision { get; init; }
     public string[]? ExpectedOutputs { get; init; }
+    /// <summary>"background_task" while a running turn waits on its agent's background task; otherwise null.</summary>
+    public string? Waiting => JobWaiting.From(Status, ReasonCode);
     public bool? AgentLive { get; init; }
     public JobDelivery? Delivery { get; init; }
     public StartupProgress? Startup { get; init; }

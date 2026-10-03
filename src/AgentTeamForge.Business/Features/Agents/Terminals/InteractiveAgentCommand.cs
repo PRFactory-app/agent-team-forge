@@ -37,6 +37,7 @@ internal static class InteractiveAgentCommand
         {
             case InteractiveAgentKind.Claude:
                 args.AddRange(["--permission-mode", "bypassPermissions", "--settings", "{\"skipDangerousModePermissionPrompt\":true}"]);
+                args.AddRange(ClaudeCodeBackend.DisallowedToolArguments);
                 break;
             case InteractiveAgentKind.Codex:
                 // The cwd key belongs in the TOML value: Codex splits CLI override paths on dots.

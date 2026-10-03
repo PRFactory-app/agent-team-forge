@@ -260,6 +260,11 @@ public sealed class WebConsoleServer : IAsyncDisposable
             _calls.Release();
         }
 
+        if (ipc.Op == IpcProtocol.JobFollowUp && !response.Ok && response.Error == JobErrors.ParentNotReady)
+        {
+            response = response with { ErrorDetail = FollowUpNotReady(response.ErrorDetail) };
+        }
+
         if (isMutation && !response.Ok && response.Error == JobErrors.InvalidRequest)
         {
             await WriteAsync(ctx, StatusCodes.Status400BadRequest, response, FieldOf(response.ErrorDetail));
@@ -268,6 +273,11 @@ public sealed class WebConsoleServer : IAsyncDisposable
 
         await WriteAsync(ctx, StatusCodes.Status200OK, response);
     }
+
+    // The daemon's detail names job ids and MCP tools for agents; the operator gets the console action instead.
+    static string FollowUpNotReady(string? detail) => detail?.StartsWith("Session fenced", StringComparison.Ordinal) == true
+        ? "ATF could not confirm this agent is idle (for example after a daemon restart). Use Stop agent, then send again."
+        : "This agent cannot take a message yet. Wait for its current turn to finish, then send again.";
 
     // Daemon validation details read "Invalid <field>: reason".
     static string? FieldOf(string? detail)

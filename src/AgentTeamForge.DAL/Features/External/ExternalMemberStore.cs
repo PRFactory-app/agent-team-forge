@@ -315,8 +315,83 @@ public sealed class ExternalMemberStore(JobDatabase database)
             return false;
         }
 
+        RelayToLinkedLead(db, tx, member.Value.Team, now);
         tx.Commit();
         return true;
+    }
+
+    // A PRFactory work item's actor team and the nested MCP session of its lead job (turn 0 is the follow-up root).
+    const string LinkedLeads = """
+        SELECT DISTINCT x.team_id,s.session_id FROM prfactory_external x
+        JOIN prfactory_members p ON p.server=x.server AND p.work_item_id=x.work_item_id AND p.member='lead' AND p.turn=0
+        JOIN lead_sessions s ON s.binding_key='managed-child:'||p.job_id AND s.closed_at IS NULL
+        """;
+
+    /// <summary>Copy an actor team's member replies into the linked work item lead's inbox, once each.</summary>
+    public void RelayToLinkedLead(string actorTeamId, DateTimeOffset now)
+    {
+        using var db = database.OpenConnection();
+        using var tx = db.BeginTransaction(deferred: false);
+        RelayToLinkedLead(db, tx, actorTeamId, now);
+        tx.Commit();
+    }
+
+    static void RelayToLinkedLead(SqliteConnection db, SqliteTransaction tx, string actorTeamId, DateTimeOffset now)
+    {
+        foreach (var session in Linked(db, tx, "x.team_id", actorTeamId))
+        {
+            using var command = db.CreateCommand();
+            command.Transaction = tx;
+            // The lead's own MCP team, as EnsureMcpTeam creates it; the copy takes its wake key for a native wake.
+            command.CommandText = """
+                INSERT OR IGNORE INTO external_teams(team_id,owner_key,lead_session_id,wake_key,created_at)
+                SELECT session_id,'mcp:'||session_id,session_id,wake_key,$now FROM lead_sessions
+                WHERE session_id=$session AND closed_at IS NULL
+                """;
+            command.Parameters.AddWithValue("$session", session);
+            command.Parameters.AddWithValue("$team", actorTeamId);
+            command.Parameters.AddWithValue("$now", now.ToString("O"));
+            command.ExecuteNonQuery();
+            command.CommandText = """
+                SELECT m.seq,m.sender,m.text FROM external_messages m
+                WHERE m.team_id=$team AND m.recipient='lead' AND NOT EXISTS (SELECT 1 FROM external_delivery_keys k
+                    WHERE k.team_id=$session AND k.command_id='prf-relay:'||m.seq)
+                ORDER BY m.seq
+                """;
+            var pending = new List<(long Seq, string Sender, string Text)>();
+            using (var reader = command.ExecuteReader())
+            {
+                while (reader.Read()) { pending.Add((reader.GetInt64(0), reader.GetString(1), reader.GetString(2))); }
+            }
+            foreach (var (seq, sender, text) in pending)
+            {
+                // A closed lead team takes no copies; the stream upload still carries the reply.
+                if (!InsertLeadMessage(db, tx, session, sender, text, now)) { break; }
+                command.CommandText = "INSERT INTO external_delivery_keys(team_id,command_id) VALUES ($session,$key)";
+                command.Parameters.AddWithValue("$key", "prf-relay:" + seq.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                command.ExecuteNonQuery();
+                command.Parameters.RemoveAt("$key");
+            }
+        }
+    }
+
+    /// <summary>Actor teams whose work item lead runs in this nested MCP session.</summary>
+    public IReadOnlyList<string> LinkedActorTeams(string sessionId)
+    {
+        using var db = database.OpenConnection();
+        return Linked(db, null, "s.session_id", sessionId);
+    }
+
+    static List<string> Linked(SqliteConnection db, SqliteTransaction? tx, string column, string value)
+    {
+        using var command = db.CreateCommand();
+        command.Transaction = tx;
+        command.CommandText = LinkedLeads + $" WHERE {column}=$value";
+        command.Parameters.AddWithValue("$value", value);
+        using var reader = command.ExecuteReader();
+        var linked = new List<string>();
+        while (reader.Read()) { linked.Add(reader.GetString(column == "x.team_id" ? 1 : 0)); }
+        return linked;
     }
 
     public bool SendToLead(string teamId, string sender, string text, DateTimeOffset now, string? commandId)
@@ -527,12 +602,14 @@ public sealed class ExternalMemberStore(JobDatabase database)
             WHERE m.team_id=$team AND m.recipient=$recipient AND ($sender IS NULL OR m.sender=$sender)
             AND m.sender_seq > CASE WHEN $sender IS NULL THEN COALESCE(c.cursor,0) ELSE $floor END
             AND ($global_since IS NULL OR m.seq > $global_since)
+            AND ($lead_global=0 OR m.read_at IS NULL)
             """;
         var filter = select.CommandText;
         select.Parameters.AddWithValue("$team", teamId);
         select.Parameters.AddWithValue("$recipient", recipient);
         select.Parameters.AddWithValue("$sender", (object?)fromAgent ?? DBNull.Value);
         select.Parameters.AddWithValue("$floor", floor);
+        select.Parameters.AddWithValue("$lead_global", leadGlobalCursor && fromAgent is null ? 1 : 0);
         select.Parameters.AddWithValue("$global_since", leadGlobalCursor && fromAgent is null
             ? (object?)sinceSeq ?? DBNull.Value : DBNull.Value);
         select.CommandText = "SELECT count(*) " + filter;
@@ -569,9 +646,50 @@ public sealed class ExternalMemberStore(JobDatabase database)
                 updated[fromAgent] = Math.Min(positions.GetValueOrDefault(fromAgent), floor);
             }
 
+            if (leadGlobalCursor && fromAgent is null)
+            {
+                // A global filter is not an acknowledgement: consume only the returned page.
+                using var read = db.CreateCommand();
+                read.Transaction = tx;
+                read.CommandText = """
+                    UPDATE external_messages SET read_at=$now
+                    WHERE team_id=$team AND recipient=$recipient AND sender=$sender AND sender_seq=$seq
+                    """;
+                read.Parameters.AddWithValue("$team", teamId);
+                read.Parameters.AddWithValue("$recipient", recipient);
+                read.Parameters.AddWithValue("$now", now.ToString("O"));
+                read.Parameters.Add("$sender", SqliteType.Text);
+                read.Parameters.Add("$seq", SqliteType.Integer);
+                foreach (var message in selected)
+                {
+                    read.Parameters["$sender"].Value = message.From;
+                    read.Parameters["$seq"].Value = message.Seq;
+                    read.ExecuteNonQuery();
+                }
+            }
+
             foreach (var message in selected)
             {
-                updated[message.From] = message.Seq;
+                updated[message.From] = leadGlobalCursor && fromAgent is null ? positions[message.From] : message.Seq;
+            }
+
+            if (leadGlobalCursor && fromAgent is null)
+            {
+                // Keep the durable cursor behind any unread gap skipped by since_seq.
+                using var gaps = db.CreateCommand();
+                gaps.Transaction = tx;
+                gaps.CommandText = """
+                    SELECT sender,min(sender_seq)-1 FROM external_messages
+                    WHERE team_id=$team AND recipient=$recipient AND read_at IS NULL GROUP BY sender
+                    """;
+                gaps.Parameters.AddWithValue("$team", teamId);
+                gaps.Parameters.AddWithValue("$recipient", recipient);
+                using var reader = gaps.ExecuteReader();
+                while (reader.Read())
+                {
+                    var sender = reader.GetString(0);
+                    updated[sender] = Math.Min(updated.GetValueOrDefault(sender), reader.GetInt64(1));
+                }
             }
 
             using var update = db.CreateCommand();
@@ -614,7 +732,8 @@ public sealed class ExternalMemberStore(JobDatabase database)
             : leadGlobalCursor && fromAgent is null ? lastGlobalSeq : selected[^1].Seq,
             unread > selected.Count,
             fromAgent is null ? limit == 0 ? cursors : PageCursors(cursors, selected) : null,
-            fromAgent is null ? null : cursors.GetValueOrDefault(fromAgent), unread);
+            // Lead reads report the remaining count; external members retain their pre-read count.
+            fromAgent is null ? null : cursors.GetValueOrDefault(fromAgent), leadGlobalCursor ? unread - selected.Count : unread);
     }
 
     // Only senders present in this page (limit=0 watermark reads keep the full map); the full per-sender map grows with every sender ever seen.

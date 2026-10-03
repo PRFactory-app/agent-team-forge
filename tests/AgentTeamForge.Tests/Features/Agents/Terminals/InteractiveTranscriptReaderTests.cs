@@ -135,6 +135,25 @@ public sealed class InteractiveTranscriptReaderTests
         Assert.DoesNotContain(transcript.Progress, text => text.StartsWith("human", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(false)] // Still working toward its end_turn: not yet waiting.
+    [InlineData(true)]  // Ended its turn on the background task: waiting.
+    public void Claude_turn_ended_on_a_pending_background_task_is_waiting(bool ended)
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Claude);
+        List<string> lines = [ClaudeUser(Marker), ClaudeBackground, ClaudeAssistant("checking", ended ? "end_turn" : "tool_use")];
+        File.WriteAllLines(file, lines);
+        Assert.Equal(ended, reader.Read(launch, Marker, DateTimeOffset.UtcNow)!.WaitingOnBackground);
+
+        // The task notification resumes the agent, so the wait ends even before its final reply.
+        lines.Add(ClaudeNotification());
+        File.WriteAllLines(file, lines);
+        var resumed = reader.Read(launch, Marker, DateTimeOffset.UtcNow)!;
+        Assert.False(resumed.WaitingOnBackground);
+        Assert.False(resumed.Completed);
+    }
+
     [Fact]
     public void Claude_api_error_is_only_terminal_if_retry_does_not_continue_the_turn()
     {

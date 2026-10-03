@@ -90,10 +90,108 @@ public sealed class LeadSessionTests
         var old = sessions.Start("/workspace/shared", "parent=old");
         Submit(Endpoint(f, sessions), old, "task");
         var fresh = sessions.Start("/workspace/shared", "parent=new");
-        Assert.NotNull(sessions.Resume(old.SessionId, "/workspace/shared", "parent=new"));
+        Assert.NotNull(sessions.Resume(old.SessionId, "/workspace/shared", "parent=new").Session);
 
         Assert.Equal(old.SessionId, sessions.Start("/workspace/shared", "parent=new").SessionId);
         Assert.NotEqual(fresh.SessionId, old.SessionId);
+    }
+
+    [Fact]
+    public void Resume_refuses_a_session_owned_by_another_live_native_unless_forced()
+    {
+        using var f = new JobFixture();
+        var live = new HashSet<string> { "native-a" };
+        var sessions = new LeadSessionStore(f.Database) { OwnerLive = owner => live.Contains(owner.NativeId) };
+        var endpoint = Endpoint(f, sessions);
+        var owned = sessions.Start("/workspace/shared", "parent=1", "claude", "native-a", "/home/.claude");
+        Submit(endpoint, owned, "task");
+        var caller = sessions.Start("/workspace/shared", "parent=2", "claude", "native-b", "/home/.claude");
+        Assert.DoesNotContain(caller.RecoverableSessions, s => s.SessionId == owned.SessionId);
+        var resume = new IpcRequest
+        {
+            Op = IpcProtocol.SessionResume,
+            LeadSessionId = owned.SessionId,
+            Workspace = owned.Workspace,
+            BindingKey = "parent=2",
+            NativeKind = "claude",
+            NativeSessionId = "native-b",
+            NativeHome = "/home/.claude"
+        };
+
+        var refused = endpoint.Handle(resume);
+        Assert.Equal(JobErrors.SessionOwned, refused.Error);
+        Assert.Contains("native-a", refused.ErrorDetail);
+        // The refusal leaves the owner's binding untouched.
+        Assert.Equal(owned.SessionId, sessions.Start("/workspace/shared", "parent=1", "claude", "native-a", "/home/.claude").SessionId);
+        // The owner's own native session may always re-adopt it.
+        Assert.True(endpoint.Handle(resume with { BindingKey = "parent=3", NativeSessionId = "native-a" }).Ok);
+
+        var forced = endpoint.Handle(resume with { Force = true });
+        Assert.True(forced.Ok, forced.Error);
+        Assert.Equal(owned.SessionId, forced.Session!.SessionId);
+    }
+
+    [Fact]
+    public void Dead_owner_is_listed_with_owner_and_can_be_resumed()
+    {
+        using var f = new JobFixture();
+        var sessions = new LeadSessionStore(f.Database) { OwnerLive = owner => owner.NativeId == "native-b" };
+        var endpoint = Endpoint(f, sessions);
+        var dead = sessions.Start("/workspace/shared", "parent=1", "claude", "native-a", "/home/.claude");
+        Submit(endpoint, dead, "dead");
+        var mine = sessions.Start("/workspace/shared", "parent=old", "claude", "native-b", "/home/.claude");
+        Submit(endpoint, mine, "mine");
+        var caller = sessions.Start("/workspace/shared", "parent=2", "claude", "native-b", "/home/.claude");
+
+        var listedDead = Assert.Single(caller.RecoverableSessions, s => s.SessionId == dead.SessionId);
+        Assert.Equal(("native-a", false, false), (listedDead.OwnerNativeId, listedDead.OwnerLive, listedDead.IsCurrent));
+        // A session of this same native session stays listed even though its owner is live.
+        var listedMine = Assert.Single(caller.RecoverableSessions, s => s.SessionId == mine.SessionId);
+        Assert.Equal(("native-b", true, true), (listedMine.OwnerNativeId, listedMine.OwnerLive, listedMine.IsCurrent));
+        var resumed = endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.SessionResume,
+            LeadSessionId = dead.SessionId,
+            Workspace = dead.Workspace,
+            BindingKey = "parent=2",
+            NativeKind = "claude",
+            NativeSessionId = "native-b",
+            NativeHome = "/home/.claude"
+        });
+        Assert.True(resumed.Ok, resumed.Error);
+    }
+
+    [Fact]
+    public void Pi_lead_is_owned_through_its_live_pi_wake_target()
+    {
+        using var f = new JobFixture();
+        var sessions = new LeadSessionStore(f.Database)
+        {
+            OwnerLive = owner => AgentTeamForge.Business.Features.Wake.LeadOwnerLiveness.IsLive(owner, new AgentTeamForge.Business.Features.Wake.ClaudeWakeMailbox())
+        };
+        var endpoint = Endpoint(f, sessions);
+        var wake = new WakeStore(f.Database);
+        var livePi = "pi:" + Environment.ProcessId;
+        var deadPi = "pi:" + int.MaxValue;
+        var live = sessions.Start("/workspace/shared", "parent=1");
+        Submit(endpoint, live, "live");
+        var liveTarget = wake.Register(livePi, "pi", "/state/pi-wake-live.jsonl", "", "");
+        sessions.BindWake(live.SessionId, liveTarget.Key, liveTarget.Generation);
+        var dead = sessions.Start("/workspace/shared", "parent=2");
+        Submit(endpoint, dead, "dead");
+        var deadTarget = wake.Register(deadPi, "pi", "/state/pi-wake-dead.jsonl", "", "");
+        sessions.BindWake(dead.SessionId, deadTarget.Key, deadTarget.Generation);
+        var caller = sessions.Start("/workspace/shared", "parent=3");
+        var info = sessions.Info(caller.SessionId, caller.Workspace)!;
+        Assert.DoesNotContain(info.RecoverableSessions, s => s.SessionId == live.SessionId);
+        var listedDead = Assert.Single(info.RecoverableSessions, s => s.SessionId == dead.SessionId);
+        Assert.Equal((deadPi, false), (listedDead.OwnerNativeId, listedDead.OwnerLive));
+        var resume = new IpcRequest { Op = IpcProtocol.SessionResume, LeadSessionId = live.SessionId, Workspace = live.Workspace, BindingKey = "parent=3", WakeKey = "pi:1" };
+
+        Assert.Equal(JobErrors.SessionOwned, endpoint.Handle(resume).Error);
+        Assert.True(endpoint.Handle(resume with { LeadSessionId = dead.SessionId }).Ok);
+        // The same Pi process, identified by its wake target, may re-adopt its own session.
+        Assert.True(endpoint.Handle(resume with { BindingKey = "parent=4", WakeKey = livePi }).Ok);
     }
 
     [Fact]
