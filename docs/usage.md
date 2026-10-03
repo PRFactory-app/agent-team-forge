@@ -121,8 +121,14 @@ several leads share a folder. `list_jobs(all_workspace=true)` shows the other
 leads' jobs in that folder. After a restart, `session_info()` shows the
 current session, its stable `lead_token` and recoverable sessions for the
 folder; `resume_session(session_id=...)` adopts a prior session's jobs and
-unread wake notices. A bridge whose parent process and folder survive a
-restart reconnects to the same session automatically.
+unread wake notices. Each recoverable session shows `owner_native_id`,
+`owner_live` and `is_current` (owned by this native session; a Pi lead is
+identified by its `pi:<pid>` wake target). A session bound to another live
+Claude or Pi session is not listed, and resuming it fails with `session_owned`;
+pass `force=true` only if that session is dead. Codex owners are never proven
+live, so their sessions are not guarded. A bridge whose
+parent process and folder survive a restart reconnects to the same session
+automatically.
 
 `set_session_name(name="planner")` gives the current lead a display name in the
 web console and `session_info`. Names are trimmed, limited to 64 characters and
