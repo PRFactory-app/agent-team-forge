@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Processes;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using AgentTeamForge.DAL.Features.Jobs;
@@ -25,7 +26,7 @@ public sealed partial class PRFactoryPullRequests(
 
     readonly Func<ProcessSpec, CancellationToken, Task<ProcessResult>> runner = run ?? RunProcessAsync;
     // The default runner resolves the real gh once; an injected runner keeps the plain name.
-    Task<string> GhPath() => run is null ? GhExecutable.ResolveAsync(RunProcessAsync) : Task.FromResult("gh");
+    Task<string> GhPath() => run is null ? Task.Run(() => ToolExecutable.Resolve("gh")) : Task.FromResult("gh");
 
     static Failure TimedOut(string what, TimeSpan limit) =>
         new($"{what} did not finish within {limit.TotalSeconds:0} s; the gh on the daemon PATH may be a looping wrapper.");

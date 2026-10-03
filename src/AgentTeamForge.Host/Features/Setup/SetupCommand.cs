@@ -289,7 +289,7 @@ public static class SetupCommand
             return "no graphical desktop session (WAYLAND_DISPLAY or DISPLAY)";
         }
         var (exitCode, output) = run("herdr", ["--version"]);
-        return exitCode == 0 ? null : exitCode == 127 ? "herdr executable not found" :
+        return exitCode == 0 ? null : exitCode == 127 ? "herdr executable not found" : exitCode == ClientSetup.TimedOut ? output :
             $"herdr --version failed: {ClientSetup.BoundedError(output)}";
     }
 
@@ -1166,9 +1166,19 @@ public static class SetupCommand
     public static int ConfiguredWebPort(StateDirectory state) =>
         File.Exists(Path.Combine(state.Path, SettingsFile)) ? ReadSettings(state).WebPort : DefaultWebPort;
 
-    internal static (int ExitCode, string Output) RunCommand(string tool, IReadOnlyList<string> args)
+    internal static (int ExitCode, string Output) RunCommand(string tool, IReadOnlyList<string> args) =>
+        RunCommand(tool, args, args is ["--version"] ? ProbeTimeout : CommandTimeout);
+
+    internal static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(15);
+    static readonly TimeSpan CommandTimeout = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Runs a client command, bounded by <paramref name="timeout"/>: a looping wrapper ends in
+    /// <see cref="ClientSetup.TimedOut"/> and a clear message instead of hanging setup.
+    /// </summary>
+    internal static (int ExitCode, string Output) RunCommand(string tool, IReadOnlyList<string> args, TimeSpan timeout)
     {
-        var info = new ProcessStartInfo(OperatingSystem.IsWindows() ? "powershell.exe" : tool)
+        var info = new ProcessStartInfo(OperatingSystem.IsWindows() ? "powershell.exe" : ToolExecutable.Resolve(tool))
         {
             UseShellExecute = false,
             RedirectStandardOutput = true,
@@ -1202,7 +1212,11 @@ public static class SetupCommand
             using var process = NonInteractiveProcess.Start(info) ?? throw new InvalidOperationException($"Cannot start {tool}");
             var stdout = process.StandardOutput.ReadToEndAsync();
             var stderr = process.StandardError.ReadToEndAsync();
-            process.WaitForExit();
+            if (!process.WaitForExit(timeout))
+            {
+                OwnedProcessTermination.Kill(process);
+                return (ClientSetup.TimedOut, ClientSetup.NoResponse(tool, timeout));
+            }
             var output = stdout.GetAwaiter().GetResult();
             var error = stderr.GetAwaiter().GetResult();
             return (process.ExitCode, process.ExitCode == 0 ? output : error.Length > 0 ? error : output);

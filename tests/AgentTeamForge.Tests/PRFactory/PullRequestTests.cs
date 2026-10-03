@@ -142,32 +142,6 @@ public sealed class PullRequestTests
     }
 
     [Fact]
-    public async Task The_resolver_prefers_the_mise_gh_over_a_script_on_path()
-    {
-        using var dir = new TempStateDir();
-        var bin = Path.Combine(dir.Path, "bin");
-        Directory.CreateDirectory(bin);
-        var wrapper = Path.Combine(bin, "gh");
-        File.WriteAllText(wrapper, "#!/bin/bash\nexec mise x gh -- gh \"$@\"\n");
-        var real = dir.File("real-gh");
-        File.WriteAllBytes(real, [0x7f, (byte)'E', (byte)'L', (byte)'F', 0]);
-
-        var chosen = await GhExecutable.ResolveAsync(bin, (spec, _) => Task.FromResult(
-            spec.File == "mise" ? new ProcessResult(0, real + "\n", "") : throw new InvalidOperationException()), CancellationToken.None);
-        Assert.Equal(real, chosen);
-
-        // mise pointing back at the wrapper, or failing, falls back to PATH.
-        Assert.Equal(wrapper, await GhExecutable.ResolveAsync(bin, (_, _) => Task.FromResult(new ProcessResult(0, wrapper, "")), CancellationToken.None));
-        Assert.Equal(wrapper, await GhExecutable.ResolveAsync(bin, (_, _) => Task.FromResult(new ProcessResult(1, "", "no")), CancellationToken.None));
-        var link = dir.File("gh-link");
-        File.CreateSymbolicLink(link, wrapper);
-        Assert.Equal(wrapper, await GhExecutable.ResolveAsync(bin, (_, _) => Task.FromResult(new ProcessResult(0, link, "")), CancellationToken.None));
-        // A real binary on PATH is used without asking mise.
-        File.WriteAllBytes(wrapper, [0x7f, (byte)'E', (byte)'L', (byte)'F', 0]);
-        Assert.Equal(wrapper, await GhExecutable.ResolveAsync(bin, (_, _) => throw new InvalidOperationException(), CancellationToken.None));
-    }
-
-    [Fact]
     public async Task Creates_the_pull_request_with_the_named_accounts_token_and_never_leaks_it()
     {
         using var f = new Fixture();

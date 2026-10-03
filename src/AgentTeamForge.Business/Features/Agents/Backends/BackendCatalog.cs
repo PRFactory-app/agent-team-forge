@@ -1,3 +1,5 @@
+using AgentTeamForge.Business.Features.Processes;
+
 namespace AgentTeamForge.Business.Features.Agents.Backends;
 
 /// <summary>The one place a job's backend name is mapped to an <see cref="IJobBackend"/>.</summary>
@@ -33,11 +35,12 @@ public sealed class BackendCatalog
         var catalog = new BackendCatalog().Register(Fake, () => fake);
         if (includeRealAgents)
         {
-            catalog.Register(Claude, () => new ClaudeCodeBackend());
-            catalog.Register(Codex, () => new CodexExecBackend());
-            catalog.Register(Pi, () => new PiBackend());
-            catalog.Register(Cursor, () => new CursorCliBackend());
-            catalog.Register(Droid, () => new DroidBackend());
+            // Resolved per launch (cached once found): the daemon's PATH may start with mise wrappers that loop.
+            catalog.Register(Claude, () => new ClaudeCodeBackend(ToolExecutable.Resolve("claude")));
+            catalog.Register(Codex, () => new CodexExecBackend(ToolExecutable.Resolve("codex")));
+            catalog.Register(Pi, () => new PiBackend(ToolExecutable.Resolve("pi")));
+            catalog.Register(Cursor, () => new CursorCliBackend(ToolExecutable.Resolve("cursor-agent")));
+            catalog.Register(Droid, () => new DroidBackend(ToolExecutable.Resolve("droid")));
         }
 
         return catalog;
