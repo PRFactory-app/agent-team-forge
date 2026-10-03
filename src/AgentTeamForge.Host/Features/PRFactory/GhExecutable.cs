@@ -21,7 +21,7 @@ public static class GhExecutable
             var real = result.ExitCode == 0
                 ? result.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault()
                 : null;
-            if (real is not null && Path.IsPathRooted(real) && File.Exists(real) && Path.GetFullPath(real) != Path.GetFullPath(onPath)) { return real; }
+            if (real is not null && Path.IsPathRooted(real) && File.Exists(real) && IsElf(real)) { return real; }
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or TimeoutException or IOException) { }
         return onPath;

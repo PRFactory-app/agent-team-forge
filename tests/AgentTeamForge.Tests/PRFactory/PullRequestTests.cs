@@ -159,6 +159,9 @@ public sealed class PullRequestTests
         // mise pointing back at the wrapper, or failing, falls back to PATH.
         Assert.Equal(wrapper, await GhExecutable.ResolveAsync(bin, (_, _) => Task.FromResult(new ProcessResult(0, wrapper, "")), CancellationToken.None));
         Assert.Equal(wrapper, await GhExecutable.ResolveAsync(bin, (_, _) => Task.FromResult(new ProcessResult(1, "", "no")), CancellationToken.None));
+        var link = dir.File("gh-link");
+        File.CreateSymbolicLink(link, wrapper);
+        Assert.Equal(wrapper, await GhExecutable.ResolveAsync(bin, (_, _) => Task.FromResult(new ProcessResult(0, link, "")), CancellationToken.None));
         // A real binary on PATH is used without asking mise.
         File.WriteAllBytes(wrapper, [0x7f, (byte)'E', (byte)'L', (byte)'F', 0]);
         Assert.Equal(wrapper, await GhExecutable.ResolveAsync(bin, (_, _) => throw new InvalidOperationException(), CancellationToken.None));
