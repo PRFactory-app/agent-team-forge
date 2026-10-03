@@ -41,6 +41,7 @@ public sealed partial class PRFactoryPullRequests(
             {
                 ["GH_TOKEN"] = token,
                 ["GH_HOST"] = "github.com",
+                ["MISE_QUIET"] = "1",
                 ["GH_PROMPT_DISABLED"] = "1",
                 ["GITHUB_TOKEN"] = null,
                 ["GH_ENTERPRISE_TOKEN"] = null
@@ -150,14 +151,20 @@ public sealed partial class PRFactoryPullRequests(
     // Always the named account; gh's active account is never consulted.
     async Task<string> TokenAsync(string login, CancellationToken ct)
     {
-        var env = new Dictionary<string, string?> { ["GH_TOKEN"] = null, ["GITHUB_TOKEN"] = null, ["GH_HOST"] = "github.com" };
+        var env = new Dictionary<string, string?> { ["GH_TOKEN"] = null, ["GITHUB_TOKEN"] = null, ["GH_HOST"] = "github.com", ["MISE_QUIET"] = "1" };
         ProcessResult result;
         try { result = await runner(new ProcessSpec("gh", ["auth", "token", "--user", login], env), ct); }
         catch (System.ComponentModel.Win32Exception) { throw new Failure("gh is not installed or not on PATH on this machine."); }
-        var token = result.Stdout.Trim();
+        // A gh shim (e.g. mise) may print progress lines before the token; the token is the last non-empty stdout line.
+        var token = result.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault() ?? "";
         if (result.ExitCode != 0 || token.Length == 0)
         {
             throw new Failure($"gh has no login for {login}; run gh auth login on this machine.");
+        }
+        // Never let anything but a plain token become a header value.
+        if (!WholeToken().IsMatch(token))
+        {
+            throw new Failure($"gh auth token for {login} did not end with a plain token on stdout (unexpected output from gh or a gh shim); run gh directly or fix the shim.");
         }
         return token;
     }
@@ -253,5 +260,6 @@ public sealed partial class PRFactoryPullRequests(
     [GeneratedRegex("^[A-Za-z0-9._-]{1,100}$")] private static partial Regex RepoPart();
     [GeneratedRegex("^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$")] private static partial Regex BranchPattern();
     [GeneratedRegex("^[0-9a-fA-F]{40}$")] private static partial Regex Sha();
+    [GeneratedRegex("^(?:gh[opsur]_|github_pat_)[A-Za-z0-9_]+$")] private static partial Regex WholeToken();
     [GeneratedRegex("(gh[opsu]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})")] private static partial Regex TokenPattern();
 }
