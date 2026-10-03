@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -9,28 +8,22 @@ namespace AgentTeamForge.Business.Features.Processes;
 /// <summary>
 /// Finds the executable to run for a CLI name. A mise wrapper on PATH (<c>exec mise x "X" -- "X"</c>) loops forever
 /// when the caller has no mise activation (systemd daemon, install unit): <c>mise x</c> finds the wrapper again.
-/// When the PATH hit is a script, ask <c>mise which</c> and use its answer if that is a native binary, or a script
-/// that is not itself a mise wrapper (cursor-agent ships a bash launcher). Otherwise keep the PATH hit.
+/// When the PATH hit is such a wrapper, ask <c>mise which</c> and use its answer if that is a native binary, or a script
+/// that is not itself a mise wrapper (cursor-agent ships a bash launcher). Otherwise keep the PATH hit. Nothing is
+/// cached: a lookup is cheap, and a later call retries mise after a failure.
 /// </summary>
 public static partial class ToolExecutable
 {
-    static readonly ConcurrentDictionary<string, string> Cache = new(StringComparer.Ordinal);
     static readonly TimeSpan MiseTimeout = TimeSpan.FromSeconds(5);
 
-    /// <summary>The process-wide answer for <paramref name="name"/> on this process's PATH; the name itself on Windows or when absent.</summary>
-    public static string Resolve(string name)
-    {
-        if (OperatingSystem.IsWindows() || name.Contains('/')) { return name; }
-        if (Cache.TryGetValue(name, out var cached)) { return cached; }
-        var resolved = Resolve(name, Environment.GetEnvironmentVariable("PATH"), MiseWhich);
-        // A tool missing now may be installed later; only cache what was found.
-        return resolved == name ? name : Cache.GetOrAdd(name, resolved);
-    }
+    /// <summary>The executable for <paramref name="name"/> on this process's PATH; the name itself on Windows or when absent.</summary>
+    public static string Resolve(string name) =>
+        OperatingSystem.IsWindows() || name.Contains('/') ? name : Resolve(name, Environment.GetEnvironmentVariable("PATH"), MiseWhich);
 
     public static string Resolve(string name, string? path, Func<string, string?> miseWhich)
     {
         var onPath = FindOnPath(name, path);
-        if (onPath is null || !IsScript(onPath)) { return onPath ?? name; }
+        if (onPath is null || !IsMiseWrapper(onPath)) { return onPath ?? name; }
         string? real = null;
         try
         {
@@ -64,7 +57,10 @@ public static partial class ToolExecutable
         foreach (var dir in (path ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
         {
             var candidate = Path.Combine(dir, name);
-            if (File.Exists(candidate)) { return candidate; }
+            if (File.Exists(candidate) && (File.GetUnixFileMode(candidate) & (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0)
+            {
+                return candidate;
+            }
         }
         return null;
     }

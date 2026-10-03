@@ -56,9 +56,53 @@ public sealed class ToolExecutableTests
         Directory.CreateDirectory(bin);
         var native = Path.Combine(bin, "tool");
         File.WriteAllBytes(native, Elf);
+        MakeExecutable(native);
 
         Assert.Equal(native, ToolExecutable.Resolve("tool", bin, _ => throw new InvalidOperationException("mise must not run")));
         Assert.Equal("missing", ToolExecutable.Resolve("missing", bin, _ => throw new InvalidOperationException("mise must not run")));
+    }
+
+    [Fact]
+    public void A_failed_mise_lookup_is_retried_on_the_next_call()
+    {
+        using var dir = new TempStateDir();
+        var (bin, wrapper) = PathWithWrapper(dir);
+        var real = dir.File("real-tool");
+        File.WriteAllBytes(real, Elf);
+        var answer = (string?)null;
+
+        Assert.Equal(wrapper, ToolExecutable.Resolve("tool", bin, _ => answer));
+        answer = real;
+        Assert.Equal(real, ToolExecutable.Resolve("tool", bin, _ => answer));
+    }
+
+    [Fact]
+    public void A_user_launcher_script_on_path_is_used_as_is()
+    {
+        using var dir = new TempStateDir();
+        var bin = dir.File("bin");
+        Directory.CreateDirectory(bin);
+        var launcher = Path.Combine(bin, "tool");
+        File.WriteAllText(launcher, "#!/bin/sh\nexport TOOL_CONFIG=mine\nexec /opt/tool/bin/tool \"$@\"\n");
+        MakeExecutable(launcher);
+
+        Assert.Equal(launcher, ToolExecutable.Resolve("tool", bin, _ => throw new InvalidOperationException("mise must not run")));
+    }
+
+    [Fact]
+    public void A_non_executable_file_earlier_on_path_is_skipped()
+    {
+        using var dir = new TempStateDir();
+        var first = dir.File("first");
+        var second = dir.File("second");
+        Directory.CreateDirectory(first);
+        Directory.CreateDirectory(second);
+        File.WriteAllBytes(Path.Combine(first, "tool"), Elf);
+        var native = Path.Combine(second, "tool");
+        File.WriteAllBytes(native, Elf);
+        MakeExecutable(native);
+
+        Assert.Equal(native, ToolExecutable.Resolve("tool", first + Path.PathSeparator + second, _ => null));
     }
 
     static (string Bin, string Wrapper) PathWithWrapper(TempStateDir dir)
@@ -67,6 +111,10 @@ public sealed class ToolExecutableTests
         Directory.CreateDirectory(bin);
         var wrapper = Path.Combine(bin, "tool");
         File.WriteAllText(wrapper, Wrapper);
+        MakeExecutable(wrapper);
         return (bin, wrapper);
     }
+
+    static void MakeExecutable(string file) =>
+        File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 }
