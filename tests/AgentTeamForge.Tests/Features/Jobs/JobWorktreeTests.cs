@@ -314,6 +314,63 @@ public sealed class JobWorktreeTests
         Assert.Equal(1024 * 1024, output.Length);
     }
 
+    [Fact]
+    public async Task Worktree_add_waits_for_another_process_holding_the_repository_lock_and_runs_once_it_dies()
+    {
+        Assert.SkipUnless(OperatingSystem.IsLinux(), "flock(1) holder");
+        var ct = TestContext.Current.CancellationToken;
+        using var source = new TempStateDir();
+        using var worktrees = new TempStateDir();
+        Git(source.Path, "init");
+        Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+        var sha = Git(source.Path, "rev-parse", "HEAD");
+        var common = Git(source.Path, "rev-parse", "--path-format=absolute", "--git-common-dir");
+        var path = Path.Combine(worktrees.Path, "job_held");
+
+        // Another process (a second daemon) holds the lock and then dies without releasing it.
+        using var holder = Process.Start(new ProcessStartInfo("flock", ["--exclusive", Path.Combine(common, WorktreeLock.FileName), "sleep", "60"]))!;
+        try
+        {
+            var watch = Stopwatch.StartNew();
+            while (true)
+            {
+                try { WorktreeLock.Acquire(common, ct, TimeSpan.Zero).Dispose(); }
+                catch (TimeoutException) { break; }
+                Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), "the holder never took the lock");
+                await Task.Delay(50, ct);
+            }
+
+            var prepare = Task.Run(() => JobWorktree.Prepare(source.Path, path, "atf/job-held", sha, ct), ct);
+            await Task.Delay(500, ct);
+            Assert.False(prepare.IsCompleted);
+            Assert.False(Directory.Exists(path));
+
+            holder.Kill(entireProcessTree: true);
+            Assert.True(await prepare.WaitAsync(Bounded.ScenarioDeadline, ct));
+            Assert.Equal("atf/job-held", Git(path, "rev-parse", "--abbrev-ref", "HEAD"));
+        }
+        finally
+        {
+            if (!holder.HasExited) { holder.Kill(entireProcessTree: true); }
+        }
+    }
+
+    [Fact]
+    public async Task Repository_lock_wait_honours_cancellation_and_fails_at_its_timeout()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var dir = new TempStateDir();
+        using (WorktreeLock.Acquire(dir.Path, ct))
+        {
+            using var cancel = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cancel.CancelAfter(200);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => WorktreeLock.AcquireAsync(dir.Path, cancel.Token));
+            Assert.Throws<TimeoutException>(() => WorktreeLock.Acquire(dir.Path, ct, TimeSpan.FromMilliseconds(300)));
+        }
+        // Disposing the handle releases the lock at once.
+        WorktreeLock.Acquire(dir.Path, ct, TimeSpan.Zero).Dispose();
+    }
+
     static string Script(string directory, string body)
     {
         var path = Path.Combine(directory, "git-probe.sh");

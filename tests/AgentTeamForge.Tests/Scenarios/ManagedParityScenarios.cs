@@ -1,4 +1,5 @@
 using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.Host.Transport;
 using AgentTeamForge.Tests.Support;
 
 namespace AgentTeamForge.Tests.Scenarios;
@@ -47,6 +48,10 @@ public sealed class ManagedParityScenarios
             ["hold"] = true
         });
         await rig.WaitForAckAsync(busy.Job!.JobId);
+        // The fake writes its ack barrier before the daemon has read the session line. An
+        // interrupt that wins that race leaves no session, and revive is then refused.
+        await Bounded.Until<IpcResponse>(async () => (await rig.GetAsync(busy.Job.JobId)) is { Job.SessionId: not null } r ? r : null,
+            "busy session recorded");
         var interrupted = await SpikeRig.CallAsync(client, "interrupt_job", new() { ["job_id"] = busy.Job.JobId });
         Assert.Equal("interrupted", interrupted.Job!.ReasonCode);
         var revived = await SpikeRig.CallAsync(client, "revive_agent", new()

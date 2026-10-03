@@ -87,20 +87,33 @@ public sealed class WorktreeCleanup(JobStore store, BackendCatalog backends)
         var repo = Path.GetFileName(common) == ".git" ? Path.GetDirectoryName(common)! : common;
         if (dryRun) { return new(path, id, "would_remove"); }
 
-        var args = force ? new[] { "worktree", "remove", "--force", "--", path } : ["worktree", "remove", "--", path];
-        var removal = await JobWorktree.RunAsync(repo, TimeSpan.FromMinutes(5), ct, args);
-        if (removal is not { ExitCode: 0 })
+        // The same per-repository lock as worktree add: a removal must not delete admin files an add is reading.
+        IDisposable held;
+        try
         {
-            return Kept("git_refused", removal is not null && JobWorktree.ErrorText(removal) is { } error ? [.. Lines(error).Take(20)] : null);
+            held = await WorktreeLock.AcquireAsync(common, ct);
         }
-
-        if (!string.IsNullOrEmpty(tip))
+        catch (TimeoutException ex)
         {
-            BeforeBranchDelete?.Invoke(repo, branch, tip);
-            var list = await JobWorktree.GitAsync(repo, Timeout, ct, "worktree", "list", "--porcelain");
-            if (list is not null && !list.Split('\n').Any(l => l.Trim() == $"branch {branch}"))
+            return Kept("worktree_locked", [ex.Message]);
+        }
+        using (held)
+        {
+            var args = force ? new[] { "worktree", "remove", "--force", "--", path } : ["worktree", "remove", "--", path];
+            var removal = await JobWorktree.RunAsync(repo, TimeSpan.FromMinutes(5), ct, args);
+            if (removal is not { ExitCode: 0 })
             {
-                await JobWorktree.GitAsync(repo, Timeout, ct, "update-ref", "-d", branch, tip);
+                return Kept("git_refused", removal is not null && JobWorktree.ErrorText(removal) is { } error ? [.. Lines(error).Take(20)] : null);
+            }
+
+            if (!string.IsNullOrEmpty(tip))
+            {
+                BeforeBranchDelete?.Invoke(repo, branch, tip);
+                var list = await JobWorktree.GitAsync(repo, Timeout, ct, "worktree", "list", "--porcelain");
+                if (list is not null && !list.Split('\n').Any(l => l.Trim() == $"branch {branch}"))
+                {
+                    await JobWorktree.GitAsync(repo, Timeout, ct, "update-ref", "-d", branch, tip);
+                }
             }
         }
         return new(path, id, "removed");

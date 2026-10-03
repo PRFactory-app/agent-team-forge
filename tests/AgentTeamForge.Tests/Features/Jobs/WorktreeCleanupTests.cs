@@ -339,6 +339,29 @@ public sealed class WorktreeCleanupTests
         Assert.Equal(moved, Git(e.Clone, "rev-parse", "refs/heads/atf/job-job_cas"));
     }
 
+    [Fact]
+    public async Task Cleanup_concurrent_with_add_in_one_repository_leaves_both_consistent()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var e = new Env();
+        var sha = Git(e.Clone, "rev-parse", "HEAD");
+        var old = Enumerable.Range(0, 8).Select(i => e.Make($"job_old{i}")).ToArray();
+
+        var removals = old.Select(path => Task.Run(() => e.Cleanup.RemoveAsync(path, false, false, false, ct), ct)).ToArray();
+        var adds = Enumerable.Range(0, 8)
+            .Select(i => Task.Run(() => JobWorktree.Prepare(e.Clone, e.Path_($"job_new{i}"), $"atf/job-job_new{i}", sha, ct), ct)).ToArray();
+
+        Assert.All(await Task.WhenAll(removals), r => Assert.Equal("removed", r.Outcome));
+        Assert.All(await Task.WhenAll(adds), Assert.True);
+        Assert.All(old, path => Assert.False(Directory.Exists(path)));
+        for (var i = 0; i < 8; i++)
+        {
+            Assert.Equal($"atf/job-job_new{i}", Git(e.Path_($"job_new{i}"), "rev-parse", "--abbrev-ref", "HEAD"));
+        }
+        Assert.Equal(9, Git(e.Clone, "worktree", "list", "--porcelain").Split('\n').Count(l => l.StartsWith("worktree ", StringComparison.Ordinal)));
+        Assert.Empty(Git(e.Clone, "worktree", "prune", "--dry-run", "--verbose"));
+    }
+
     sealed class IdleBackend : IJobBackend, IInteractiveSessionStop
     {
         public IBackendRun Start(BackendRequest request) => throw new InvalidOperationException("not dispatched");
