@@ -56,9 +56,16 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             request.ResumeSessionId is null, request.WorkingDirectory ?? Environment.CurrentDirectory, request.Output);
     }
 
+    /// <summary>
+    /// Managed workers run unattended: AskUserQuestion would wait forever for a human, so every
+    /// ATF-launched Claude argv disables it. Keep it before the prompt; the option takes a list.
+    /// </summary>
+    internal static readonly string[] DisallowedToolArguments = ["--disallowed-tools", "AskUserQuestion"];
+
     internal static List<string> Arguments(BackendRequest request, string sessionId)
     {
         List<string> arguments = ["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"];
+        arguments.AddRange(DisallowedToolArguments);
         arguments.AddRange(ManagedChildContext.Arguments("claude", request.ManagedMcpConfig));
         foreach (var part in request.Options.Split(';', StringSplitOptions.RemoveEmptyEntries))
         {

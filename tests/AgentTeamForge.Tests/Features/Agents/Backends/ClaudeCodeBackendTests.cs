@@ -1,4 +1,5 @@
 using AgentTeamForge.Business.Features.Agents.Backends;
+using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Tests.Support;
 
 namespace AgentTeamForge.Tests.Features.Agents.Backends;
@@ -8,6 +9,30 @@ public sealed class ClaudeCodeBackendTests : IDisposable
     readonly TempStateDir _dir = new();
 
     public void Dispose() => _dir.Dispose();
+
+    [Theory]
+    [InlineData("headless", false)]
+    [InlineData("headless", true)]
+    [InlineData("herdr", false)]
+    [InlineData("herdr", true)]
+    [InlineData("tab", false)]
+    [InlineData("tab", true)]
+    public void EveryManagedClaudeLaunchDisallowsAskUserQuestionBeforeThePrompt(string mode, bool resume)
+    {
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Claude, "atf0123456789abcdef0123", Path.GetTempPath(),
+            resume ? "native-1" : null, null, "/tmp/atf.launch.sh")
+        { Model = "opus", Effort = "medium" };
+        var args = (mode switch
+        {
+            "headless" => ClaudeCodeBackend.Arguments(new BackendRequest("j", "c", "task", "model=opus") { ResumeSessionId = resume ? "s-1" : null }, "s-1"),
+            "herdr" => HerdrAgentControl.AgentArguments(launch),
+            _ => WtTabControl.AgentArguments(launch, "task", windowsCommandLine: false),
+        }).ToList();
+        var at = args.IndexOf("--disallowed-tools");
+        Assert.True(at >= 0 && args[at + 1] == "AskUserQuestion", string.Join(' ', args));
+        var separator = args.IndexOf("--");
+        Assert.True(separator < 0 || at < separator, string.Join(' ', args));
+    }
 
     /// <summary>Fake claude: records argv, cwd and stdin, then prints canned JSON.</summary>
     string FakeClaude(string json)
@@ -51,7 +76,7 @@ public sealed class ClaudeCodeBackendTests : IDisposable
 
         // The session id is chosen up front and reported before any output.
         var argv = File.ReadAllLines(_dir.File("argv"));
-        Assert.Equal(["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--session-id"], argv[..^1]);
+        Assert.Equal(["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--disallowed-tools", "AskUserQuestion", "--session-id"], argv[..^1]);
         var chosen = argv[^1];
         Assert.True(Guid.TryParse(chosen, out _));
         Assert.Equal<BackendEvidence>(
@@ -72,7 +97,7 @@ public sealed class ClaudeCodeBackendTests : IDisposable
         var evidence = await RunAsync(backend, new BackendRequest("j2", "c2", "more", "") { ResumeSessionId = "s-1" });
 
         Assert.Contains(new BackendEvidence.Result("c2", "again"), evidence);
-        Assert.Equal(["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--resume", "s-1"], File.ReadAllLines(_dir.File("argv")));
+        Assert.Equal(["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--disallowed-tools", "AskUserQuestion", "--resume", "s-1"], File.ReadAllLines(_dir.File("argv")));
     }
 
     [Fact]
