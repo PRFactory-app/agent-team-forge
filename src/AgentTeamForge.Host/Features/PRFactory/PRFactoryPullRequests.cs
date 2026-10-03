@@ -82,8 +82,14 @@ public sealed partial class PRFactoryPullRequests(
                 throw new Failure($"The open pull request for {request.HeadBranch} points at a different commit; update or close it.");
             }
             var result = new PRFactoryPullRequestResult("pull-request-result", 1, existing.Number, existing.Url, request.HeadSha, created);
-            await client.CompleteAsync(item.Id, item.LeaseToken, JsonSerializer.Serialize(result, PRFactoryWorkItemJson.Default.PRFactoryPullRequestResult),
+            var cleanupWip = await client.CompleteAsync(item.Id, item.LeaseToken, JsonSerializer.Serialize(result, PRFactoryWorkItemJson.Default.PRFactoryPullRequestResult),
                 ct, request.HeadBranch, request.HeadSha);
+            if (cleanupWip is not null)
+            {
+                await PRFactoryWorkItems.CleanupWipAsync(item.Id, repositories.First(r => r.Id == request.RepositoryId).Directory,
+                    remote.Url, cleanupWip, publications.VerifiedFor(server, request.SourceWorkItemId, request.RepositoryId)
+                        .Select(p => p.PublishBranch).Append(request.HeadBranch), log, ct);
+            }
         }
         catch (Failure failure)
         {
@@ -176,11 +182,11 @@ public sealed partial class PRFactoryPullRequests(
         var receipt = publications.VerifiedFor(server, request.SourceWorkItemId, request.RepositoryId).FirstOrDefault(p =>
             p.PublishBranch == request.HeadBranch && string.Equals(p.HeadSha, request.HeadSha, StringComparison.OrdinalIgnoreCase))
             ?? throw new Failure($"This machine did not publish {request.HeadBranch}@{request.HeadSha}.");
-        return await Task.FromResult(ParseRemote(receipt.Remote));
+        return await Task.FromResult(ParseRemote(receipt.Remote) with { Url = receipt.Remote });
     }
 
     /// <summary>Owner is the GitHub owner, Bitbucket workspace or Azure DevOps organization; Project is Azure only.</summary>
-    internal sealed record RemoteRepository(string Host, string Owner, string Repo, string? User, string? Project = null);
+    internal sealed record RemoteRepository(string Host, string Owner, string Repo, string? User, string? Project = null, string Url = "");
 
     /// <summary>
     /// Splits an https, ssh:// or scp-style remote into host and repository. Add a host here and in HandleAsync.

@@ -293,7 +293,8 @@ public sealed partial class PRFactoryClient(HttpClient httpClient, TimeProvider?
         response.EnsureSuccessStatusCode();
     }
 
-    public async Task CompleteAsync(Guid id, Guid? lease, string? markdown, CancellationToken ct,
+    /// <summary>Returns the remote WIP branch the server asks this machine to delete once the ticket completed.</summary>
+    public async Task<string?> CompleteAsync(Guid id, Guid? lease, string? markdown, CancellationToken ct,
         string? branch = null, string? commit = null, PRFactoryRemotePublication? publication = null,
         List<PRFactoryRepositoryFreshnessRequest>? repositoryResults = null)
     {
@@ -307,6 +308,7 @@ public sealed partial class PRFactoryClient(HttpClient httpClient, TimeProvider?
         {
             throw new HttpRequestException("PRFactory did not accept completion");
         }
+        return receipt.CleanupWipBranch;
     }
 
     public async Task FailAsync(Guid id, Guid? lease, string error, CancellationToken ct, bool shouldRetry = false, string details = "")
