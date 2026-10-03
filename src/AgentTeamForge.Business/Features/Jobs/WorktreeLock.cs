@@ -6,8 +6,9 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// Serializes `git worktree add/remove` per repository across threads, daemons and processes on this machine.
 /// Concurrent adds (or an add next to a remove) read each other's half-written admin files and fail
 /// ("failed to read .git/worktrees/&lt;id&gt;/commondir").
-/// The lock is the OS lock on an open handle (FileShare.None is flock on Unix), so it dies with its holder's
-/// process: a crash never leaves it held. The file itself carries no state and is never deleted.
+/// The lock is the OS lock on an open handle, so it dies with its holder's process: a crash never leaves it held.
+/// The file itself carries no state and is never deleted. FileShare.None is a mandatory share-mode lock on Windows and
+/// an advisory flock on Linux/macOS; every ATF path takes it only through this class, so all three behave the same.
 /// </summary>
 public static class WorktreeLock
 {
@@ -52,7 +53,10 @@ public static class WorktreeLock
         }
     }
 
-    /// <summary>The held handle, or null while another handle holds it. Other I/O errors (missing repository) propagate.</summary>
+    /// <summary>
+    /// The held handle, or null while another handle holds it: EWOULDBLOCK from flock on Unix, a sharing violation on
+    /// Windows (also a scanner briefly opening the file). Both are IOException and mean retry. Missing paths propagate.
+    /// </summary>
     static FileStream? TryOpen(string path)
     {
         try
