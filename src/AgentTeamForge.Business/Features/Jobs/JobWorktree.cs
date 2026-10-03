@@ -1,5 +1,4 @@
 using AgentTeamForge.DAL.Files;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
@@ -56,10 +55,18 @@ public static class JobWorktree
         PrivateFiles.CreateDirectory(Path.GetDirectoryName(path)!);
         var commonDir = Git(repository, QueryTimeout, "rev-parse", "--path-format=absolute", "--git-common-dir");
         if (commonDir is null) { return false; }
-        // Another job's slow checkout must not hold a cancelled attempt: the wait and the add honour its token.
-        var gate = AddLocks.GetOrAdd(commonDir, _ => new SemaphoreSlim(1, 1));
-        gate.Wait(cancellationToken);
+        // Another job's slow checkout must not hold a cancelled attempt: the wait honours its token.
+        IDisposable held;
         try
+        {
+            held = WorktreeLock.Acquire(commonDir, cancellationToken);
+        }
+        catch (TimeoutException ex)
+        {
+            Console.Error.WriteLine($"[atf-daemon] git worktree add {path} not attempted: {ex.Message}");
+            return false;
+        }
+        using (held)
         {
             // An interrupted worktree add can have already created the branch.
             var existing = Git(repository, QueryTimeout, "rev-parse", "--verify", "--quiet", $"refs/heads/{branch}");
@@ -70,15 +77,7 @@ public static class JobWorktree
             }
             return Add(repository, "worktree", "add", "-b", branch, path, startingSha);
         }
-        finally
-        {
-            gate.Release();
-        }
     }
-
-    // Concurrent `git worktree add` in one repository is unsafe: each reads every sibling's admin files and dies
-    // ("failed to read .git/worktrees/<id>/commondir") when another add is still writing them. Serialize per repository.
-    static readonly ConcurrentDictionary<string, SemaphoreSlim> AddLocks = new(StringComparer.Ordinal);
 
     /// <summary>A refused checkout fails the job; keep git's reason in the daemon log rather than on its raw stderr.</summary>
     static bool Add(string repository, params string[] args)
