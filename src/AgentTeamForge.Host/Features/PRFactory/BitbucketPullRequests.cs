@@ -14,25 +14,7 @@ public sealed partial class PRFactoryPullRequests
     async Task<string> BitbucketTokenAsync(string? user, CancellationToken ct)
     {
         var token = Environment.GetEnvironmentVariable("BITBUCKET_TOKEN");
-        if (string.IsNullOrEmpty(token))
-        {
-            var input = "protocol=https\nhost=bitbucket.org\n" + (user is null ? "" : $"username={user}\n") + "\n";
-            // Unattended on every platform: no terminal prompt, and no Git Credential Manager sign-in window
-            // (Windows/macOS default helper). Output may end lines with CRLF there.
-            var env = new Dictionary<string, string?>
-            {
-                ["GIT_TERMINAL_PROMPT"] = "0",
-                ["GCM_INTERACTIVE"] = "never",
-                ["GIT_ASKPASS"] = null,
-                ["SSH_ASKPASS"] = null
-            };
-            ProcessResult result;
-            try { result = await runner(new ProcessSpec("git", ["credential", "fill"], env, input, TokenTimeout), ct); }
-            catch (TimeoutException) { throw new Failure($"git credential fill did not finish within {TokenTimeout.TotalSeconds:0} s."); }
-            catch (System.ComponentModel.Win32Exception) { throw new Failure("git is not installed or not on PATH on this machine."); }
-            token = result.ExitCode != 0 ? null : result.Stdout.Split('\n')
-                .FirstOrDefault(l => l.StartsWith("password=", StringComparison.Ordinal))?["password=".Length..].TrimEnd('\r');
-        }
+        if (string.IsNullOrEmpty(token)) { token = await CredentialFillAsync("bitbucket.org", null, user, ct); }
         if (string.IsNullOrEmpty(token))
         {
             throw new Failure("No credential for bitbucket.org on this machine; store an access token with git or set BITBUCKET_TOKEN.");
@@ -103,52 +85,11 @@ public sealed partial class PRFactoryPullRequests
             return url is not null && url.StartsWith("https://", StringComparison.Ordinal) ? new(pr.GetProperty("id").GetInt32(), url, hash) : null;
         }
 
-        static T Read<T>(Func<T> read)
-        {
-            try { return read(); }
-            catch (Exception ex) when (ex is InvalidOperationException or KeyNotFoundException or FormatException)
-            {
-                throw new Failure("Bitbucket returned an unreadable response.");
-            }
-        }
+        static T Read<T>(Func<T> read) => ReadJson("Bitbucket", read);
 
-        async Task<JsonDocument> SendAsync(HttpMethod method, string path, byte[]? body, CancellationToken ct)
-        {
-            using var http = new HttpClient(owner.httpHandler ?? new HttpClientHandler(), disposeHandler: owner.httpHandler is null)
-            {
-                BaseAddress = BitbucketApi,
-                Timeout = CallTimeout
-            };
-            using var request = new HttpRequestMessage(method, path);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            if (body is not null)
-            {
-                request.Content = new ByteArrayContent(body);
-                request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
-            }
-            try
-            {
-                using var response = await http.SendAsync(request, ct);
-                var text = await response.Content.ReadAsStringAsync(ct);
-                if (!response.IsSuccessStatusCode)
-                {
-                    var details = Scrub(text, token);
-                    throw new Failure($"Bitbucket refused: HTTP {(int)response.StatusCode} {method} {path.Split('?')[0]}",
-                        details[..Math.Min(details.Length, 2000)]);
-                }
-                try { return JsonDocument.Parse(text); }
-                catch (JsonException) { throw new Failure("Bitbucket returned an unreadable response."); }
-            }
-            catch (TaskCanceledException) when (!ct.IsCancellationRequested)
-            {
-                throw new Failure($"Bitbucket did not answer within {CallTimeout.TotalSeconds:0} s.");
-            }
-            catch (HttpRequestException ex)
-            {
-                throw new Failure("Could not reach Bitbucket: " + (ex.HttpRequestError == HttpRequestError.Unknown ? ex.GetType().Name : ex.HttpRequestError));
-            }
-        }
+        Task<JsonDocument> SendAsync(HttpMethod method, string path, byte[]? body, CancellationToken ct) =>
+            owner.SendJsonAsync("Bitbucket", BitbucketApi, path, method, body, token,
+                headers => headers.Authorization = new AuthenticationHeaderValue("Bearer", token), ct);
     }
 
     [GeneratedRegex("^[\\x21-\\x7E]{1,4096}$")] private static partial Regex BearerToken();

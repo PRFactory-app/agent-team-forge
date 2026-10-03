@@ -13,7 +13,7 @@ public sealed record ProcessResult(int ExitCode, string Stdout, string Stderr);
 
 /// <summary>
 /// pull-request-v1: opens the pull request for a branch this machine published, on GitHub with the account
-/// chosen at connect time, or on Bitbucket Cloud with the stored git credential. The token is read per call,
+/// chosen at connect time, or on Bitbucket Cloud or Azure DevOps with the stored git credential. The token is read per call,
 /// kept in memory and never logged.
 /// </summary>
 public sealed partial class PRFactoryPullRequests(
@@ -56,6 +56,10 @@ public sealed partial class PRFactoryPullRequests(
                 case "bitbucket.org":
                     token = await BitbucketTokenAsync(remote.User, ct);
                     host = new Bitbucket(this, token, remote.Owner, remote.Repo);
+                    break;
+                case "dev.azure.com":
+                    token = await AzureDevOpsTokenAsync(remote, ct);
+                    host = new AzureDevOps(this, token, remote.Owner, remote.Project!, remote.Repo);
                     break;
                 default:
                     throw new Failure($"Worker-opened pull requests are not supported for {remote.Host}.");
@@ -175,7 +179,8 @@ public sealed partial class PRFactoryPullRequests(
         return await Task.FromResult(ParseRemote(receipt.Remote));
     }
 
-    internal sealed record RemoteRepository(string Host, string Owner, string Repo, string? User);
+    /// <summary>Owner is the GitHub owner, Bitbucket workspace or Azure DevOps organization; Project is Azure only.</summary>
+    internal sealed record RemoteRepository(string Host, string Owner, string Repo, string? User, string? Project = null);
 
     /// <summary>
     /// Splits an https, ssh:// or scp-style remote into host and repository. Add a host here and in HandleAsync.
@@ -183,7 +188,7 @@ public sealed partial class PRFactoryPullRequests(
     /// </summary>
     internal static RemoteRepository ParseRemote(string remote)
     {
-        var unsupported = new Failure("Only github.com and bitbucket.org remotes are supported for worker-opened pull requests.");
+        var unsupported = new Failure("Only github.com, bitbucket.org and Azure DevOps remotes are supported for worker-opened pull requests.");
         string host, path;
         string? user = null;
         if (Uri.TryCreate(remote, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == "ssh"))
@@ -202,6 +207,7 @@ public sealed partial class PRFactoryPullRequests(
         path = path.Trim('/');
         if (path.EndsWith(".git", StringComparison.OrdinalIgnoreCase)) { path = path[..^4]; }
         var parts = path.Split('/');
+        if (ParseAzureDevOps(host, parts, user) is { } azure) { return azure; }
         if (parts.Length != 2 || !RepoPart().IsMatch(parts[0]) || !RepoPart().IsMatch(parts[1])) { throw unsupported; }
         return host switch
         {
@@ -209,6 +215,27 @@ public sealed partial class PRFactoryPullRequests(
             "bitbucket.org" => new(host, parts[0], parts[1], user is not null && CredentialUser().IsMatch(user) ? user : null),
             _ => throw unsupported
         };
+    }
+
+    // dev.azure.com/{org}/{project}/_git/{repo}, {org}.visualstudio.com/[DefaultCollection/]{project}/_git/{repo} and
+    // ssh.dev.azure.com:v3/{org}/{project}/{repo}, all as host dev.azure.com. Project and repository may contain spaces.
+    static RemoteRepository? ParseAzureDevOps(string host, string[] parts, string? user)
+    {
+        string[]? names = host switch
+        {
+            "dev.azure.com" when parts is [var org, var project, "_git", var repo] => [org, project, repo],
+            "ssh.dev.azure.com" or "vs-ssh.visualstudio.com" when parts is ["v3", var org, var project, var repo] => [org, project, repo],
+            _ when host.EndsWith(".visualstudio.com", StringComparison.Ordinal) && parts is [.. var rest, var project, "_git", var repo]
+                && (rest.Length == 0 || rest is ["DefaultCollection"]) => [host[..^".visualstudio.com".Length], project, repo],
+            _ => null
+        };
+        if (names is null) { return null; }
+        names = [.. names.Select(Uri.UnescapeDataString)];
+        if (!RepoPart().IsMatch(names[0]) || !AzureName().IsMatch(names[1]) || !AzureName().IsMatch(names[2]))
+        {
+            throw new Failure("The Azure DevOps remote has an unsupported organization, project or repository name.");
+        }
+        return new("dev.azure.com", names[0], names[2], user is not null && CredentialUser().IsMatch(user) ? user : null, names[1]);
     }
 
     // Always the named account; gh's active account is never consulted.
@@ -281,6 +308,77 @@ public sealed partial class PRFactoryPullRequests(
         return result.Stdout;
     }
 
+    // The git credential for host (and path, when the helper keys on it). Unattended on every platform: no
+    // terminal prompt and no Git Credential Manager sign-in window (Windows/macOS default helper), whose output
+    // may end lines with CRLF. Only the password line is read; nothing is logged.
+    async Task<string?> CredentialFillAsync(string host, string? path, string? user, CancellationToken ct)
+    {
+        var input = $"protocol=https\nhost={host}\n" + (path is null ? "" : $"path={path}\n") + (user is null ? "" : $"username={user}\n") + "\n";
+        var env = new Dictionary<string, string?>
+        {
+            ["GIT_TERMINAL_PROMPT"] = "0",
+            ["GCM_INTERACTIVE"] = "never",
+            ["GIT_ASKPASS"] = null,
+            ["SSH_ASKPASS"] = null
+        };
+        string[] args = path is null ? ["credential", "fill"] : ["-c", "credential.useHttpPath=true", "credential", "fill"];
+        ProcessResult result;
+        try { result = await runner(new ProcessSpec("git", args, env, input, TokenTimeout), ct); }
+        catch (TimeoutException) { throw new Failure($"git credential fill did not finish within {TokenTimeout.TotalSeconds:0} s."); }
+        catch (System.ComponentModel.Win32Exception) { throw new Failure("git is not installed or not on PATH on this machine."); }
+        return result.ExitCode != 0 ? null : result.Stdout.Split('\n')
+            .FirstOrDefault(l => l.StartsWith("password=", StringComparison.Ordinal))?["password=".Length..].TrimEnd('\r');
+    }
+
+    // One JSON REST call to a git host; failures carry the scrubbed response body as details.
+    async Task<JsonDocument> SendJsonAsync(string name, Uri api, string path, HttpMethod method, byte[]? body, string token,
+        Action<System.Net.Http.Headers.HttpRequestHeaders> headers, CancellationToken ct)
+    {
+        using var http = new HttpClient(httpHandler ?? new HttpClientHandler(), disposeHandler: httpHandler is null)
+        {
+            BaseAddress = api,
+            Timeout = CallTimeout
+        };
+        using var request = new HttpRequestMessage(method, path);
+        headers(request.Headers);
+        request.Headers.Accept.Add(new("application/json"));
+        if (body is not null)
+        {
+            request.Content = new ByteArrayContent(body);
+            request.Content.Headers.ContentType = new("application/json");
+        }
+        try
+        {
+            using var response = await http.SendAsync(request, ct);
+            var text = await response.Content.ReadAsStringAsync(ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                var details = Scrub(text, token);
+                throw new Failure($"{name} refused: HTTP {(int)response.StatusCode} {method} {path.Split('?')[0]}",
+                    details[..Math.Min(details.Length, 2000)]);
+            }
+            try { return JsonDocument.Parse(text); }
+            catch (JsonException) { throw new Failure($"{name} returned an unreadable response."); }
+        }
+        catch (TaskCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new Failure($"{name} did not answer within {CallTimeout.TotalSeconds:0} s.");
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new Failure($"Could not reach {name}: " + (ex.HttpRequestError == HttpRequestError.Unknown ? ex.GetType().Name : ex.HttpRequestError));
+        }
+    }
+
+    static T ReadJson<T>(string name, Func<T> read)
+    {
+        try { return read(); }
+        catch (Exception ex) when (ex is InvalidOperationException or KeyNotFoundException or FormatException)
+        {
+            throw new Failure($"{name} returned an unreadable response.");
+        }
+    }
+
     static readonly TimeSpan TokenTimeout = TimeSpan.FromSeconds(20), CallTimeout = TimeSpan.FromMinutes(2);
 
     static string Scrub(string text, string? token)
@@ -332,8 +430,10 @@ public sealed partial class PRFactoryPullRequests(
     [GeneratedRegex("^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$")] private static partial Regex BranchPattern();
     [GeneratedRegex("^[0-9a-fA-F]{40}$")] private static partial Regex Sha();
     [GeneratedRegex("^(?:gh[opsur]_|github_pat_)[A-Za-z0-9_]+$")] private static partial Regex WholeToken();
-    // GitHub tokens, and Atlassian access tokens (ATCTT3…), API tokens (ATATT3…) and app passwords (ATBB…).
-    [GeneratedRegex("(gh[opsu]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|AT(?:CTT|ATT)3[A-Za-z0-9_=-]{16,}|ATBB[A-Za-z0-9]{16,})")] private static partial Regex TokenPattern();
+    // GitHub tokens, Atlassian access tokens (ATCTT3…), API tokens (ATATT3…) and app passwords (ATBB…), and
+    // Azure DevOps PATs (84 characters with the AZDO signature at offset 76).
+    [GeneratedRegex("(gh[opsu]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|AT(?:CTT|ATT)3[A-Za-z0-9_=-]{16,}|ATBB[A-Za-z0-9]{16,}|[A-Za-z0-9]{76}AZDO[A-Za-z0-9]{4})")] private static partial Regex TokenPattern();
     [GeneratedRegex("^[A-Za-z0-9._-]+@(?<host>[A-Za-z0-9.-]+):(?<path>[^:]+)$")] private static partial Regex ScpRemote();
     [GeneratedRegex("^[A-Za-z0-9._-]{1,100}$")] private static partial Regex CredentialUser();
+    [GeneratedRegex("^[A-Za-z0-9._-](?:[A-Za-z0-9._ -]{0,62}[A-Za-z0-9._-])?$")] private static partial Regex AzureName();
 }
