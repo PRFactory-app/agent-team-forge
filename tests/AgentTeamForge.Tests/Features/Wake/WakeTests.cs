@@ -250,6 +250,110 @@ public sealed class WakeTests
     }
 
     [Fact]
+    public async Task Dead_claude_targets_are_pruned_live_ones_never_and_unread_rows_stay()
+    {
+        using var fixture = new JobFixture();
+        var store = new WakeStore(fixture.Database);
+        var gone = fixture.DatabasePath + ".gone.sock";
+        var dead = store.Register("claude:dead", "claude", gone, "secret", "2147483647");
+        var legacy = store.Register("claude:" + gone, "claude", gone, "", "");
+        var live = store.Register("claude:live", "claude", fixture.DatabasePath, "secret", Environment.ProcessId.ToString());
+        Finish(fixture, dead, "dead");
+        Finish(fixture, legacy, "legacy");
+        Finish(fixture, live, "live");
+        var logs = new List<string>();
+        var time = DateTimeOffset.UtcNow;
+        // The Unix rule on every OS; per-platform liveness is covered by Claude_target_is_gone_only_when_its_owner_is_gone.
+        async Task Tick() => await new WakeCoordinator(store, new FakePoster((_, _) => false), logs.Add, () => time, TimeSpan.Zero,
+            claudeGone: t => WakeCoordinator.ClaudeTargetGone(t, "linux")).TickAsync(TestContext.Current.CancellationToken);
+        await Tick();
+        Assert.Equal(3, store.Pending().Count); // registered moments ago: inside the grace period
+
+        time += TimeSpan.FromMinutes(11);
+        await Tick();
+        Assert.Equal("claude:live", Assert.Single(store.Pending()).Target.Key);
+        Assert.Contains(logs, line => line.Contains("wake target pruned: target=claude:dead"));
+        Assert.Contains(logs, line => line.Contains($"wake target pruned: target={legacy.Key}"));
+
+        // Unread work survives the prune and wakes again once the session registers anew.
+        store.Register("claude:dead", "claude", gone, "secret", "2147483647");
+        Assert.Equal(1, store.Pending().Single(x => x.Target.Key == "claude:dead").Unread);
+        store.Invalidate("claude:dead");
+
+        // A live lead is never pruned: not after days of rejected posts, nor when new work lands after days idle.
+        time += TimeSpan.FromDays(4);
+        await Tick();
+        Finish(fixture, live, "after-idle");
+        time += TimeSpan.FromMinutes(11);
+        await Tick();
+        Assert.Equal(2, Assert.Single(store.Pending()).Unread);
+        Assert.DoesNotContain(logs, line => line.Contains("pruned: target=claude:live"));
+    }
+
+    [Theory]
+    [InlineData("linux")]
+    [InlineData("macos")]
+    [InlineData("windows")]
+    public void Claude_target_is_gone_only_when_its_owner_is_gone(string platform)
+    {
+        var self = Environment.ProcessId.ToString();
+        var missing = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".sock");
+        var existing = Environment.ProcessPath!;
+        Assert.True(WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", missing, "s", "2147483647"), platform));
+        Assert.False(WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", missing, "s", self), platform));
+        Assert.False(WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", existing, "s", self), platform));
+        // Unix: a live socket file keeps the target; a legacy row without a pid goes with its socket.
+        // Windows: pipes cannot be probed, so a row without a pid is never judged gone.
+        Assert.Equal(platform == "windows", WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", existing, "s", "2147483647"), platform));
+        Assert.Equal(platform != "windows", WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", missing, "", ""), platform));
+        Assert.False(WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", missing, "s", self), "unsupported"));
+    }
+
+    [Fact]
+    public async Task Rejected_post_logs_its_reason_once_per_target_and_reason()
+    {
+        using var fixture = new JobFixture();
+        var store = new WakeStore(fixture.Database);
+        var target = store.Register("claude:norelay", "claude", fixture.DatabasePath, "secret", Environment.ProcessId.ToString());
+        Finish(fixture, target, "one");
+        var mailbox = new ClaudeWakeMailbox();
+        var time = DateTimeOffset.UtcNow;
+        var logs = new List<string>();
+        var coordinator = new WakeCoordinator(store, new NativeWakePoster(fixture.DatabasePath + ".state", mailbox), logs.Add, () => time, TimeSpan.Zero);
+        for (var i = 0; i < 5; i++)
+        {
+            await coordinator.TickAsync(TestContext.Current.CancellationToken);
+            time += TimeSpan.FromMinutes(5);
+        }
+        var rejected = Assert.Single(logs, line => line.Contains("wake post rejected:"));
+        Assert.Contains("reason=no_relay", rejected);
+
+        // A live relay that reports a failed delivery is a new reason, again logged once.
+        using var stop = new CancellationTokenSource();
+        var relay = Task.Run(async () =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                if (mailbox.Take(target.Address, target.Secret, target.Home) is { } offer)
+                {
+                    mailbox.Complete(offer.Id, target.Address, target.Secret, target.Home, posted: false);
+                }
+                await Task.Delay(20);
+            }
+        }, TestContext.Current.CancellationToken);
+        mailbox.Take(target.Address, target.Secret, target.Home);
+        for (var i = 0; i < 3; i++)
+        {
+            await coordinator.TickAsync(TestContext.Current.CancellationToken);
+            time += TimeSpan.FromMinutes(5);
+        }
+        await stop.CancelAsync();
+        await relay;
+        Assert.Equal(2, logs.Count(line => line.Contains("wake post rejected:")));
+        Assert.Contains(logs, line => line.Contains("reason=relay_failed"));
+    }
+
+    [Fact]
     public async Task Legacy_lead_wake_is_rebound_to_a_live_bridge_for_external_messages_and_jobs()
     {
         using var fixture = new JobFixture();
