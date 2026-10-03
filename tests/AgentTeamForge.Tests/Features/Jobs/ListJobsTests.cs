@@ -42,6 +42,32 @@ public sealed class ListJobsTests
     }
 
     [Fact]
+    public void Overlapping_background_wait_signals_preserve_the_interactive_prompt_wait()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("overlapping-waits");
+        var claim = f.Store.BeginNextAttempt()!;
+        var run = new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+
+        // Herdr reports a prompt before the previous background-wait transcript catches up.
+        Assert.True(f.Store.RecordBlocked(run, true));
+        Assert.False(f.Store.RecordWaiting(run, JobWaiting.BackgroundTaskReason, true));
+        Assert.Equal("interactive_agent_blocked", f.Store.GetJob(job.JobId)!.ReasonCode);
+        Assert.False(f.Store.RecordWaiting(run, JobWaiting.BackgroundTaskReason, false));
+        Assert.Equal("interactive_agent_blocked", f.Store.GetJob(job.JobId)!.ReasonCode);
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(job.JobId)!.Status);
+
+        Assert.True(f.Store.RecordBlocked(run, false));
+        Assert.Null(f.Store.GetJob(job.JobId)!.ReasonCode);
+
+        // Prompt precedence also holds when the background signal arrives first.
+        Assert.True(f.Store.RecordWaiting(run, JobWaiting.BackgroundTaskReason, true));
+        Assert.True(f.Store.RecordBlocked(run, true));
+        Assert.False(f.Store.RecordWaiting(run, JobWaiting.BackgroundTaskReason, false));
+        Assert.Equal("interactive_agent_blocked", f.Store.GetJob(job.JobId)!.ReasonCode);
+    }
+
+    [Fact]
     public void Console_scope_lists_every_lead_and_connector_but_no_unrelated_principal()
     {
         using var f = new JobFixture();

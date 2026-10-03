@@ -716,7 +716,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
 
     /// <summary>
     /// Marks (or clears) an informational wait on a live turn as its reason_code: an interactive prompt or a
-    /// background task the agent ended its turn on. Never replaces another reason; clearing touches only this one.
+    /// background task the agent ended its turn on. Interactive prompts take precedence over background waits;
+    /// other reasons are preserved, and clearing touches only this reason.
     /// </summary>
     public bool RecordWaiting(RunRef run, string reason, bool waiting) => Write(connection =>
     {
@@ -724,7 +725,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         var updated = Execute(connection, tx, """
             UPDATE jobs SET reason_code=CASE WHEN $waiting THEN $reason ELSE NULL END, updated_at=$now
             WHERE job_id=$id AND status='running'
-              AND (CASE WHEN $waiting THEN reason_code IS NULL OR reason_code IN ('interactive_agent_blocked', 'waiting_background_task')
+              AND (CASE WHEN $waiting THEN reason_code IS NULL OR reason_code=$reason
+                       OR ($reason='interactive_agent_blocked' AND reason_code='waiting_background_task')
                    ELSE reason_code=$reason END)
               AND EXISTS (SELECT 1 FROM runs WHERE run_id=$run AND job_id=$id AND generation=$gen AND correlation=$corr AND state='started')
             """,
