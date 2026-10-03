@@ -360,6 +360,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     return new IpcResponse(false, JobErrors.InvalidRequest,
                         ErrorDetail: string.Create(CultureInfo.InvariantCulture, $"Invalid max_bytes: must be an integer from 1 to {JobLogs.MaxReadBytes}."));
                 }
+                MarkWakeRead(request, outputJob.Job!.JobId, outputJob.Job.Status, outputJob.Job.Revision);
                 return new IpcResponse(true, Outcome: "output", Output: logs.Read(request.JobId!, request.Offset ?? 0, request.MaxBytes ?? JobLogs.MaxReadBytes));
             case IpcProtocol.JobActivity:
                 var activityJob = ReadJob(request);

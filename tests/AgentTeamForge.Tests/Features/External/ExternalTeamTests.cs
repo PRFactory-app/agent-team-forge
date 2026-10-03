@@ -348,7 +348,7 @@ public sealed class ExternalTeamTests
         Assert.Equal(("a", 1L, "aa", true, 3),
             (first.Messages[0].From, first.Messages[0].Seq, first.Messages[0].Text,
                 first.Messages[0].Truncated, first.Messages[0].FullLen));
-        Assert.Equal(3, first.UnreadCount);
+        Assert.Equal(2, first.UnreadCount);
         Assert.Equal(1, first.Cursors!["a"]);
         Assert.DoesNotContain("b", first.Cursors.Keys);
 

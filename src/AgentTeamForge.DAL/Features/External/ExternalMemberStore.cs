@@ -569,6 +569,25 @@ public sealed class ExternalMemberStore(JobDatabase database)
                 updated[fromAgent] = Math.Min(positions.GetValueOrDefault(fromAgent), floor);
             }
 
+            else if (leadGlobalCursor && sinceSeq is not null)
+            {
+                // A global since_seq acknowledges every earlier lead message, so none stays unread yet unreachable by it.
+                using var skipped = db.CreateCommand();
+                skipped.Transaction = tx;
+                skipped.CommandText = """
+                    SELECT sender,max(sender_seq) FROM external_messages
+                    WHERE team_id=$team AND recipient=$recipient AND seq<=$since GROUP BY sender
+                    """;
+                skipped.Parameters.AddWithValue("$team", teamId);
+                skipped.Parameters.AddWithValue("$recipient", recipient);
+                skipped.Parameters.AddWithValue("$since", sinceSeq.Value);
+                using var reader = skipped.ExecuteReader();
+                while (reader.Read())
+                {
+                    updated[reader.GetString(0)] = Math.Max(updated.GetValueOrDefault(reader.GetString(0)), reader.GetInt64(1));
+                }
+            }
+
             foreach (var message in selected)
             {
                 updated[message.From] = message.Seq;
@@ -614,7 +633,8 @@ public sealed class ExternalMemberStore(JobDatabase database)
             : leadGlobalCursor && fromAgent is null ? lastGlobalSeq : selected[^1].Seq,
             unread > selected.Count,
             fromAgent is null ? limit == 0 ? cursors : PageCursors(cursors, selected) : null,
-            fromAgent is null ? null : cursors.GetValueOrDefault(fromAgent), unread);
+            // What is still unread after this read; a limit=0 watermark consumes nothing.
+            fromAgent is null ? null : cursors.GetValueOrDefault(fromAgent), unread - selected.Count);
     }
 
     // Only senders present in this page (limit=0 watermark reads keep the full map); the full per-sender map grows with every sender ever seen.
