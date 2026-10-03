@@ -12,6 +12,12 @@ internal static class ClientSetup
     const string Name = "agentteamforge";
     const string Adapter = PiMcpAdapter.Package;
 
+    /// <summary>Exit code a command runner returns when the tool did not finish in time (never a real exit code).</summary>
+    internal const int TimedOut = -1;
+
+    internal static string NoResponse(string tool, TimeSpan timeout) =>
+        $"{tool} did not respond within {timeout.TotalSeconds:0} s; the {tool} on PATH may be a looping wrapper";
+
     /// <summary>
     /// The installer's stable link, as written from HOME, when <paramref name="executable"/> is the
     /// release it currently points at. The OS may report the executable fully link-resolved
@@ -64,16 +70,36 @@ internal static class ClientSetup
         var healthy = true;
         var hardFailure = false;
         var installed = 0;
+        var versions = new Dictionary<string, (int ExitCode, string Output)>(StringComparer.Ordinal);
+        // Each client is probed once; one that does not answer is reported and skipped, never waited on again.
+        (int ExitCode, string Output) Version(string tool)
+        {
+            if (!versions.TryGetValue(tool, out var result))
+            {
+                versions[tool] = result = run(tool, ["--version"]);
+                if (result.ExitCode == TimedOut)
+                {
+                    Console.Error.WriteLine($"{tool}: failed ({result.Output})");
+                    healthy = false;
+                }
+            }
+            return result;
+        }
         Console.Out.WriteLine($"MCP binary: {binary}");
         Console.Out.WriteLine($"State directory: {stateDir}");
         foreach (var client in new[] { "claude", "codex" })
         {
-            if (run(client, ["--version"]).ExitCode == 127)
+            var probe = Version(client).ExitCode;
+            if (probe == 127)
             {
                 Console.Out.WriteLine($"{client}: skipped (not installed)");
                 continue;
             }
             installed++;
+            if (probe == TimedOut)
+            {
+                continue;
+            }
 
             var (exitCode, output) = run(client, ["mcp", "get", Name]);
             var desiredArgs = StateArgs + stateDir;
@@ -124,7 +150,7 @@ internal static class ClientSetup
             Console.Out.WriteLine($"{client}: installed (MCP registration updated)");
         }
 
-        if (run("claude", ["--version"]).ExitCode != 127)
+        if (Version("claude").ExitCode is not (127 or TimedOut))
         {
             try
             {
@@ -151,7 +177,12 @@ internal static class ClientSetup
             }
         }
 
-        if (run("pi", ["--version"]).ExitCode != 127)
+        var piProbe = Version("pi").ExitCode;
+        if (piProbe == TimedOut)
+        {
+            installed++;
+        }
+        else if (piProbe != 127)
         {
             installed++;
             try
@@ -169,7 +200,7 @@ internal static class ClientSetup
                 hardFailure = true;
             }
         }
-        else
+        else if (piProbe == 127)
         {
             Console.Out.WriteLine("pi: skipped (not installed)");
         }
@@ -177,7 +208,11 @@ internal static class ClientSetup
         // user/project configuration, so setup only detects them here.
         foreach (var (client, binaryName) in new[] { ("cursor", "cursor-agent"), ("droid", "droid") })
         {
-            var (code, version) = run(binaryName, ["--version"]);
+            var (code, version) = Version(binaryName);
+            if (code == TimedOut)
+            {
+                continue;
+            }
             Console.Out.WriteLine(code == 127 ? $"{client}: skipped (not installed)"
                 : code == 0 ? $"{client}: installed ({BoundedError(version)}; headless-only)"
                 : $"{client}: found but version check failed ({BoundedError(version)})");

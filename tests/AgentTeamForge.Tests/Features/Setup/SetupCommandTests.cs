@@ -927,4 +927,50 @@ public sealed class SetupCommandTests
         Assert.True(LoginAutostart.UseSystemdUserUnit(home, Path.Combine(real, "a \"$b%"), Path.Combine(real, "state")));
         Assert.False(LoginAutostart.UseSystemdUserUnit(home, Path.Combine(real, "a \"$b"), Path.Combine(real, "state")));
     }
+
+    [Fact]
+    public void A_hanging_client_probe_times_out_with_a_clear_message()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        using var temp = new TempStateDir();
+        var tool = temp.File("hangs");
+        File.WriteAllText(tool, "#!/bin/sh\nexec sleep 60\n");
+        File.SetUnixFileMode(tool, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        var watch = Stopwatch.StartNew();
+        var (code, output) = SetupCommand.RunCommand(tool, ["--version"], TimeSpan.FromSeconds(1));
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(30));
+        Assert.Equal(ClientSetup.TimedOut, code);
+        Assert.Equal($"{tool} did not respond within 1 s; the {tool} on PATH may be a looping wrapper", output);
+    }
+
+    [Fact]
+    public void A_client_whose_probe_timed_out_is_reported_and_not_run_again()
+    {
+        using var temp = new TempStateDir();
+        var calls = new List<string>();
+        (int, string) Runner(string tool, IReadOnlyList<string> args)
+        {
+            calls.Add(tool + " " + string.Join(' ', args));
+            return tool == "claude" ? (ClientSetup.TimedOut, ClientSetup.NoResponse("claude", TimeSpan.FromSeconds(15))) : (127, "");
+        }
+        var originalError = Console.Error;
+        using var error = new StringWriter();
+        Console.SetError(error);
+        try
+        {
+            ClientSetup.Reconcile("/tmp/atf", temp.File("state"), temp.File("home"), temp.File("settings.json"), null, Runner, apply: true);
+        }
+        finally
+        {
+            Console.SetError(originalError);
+        }
+
+        Assert.Equal(["claude --version"], calls.Where(call => call.StartsWith("claude ", StringComparison.Ordinal)));
+        Assert.Contains("claude: failed (claude did not respond within 15 s; the claude on PATH may be a looping wrapper)", error.ToString());
+    }
 }

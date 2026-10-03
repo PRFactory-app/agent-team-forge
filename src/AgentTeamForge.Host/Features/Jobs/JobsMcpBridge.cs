@@ -121,7 +121,7 @@ public static class JobsMcpBridge
 
     const string MemberWakeSchema = """{"type":"object","properties":{"member_token":{"type":"string"},"kind":{"type":"string","enum":["claude","codex"]},"codex_thread_id":{"type":"string"},"codex_home":{"type":"string"}},"required":["member_token"]}""";
 
-    /// <summary>Set to 1 by setup and uninstall for the client commands they run; see <see cref="SetupCommand.RunCommand"/>.</summary>
+    /// <summary>Set to 1 by setup and uninstall for the client commands they run; see <see cref="SetupCommand.RunCommand(string, IReadOnlyList{string})"/>.</summary>
     internal const string HealthCheckVariable = "ATF_MCP_HEALTH_CHECK";
 
     public static async Task<int> RunAsync(StateDirectory state, bool testProfile, string? managedContextPath = null)
