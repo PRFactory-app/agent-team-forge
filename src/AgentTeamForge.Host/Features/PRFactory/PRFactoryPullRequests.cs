@@ -12,12 +12,14 @@ public sealed record ProcessSpec(string File, string[] Args, IReadOnlyDictionary
 public sealed record ProcessResult(int ExitCode, string Stdout, string Stderr);
 
 /// <summary>
-/// pull-request-v1: opens the pull request for a branch this machine published, using the GitHub
-/// account chosen at connect time. The token is read per call, kept in memory and never logged.
+/// pull-request-v1: opens the pull request for a branch this machine published, on GitHub with the account
+/// chosen at connect time, or on Bitbucket Cloud with the stored git credential. The token is read per call,
+/// kept in memory and never logged.
 /// </summary>
 public sealed partial class PRFactoryPullRequests(
     string server, IReadOnlyList<RepositoryMapping> repositories, string? gitHubUser, PRFactoryClient client,
-    PRFactoryPublicationStore publications, Action<string>? log = null, Func<ProcessSpec, CancellationToken, Task<ProcessResult>>? run = null)
+    PRFactoryPublicationStore publications, Action<string>? log = null, Func<ProcessSpec, CancellationToken, Task<ProcessResult>>? run = null,
+    HttpMessageHandler? http = null)
 {
     sealed class Failure(string message, string details = "") : Exception(message)
     {
@@ -25,6 +27,8 @@ public sealed partial class PRFactoryPullRequests(
     }
 
     readonly Func<ProcessSpec, CancellationToken, Task<ProcessResult>> runner = run ?? RunProcessAsync;
+    // Tests replace the REST transport of the hosts that are not driven through a CLI.
+    readonly HttpMessageHandler? httpHandler = http;
     // The default runner resolves the real gh once; an injected runner keeps the plain name.
     Task<string> GhPath() => run is null ? Task.Run(() => ToolExecutable.Resolve("gh")) : Task.FromResult("gh");
 
@@ -39,36 +43,37 @@ public sealed partial class PRFactoryPullRequests(
         try
         {
             var request = Parse(item);
-            var (owner, repo, remoteUser) = await Authorize(request, ct);
-            var login = gitHubUser ?? remoteUser
-                ?? throw new Failure("No GitHub account configured for this connector; reconnect with --github-user.");
-            token = await TokenAsync(login, ct);
-            var env = new Dictionary<string, string?>
+            var remote = await Authorize(request, ct);
+            IPullRequestHost host;
+            switch (remote.Host)
             {
-                ["GH_TOKEN"] = token,
-                ["GH_HOST"] = "github.com",
-                ["MISE_QUIET"] = "1",
-                ["GH_PROMPT_DISABLED"] = "1",
-                ["GITHUB_TOKEN"] = null,
-                ["GH_ENTERPRISE_TOKEN"] = null
-            };
-            var slug = $"{owner}/{repo}";
-            var head = (await Gh(env, token, ["api", $"repos/{slug}/branches/{request.HeadBranch}", "--jq", ".commit.sha"], null, ct)).Trim();
-            if (!string.Equals(head, request.HeadSha, StringComparison.OrdinalIgnoreCase))
+                case "github.com":
+                    var login = gitHubUser ?? remote.User
+                        ?? throw new Failure("No GitHub account configured for this connector; reconnect with --github-user.");
+                    token = await TokenAsync(login, ct);
+                    host = new GitHub(this, token, remote.Owner, remote.Repo);
+                    break;
+                case "bitbucket.org":
+                    token = await BitbucketTokenAsync(remote.User, ct);
+                    host = new Bitbucket(this, token, remote.Owner, remote.Repo);
+                    break;
+                default:
+                    throw new Failure($"Worker-opened pull requests are not supported for {remote.Host}.");
+            }
+            var head = await host.HeadShaAsync(request.HeadBranch, ct);
+            if (!SameCommit(head, request.HeadSha))
             {
                 throw new Failure($"Remote branch {request.HeadBranch} moved; republish it before opening the pull request.");
             }
             var created = false;
-            var existing = await OpenAsync(env, token, owner, repo, request, ct);
+            var existing = await host.FindOpenAsync(request, ct);
             if (existing is null)
             {
-                await Gh(env, token, ["pr", "create", "--repo", slug, "--head", request.HeadBranch, "--base", request.BaseBranch,
-                    "--title", request.Title, "--body-file", "-"], request.Body, ct);
-                existing = await OpenAsync(env, token, owner, repo, request, ct)
-                    ?? throw new Failure("GitHub did not list the pull request after creating it.");
+                existing = await host.CreateAsync(request, ct) ?? await host.FindOpenAsync(request, ct)
+                    ?? throw new Failure($"{host.Name} did not list the pull request after creating it.");
                 created = true;
             }
-            if (!string.Equals(existing.HeadRefOid, request.HeadSha, StringComparison.OrdinalIgnoreCase))
+            if (!SameCommit(existing.HeadSha, request.HeadSha))
             {
                 throw new Failure($"The open pull request for {request.HeadBranch} points at a different commit; update or close it.");
             }
@@ -84,6 +89,51 @@ public sealed partial class PRFactoryPullRequests(
             or WorkerTokenRejectedException or HttpRequestException))
         {
             await FailAsync(item, "Could not open the pull request: " + ex.GetType().Name, "", token, ct);
+        }
+    }
+
+    /// <summary>An open pull request; HeadSha may be abbreviated (Bitbucket returns 12 characters).</summary>
+    sealed record OpenPullRequest(int Number, string Url, string HeadSha);
+
+    /// <summary>One git host's pull request API. Each call throws Failure with a scrubbable message.</summary>
+    interface IPullRequestHost
+    {
+        string Name { get; }
+        Task<string> HeadShaAsync(string branch, CancellationToken ct);
+        Task<OpenPullRequest?> FindOpenAsync(PRFactoryPullRequestRequest request, CancellationToken ct);
+        /// <summary>Returns the created pull request, or null when the host must be listed again.</summary>
+        Task<OpenPullRequest?> CreateAsync(PRFactoryPullRequestRequest request, CancellationToken ct);
+    }
+
+    // A full 40-character sha against a host that may abbreviate it.
+    static bool SameCommit(string remote, string full) =>
+        remote.Length >= 7 && full.StartsWith(remote, StringComparison.OrdinalIgnoreCase);
+
+    sealed class GitHub(PRFactoryPullRequests owner, string token, string ownerName, string repo) : IPullRequestHost
+    {
+        readonly Dictionary<string, string?> env = new()
+        {
+            ["GH_TOKEN"] = token,
+            ["GH_HOST"] = "github.com",
+            ["MISE_QUIET"] = "1",
+            ["GH_PROMPT_DISABLED"] = "1",
+            ["GITHUB_TOKEN"] = null,
+            ["GH_ENTERPRISE_TOKEN"] = null
+        };
+
+        public string Name => "GitHub";
+
+        public async Task<string> HeadShaAsync(string branch, CancellationToken ct) =>
+            (await owner.Gh(env, token, ["api", $"repos/{ownerName}/{repo}/branches/{branch}", "--jq", ".commit.sha"], null, ct)).Trim();
+
+        public Task<OpenPullRequest?> FindOpenAsync(PRFactoryPullRequestRequest request, CancellationToken ct) =>
+            owner.OpenAsync(env, token, ownerName, repo, request, ct);
+
+        public async Task<OpenPullRequest?> CreateAsync(PRFactoryPullRequestRequest request, CancellationToken ct)
+        {
+            await owner.Gh(env, token, ["pr", "create", "--repo", $"{ownerName}/{repo}", "--head", request.HeadBranch, "--base", request.BaseBranch,
+                "--title", request.Title, "--body-file", "-"], request.Body, ct);
+            return null;
         }
     }
 
@@ -112,7 +162,7 @@ public sealed partial class PRFactoryPullRequests(
         return request;
     }
 
-    async Task<(string Owner, string Repo, string? User)> Authorize(PRFactoryPullRequestRequest request, CancellationToken ct)
+    async Task<RemoteRepository> Authorize(PRFactoryPullRequestRequest request, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         if (repositories.All(r => r.Id != request.RepositoryId))
@@ -125,33 +175,40 @@ public sealed partial class PRFactoryPullRequests(
         return await Task.FromResult(ParseRemote(receipt.Remote));
     }
 
-    internal static (string Owner, string Repo, string? User) ParseRemote(string remote)
+    internal sealed record RemoteRepository(string Host, string Owner, string Repo, string? User);
+
+    /// <summary>
+    /// Splits an https, ssh:// or scp-style remote into host and repository. Add a host here and in HandleAsync.
+    /// Only the username of an https remote counts; any password or token in the URL is ignored.
+    /// </summary>
+    internal static RemoteRepository ParseRemote(string remote)
     {
-        var unsupported = new Failure("Only github.com remotes are supported for worker-opened pull requests.");
-        string path;
+        var unsupported = new Failure("Only github.com and bitbucket.org remotes are supported for worker-opened pull requests.");
+        string host, path;
         string? user = null;
-        if (Uri.TryCreate(remote, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps)
+        if (Uri.TryCreate(remote, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == "ssh"))
         {
-            if (!uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)) { throw unsupported; }
-            path = uri.AbsolutePath.Trim('/');
-            // Only the username counts; any password or token in the URL is ignored.
-            user = uri.UserInfo.Length == 0 ? null : uri.UserInfo.Split(':')[0];
-            user = user is not null && IsGitHubLogin(user) ? user : null;
+            host = uri.Host;
+            path = uri.AbsolutePath;
+            if (uri.Scheme == Uri.UriSchemeHttps && uri.UserInfo.Length > 0) { user = Uri.UnescapeDataString(uri.UserInfo.Split(':')[0]); }
         }
-        else if (Uri.TryCreate(remote, UriKind.Absolute, out var ssh) && ssh.Scheme == "ssh")
+        else if (ScpRemote().Match(remote) is { Success: true } scp)
         {
-            if (!ssh.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)) { throw unsupported; }
-            path = ssh.AbsolutePath.Trim('/');
-        }
-        else if (remote.StartsWith("git@github.com:", StringComparison.Ordinal))
-        {
-            path = remote["git@github.com:".Length..].Trim('/');
+            host = scp.Groups["host"].Value;
+            path = scp.Groups["path"].Value;
         }
         else { throw unsupported; }
+        host = host.ToLowerInvariant();
+        path = path.Trim('/');
         if (path.EndsWith(".git", StringComparison.OrdinalIgnoreCase)) { path = path[..^4]; }
         var parts = path.Split('/');
         if (parts.Length != 2 || !RepoPart().IsMatch(parts[0]) || !RepoPart().IsMatch(parts[1])) { throw unsupported; }
-        return (parts[0], parts[1], user);
+        return host switch
+        {
+            "github.com" => new(host, parts[0], parts[1], user is not null && IsGitHubLogin(user) ? user : null),
+            "bitbucket.org" => new(host, parts[0], parts[1], user is not null && CredentialUser().IsMatch(user) ? user : null),
+            _ => throw unsupported
+        };
     }
 
     // Always the named account; gh's active account is never consulted.
@@ -176,10 +233,8 @@ public sealed partial class PRFactoryPullRequests(
         return token;
     }
 
-    sealed record Listed(int Number, string Url, string HeadRefOid);
-
     // Only a same-repository PR for the published repository, branch and base qualifies; forks share branch names.
-    async Task<Listed?> OpenAsync(IReadOnlyDictionary<string, string?> env, string token, string owner, string repo,
+    async Task<OpenPullRequest?> OpenAsync(IReadOnlyDictionary<string, string?> env, string token, string owner, string repo,
         PRFactoryPullRequestRequest request, CancellationToken ct)
     {
         var json = await Gh(env, token, ["pr", "list", "--repo", $"{owner}/{repo}", "--head", request.HeadBranch, "--base", request.BaseBranch,
@@ -187,7 +242,7 @@ public sealed partial class PRFactoryPullRequests(
         try
         {
             using var document = JsonDocument.Parse(json);
-            var eligible = new List<Listed>();
+            var eligible = new List<OpenPullRequest>();
             foreach (var entry in document.RootElement.EnumerateArray())
             {
                 var url = entry.GetProperty("url").GetString();
@@ -202,7 +257,7 @@ public sealed partial class PRFactoryPullRequests(
                 }
                 eligible.Add(new(entry.GetProperty("number").GetInt32(), url, entry.GetProperty("headRefOid").GetString() ?? ""));
             }
-            return eligible.FirstOrDefault(p => string.Equals(p.HeadRefOid, request.HeadSha, StringComparison.OrdinalIgnoreCase))
+            return eligible.FirstOrDefault(p => string.Equals(p.HeadSha, request.HeadSha, StringComparison.OrdinalIgnoreCase))
                 ?? eligible.FirstOrDefault();
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException)
@@ -277,5 +332,8 @@ public sealed partial class PRFactoryPullRequests(
     [GeneratedRegex("^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$")] private static partial Regex BranchPattern();
     [GeneratedRegex("^[0-9a-fA-F]{40}$")] private static partial Regex Sha();
     [GeneratedRegex("^(?:gh[opsur]_|github_pat_)[A-Za-z0-9_]+$")] private static partial Regex WholeToken();
-    [GeneratedRegex("(gh[opsu]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})")] private static partial Regex TokenPattern();
+    // GitHub tokens, and Atlassian access tokens (ATCTT3…), API tokens (ATATT3…) and app passwords (ATBB…).
+    [GeneratedRegex("(gh[opsu]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|AT(?:CTT|ATT)3[A-Za-z0-9_=-]{16,}|ATBB[A-Za-z0-9]{16,})")] private static partial Regex TokenPattern();
+    [GeneratedRegex("^[A-Za-z0-9._-]+@(?<host>[A-Za-z0-9.-]+):(?<path>[^:]+)$")] private static partial Regex ScpRemote();
+    [GeneratedRegex("^[A-Za-z0-9._-]{1,100}$")] private static partial Regex CredentialUser();
 }
