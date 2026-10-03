@@ -190,6 +190,39 @@ public sealed class FollowUpJobTests
     }
 
     [Fact]
+    public async Task Deferred_follow_up_on_a_running_native_child_queues_and_runs_once_after_it()
+    {
+        using var f = new JobFixture();
+        var backend = new ScriptedBackend(r => [new BackendEvidence.Session(r.Correlation, "thread-live")]) { Hangs = true };
+        var catalog = new BackendCatalog().Register(BackendCatalog.Codex, () => backend);
+        var accept = Accept(f, catalog);
+        var parent = accept.Execute(new SubmitJobRequest("p", "first", null, false) { Backend = BackendCatalog.Codex, TargetAgent = "live" }).Job!;
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+        var parentRun = dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+        await Bounded.Until(() => f.Store.GetJob(parent.JobId)?.SessionId == "thread-live", "session binding");
+        var follow = new FollowUpJob(f.Store, JobFixture.Operator, accept);
+        var child = follow.Execute(new FollowUpRequest(parent.JobId, "second", "c1") { Defer = true }).Job!;
+        var childClaim = f.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home")!;
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(child.JobId)!.Status);
+
+        // The child's native turn is still unacknowledged: defer queues behind it, a plain follow-up is refused.
+        Assert.Equal(JobErrors.ParentNotReady, follow.Execute(new FollowUpRequest(child.JobId, "now", "c2-now")).Error);
+        var queued = follow.Execute(new FollowUpRequest(child.JobId, "third", "c2") { Defer = true });
+        Assert.Equal("accepted", queued.Outcome);
+        Assert.Equal(JobStatus.Queued, queued.Job!.Status);
+        Assert.Null(f.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home"));
+        Assert.Null(f.Store.BeginNextAttempt());
+
+        Assert.True(f.Store.SettleNativeAttempt(child.JobId, childClaim.Correlation, "second done"));
+        Assert.Equal(queued.Job.JobId, f.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home")!.Job.JobId);
+        Assert.Null(f.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home"));
+        Assert.Null(f.Store.BeginNextAttempt());
+
+        dispatcher.CancelRunning(parent.JobId);
+        await parentRun.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public void Reconciliation_waits_for_the_marked_process_and_allows_follow_up_after_recovery()
     {
         using var f = new JobFixture();

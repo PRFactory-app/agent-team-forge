@@ -169,17 +169,21 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 : new Conflict();
         }
 
+        // A deferred child waits behind its own parent's unacknowledged native turn: the
+        // dispatcher keeps that fence (BeginNextAttempt, BeginNative*Attempt) before any effect.
+        var deferredOn = job.DeferParent && job.ParentJobId is { } deferParentId
+            && GetJob(connection, tx, deferParentId) is { Status: JobStatus.Queued or JobStatus.Running } ? deferParentId : null;
         if (Scalar(connection, tx, """
             SELECT count(*) FROM native_codex_attempts n JOIN jobs j ON j.job_id=n.job_id
-            WHERE n.state='sent' AND j.principal=$p AND j.team=$t AND j.target_agent=$a
-            """, ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent)) > 0)
+            WHERE n.state='sent' AND j.principal=$p AND j.team=$t AND j.target_agent=$a AND n.job_id IS NOT $deferred
+            """, ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent), ("$deferred", deferredOn)) > 0)
         {
             return new ParentNotReady();
         }
         if (Scalar(connection, tx, """
             SELECT count(*) FROM native_claude_attempts n JOIN jobs j ON j.job_id=n.job_id
-            WHERE n.state IN ('posting','posted') AND j.principal=$p AND j.team=$t AND j.target_agent=$a
-            """, ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent)) > 0)
+            WHERE n.state IN ('posting','posted') AND j.principal=$p AND j.team=$t AND j.target_agent=$a AND n.job_id IS NOT $deferred
+            """, ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent), ("$deferred", deferredOn)) > 0)
         {
             return new ParentNotReady();
         }
@@ -210,12 +214,14 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             // N5 is checked in the acceptance transaction, including replacements and
             // ordinary resume attempts. An uncertain queue call may still present later.
             if (parent.SessionId is { } thread && Scalar(connection, tx,
-                "SELECT count(*) FROM native_codex_attempts WHERE thread_id=$thread AND state='sent'", ("$thread", thread)) > 0)
+                "SELECT count(*) FROM native_codex_attempts WHERE thread_id=$thread AND state='sent' AND job_id IS NOT $deferred",
+                ("$thread", thread), ("$deferred", deferredOn)) > 0)
             {
                 return new ParentNotReady();
             }
             if (parent.SessionId is { } claudeSession && Scalar(connection, tx,
-                "SELECT count(*) FROM native_claude_attempts WHERE session_id=$session AND state IN ('posting','posted')", ("$session", claudeSession)) > 0)
+                "SELECT count(*) FROM native_claude_attempts WHERE session_id=$session AND state IN ('posting','posted') AND job_id IS NOT $deferred",
+                ("$session", claudeSession), ("$deferred", deferredOn)) > 0)
             {
                 return new ParentNotReady();
             }
