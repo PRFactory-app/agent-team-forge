@@ -60,6 +60,79 @@ public sealed class WakeTests
         return claim.Job.JobId;
     }
 
+    /// <summary>Claude Code drops a channel message whose sender and body repeat within 30s, yet the write succeeds.</summary>
+    sealed class DedupingPoster : IWakePoster
+    {
+        public readonly List<string> Delivered = [];
+        public Task<bool> PostAsync(WakeRegistration target, string notice, CancellationToken cancellationToken)
+        {
+            if (!Delivered.Contains(notice)) { Delivered.Add(notice); }
+            return Task.FromResult(true);
+        }
+    }
+
+    static (WakeStore Wake, ExternalTeam Team, LeadSessionInfo Lead, string MemberToken) ExternalSetup(JobFixture fixture, string name)
+    {
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/" + name, name + "-lead");
+        var target = wake.Register("claude:" + name, "claude", "/tmp/" + name + ".sock", "secret", "1");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        var team = new ExternalTeam(new ExternalMemberStore(fixture.Database), wake);
+        var member = team.Join(lead.SessionId, team.CreateTicket(lead.SessionId, lead.Workspace, "worker", null).Ticket!.Token).Member!;
+        return (wake, team, lead, member.MemberToken);
+    }
+
+    static async Task<WakeSnapshot> NotifyAsync(WakeStore wake, WakeCoordinator coordinator, int unread)
+    {
+        var pending = Assert.Single(wake.PendingExternal());
+        Assert.Equal(unread, pending.Unread);
+        Assert.True(pending.LatestSeq > pending.NotifiedSeq);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(pending.LatestSeq, Assert.Single(wake.PendingExternal()).NotifiedSeq);
+        return pending;
+    }
+
+    [Fact]
+    public async Task External_notices_differ_when_unread_returns_to_one_within_the_native_dedup_window()
+    {
+        using var fixture = new JobFixture();
+        var (wake, team, lead, token) = ExternalSetup(fixture, "dedup");
+        var poster = new DedupingPoster();
+        var clock = DateTimeOffset.UtcNow;
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, clock: () => clock, coalesce: TimeSpan.Zero);
+        var seqs = new List<long>();
+        for (var step = 0; step < 3; step++)
+        {
+            Assert.True(step == 1
+                ? team.SendFromOperator(lead.SessionId, lead.Workspace, "operator work", "op").Ok
+                : team.Send(token, "agent report " + step).Ok);
+            seqs.Add((await NotifyAsync(wake, coordinator, 1)).LatestSeq);
+            team.ReadLead(lead.SessionId, lead.Workspace, null, 10);
+            Assert.Empty(wake.PendingExternal());
+        }
+        Assert.Equal(3, poster.Delivered.Count);
+        Assert.True(seqs[0] < seqs[1] && seqs[1] < seqs[2]);
+        Assert.All(poster.Delivered, notice => Assert.DoesNotContain("report", notice));
+    }
+
+    [Fact]
+    public async Task Operator_and_agent_messages_grow_the_unread_notice_alike()
+    {
+        using var fixture = new JobFixture();
+        var (wake, team, lead, token) = ExternalSetup(fixture, "grow");
+        var poster = new DedupingPoster();
+        var clock = DateTimeOffset.UtcNow;
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, clock: () => clock, coalesce: TimeSpan.Zero);
+        Assert.True(team.Send(token, "agent one").Ok);
+        await NotifyAsync(wake, coordinator, 1);
+        Assert.True(team.SendFromOperator(lead.SessionId, lead.Workspace, "operator two", "op").Ok);
+        await NotifyAsync(wake, coordinator, 2);
+        Assert.True(team.Send(token, "agent three").Ok);
+        await NotifyAsync(wake, coordinator, 3);
+        Assert.Equal(3, poster.Delivered.Count);
+    }
+
     [Fact]
     public async Task Operator_message_is_committed_before_exactly_one_notice()
     {
