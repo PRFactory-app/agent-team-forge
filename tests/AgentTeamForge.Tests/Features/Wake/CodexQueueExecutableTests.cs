@@ -47,6 +47,21 @@ public sealed class CodexQueueExecutableTests
         Assert.DoesNotContain("basic-credential", result);
     }
 
+    [Theory]
+    [InlineData("password=\"synthetic first second\" api_key=\"synthetic,tail\"", "[REDACTED] [REDACTED]")]
+    [InlineData("password=\"a b\" api_key=\"x,y\"", "[REDACTED] [REDACTED]")]
+    [InlineData("password='a b' api_key='x,y'", "[REDACTED] [REDACTED]")]
+    [InlineData("password=\"a \\\"quoted\\\" b\" after", "[REDACTED] after")]
+    [InlineData("password='a \\'quoted\\' b' after", "[REDACTED] after")]
+    [InlineData("password=synthetic,tail after", "[REDACTED] after")]
+    [InlineData("password=\"unterminated synthetic tail", "[REDACTED]")]
+    public void Diagnostic_redacts_entire_credential_values(string input, string expected)
+    {
+        var result = CodexQueueWake.Diagnostic(7, false, input, input, "failed");
+        Assert.Contains("stdout_tail=\"" + expected + "\"", result);
+        Assert.Contains("stderr_tail=\"" + expected + "\"", result);
+    }
+
     [Fact]
     public async Task Unparsed_success_and_start_failure_both_have_diagnostics()
     {

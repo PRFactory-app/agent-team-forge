@@ -218,7 +218,7 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
             .Replace("\r", "\\r", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal).Replace("\t", "\\t", StringComparison.Ordinal) + "\"";
     }
 
-    [System.Text.RegularExpressions.GeneratedRegex("(?i)(?:(?:bearer|basic)\\s+\\S+|(?:access_token|refresh_token|id_token|api[_-]?key|token|password|secret)[\\\"']?\\s*[:=]\\s*[\\\"']?(?:(?:bearer|basic)\\s+)?[^\\s\\\"',}]+|(?:sk-|gh[pousr]_|github_pat_)[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+)")]
+    [System.Text.RegularExpressions.GeneratedRegex("""(?i)(?:(?:bearer|basic)\s+\S+|(?:access_token|refresh_token|id_token|api[_-]?key|token|password|secret)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|(?:(?:bearer|basic)\s+)?[^\s"']+)|(?:sk-|gh[pousr]_|github_pat_)[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)""")]
     private static partial System.Text.RegularExpressions.Regex Credential();
 
     // Queue helpers need the same wrapper bypass as job launches on Linux/macOS.
