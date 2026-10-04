@@ -1,4 +1,5 @@
 using System.Net;
+using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Features.Jobs;
 using AgentTeamForge.Host.Features.PRFactory;
 
@@ -38,7 +39,19 @@ public sealed class HumanWaitChainTests
     public async Task Prfactory_question_tool_is_gated_and_direct_call_does_not_create_a_wait()
     {
         using var h = NewHarness();
-        await h.TickAsync();
+        var submissions = 0;
+        var adapter = h.Adapter(submit: request => ++submissions == 1
+            ? JobResult.Fail(JobErrors.StorageBusy) : h.Accept.Execute(request));
+        // A tick may defer submission (for example on SQLite contention). Dispatch only
+        // after the durable lead mapping exists, with a deadline and useful failure details.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        while (h.Teams.MemberJob(ChainServer.Url, h.Server.Item.Id, "lead", 0) is null)
+        {
+            Assert.False(timeout.IsCancellationRequested, string.Join(Environment.NewLine, h.Logs));
+            await adapter.TickAsync(ChainHarness.Machine, timeout.Token);
+        }
+        Assert.Equal(2, submissions);
         var (lead, _) = h.StartOne();
         Assert.DoesNotContain("request_human_input", lead.Instruction, StringComparison.Ordinal);
         Assert.DoesNotContain("human-wait-v1", PRFactoryClient.Capabilities);
