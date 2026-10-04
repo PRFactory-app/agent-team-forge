@@ -16,11 +16,17 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
     Func<WakeRegistration, string, CancellationToken, Task<bool>>? queue = null) : IWakePoster
 {
     readonly Func<WakeRegistration, bool> verifyThread = verify ?? VerifyCodexThread;
-    readonly Func<WakeRegistration, string, CancellationToken, Task<bool>> queueNotice = queue ?? QueueAsync;
+    public async Task<bool> PostAsync(WakeRegistration target, string notice, CancellationToken cancellationToken) =>
+        await PostWithReasonAsync(target, notice, cancellationToken) == WakePost.Ok;
 
-    public Task<bool> PostAsync(WakeRegistration target, string notice, CancellationToken cancellationToken) =>
-        target.Kind == "codex" && verifyThread(target)
-            ? queueNotice(target, notice, cancellationToken) : Task.FromResult(false);
+    public async Task<string> PostWithReasonAsync(WakeRegistration target, string notice, CancellationToken cancellationToken)
+    {
+        if (target.Kind != "codex") { return "wrong_kind"; }
+        if (!verifyThread(target)) { return "thread_unverified"; }
+        if (queue is not null) { return await queue(target, notice, cancellationToken) ? WakePost.Ok : "queue_rejected"; }
+        var submission = await SubmitAsync(target.Address, target.Home, notice, cancellationToken);
+        return submission.SubmissionId is not null ? WakePost.Ok : submission.Diagnostic ?? "queue_receipt_missing";
+    }
 
     public static bool VerifyCodexThread(WakeRegistration target)
     {
@@ -82,9 +88,6 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
         }
         catch (IOException) { return false; }
     }
-
-    static async Task<bool> QueueAsync(WakeRegistration target, string notice, CancellationToken cancellationToken) =>
-        (await SubmitAsync(target.Address, target.Home, notice, cancellationToken)).SubmissionId is not null;
 
     /// <summary>
     /// Returns the carrier's submission id, or null when no receipt was proven.

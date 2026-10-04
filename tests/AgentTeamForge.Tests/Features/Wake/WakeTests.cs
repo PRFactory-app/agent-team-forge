@@ -60,6 +60,307 @@ public sealed class WakeTests
         return claim.Job.JobId;
     }
 
+    /// <summary>Claude Code drops a channel message whose sender and body repeat within 30s, yet the write succeeds.</summary>
+    sealed class DedupingPoster : IWakePoster
+    {
+        public readonly List<string> Delivered = [];
+        public Task<bool> PostAsync(WakeRegistration target, string notice, CancellationToken cancellationToken)
+        {
+            if (!Delivered.Contains(notice)) { Delivered.Add(notice); }
+            return Task.FromResult(true);
+        }
+    }
+
+    static (WakeStore Wake, ExternalTeam Team, LeadSessionInfo Lead, string MemberToken) ExternalSetup(JobFixture fixture, string name)
+    {
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/" + name, name + "-lead");
+        var target = wake.Register("claude:" + name, "claude", "/tmp/" + name + ".sock", "secret", "1");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        var team = new ExternalTeam(new ExternalMemberStore(fixture.Database), wake);
+        var member = team.Join(lead.SessionId, team.CreateTicket(lead.SessionId, lead.Workspace, "worker", null).Ticket!.Token).Member!;
+        return (wake, team, lead, member.MemberToken);
+    }
+
+    static async Task<WakeSnapshot> NotifyAsync(WakeStore wake, WakeCoordinator coordinator, int unread)
+    {
+        var pending = Assert.Single(wake.PendingExternal());
+        Assert.Equal(unread, pending.Unread);
+        Assert.True(pending.LatestSeq > pending.NotifiedSeq);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(pending.LatestSeq, Assert.Single(wake.PendingExternal()).NotifiedSeq);
+        return pending;
+    }
+
+    [Fact]
+    public async Task External_notices_differ_when_unread_returns_to_one_within_the_native_dedup_window()
+    {
+        using var fixture = new JobFixture();
+        var (wake, team, lead, token) = ExternalSetup(fixture, "dedup");
+        var poster = new DedupingPoster();
+        var clock = DateTimeOffset.UtcNow;
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, clock: () => clock, coalesce: TimeSpan.Zero);
+        var seqs = new List<long>();
+        for (var step = 0; step < 3; step++)
+        {
+            Assert.True(step == 1
+                ? team.SendFromOperator(lead.SessionId, lead.Workspace, "operator work", "op").Ok
+                : team.Send(token, "agent report " + step).Ok);
+            seqs.Add((await NotifyAsync(wake, coordinator, 1)).LatestSeq);
+            team.ReadLead(lead.SessionId, lead.Workspace, null, 10);
+            Assert.Empty(wake.PendingExternal());
+        }
+        Assert.Equal(3, poster.Delivered.Count);
+        Assert.True(seqs[0] < seqs[1] && seqs[1] < seqs[2]);
+        Assert.All(poster.Delivered, notice => Assert.DoesNotContain("report", notice));
+    }
+
+    [Fact]
+    public async Task Operator_and_agent_messages_grow_the_unread_notice_alike()
+    {
+        using var fixture = new JobFixture();
+        var (wake, team, lead, token) = ExternalSetup(fixture, "grow");
+        var poster = new DedupingPoster();
+        var clock = DateTimeOffset.UtcNow;
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, clock: () => clock, coalesce: TimeSpan.Zero);
+        Assert.True(team.Send(token, "agent one").Ok);
+        await NotifyAsync(wake, coordinator, 1);
+        Assert.True(team.SendFromOperator(lead.SessionId, lead.Workspace, "operator two", "op").Ok);
+        await NotifyAsync(wake, coordinator, 2);
+        Assert.True(team.Send(token, "agent three").Ok);
+        await NotifyAsync(wake, coordinator, 3);
+        Assert.Equal(3, poster.Delivered.Count);
+    }
+
+    [Fact]
+    public async Task Operator_message_is_committed_before_exactly_one_notice()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/operator", "operator-lead");
+        var target = wake.Register("codex:operator", "codex", "thread", "", "/tmp");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        var team = new ExternalTeam(new ExternalMemberStore(fixture.Database), wake);
+        Assert.True(team.SendFromOperator(lead.SessionId, lead.Workspace, "operator work", "once").Ok);
+        Assert.True(team.SendFromOperator(lead.SessionId, lead.Workspace, "operator work", "once").Ok);
+        Assert.Equal(target, Assert.Single(wake.PendingExternal()).Target);
+        var poster = new FakePoster((_, notice) =>
+        {
+            Assert.DoesNotContain("operator work", notice);
+            var message = Assert.Single(team.ReadLead(lead.SessionId, lead.Workspace, null, 10).Inbox!.Messages);
+            Assert.Equal("operator", message.From);
+            Assert.Equal("operator work", message.Text);
+            return true;
+        });
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Single(poster.Attempts);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Completion_after_a_child_report_does_not_send_a_second_notice(bool readReport, bool failed)
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/report", "report-lead");
+        var target = wake.Register("codex:report", "codex", "thread", "", "/tmp");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        var team = new ExternalTeam(new ExternalMemberStore(fixture.Database), wake);
+        var job = fixture.Accept().Execute(new SubmitJobRequest("reported", "work", null, false)
+        { LeadSessionId = lead.SessionId, WakeKey = target.Key, WakeGeneration = target.Generation }).Job!;
+        var ticket = team.CreateTicket(lead.SessionId, lead.Workspace, "child-" + job.JobId, null).Ticket!;
+        var member = team.Join(lead.SessionId, ticket.Token).Member!;
+        var claim = fixture.Store.BeginNextAttempt()!;
+        var run = new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(team.Send(member.MemberToken, "report").Ok);
+        var poster = new FakePoster();
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        if (readReport) { team.ReadLead(lead.SessionId, lead.Workspace, null, 10); }
+        Assert.True(failed ? fixture.Store.EndUnsuccessfully(run, JobStatus.Failed, "backend_failed")
+            : fixture.Store.Complete(run, "result"));
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        // A report read before completion no longer announces it, so the completion wakes.
+        Assert.Equal(failed || readReport ? 2 : 1, poster.Attempts.Count);
+        Assert.Equal(failed || readReport ? 1 : 0, wake.Pending().Count);
+    }
+
+    [Fact]
+    public async Task Report_read_after_completion_keeps_a_single_notice()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/late-read", "late-read-lead");
+        var target = wake.Register("codex:late-read", "codex", "thread", "", "/tmp");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        var team = new ExternalTeam(new ExternalMemberStore(fixture.Database), wake);
+        var job = fixture.Accept().Execute(new SubmitJobRequest("late-read", "work", null, false)
+        { LeadSessionId = lead.SessionId, WakeKey = target.Key, WakeGeneration = target.Generation }).Job!;
+        var member = team.Join(lead.SessionId,
+            team.CreateTicket(lead.SessionId, lead.Workspace, "child-" + job.JobId, null).Ticket!.Token).Member!;
+        var claim = fixture.Store.BeginNextAttempt()!;
+        var run = new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(team.Send(member.MemberToken, "report").Ok);
+        var poster = new FakePoster();
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.True(fixture.Store.Complete(run, "result"));
+        team.ReadLead(lead.SessionId, lead.Workspace, null, 10);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Single(poster.Attempts);
+        Assert.Empty(wake.Pending());
+    }
+
+    static (WakeStore Wake, ExternalMemberStore Members, LeadSessionInfo Lead, WakeRegistration Target, RunRef Run)
+        CommittedReport(JobFixture fixture)
+    {
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/report-order", "report-order");
+        var target = wake.Register("codex:report-order", "codex", "thread", "", "/tmp");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        var job = fixture.Accept().Execute(new SubmitJobRequest("report-order", "work", null, false)
+        { LeadSessionId = lead.SessionId, WakeKey = target.Key, WakeGeneration = target.Generation }).Job!;
+        var members = new ExternalMemberStore(fixture.Database);
+        Assert.True(members.EnsureMcpTeam(lead.SessionId, lead.Workspace, DateTimeOffset.UtcNow));
+        var claim = fixture.Store.BeginNextAttempt()!;
+        Assert.True(members.SendToLead(lead.SessionId, "child-" + job.JobId, "report", DateTimeOffset.UtcNow, null));
+        return (wake, members, lead, target, new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation));
+    }
+
+    [Fact]
+    public async Task Read_waiting_for_completion_transaction_does_not_duplicate_the_report_notice()
+    {
+        using var fixture = new JobFixture();
+        var (wake, members, lead, _, run) = CommittedReport(fixture);
+        var poster = new FakePoster();
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        using var writer = fixture.Database.OpenConnection();
+        using var tx = writer.BeginTransaction(deferred: false);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reading = Task.Run(() =>
+        {
+            started.SetResult();
+            return members.ReadLeadCompat(lead.SessionId, null, 10, () => DateTimeOffset.UtcNow, null);
+        }, TestContext.Current.CancellationToken);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.False(reading.IsCompleted);
+        // Commit the completion while the read is waiting for this write transaction.
+        using var complete = writer.CreateCommand();
+        complete.Transaction = tx;
+        complete.CommandText = """
+            UPDATE jobs SET status='completed',updated_at=$now WHERE job_id=$id;
+            INSERT INTO events(job_id,kind,created_at) VALUES ($id,'completed',$now);
+            """;
+        complete.Parameters.AddWithValue("$id", run.JobId);
+        complete.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        complete.ExecuteNonQuery();
+        tx.Commit();
+        Assert.Single((await reading.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken))!.Messages);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(wake.Pending());
+        Assert.Single(poster.Attempts);
+    }
+
+    [Fact]
+    public async Task Retention_preserves_report_evidence_until_the_unread_job_is_retired()
+    {
+        using var fixture = new JobFixture();
+        var (wake, members, lead, target, run) = CommittedReport(fixture);
+        var poster = new FakePoster();
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.True(fixture.Store.Complete(run, "result"));
+        members.ReadLeadCompat(lead.SessionId, null, 10, () => DateTimeOffset.UtcNow, null);
+        Assert.Empty(wake.Pending());
+        var cutoff = DateTimeOffset.UtcNow.AddDays(40);
+        var jobs = new PruneJobs(fixture.Database);
+        Assert.Empty(jobs.Execute(cutoff, dryRun: false));
+        Assert.Equal(0, members.Prune(cutoff, dryRun: true));
+        Assert.Equal(0, members.Prune(cutoff, dryRun: false));
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(wake.Pending());
+        Assert.Single(poster.Attempts);
+
+        // Reading the job retires its pin, so neither the job nor report is kept indefinitely.
+        wake.MarkRead(run.JobId, JobStatus.Completed, target.Key, target.Generation);
+        Assert.Equal(run.JobId, Assert.Single(jobs.Execute(cutoff, dryRun: false)));
+        Assert.Equal(1, members.Prune(cutoff, dryRun: true));
+        Assert.Equal(1, members.Prune(cutoff, dryRun: false));
+    }
+
+    [Fact]
+    public async Task An_earlier_turn_report_does_not_suppress_completion()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/old-report", "old-report-lead");
+        var target = wake.Register("codex:old-report", "codex", "thread", "", "/tmp");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        var members = new ExternalMemberStore(fixture.Database);
+        var team = new ExternalTeam(members, wake);
+        var job = fixture.Accept().Execute(new SubmitJobRequest("old-report", "work", null, false)
+        { LeadSessionId = lead.SessionId, WakeKey = target.Key, WakeGeneration = target.Generation }).Job!;
+        Assert.True(members.EnsureMcpTeam(lead.SessionId, lead.Workspace, DateTimeOffset.UtcNow));
+        Assert.True(members.SendToLead(lead.SessionId, "child-" + job.JobId, "old report", DateTimeOffset.UtcNow.AddMinutes(-1), null));
+        var claim = fixture.Store.BeginNextAttempt()!;
+        Assert.True(fixture.Store.Complete(new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "result"));
+        var poster = new FakePoster();
+        await new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero).TickAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, poster.Attempts.Count);
+        Assert.Single(wake.Pending());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Follow_up_completion_uses_only_the_root_members_current_turn_report(bool reported)
+    {
+        using var fixture = new JobFixture();
+        var (endpoint, wake, lead) = FollowUpSetup(fixture);
+        var root = Submit(endpoint, lead, "root");
+        var team = new ExternalTeam(new ExternalMemberStore(fixture.Database), wake);
+        var member = team.Join(lead.SessionId,
+            team.CreateTicket(lead.SessionId, lead.Workspace, "child-" + root, null).Ticket!.Token).Member!;
+        var claim = fixture.Store.BeginNextAttempt()!;
+        var run = new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(fixture.Store.RecordSession(run, "native"));
+        Assert.True(team.Send(member.MemberToken, "previous turn").Ok);
+        Assert.True(fixture.Store.Complete(run, "first"));
+        team.ReadLead(lead.SessionId, lead.Workspace, null, 10);
+        var parent = root;
+        for (var turn = 0; turn < 2; turn++)
+        {
+            var next = endpoint.Handle(new IpcRequest
+            {
+                Op = IpcProtocol.JobFollowUp,
+                LeadSessionId = lead.SessionId,
+                Workspace = lead.Workspace,
+                JobId = parent,
+                Instruction = "next",
+                IdempotencyKey = "next-" + turn
+            });
+            Assert.True(next.Ok, next.Error);
+            claim = fixture.Store.BeginNextAttempt()!;
+            run = new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+            Assert.True(fixture.Store.RecordSession(run, "native"));
+            if (reported) { Assert.True(team.Send(member.MemberToken, "current turn").Ok); }
+            Assert.True(fixture.Store.Complete(run, "next"));
+            Assert.Equal(reported ? 0 : 1, wake.Pending().Count);
+            parent = next.Job!.JobId;
+        }
+    }
+
     [Fact]
     public async Task Interactive_park_notifies_once()
     {
@@ -288,6 +589,58 @@ public sealed class WakeTests
         await Tick();
         Assert.Equal(2, Assert.Single(store.Pending()).Unread);
         Assert.DoesNotContain(logs, line => line.Contains("pruned: target=claude:live"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task No_relay_keeps_a_resumable_leads_target_and_reconnect_delivers(bool completedOwner)
+    {
+        using var fixture = new JobFixture();
+        var owner = fixture.Submit("orchestrator");
+        var run = fixture.Store.BeginNextAttempt()!;
+        if (completedOwner)
+        {
+            Assert.True(fixture.Store.Complete(new(run.Job.JobId, run.RunId, run.Generation, run.Correlation), "done"));
+        }
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/orchestrator", "managed-child:" + owner.JobId, "claude", "native-lead");
+        var store = new WakeStore(fixture.Database);
+        var target = store.Register("claude:resumable", "claude", fixture.DatabasePath + ".gone.sock", "secret", "2147483647");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        Finish(fixture, target, "child");
+        var mailbox = new ClaudeWakeMailbox();
+        var time = DateTimeOffset.UtcNow;
+        var logs = new List<string>();
+        var coordinator = new WakeCoordinator(store, mailbox, logs.Add, () => time, TimeSpan.Zero,
+            claudeGone: t => WakeCoordinator.ClaudeTargetGone(t, "linux"));
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Contains(logs, line => line.Contains("reason=no_relay"));
+        time += TimeSpan.FromDays(4);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.True(store.IsCurrent(target));
+        Assert.Equal(0, Assert.Single(store.Pending()).NotifiedSeq);
+
+        // The same channel can reconnect without re-registering or changing generation.
+        Assert.Null(mailbox.Take(target.Address, target.Secret, target.Home));
+        time += TimeSpan.FromMinutes(11);
+        var posting = coordinator.TickAsync(TestContext.Current.CancellationToken);
+        var offer = Assert.IsType<ClaudeWakeNotice>(mailbox.Take(target.Address, target.Secret, target.Home));
+        Assert.True(mailbox.Complete(offer.Id, target.Address, target.Secret, target.Home, posted: true));
+        await posting;
+        var notified = Assert.Single(store.Pending());
+        Assert.Equal(notified.LatestSeq, notified.NotifiedSeq);
+        Assert.True(store.IsCurrent(target));
+
+        // Explicit closure ends resumability: a missing channel and dead PID may now be pruned.
+        if (!completedOwner)
+        {
+            Assert.True(fixture.Store.Complete(new(run.Job.JobId, run.RunId, run.Generation, run.Correlation), "done"));
+        }
+        Assert.True(sessions.Close(lead.SessionId, lead.Workspace));
+        time += TimeSpan.FromMinutes(11);
+        Assert.Equal(target.Key, Assert.Single(store.PruneDead(time, _ => true)));
+        Assert.False(store.IsCurrent(target));
     }
 
     [Theory]

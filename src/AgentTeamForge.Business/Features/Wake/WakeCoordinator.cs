@@ -15,7 +15,7 @@ public interface IWakePoster
 public static class WakePost
 {
     public const string Ok = "ok";
-    /// <summary>No bridge relay polled the channel recently: the Claude process or its MCP bridge is gone.</summary>
+    /// <summary>No bridge relay polled recently. Transient: this does not establish that the lead is dead.</summary>
     public const string NoRelay = "no_relay";
     public const string Timeout = "timeout";
     public const string RelayFailed = "relay_failed";
@@ -147,11 +147,12 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
 
             using var routing = await WakeRoutingGate.EnterAsync(cancellationToken);
             if (!store.IsCurrent(target)) { continue; }
-            // Notice-only: job IDs and result content stay in get_job.
+            // Notice-only: job IDs and result content stay in get_job. The external notice carries the inbox
+            // revision because Claude Code silently drops a channel message repeating the previous body within 30s.
             var notice = snapshot.ParkJobId is not null
                 ? "[AgentTeamForge wake] An interactive agent is idle without a native completion. Call mcp__agentteamforge__list_jobs and mcp__agentteamforge__get_job."
                 : snapshot.External
-                ? $"[AgentTeamForge wake] {snapshot.Unread} external message(s) await reading. Call mcp__agentteamforge__external_read or mcp__agentteamforge__read_messages."
+                ? $"[AgentTeamForge wake] {snapshot.Unread} external message(s) await reading (inbox revision {snapshot.LatestSeq}). Call mcp__agentteamforge__external_read or mcp__agentteamforge__read_messages."
                 : $"[AgentTeamForge wake] {snapshot.Unread} job(s) finished or need attention. Call mcp__agentteamforge__list_jobs with unread=true, then get_job.";
             string reason;
             try { reason = await poster.PostWithReasonAsync(target, notice, cancellationToken); }

@@ -10,6 +10,28 @@ namespace AgentTeamForge.Tests.Features.Wake;
 public sealed class CodexLeadWakeTests
 {
     [Fact]
+    public async Task Freshly_verified_lead_is_queued_and_validation_failures_are_distinct()
+    {
+        using var dir = new TempStateDir();
+        var thread = Guid.NewGuid().ToString("D");
+        Directory.CreateDirectory(dir.File("sessions"));
+        File.WriteAllText(dir.File($"sessions/rollout-2026-10-04-{thread}.jsonl"), "");
+        var target = new WakeRegistration("codex:" + thread, 1, "codex", thread, "", dir.Path);
+        var calls = 0;
+        IWakePoster poster = new CodexQueueWake(queue: (registration, notice, _) =>
+        {
+            Assert.Equal(target, registration);
+            calls++;
+            return Task.FromResult(true);
+        });
+        Assert.Equal(WakePost.Ok, await poster.PostWithReasonAsync(target, "notice", TestContext.Current.CancellationToken));
+        Assert.Equal("thread_unverified", await poster.PostWithReasonAsync(target with { Address = Guid.NewGuid().ToString("D") }, "notice", TestContext.Current.CancellationToken));
+        Assert.Equal(1, calls);
+        IWakePoster native = new NativeWakePoster(dir.Path, new ClaudeWakeMailbox());
+        Assert.Equal("thread_unverified", await native.PostWithReasonAsync(target with { Home = dir.File("missing") }, "notice", TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public void Resolved_codex_host_registers_a_verified_thread()
     {
         using var dir = new TempStateDir();

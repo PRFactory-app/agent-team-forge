@@ -192,7 +192,7 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
         if (maxChars is < 0 or > 65536) { return new("invalid_request", ErrorDetail: "Invalid max_chars: must be between 0 and 65536."); }
         if (fromAgent is { Length: > 64 }) { return new("invalid_request", ErrorDetail: "Invalid from_agent: must be at most 64 characters."); }
 
-        var inbox = members.ReadLeadCompat(sessionId, sinceSeq, full ? int.MaxValue - 1 : limit ?? 50, now(),
+        var inbox = members.ReadLeadCompat(sessionId, sinceSeq, full ? int.MaxValue - 1 : limit ?? 50, now,
             string.IsNullOrEmpty(fromAgent) ? null : fromAgent, maxChars);
         if (inbox is null)
         {
