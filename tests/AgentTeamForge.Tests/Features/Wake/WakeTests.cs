@@ -141,6 +141,46 @@ public sealed class WakeTests
         Assert.Single(wake.Pending());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Follow_up_completion_uses_only_the_root_members_current_turn_report(bool reported)
+    {
+        using var fixture = new JobFixture();
+        var (endpoint, wake, lead) = FollowUpSetup(fixture);
+        var root = Submit(endpoint, lead, "root");
+        var team = new ExternalTeam(new ExternalMemberStore(fixture.Database), wake);
+        var member = team.Join(lead.SessionId,
+            team.CreateTicket(lead.SessionId, lead.Workspace, "child-" + root, null).Ticket!.Token).Member!;
+        var claim = fixture.Store.BeginNextAttempt()!;
+        var run = new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(fixture.Store.RecordSession(run, "native"));
+        Assert.True(team.Send(member.MemberToken, "previous turn").Ok);
+        Assert.True(fixture.Store.Complete(run, "first"));
+        team.ReadLead(lead.SessionId, lead.Workspace, null, 10);
+        var parent = root;
+        for (var turn = 0; turn < 2; turn++)
+        {
+            var next = endpoint.Handle(new IpcRequest
+            {
+                Op = IpcProtocol.JobFollowUp,
+                LeadSessionId = lead.SessionId,
+                Workspace = lead.Workspace,
+                JobId = parent,
+                Instruction = "next",
+                IdempotencyKey = "next-" + turn
+            });
+            Assert.True(next.Ok, next.Error);
+            claim = fixture.Store.BeginNextAttempt()!;
+            run = new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+            Assert.True(fixture.Store.RecordSession(run, "native"));
+            if (reported) { Assert.True(team.Send(member.MemberToken, "current turn").Ok); }
+            Assert.True(fixture.Store.Complete(run, "next"));
+            Assert.Equal(reported ? 0 : 1, wake.Pending().Count);
+            parent = next.Job!.JobId;
+        }
+    }
+
     [Fact]
     public async Task Interactive_park_notifies_once()
     {

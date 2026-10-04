@@ -27,6 +27,8 @@ public sealed class CodexLeadWakeTests
         Assert.Equal(WakePost.Ok, await poster.PostWithReasonAsync(target, "notice", TestContext.Current.CancellationToken));
         Assert.Equal("thread_unverified", await poster.PostWithReasonAsync(target with { Address = Guid.NewGuid().ToString("D") }, "notice", TestContext.Current.CancellationToken));
         Assert.Equal(1, calls);
+        IWakePoster native = new NativeWakePoster(dir.Path, new ClaudeWakeMailbox());
+        Assert.Equal("thread_unverified", await native.PostWithReasonAsync(target with { Home = dir.File("missing") }, "notice", TestContext.Current.CancellationToken));
     }
 
     [Fact]
