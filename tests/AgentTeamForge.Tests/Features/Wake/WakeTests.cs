@@ -114,8 +114,36 @@ public sealed class WakeTests
         Assert.True(failed ? fixture.Store.EndUnsuccessfully(run, JobStatus.Failed, "backend_failed")
             : fixture.Store.Complete(run, "result"));
         await coordinator.TickAsync(TestContext.Current.CancellationToken);
-        Assert.Equal(failed ? 2 : 1, poster.Attempts.Count);
-        Assert.Equal(failed ? 1 : 0, wake.Pending().Count);
+        // A report read before completion no longer announces it, so the completion wakes.
+        Assert.Equal(failed || readReport ? 2 : 1, poster.Attempts.Count);
+        Assert.Equal(failed || readReport ? 1 : 0, wake.Pending().Count);
+    }
+
+    [Fact]
+    public async Task Report_read_after_completion_keeps_a_single_notice()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/late-read", "late-read-lead");
+        var target = wake.Register("codex:late-read", "codex", "thread", "", "/tmp");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        var team = new ExternalTeam(new ExternalMemberStore(fixture.Database), wake);
+        var job = fixture.Accept().Execute(new SubmitJobRequest("late-read", "work", null, false)
+        { LeadSessionId = lead.SessionId, WakeKey = target.Key, WakeGeneration = target.Generation }).Job!;
+        var member = team.Join(lead.SessionId,
+            team.CreateTicket(lead.SessionId, lead.Workspace, "child-" + job.JobId, null).Ticket!.Token).Member!;
+        var claim = fixture.Store.BeginNextAttempt()!;
+        var run = new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(team.Send(member.MemberToken, "report").Ok);
+        var poster = new FakePoster();
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.True(fixture.Store.Complete(run, "result"));
+        team.ReadLead(lead.SessionId, lead.Workspace, null, 10);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Single(poster.Attempts);
+        Assert.Empty(wake.Pending());
     }
 
     [Fact]

@@ -193,6 +193,8 @@ public sealed class WakeStore(JobDatabase database)
               AND (j.status!='completed' OR NOT EXISTS (
                   SELECT 1 FROM external_messages m
                   WHERE m.team_id=j.lead_session_id AND m.recipient='lead'
+                    -- A report the lead consumed before the job finished cannot announce the completion.
+                    AND (m.read_at IS NULL OR m.read_at >= j.updated_at)
                     AND m.created_at >= (SELECT max(r.started_at) FROM runs r WHERE r.job_id=j.job_id)
                     AND m.created_at <= j.updated_at
                     AND m.sender IN (
