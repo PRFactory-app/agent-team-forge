@@ -1161,6 +1161,9 @@ public sealed class DispatchJob : IDisposable
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(daemonLifetime, stopRequested);
                 deadline.CancelAfter(TimeSpan.FromSeconds(job.TimeoutSeconds ?? 600));
                 var submission = await SubmitNativeCodex(attempt.ThreadId, attempt.CodexHome, prompt, deadline.Token);
+                var diagnostic = submission.Diagnostic ?? $"codex queue started={submission.Started} receipt={(submission.SubmissionId is null ? "missing" : "present")}";
+                log($"{run.JobId}: {diagnostic}");
+                jobLogs?.BeginRun(run.JobId, run.RunId, BackendCatalog.Codex)("status", System.Text.Encoding.UTF8.GetBytes(diagnostic + "\n"));
                 if (!submission.Started)
                 {
                     if (store.RevertNativeAttempt(run)) { log($"codex queue did not start for {run.JobId}; resuming instead"); }

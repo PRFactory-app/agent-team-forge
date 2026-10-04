@@ -9,7 +9,7 @@ using Microsoft.Data.Sqlite;
 namespace AgentTeamForge.Business.Features.Wake;
 
 /// <summary>Started=false proves no codex process ran, so nothing can be presented.</summary>
-public sealed record CodexSubmission(bool Started, string? SubmissionId);
+public sealed record CodexSubmission(bool Started, string? SubmissionId, string? Diagnostic = null);
 
 /// <summary>Port of verify_codex_thread and CodexMemberWake queue transport.</summary>
 public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify = null,
@@ -90,13 +90,16 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
     /// Returns the carrier's submission id, or null when no receipt was proven.
     /// Only a codex process that never started proves nothing was queued.
     /// </summary>
-    public static async Task<CodexSubmission> SubmitAsync(string thread, string home, string message, CancellationToken cancellationToken)
+    public static Task<CodexSubmission> SubmitAsync(string thread, string home, string message, CancellationToken cancellationToken) =>
+        SubmitAsync(thread, home, message, null, TimeSpan.FromSeconds(15), cancellationToken);
+
+    internal static async Task<CodexSubmission> SubmitAsync(string thread, string home, string message,
+        string? executable, TimeSpan timeout, CancellationToken cancellationToken)
     {
         Process? process;
         try
         {
-            var executable = QueueExecutable(ToolExecutable.Resolve);
-            var start = new ProcessStartInfo(executable)
+            var start = new ProcessStartInfo(executable ?? QueueExecutable(ToolExecutable.Resolve))
             {
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
@@ -116,51 +119,114 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or BackendNotStartedException)
         {
-            return new(false, null);
+            return new(false, null, Diagnostic(null, false, "", "", ex.GetType().Name));
         }
-        catch (IOException)
+        catch (IOException ex)
         {
-            return new(true, null);
+            return new(true, null, Diagnostic(null, false, "", "", ex.GetType().Name));
         }
         if (process is null)
         {
-            return new(false, null);
+            return new(false, null, Diagnostic(null, false, "", "", "process_not_started"));
         }
 
         using (process)
         {
+            var stdout = new System.Text.StringBuilder();
+            var stderr = new System.Text.StringBuilder();
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deadline.CancelAfter(timeout);
+            var output = CaptureTailAsync(process.StandardOutput, stdout, deadline.Token);
+            var error = CaptureTailAsync(process.StandardError, stderr, deadline.Token);
+            var readers = Task.WhenAll(output, error);
+            string? failure = null;
+            var timedOut = false;
             try
             {
-                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                deadline.CancelAfter(TimeSpan.FromSeconds(15));
-                var stdout = process.StandardOutput.ReadToEndAsync(deadline.Token);
-                var stderr = process.StandardError.ReadToEndAsync(deadline.Token);
                 await process.WaitForExitAsync(deadline.Token);
-                await Task.WhenAll(stdout, stderr);
-                return new(true, process.ExitCode == 0 ? SubmissionId(await stdout, thread) : null);
+                await readers.WaitAsync(deadline.Token);
             }
             catch (OperationCanceledException)
+            {
+                timedOut = !cancellationToken.IsCancellationRequested;
+                failure = timedOut ? "timeout" : "cancelled";
+            }
+            catch (IOException ex)
+            {
+                failure = ex.GetType().Name;
+            }
+            if (failure is not null)
             {
                 try
                 {
                     if (!process.HasExited) { OwnedProcessTermination.Kill(process); }
+                    using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+                    await process.WaitForExitAsync(cleanup.Token);
                 }
-                catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { }
-                return new(true, null);
+                catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException or System.ComponentModel.Win32Exception) { }
             }
-            catch (IOException)
+            // Stop both readers before inspecting their buffers, including partial output on failure.
+            await deadline.CancelAsync();
+            try { await readers.WaitAsync(TimeSpan.FromSeconds(1), CancellationToken.None); }
+            catch (Exception ex) when (ex is OperationCanceledException or IOException) { }
+            catch (TimeoutException)
             {
-                return new(true, null);
+                // Some pipe implementations do not cancel an outstanding read promptly.
+                // Keep submission bounded even if an inherited writer remains open.
+                failure ??= "output_capture_timeout";
+                _ = readers.ContinueWith(task => { _ = task.Exception; }, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
+            var exitCode = process.HasExited ? (int?)process.ExitCode : null;
+            string outputTail;
+            string errorTail;
+            lock (stdout) { outputTail = stdout.ToString(); }
+            lock (stderr) { errorTail = stderr.ToString(); }
+            var id = failure is null && exitCode == 0 ? SubmissionId(outputTail, thread) : null;
+            return new(true, id, Diagnostic(exitCode, timedOut, outputTail, errorTail, failure ?? (id is null ? "receipt_missing" : "submitted")));
+        }
+    }
+
+    static async Task CaptureTailAsync(StreamReader reader, System.Text.StringBuilder tail, CancellationToken cancellationToken)
+    {
+        var buffer = new char[1024];
+        while (await reader.ReadAsync(buffer.AsMemory(), cancellationToken) is var count && count > 0)
+        {
+            lock (tail)
+            {
+                tail.Append(buffer, 0, count);
+                if (tail.Length > 8192) { tail.Remove(0, tail.Length - 8192); }
             }
         }
     }
+
+    internal static string Diagnostic(int? exitCode, bool timedOut, string stdout, string stderr, string outcome) =>
+        $"codex queue exit_code={exitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"} timeout={timedOut} outcome={outcome} stdout_tail={SafeTail(stdout)} stderr_tail={SafeTail(stderr)}";
+
+    static string SafeTail(string value)
+    {
+        // The capture buffer may begin halfway through a credential-bearing line.
+        if (value.Length >= 8192)
+        {
+            var newline = value.IndexOf('\n');
+            value = newline < 0 ? "[line omitted: too large]" : value[(newline + 1)..];
+        }
+        // Redact before truncating so a tail cannot expose the end of a recognized credential.
+        value = Credential().Replace(value, "[REDACTED]");
+        value = value.Length > 2048 ? value[^2048..] : value;
+        return "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal)
+            .Replace("\r", "\\r", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal).Replace("\t", "\\t", StringComparison.Ordinal) + "\"";
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex("(?i)(?:(?:bearer|basic)\\s+\\S+|(?:access_token|refresh_token|id_token|api[_-]?key|token|password|secret)[\\\"']?\\s*[:=]\\s*[\\\"']?(?:(?:bearer|basic)\\s+)?[^\\s\\\"',}]+|(?:sk-|gh[pousr]_|github_pat_)[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+)")]
+    private static partial System.Text.RegularExpressions.Regex Credential();
 
     // Queue helpers need the same wrapper bypass as job launches on Linux/macOS.
     internal static string QueueExecutable(Func<string, string> resolve) =>
         OperatingSystem.IsWindows() ? WtTabControl.WindowsAgentBinary("codex") : resolve("codex");
 
     /// <summary>
-    /// codex 0.157 prints "Queued message &lt;id&gt; for thread &lt;thread&gt;."; a JSON submission_id is also accepted.
+    /// codex 0.157 and 0.160 print "Queued message &lt;id&gt; for thread &lt;thread&gt;."; a JSON submission_id is also accepted.
     /// Exit 0 without an id is not proof that the notice was queued.
     /// </summary>
     public static bool HasSubmissionId(string output, string? thread = null)

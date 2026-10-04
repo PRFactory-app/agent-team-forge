@@ -190,12 +190,19 @@ public sealed class NativeCodexDeliveryTests
         var follow = new FollowUpJob(fixture.Store, JobFixture.Operator, Accept(fixture, catalog));
         var child = follow.Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
         var submits = 0;
-        using var dispatcher = new DispatchJob(fixture.Store, catalog, fixture.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { })
+        using var logDir = new TempStateDir();
+        var jobLogs = new JobLogs(logDir.Path);
+        var daemonLog = new List<string>();
+        const string diagnostic = "codex queue exit_code=7 timeout=False stdout_tail=started stderr_tail=rejected";
+        using var dispatcher = new DispatchJob(fixture.Store, catalog, fixture.Limits, DurabilityCheckpoints.None, new AdmissionGate(), daemonLog.Add, jobLogs)
         {
-            SubmitNativeCodex = (_, _, _, _) => { submits++; return Task.FromResult(new CodexSubmission(true, null)); }
+            SubmitNativeCodex = (_, _, _, _) => { submits++; return Task.FromResult(new CodexSubmission(true, null, diagnostic)); }
         };
         await dispatcher.RunAttemptAsync(fixture.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home")!, CancellationToken.None);
         Assert.Equal(JobStatus.NeedsReconciliation, fixture.Store.GetJob(child.JobId)!.Status);
+        Assert.Contains(diagnostic, jobLogs.Read(child.JobId).Text);
+        Assert.Contains(jobLogs.ReadActivity(child.JobId, BackendCatalog.Codex).Entries, entry => entry.Text == diagnostic);
+        Assert.Contains(daemonLog, line => line.Contains(child.JobId, StringComparison.Ordinal) && line.Contains(diagnostic, StringComparison.Ordinal));
         Assert.Equal(JobErrors.ParentNotReady, follow.Execute(new FollowUpRequest(parent.JobId, "retry", "retry")).Error);
 
         var stop = new StopJob(fixture.Store, JobFixture.Operator, dispatcher.CancelRunning, releaseNative: dispatcher.ReleaseNative);
