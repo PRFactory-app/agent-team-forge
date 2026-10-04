@@ -105,7 +105,7 @@ public sealed record PRFactoryFailureRequest(string ErrorMessage, string ErrorDe
 public sealed record PRFactoryPullRequestRequest(string Kind, int Version, Guid SourceWorkItemId, Guid RepositoryId,
     string HeadBranch, string HeadSha, string BaseBranch, string Title, string Body);
 public sealed record PRFactoryPullRequestResult(string Kind, int Version, int Number, string Url, string HeadSha, bool Created);
-public sealed record PRFactoryCompletionResponse(bool Accepted);
+public sealed record PRFactoryCompletionResponse(bool Accepted, string? CleanupWipBranch = null);
 public sealed record PRFactoryFailureResponse(bool Acknowledged);
 // QuestionId correlates a human answer to request_human_input (human-wait-v1); absent for ordinary sends.
 public sealed record PRFactoryCommand(Guid CommandId, string Kind, string TargetAgentName, string? Text, string? QuestionId = null);

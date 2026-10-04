@@ -33,6 +33,9 @@ public abstract record BackendEvidence
     /// <summary>A live interactive agent waits on a prompt (e.g. a permission request); its turn is still running.</summary>
     public sealed record AgentBlocked(bool Blocked) : BackendEvidence;
 
+    /// <summary>A live interactive agent ended its turn on a pending background task and waits for it; the turn is still running.</summary>
+    public sealed record BackgroundWait(bool Waiting) : BackendEvidence;
+
     public sealed record ProtocolError(string Code, string? Details = null) : BackendEvidence;
 
     /// <summary>CLI rejected its arguments before a turn began; no job effect occurred.</summary>

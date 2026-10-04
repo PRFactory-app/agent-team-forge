@@ -203,6 +203,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
         string? _sessionId = request.ResumeSessionId;
         string? _notStartedError;
         int _loggedMessages;
+        bool _backgroundWait;
         DateTimeOffset? _apiErrorSince;
         InteractiveApiError? _observedApiError;
         string? _reportedLimitDetails;
@@ -303,6 +304,13 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
                     yield return new BackendEvidence.Result(request.Correlation, message);
                     yield return new BackendEvidence.EndOfOutput();
                     yield break;
+                }
+                // The agent ended its turn on a background task and waits for it to report back; the turn
+                // stays running. Reattach after a restart clears the marker.
+                if (acknowledged && output is not null && output.WaitingOnBackground != _backgroundWait)
+                {
+                    _backgroundWait = output.WaitingOnBackground;
+                    yield return new BackendEvidence.BackgroundWait(output.WaitingOnBackground);
                 }
                 if (!acknowledged)
                 {

@@ -235,6 +235,10 @@ public static class DaemonCommand
         var humanWaits = new HumanWaitStore(database);
         var claudeMailbox = new ClaudeWakeMailbox();
         dispatcher.ClaudeBridgeReady = claudeMailbox.HasRecentRelay;
+        var leadSessions = new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database)
+        {
+            OwnerLive = owner => LeadOwnerLiveness.IsLive(owner, claudeMailbox)
+        };
         var worktreeCleanup = new WorktreeCleanup(store, backends);
         var interactiveLaunch = launchMode is "herdr" or "terminal" or "wt";
         var stopAgent = new StopAgent(store, profile.Bound, backends, dispatcher.SettleCompletedInteractive);
@@ -242,7 +246,7 @@ public static class DaemonCommand
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound, interactiveLaunch), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning, reconcileIdleInteractive: dispatcher.ReconcileIdleInteractive, hasIdleInteractive: dispatcher.HasIdleInteractive, settleCompletedInteractive: dispatcher.SettleCompletedInteractive),
             new ListJobs(store, profile.Bound, jobLogs, interactiveLaunch),
             new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning, dispatcher.ReleaseNative), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
-            new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database), externalTeam, stopAgent, backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
+            leadSessions, externalTeam, stopAgent, backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
             (token, _, _) => PRFactoryInteraction.RequestFromManagedChild(externalTeam.ManagedChildName(token)),
             externalMembers, new GetJob(store, connectorPrincipal), dispatcher.TakeNativeClaude,
             new RemoveWorktree(store, profile.Bound, worktreeCleanup), worktreeCleanup,

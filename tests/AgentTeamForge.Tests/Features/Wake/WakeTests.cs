@@ -250,6 +250,110 @@ public sealed class WakeTests
     }
 
     [Fact]
+    public async Task Dead_claude_targets_are_pruned_live_ones_never_and_unread_rows_stay()
+    {
+        using var fixture = new JobFixture();
+        var store = new WakeStore(fixture.Database);
+        var gone = fixture.DatabasePath + ".gone.sock";
+        var dead = store.Register("claude:dead", "claude", gone, "secret", "2147483647");
+        var legacy = store.Register("claude:" + gone, "claude", gone, "", "");
+        var live = store.Register("claude:live", "claude", fixture.DatabasePath, "secret", Environment.ProcessId.ToString());
+        Finish(fixture, dead, "dead");
+        Finish(fixture, legacy, "legacy");
+        Finish(fixture, live, "live");
+        var logs = new List<string>();
+        var time = DateTimeOffset.UtcNow;
+        // The Unix rule on every OS; per-platform liveness is covered by Claude_target_is_gone_only_when_its_owner_is_gone.
+        async Task Tick() => await new WakeCoordinator(store, new FakePoster((_, _) => false), logs.Add, () => time, TimeSpan.Zero,
+            claudeGone: t => WakeCoordinator.ClaudeTargetGone(t, "linux")).TickAsync(TestContext.Current.CancellationToken);
+        await Tick();
+        Assert.Equal(3, store.Pending().Count); // registered moments ago: inside the grace period
+
+        time += TimeSpan.FromMinutes(11);
+        await Tick();
+        Assert.Equal("claude:live", Assert.Single(store.Pending()).Target.Key);
+        Assert.Contains(logs, line => line.Contains("wake target pruned: target=claude:dead"));
+        Assert.Contains(logs, line => line.Contains($"wake target pruned: target={legacy.Key}"));
+
+        // Unread work survives the prune and wakes again once the session registers anew.
+        store.Register("claude:dead", "claude", gone, "secret", "2147483647");
+        Assert.Equal(1, store.Pending().Single(x => x.Target.Key == "claude:dead").Unread);
+        store.Invalidate("claude:dead");
+
+        // A live lead is never pruned: not after days of rejected posts, nor when new work lands after days idle.
+        time += TimeSpan.FromDays(4);
+        await Tick();
+        Finish(fixture, live, "after-idle");
+        time += TimeSpan.FromMinutes(11);
+        await Tick();
+        Assert.Equal(2, Assert.Single(store.Pending()).Unread);
+        Assert.DoesNotContain(logs, line => line.Contains("pruned: target=claude:live"));
+    }
+
+    [Theory]
+    [InlineData("linux")]
+    [InlineData("macos")]
+    [InlineData("windows")]
+    public void Claude_target_is_gone_only_when_its_owner_is_gone(string platform)
+    {
+        var self = Environment.ProcessId.ToString();
+        var missing = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".sock");
+        var existing = Environment.ProcessPath!;
+        Assert.True(WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", missing, "s", "2147483647"), platform));
+        Assert.False(WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", missing, "s", self), platform));
+        Assert.False(WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", existing, "s", self), platform));
+        // Unix: a live socket file keeps the target; a legacy row without a pid goes with its socket.
+        // Windows: pipes cannot be probed, so a row without a pid is never judged gone.
+        Assert.Equal(platform == "windows", WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", existing, "s", "2147483647"), platform));
+        Assert.Equal(platform != "windows", WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", missing, "", ""), platform));
+        Assert.False(WakeCoordinator.ClaudeTargetGone(new("k", 1, "claude", missing, "s", self), "unsupported"));
+    }
+
+    [Fact]
+    public async Task Rejected_post_logs_its_reason_once_per_target_and_reason()
+    {
+        using var fixture = new JobFixture();
+        var store = new WakeStore(fixture.Database);
+        var target = store.Register("claude:norelay", "claude", fixture.DatabasePath, "secret", Environment.ProcessId.ToString());
+        Finish(fixture, target, "one");
+        var mailbox = new ClaudeWakeMailbox();
+        var time = DateTimeOffset.UtcNow;
+        var logs = new List<string>();
+        var coordinator = new WakeCoordinator(store, new NativeWakePoster(fixture.DatabasePath + ".state", mailbox), logs.Add, () => time, TimeSpan.Zero);
+        for (var i = 0; i < 5; i++)
+        {
+            await coordinator.TickAsync(TestContext.Current.CancellationToken);
+            time += TimeSpan.FromMinutes(5);
+        }
+        var rejected = Assert.Single(logs, line => line.Contains("wake post rejected:"));
+        Assert.Contains("reason=no_relay", rejected);
+
+        // A live relay that reports a failed delivery is a new reason, again logged once.
+        using var stop = new CancellationTokenSource();
+        var relay = Task.Run(async () =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                if (mailbox.Take(target.Address, target.Secret, target.Home) is { } offer)
+                {
+                    mailbox.Complete(offer.Id, target.Address, target.Secret, target.Home, posted: false);
+                }
+                await Task.Delay(20);
+            }
+        }, TestContext.Current.CancellationToken);
+        mailbox.Take(target.Address, target.Secret, target.Home);
+        for (var i = 0; i < 3; i++)
+        {
+            await coordinator.TickAsync(TestContext.Current.CancellationToken);
+            time += TimeSpan.FromMinutes(5);
+        }
+        await stop.CancelAsync();
+        await relay;
+        Assert.Equal(2, logs.Count(line => line.Contains("wake post rejected:")));
+        Assert.Contains(logs, line => line.Contains("reason=relay_failed"));
+    }
+
+    [Fact]
     public async Task Legacy_lead_wake_is_rebound_to_a_live_bridge_for_external_messages_and_jobs()
     {
         using var fixture = new JobFixture();
@@ -598,6 +702,160 @@ public sealed class WakeTests
         await new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero)
             .TickAsync(TestContext.Current.CancellationToken);
         Assert.Contains("1 job(s)", Assert.Single(poster.Attempts).Notice);
+    }
+
+    [Fact]
+    public async Task Lead_message_reads_drain_the_external_wake_counter_with_and_without_from_agent_and_since_seq()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/wake-messages", "parent=1");
+        var team = new ExternalTeam(new ExternalMemberStore(fixture.Database), wake);
+        var accept = fixture.Accept();
+        var endpoint = new JobsEndpoint(accept, fixture.Get(), new FollowUpJob(fixture.Store, JobFixture.Operator, accept), fixture.List(),
+            new StopJob(fixture.Store, JobFixture.Operator, _ => { }), new AgentTeamForge.DAL.Sqlite.DurabilityCheckpoints(null),
+            () => { }, wake, jobStore: fixture.Store, sessions: sessions, external: team);
+        var target = wake.Register("codex:messages", "codex", "addr", "", "/tmp");
+        Assert.True(endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.SessionBindWake,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            WakeKey = target.Key,
+            WakeGeneration = target.Generation
+        }).Ok);
+        string Member(string name) => team.Join(lead.SessionId,
+            team.CreateTicket(lead.SessionId, lead.Workspace, name, null).Ticket!.Token).Member!.MemberToken;
+        var a = Member("a");
+        var b = Member("b");
+        IpcResponse Read(string? fromAgent = null, long? sinceSeq = null, int? limit = null) => endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.ExternalLeadRead,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            FromAgent = fromAgent,
+            SinceSeq = sinceSeq,
+            Limit = limit
+        });
+        var poster = new FakePoster();
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero);
+
+        Assert.True(team.Send(a, "a1").Ok);
+        Assert.True(team.Send(b, "b1").Ok);
+        Assert.True(team.Send(a, "a2").Ok);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Contains("3 external message(s)", Assert.Single(poster.Attempts).Notice);
+
+        // A full read reports what is still unread after it, and the wake has nothing left to announce.
+        var full = Read(limit: 10000);
+        Assert.True(full.Ok, full.Error);
+        Assert.Equal(3, full.Messages!.Count);
+        Assert.Equal(0, full.UnreadCount);
+        Assert.False(full.HasMore);
+        Assert.Empty(wake.PendingExternal());
+
+        Assert.True(team.Send(a, "a3").Ok);
+        Assert.True(team.Send(b, "b2").Ok);
+        Assert.True(team.Send(a, "a4").Ok);
+        var fromA = Read(fromAgent: "a", sinceSeq: 2);
+        Assert.Equal(["a3", "a4"], fromA.Messages!.Select(m => m.Text));
+        Assert.Equal(0, fromA.UnreadCount);
+        Assert.Equal(1, Assert.Single(wake.PendingExternal()).Unread);
+
+        // A global filter must leave messages it did not return unread and retrievable.
+        var past = Read(sinceSeq: full.NextSeq + 3);
+        Assert.True(past.Ok, past.Error);
+        Assert.Empty(past.Messages!);
+        Assert.Equal(0, past.UnreadCount);
+        Assert.Equal(1, Assert.Single(wake.PendingExternal()).Unread);
+
+        var remaining = Read();
+        Assert.Equal("b2", Assert.Single(remaining.Messages!).Text);
+        Assert.Equal(0, remaining.UnreadCount);
+        Assert.Empty(wake.PendingExternal());
+
+        Assert.True(team.Send(a, "a5").Ok);
+        Assert.True(team.Send(a, "a6").Ok);
+        Assert.True(team.Send(b, "b3").Ok);
+        var later = Read(sinceSeq: past.NextSeq + 1, limit: 1);
+        Assert.Equal("a6", Assert.Single(later.Messages!).Text);
+        Assert.True(later.HasMore);
+        Assert.Equal(2, Assert.Single(wake.PendingExternal()).Unread);
+        Assert.Empty(Read(sinceSeq: later.NextSeq, limit: 0).Messages!);
+        Assert.Equal(2, Assert.Single(wake.PendingExternal()).Unread);
+        var earlier = Read(limit: 1);
+        Assert.Equal("a5", Assert.Single(earlier.Messages!).Text);
+        Assert.Equal(1, Assert.Single(wake.PendingExternal()).Unread);
+        var last = Read(sinceSeq: later.NextSeq);
+        Assert.Equal("b3", Assert.Single(last.Messages!).Text);
+        Assert.Equal(0, last.UnreadCount);
+        Assert.Empty(wake.PendingExternal());
+
+        poster.Attempts.Clear();
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(poster.Attempts);
+        Assert.Equal(0, Read(limit: 0).UnreadCount);
+    }
+
+    [Fact]
+    public async Task Lead_job_reads_drain_the_jobs_wake_counter_for_list_get_and_output()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/wake-jobs", "parent=1");
+        var accept = fixture.Accept();
+        var endpoint = new JobsEndpoint(accept, fixture.Get(), new FollowUpJob(fixture.Store, JobFixture.Operator, accept), fixture.List(),
+            new StopJob(fixture.Store, JobFixture.Operator, _ => { }), new AgentTeamForge.DAL.Sqlite.DurabilityCheckpoints(null),
+            () => { }, wake, logs: new JobLogs(Path.GetDirectoryName(fixture.DatabasePath)!), jobStore: fixture.Store, sessions: sessions);
+        var target = wake.Register("codex:jobs", "codex", "addr", "", "/tmp");
+        Assert.True(endpoint.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.SessionBindWake,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            WakeKey = target.Key,
+            WakeGeneration = target.Generation
+        }).Ok);
+        string SubmitAndComplete(string key)
+        {
+            var jobId = Submit(endpoint, lead, key);
+            var claim = fixture.Store.BeginNextAttempt()!;
+            Assert.Equal(jobId, claim.Job.JobId);
+            Assert.True(fixture.Store.Complete(new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "done"));
+            return jobId;
+        }
+        IpcResponse Call(string op, string? jobId = null, bool unread = false) => endpoint.Handle(new IpcRequest
+        {
+            Op = op,
+            LeadSessionId = lead.SessionId,
+            Workspace = lead.Workspace,
+            JobId = jobId,
+            Unread = unread
+        });
+        var poster = new FakePoster();
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero);
+
+        var listed = SubmitAndComplete("listed");
+        var got = SubmitAndComplete("got");
+        var output = SubmitAndComplete("output");
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Contains("3 job(s)", Assert.Single(poster.Attempts).Notice);
+
+        Assert.True(Call(IpcProtocol.JobOutput, output).Ok);
+        Assert.Equal(2, Assert.Single(wake.Pending()).Unread);
+        Assert.True(Call(IpcProtocol.JobGet, got).Ok);
+        Assert.Equal(1, Assert.Single(wake.Pending()).Unread);
+        var unread = Call(IpcProtocol.JobList, unread: true);
+        Assert.True(unread.Ok, unread.Error);
+        Assert.Equal(listed, Assert.Single(unread.Page!.Jobs).JobId);
+        Assert.Empty(wake.Pending());
+        Assert.Empty(Call(IpcProtocol.JobList, unread: true).Page!.Jobs);
+
+        poster.Attempts.Clear();
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(poster.Attempts);
     }
 
     [Fact]

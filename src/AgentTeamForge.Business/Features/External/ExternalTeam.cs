@@ -134,7 +134,15 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
             return result;
         }
 
-        var valid = members.ActiveMemberNames(sessionId);
+        // A PRFactory work item lead reaches its recipe's external members in the connector's actor team.
+        var linked = members.LinkedActorTeams(sessionId);
+        foreach (var team in linked)
+        {
+            var relayed = SendToMember(team, name, text);
+            if (relayed.Error != "member_not_found") { return relayed; }
+        }
+
+        var valid = members.ActiveMemberNames(sessionId).Concat(linked.SelectMany(members.ActiveMemberNames)).ToList();
         return result with { ErrorDetail = $"Unknown recipient '{name}'. Valid recipients in this AgentTeamForge lead session: {(valid.Count == 0 ? "none (no external members have joined)" : string.Join(", ", valid))}." };
     }
 
@@ -205,6 +213,9 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
         var inbox = members.ReadTeam(teamId, sinceSeq, limit ?? 50, now());
         return inbox is null ? new("invalid_team") : new(Inbox: inbox);
     }
+
+    /// <summary>Deliver an actor team's member replies to its work item lead's own inbox (idempotent).</summary>
+    public void RelayToLinkedLead(string teamId) => members.RelayToLinkedLead(teamId, now());
 
     public bool BindTeamWake(string teamId, string wakeKey, long generation) =>
         members.BindTeamWake(teamId, wakeKey, generation);

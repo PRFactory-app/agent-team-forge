@@ -260,7 +260,7 @@ public sealed class ExternalJoinScenarios
             var root = readJson.RootElement;
             Assert.Equal(JsonValueKind.Null, root.GetProperty("cursors").ValueKind);
             Assert.Equal(1, root.GetProperty("seq").GetInt64());
-            Assert.Equal(1, root.GetProperty("unread_count").GetInt32());
+            Assert.Equal(0, root.GetProperty("unread_count").GetInt32());
             Assert.False(root.GetProperty("has_more").GetBoolean());
             var message = Assert.Single(root.GetProperty("messages").EnumerateArray());
             Assert.Equal("do", message.GetProperty("text").GetString());

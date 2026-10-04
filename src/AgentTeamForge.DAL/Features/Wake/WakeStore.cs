@@ -93,6 +93,46 @@ public sealed class WakeStore(JobDatabase database)
         command.ExecuteNonQuery();
     }
 
+    /// <summary>Deactivates Claude targets whose owner is provably <paramref name="gone"/>, once nothing registered
+    /// or posted to them for 10 minutes. Targets of uncertain liveness are never pruned. Unread rows stay;
+    /// resume_session rebinds them to a live target.</summary>
+    public IReadOnlyList<string> PruneDead(DateTimeOffset now, Func<WakeRegistration, bool> gone)
+    {
+        using var connection = database.OpenConnection();
+        var candidates = new List<(WakeRegistration Target, DateTimeOffset LastOk)>();
+        using (var select = connection.CreateCommand())
+        {
+            select.CommandText = """
+                SELECT t.target_key,t.generation,t.kind,t.address,t.secret,t.home,
+                       t.registered_at,t.last_success,t.last_external_success
+                FROM wake_targets t WHERE t.active=1 AND t.kind='claude'
+                """;
+            using var reader = select.ExecuteReader();
+            while (reader.Read())
+            {
+                var target = new WakeRegistration(reader.GetString(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetString(5));
+                var lastOk = Enumerable.Range(6, 3).Where(i => !reader.IsDBNull(i))
+                    .Max(i => DateTimeOffset.Parse(reader.GetString(i), System.Globalization.CultureInfo.InvariantCulture));
+                candidates.Add((target, lastOk));
+            }
+        }
+        var pruned = new List<string>();
+        foreach (var (target, lastOk) in candidates)
+        {
+            if (now - lastOk <= TimeSpan.FromMinutes(10) || !gone(target)) { continue; }
+            using var update = connection.CreateCommand();
+            update.CommandText = """
+                UPDATE wake_targets SET active=0,generation=generation+1,notified_seq=0,last_success=NULL,
+                    external_notified_seq=0,last_external_success=NULL
+                WHERE target_key=$key AND generation=$generation AND active=1
+                """;
+            update.Parameters.AddWithValue("$key", target.Key);
+            update.Parameters.AddWithValue("$generation", target.Generation);
+            if (update.ExecuteNonQuery() == 1) { pruned.Add(target.Key); }
+        }
+        return pruned;
+    }
+
     /// <summary>Reads only the terminal state (status and event revision) the caller saw; a null revision skips the revision check: a completion racing a read of the running job still wakes.</summary>
     public void MarkRead(string jobId, string observedStatus, string key, long generation, long? revision = null)
     {

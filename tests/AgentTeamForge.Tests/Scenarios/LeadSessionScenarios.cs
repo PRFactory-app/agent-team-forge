@@ -1,4 +1,5 @@
 using AgentTeamForge.Tests.Support;
+using Microsoft.Data.Sqlite;
 
 namespace AgentTeamForge.Tests.Scenarios;
 
@@ -64,5 +65,42 @@ public sealed class LeadSessionScenarios
         Assert.Equal(firstSession.LeadToken, resumed.Session!.LeadToken);
         Assert.Equal([firstJob], (await SpikeRig.CallAsync(restarted, "list_jobs", [])).Page!.Jobs.Select(j => j.JobId));
         Assert.Equal([secondJob], (await SpikeRig.CallAsync(second, "list_jobs", [])).Page!.Jobs.Select(j => j.JobId));
+    }
+
+    [Fact]
+    public async Task Resume_refuses_a_live_claude_owner_until_its_process_is_gone()
+    {
+        using var rig = new SpikeRig();
+        await rig.InitAsync();
+        await rig.StartDaemonAsync();
+        var (ownerProcess, owner) = await rig.StartBridgeAsync("lead-one", environment: new Dictionary<string, string> { ["CLAUDE_CODE_SESSION_ID"] = "native-a" });
+        var ownerSession = (await SpikeRig.CallAsync(owner, "session_info", [])).Session!;
+        Assert.True((await SpikeRig.CallAsync(owner, "submit_job", new() { ["backend"] = "fake", ["instruction"] = "x", ["idempotency_key"] = "k" })).Ok);
+        // Bind the owner's session to a Claude wake target whose host pid is the live owner bridge.
+        using (var connection = new SqliteConnection($"Data Source={Path.Combine(rig.StateDir, "jobs.db")}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO wake_targets(target_key,generation,kind,address,secret,home,registered_at)
+                VALUES ('claude:owner',1,'claude','/nonexistent.sock','token',$pid,$now);
+                UPDATE lead_sessions SET wake_key='claude:owner' WHERE session_id=$id;
+                """;
+            command.Parameters.AddWithValue("$pid", ownerProcess.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$id", ownerSession.SessionId);
+            command.ExecuteNonQuery();
+        }
+        var (_, other) = await rig.StartBridgeAsync("lead-two", environment: new Dictionary<string, string> { ["CLAUDE_CODE_SESSION_ID"] = "native-b" });
+        Assert.DoesNotContain((await SpikeRig.CallAsync(other, "session_info", [])).Session!.RecoverableSessions,
+            s => s.SessionId == ownerSession.SessionId);
+        var refused = await SpikeRig.CallAsync(other, "resume_session", new() { ["session_id"] = ownerSession.SessionId });
+        Assert.Equal("session_owned", refused.Error);
+
+        OwnedProcesses.KillAbruptly(ownerProcess);
+        var listed = Assert.Single((await SpikeRig.CallAsync(other, "session_info", [])).Session!.RecoverableSessions,
+            s => s.SessionId == ownerSession.SessionId);
+        Assert.Equal(("native-a", false), (listed.OwnerNativeId, listed.OwnerLive));
+        Assert.True((await SpikeRig.CallAsync(other, "resume_session", new() { ["session_id"] = ownerSession.SessionId })).Ok);
     }
 }

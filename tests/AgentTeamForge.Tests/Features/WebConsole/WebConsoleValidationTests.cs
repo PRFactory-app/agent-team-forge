@@ -77,6 +77,27 @@ public sealed class WebConsoleValidationTests : IAsyncLifetime
         Assert.Equal(JobStatus.Running, _jobs.Store.GetJob(parent.JobId)!.Status);
     }
 
+    [Fact]
+    public async Task Follow_up_to_a_fenced_session_explains_itself_without_internal_ids()
+    {
+        var parent = _jobs.Submit("parent", "first");
+        var claim = _jobs.Store.BeginNextAttempt()!;
+        var run = new RunRef(parent.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        _jobs.Store.RecordSession(run, "native");
+        _jobs.Store.Complete(run, "done");
+        _jobs.Store.FenceSession(parent.JobId);
+
+        var (status, body) = await Send(HttpMethod.Post, $"/api/jobs/{parent.JobId}/follow-up",
+            """{"instruction":"next","idempotency_key":"web-fenced"}""");
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        Assert.Equal((false, JobErrors.ParentNotReady), ((bool)body["ok"]!, (string?)body["error"]));
+        var detail = (string)body["error_detail"]!;
+        Assert.Contains("Stop agent", detail, StringComparison.Ordinal);
+        Assert.DoesNotContain(parent.JobId, detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("stop_job", detail, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("cheapest", "gpt-6-luna", "ultra", "effort", "Supported: low, medium, high, xhigh, max")]
     [InlineData("cheapest", "gpt-6-luna", "bogus-eff", "effort", "Unsupported effort 'bogus-eff'")]

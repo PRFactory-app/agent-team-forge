@@ -31,6 +31,8 @@ sealed class ChainServer(PRFactoryWorkItem item)
     public bool BaseWipSupported { get; set; }
     public string? AcceptanceReleaseIdOverride { get; set; }
     public bool HandoverRequested { get; set; }
+    /// <summary>Returned with an accepted completion, like the server once the ticket reached Completed.</summary>
+    public string? CleanupWipBranch { get; set; }
     /// <summary>Like the real server: a release makes the item pending again with the handover fields for the next claim.</summary>
     public bool ReleaseRequeues { get; set; }
     /// <summary>Pin: only this machine is offered the item once claimed. A release clears it.</summary>
@@ -258,7 +260,8 @@ sealed class ChainServer(PRFactoryWorkItem item)
                 UploadOrder.Add("complete");
                 Completions.Add(JsonElement.Parse(body!));
                 Status = 3;
-                return Json("{\"accepted\":true}");
+                return Json(JsonSerializer.Serialize(new PRFactoryCompletionResponse(true, CleanupWipBranch),
+                    PRFactoryWorkItemJson.Default.PRFactoryCompletionResponse));
             }
             if (path.Contains("/fail/", StringComparison.Ordinal))
             {

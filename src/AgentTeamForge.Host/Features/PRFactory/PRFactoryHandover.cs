@@ -332,9 +332,22 @@ public sealed class PRFactoryHandover(PRFactoryClient client, PRFactoryHandoverS
             throw new InvalidOperationException("Lead has commits beyond the WIP receipt; cleanup refused.");
         }
         await RequireIntegratedAsync(workspace, wip.HeadSha, "Child commits are not in the WIP receipt; cleanup refused.");
-        foreach (var path in owned)
+        var common = await TeamWorkspace.Git(repository, "rev-parse", "--path-format=absolute", "--git-common-dir");
+        IDisposable held;
+        try
         {
-            await TeamWorkspace.Git(repository, "worktree", "remove", "--", path);
+            held = await WorktreeLock.AcquireAsync(common, CancellationToken.None);
+        }
+        catch (TimeoutException ex)
+        {
+            throw new InvalidOperationException($"Cleanup refused: {ex.Message}");
+        }
+        using (held)
+        {
+            foreach (var path in owned)
+            {
+                await TeamWorkspace.Git(repository, "worktree", "remove", "--", path);
+            }
         }
         try
         {

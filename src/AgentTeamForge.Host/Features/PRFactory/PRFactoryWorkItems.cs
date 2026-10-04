@@ -1402,6 +1402,8 @@ public sealed partial class PRFactoryWorkItems(
             teams.MarkExternalClosed(server, item.Id, external.Member);
         }
 
+        // Catch-up for replies sent before the lead job's MCP session existed; later replies relay on send.
+        actor.RelayToLinkedLead(teamId);
         var cursor = externals.Min(e => e.ReplySeq);
         var inbox = actor.ReadTeam(teamId, cursor, 50).Inbox;
         if (inbox is null && externals.All(e => e.Closed))
@@ -1555,8 +1557,18 @@ public sealed partial class PRFactoryWorkItems(
             var (branch, commit) = receipt is not null ? (receipt.Intent.PublishBranch, receipt.Intent.HeadSha)
                 : item.RepositoryId is null || workspace is not null || item.ReadOnly || cwd is null ? (null, null) : (JobWorktree.Branch(cwd), JobWorktree.Head(cwd));
             var publication = receipt is null ? null : new PRFactoryRemotePublication(true, branch!, commit!, true);
-            await Guard(item.Id, () => client.CompleteAsync(item.Id, item.LeaseToken, result, ct, branch, commit, publication,
-                repositoryResults), ct);
+            string? cleanupWip = null;
+            await Guard(item.Id, async () => cleanupWip = await client.CompleteAsync(item.Id, item.LeaseToken, result, ct, branch, commit,
+                publication, repositoryResults), ct);
+            if (cleanupWip is not null)
+            {
+                var protectedBranches = item.RepositoryId is { } repositoryId && publications is not null
+                    ? publications.VerifiedFor(server, item.Id, repositoryId).Select(p => p.PublishBranch)
+                    : [];
+                await CleanupWipAsync(item.Id, workspace?.RepositoryPath, workspace?.Remote, cleanupWip,
+                    protectedBranches.Cast<string?>().Append(branch).Append(receipt?.Intent.PublishBranch)
+                        .Concat(repositoryResults?.Select(r => r.BranchName) ?? []), log, ct);
+            }
             StopManagedJobs(item.Id);
             teams.Finish(server, item.Id, "completed");
             await Observe(item.Id, "completed", null, ct); // Also closes retained interactive sessions.
@@ -1570,6 +1582,26 @@ public sealed partial class PRFactoryWorkItems(
             teams.Finish(server, item.Id, error.StartsWith("multi-repository", StringComparison.Ordinal) ? "refused" : "failed");
             await Observe(item.Id, "completed", "failure_reported", ct);
         }
+    }
+
+    /// <summary>Best-effort: the ticket already completed, so a failed delete is logged and never fails the item.</summary>
+    internal static async Task CleanupWipAsync(Guid itemId, string? checkout, string? remote, string branch,
+        IEnumerable<string?> protectedBranches, Action<string>? log, CancellationToken ct)
+    {
+        string? skipped;
+        try
+        {
+            skipped = protectedBranches.Contains(branch, StringComparer.Ordinal) ? "protected publication or PR head branch"
+                : checkout is null || remote is null ? "no mapped checkout"
+                : await WipPublisher.DeleteAsync(checkout, remote, branch, ct);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            skipped = ex.GetType().Name;
+        }
+        log?.Invoke(skipped is null
+            ? $"PRFactory work item {itemId:D}: deleted remote WIP branch {branch} after ticket completion"
+            : $"PRFactory work item {itemId:D}: WIP branch {branch} not deleted ({skipped})");
     }
 
     /// <summary>JSON details: the limit text plus the reset as an ISO-8601 UTC string the server uses to exclude this machine.</summary>

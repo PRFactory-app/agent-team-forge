@@ -1364,6 +1364,7 @@
         if (j.backend) chips.append(backendChip(j.backend));
         if (j.model) chips.append(element('span', 'chip', j.model));
         if (j.effort) chips.append(element('span', 'chip subtle', 'effort ' + j.effort));
+        if (j.waiting === 'background_task') chips.append(element('span', 'chip', 'waiting on background task'));
         if (herdrMode && j.herdr_placement) chips.append(element('span', 'chip subtle', j.herdr_placement === 'own-session' ? 'Own Herdr session' : 'Herdr ' + j.herdr_placement.slice(14)));
         const state = element('span', 'badge ' + (j.status === 'completed' ? 'done' : j.light),
           j.status === 'completed' ? 'done' : j.status === 'parked' ? 'parked · awaiting reply' : j.status.replaceAll('_', ' '));

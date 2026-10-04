@@ -113,8 +113,10 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             {
                 return new IpcResponse(false, JobErrors.InvalidRequest);
             }
-            var resumed = sessions.Resume(request.LeadSessionId, request.Workspace!, request.BindingKey!, request.NativeKind, request.NativeSessionId, request.NativeHome);
-            return resumed is null ? new IpcResponse(false, JobErrors.NotFound) : new IpcResponse(true, Outcome: "resumed", Session: resumed);
+            var (resumed, liveOwner) = sessions.Resume(request.LeadSessionId, request.Workspace!, request.BindingKey!, request.NativeKind, request.NativeSessionId, request.NativeHome, request.Force, request.WakeKey);
+            return liveOwner is not null
+                ? new IpcResponse(false, JobErrors.SessionOwned, ErrorDetail: $"Session {request.LeadSessionId} is bound to live native session {liveOwner}; adopting it would take over that lead's wakes and results. Pass force=true only if that session is dead.")
+                : resumed is null ? new IpcResponse(false, JobErrors.NotFound) : new IpcResponse(true, Outcome: "resumed", Session: resumed);
         }
         if (request.Op == IpcProtocol.SessionInfo)
         {
@@ -360,6 +362,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     return new IpcResponse(false, JobErrors.InvalidRequest,
                         ErrorDetail: string.Create(CultureInfo.InvariantCulture, $"Invalid max_bytes: must be an integer from 1 to {JobLogs.MaxReadBytes}."));
                 }
+                MarkWakeRead(request, outputJob.Job!.JobId, outputJob.Job.Status, outputJob.Job.Revision);
                 return new IpcResponse(true, Outcome: "output", Output: logs.Read(request.JobId!, request.Offset ?? 0, request.MaxBytes ?? JobLogs.MaxReadBytes));
             case IpcProtocol.JobActivity:
                 var activityJob = ReadJob(request);
