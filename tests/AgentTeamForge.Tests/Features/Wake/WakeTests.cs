@@ -61,6 +61,87 @@ public sealed class WakeTests
     }
 
     [Fact]
+    public async Task Operator_message_is_committed_before_exactly_one_notice()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/operator", "operator-lead");
+        var target = wake.Register("codex:operator", "codex", "thread", "", "/tmp");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        var team = new ExternalTeam(new ExternalMemberStore(fixture.Database), wake);
+        Assert.True(team.SendFromOperator(lead.SessionId, lead.Workspace, "operator work", "once").Ok);
+        Assert.True(team.SendFromOperator(lead.SessionId, lead.Workspace, "operator work", "once").Ok);
+        Assert.Equal(target, Assert.Single(wake.PendingExternal()).Target);
+        var poster = new FakePoster((_, notice) =>
+        {
+            Assert.DoesNotContain("operator work", notice);
+            var message = Assert.Single(team.ReadLead(lead.SessionId, lead.Workspace, null, 10).Inbox!.Messages);
+            Assert.Equal("operator", message.From);
+            Assert.Equal("operator work", message.Text);
+            return true;
+        });
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Single(poster.Attempts);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Completion_after_a_child_report_does_not_send_a_second_notice(bool readReport, bool failed)
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/report", "report-lead");
+        var target = wake.Register("codex:report", "codex", "thread", "", "/tmp");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        var team = new ExternalTeam(new ExternalMemberStore(fixture.Database), wake);
+        var job = fixture.Accept().Execute(new SubmitJobRequest("reported", "work", null, false)
+        { LeadSessionId = lead.SessionId, WakeKey = target.Key, WakeGeneration = target.Generation }).Job!;
+        var ticket = team.CreateTicket(lead.SessionId, lead.Workspace, "child-" + job.JobId, null).Ticket!;
+        var member = team.Join(lead.SessionId, ticket.Token).Member!;
+        var claim = fixture.Store.BeginNextAttempt()!;
+        var run = new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        Assert.True(team.Send(member.MemberToken, "report").Ok);
+        var poster = new FakePoster();
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        if (readReport) { team.ReadLead(lead.SessionId, lead.Workspace, null, 10); }
+        Assert.True(failed ? fixture.Store.EndUnsuccessfully(run, JobStatus.Failed, "backend_failed")
+            : fixture.Store.Complete(run, "result"));
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(failed ? 2 : 1, poster.Attempts.Count);
+        Assert.Equal(failed ? 1 : 0, wake.Pending().Count);
+    }
+
+    [Fact]
+    public async Task An_earlier_turn_report_does_not_suppress_completion()
+    {
+        using var fixture = new JobFixture();
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/old-report", "old-report-lead");
+        var target = wake.Register("codex:old-report", "codex", "thread", "", "/tmp");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        var members = new ExternalMemberStore(fixture.Database);
+        var team = new ExternalTeam(members, wake);
+        var job = fixture.Accept().Execute(new SubmitJobRequest("old-report", "work", null, false)
+        { LeadSessionId = lead.SessionId, WakeKey = target.Key, WakeGeneration = target.Generation }).Job!;
+        Assert.True(members.EnsureMcpTeam(lead.SessionId, lead.Workspace, DateTimeOffset.UtcNow));
+        Assert.True(members.SendToLead(lead.SessionId, "child-" + job.JobId, "old report", DateTimeOffset.UtcNow.AddMinutes(-1), null));
+        var claim = fixture.Store.BeginNextAttempt()!;
+        Assert.True(fixture.Store.Complete(new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "result"));
+        var poster = new FakePoster();
+        await new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero).TickAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, poster.Attempts.Count);
+        Assert.Single(wake.Pending());
+    }
+
+    [Fact]
     public async Task Interactive_park_notifies_once()
     {
         using var fixture = new JobFixture();

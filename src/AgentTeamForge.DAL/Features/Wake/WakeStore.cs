@@ -187,7 +187,21 @@ public sealed class WakeStore(JobDatabase database)
                 -- Session-owned parks wake once through PendingParks; session-less ones keep the terminal notice.
                 AND (j.lead_session_id IS NULL OR j.reason_code IS NULL OR j.reason_code!='interactive_completion_unobserved')
             JOIN events e ON e.job_id=j.job_id AND e.kind IN ('completed','failed','needs_reconciliation','cancelled')
-            WHERE t.active=1 GROUP BY t.target_key;
+            WHERE t.active=1
+              -- A managed child's committed report is already a doorbell for this turn.
+              -- Keep failures/attention notices and unread job state independent of that report.
+              AND (j.status!='completed' OR NOT EXISTS (
+                  SELECT 1 FROM external_messages m
+                  WHERE m.team_id=j.lead_session_id AND m.recipient='lead'
+                    AND m.created_at >= (SELECT max(r.started_at) FROM runs r WHERE r.job_id=j.job_id)
+                    AND m.created_at <= j.updated_at
+                    AND m.sender IN (
+                        WITH RECURSIVE ancestors(id,parent) AS (
+                            SELECT j.job_id,j.parent_job_id
+                            UNION ALL
+                            SELECT p.job_id,p.parent_job_id FROM jobs p JOIN ancestors a ON p.job_id=a.parent
+                        ) SELECT 'child-'||id FROM ancestors)))
+            GROUP BY t.target_key;
             """;
         using var reader = command.ExecuteReader();
         var result = new List<WakeSnapshot>();

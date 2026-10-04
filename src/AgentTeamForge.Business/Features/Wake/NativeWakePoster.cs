@@ -14,7 +14,13 @@ public sealed class NativeWakePoster(string stateDirectory, ClaudeWakeMailbox cl
         _ => Task.FromResult(false),
     };
 
-    public async Task<string> PostWithReasonAsync(WakeRegistration target, string notice, CancellationToken cancellationToken) =>
-        target.Kind == "claude" ? await claude.PostWithReasonAsync(target, notice, cancellationToken)
-            : await PostAsync(target, notice, cancellationToken) ? WakePost.Ok : WakePost.Rejected;
+    public Task<string> PostWithReasonAsync(WakeRegistration target, string notice, CancellationToken cancellationToken) => target.Kind switch
+    {
+        "claude" => claude.PostWithReasonAsync(target, notice, cancellationToken),
+        "codex" => codex.PostWithReasonAsync(target, notice, cancellationToken),
+        _ => OtherAsync(target, notice, cancellationToken)
+    };
+
+    async Task<string> OtherAsync(WakeRegistration target, string notice, CancellationToken cancellationToken) =>
+        await PostAsync(target, notice, cancellationToken) ? WakePost.Ok : WakePost.Rejected;
 }
