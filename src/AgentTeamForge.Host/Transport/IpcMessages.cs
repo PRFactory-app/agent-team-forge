@@ -130,6 +130,7 @@ public static class IpcProtocol
     public const string JobOutput = "job_output";
     public const string JobActivity = "get_job_activity";
     public const string JobFollowUp = "job_follow_up";
+    public const string JobRelease = "job_release";
     public const string JobStop = "job_stop";
     public const string JobStopAgent = "job_stop_agent";
     public const string JobStopIdle = "job_stop_idle";

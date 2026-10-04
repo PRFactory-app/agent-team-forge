@@ -2,12 +2,16 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Jint;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using AgentTeamForge.Host.Features.Setup;
 using AgentTeamForge.Tests.Support;
 using AgentTeamForge.Host.Features.WebConsole;
 using AgentTeamForge.Host.Transport;
+using AgentTeamForge.DAL.Features.Jobs;
+using AgentTeamForge.Host.Features.Jobs;
+using AgentTeamForge.DAL.Sqlite;
 
 namespace AgentTeamForge.Tests.Features.WebConsole;
 
@@ -66,6 +70,44 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
     HttpRequestMessage Ticket(string leadId, WebJoinTicketBody body, string? token = null, string? origin = null) =>
         Api(HttpMethod.Post, $"/api/leads/{leadId}/join-ticket", token, origin ?? Origin,
             JsonSerializer.Serialize(body, WebConsoleJson.Default.WebJoinTicketBody));
+
+    [Fact]
+    public async Task Release_of_nonnative_reconciled_job_never_closes_the_agent()
+    {
+        using var fixture = new JobFixture();
+        var job = fixture.Submit("nonnative");
+        var claim = fixture.Store.BeginNextAttempt()!;
+        Assert.True(fixture.Store.EndUnsuccessfully(new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation),
+            JobStatus.NeedsReconciliation, "daemon_restart_uncertain"));
+        var closed = 0;
+        var accept = fixture.Accept();
+        var stop = new StopJob(fixture.Store, JobFixture.Operator, _ => closed++,
+            stopReconciled: _ => { closed++; return ReconcileStop.Stopped; },
+            releaseNative: _ => false);
+        var endpoint = new JobsEndpoint(accept, fixture.Get(), new FollowUpJob(fixture.Store, JobFixture.Operator, accept),
+            fixture.List(), stop, DurabilityCheckpoints.None, () => { });
+        Daemon = request => Task.FromResult(endpoint.Handle(request));
+        var path = "/api/jobs/" + job.JobId + "/release";
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Send(Api(HttpMethod.Post, path, token: WebConsoleServer.NewToken(), origin: Origin))).Status);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Send(Api(HttpMethod.Post, path, origin: "http://attacker.example"))).Status);
+        Assert.Empty(_forwarded);
+        var (status, body) = await Send(Api(HttpMethod.Post, path, origin: Origin));
+        Assert.Equal(HttpStatusCode.OK, status);
+        Assert.False(body.Ok);
+        Assert.Equal(JobErrors.NativeReleaseUnavailable, body.Error);
+        Assert.Equal(0, closed);
+        var view = fixture.Get().Execute(job.JobId).Job!;
+        Assert.False(view.ReleaseAvailable);
+        Assert.False(Assert.Single(fixture.List().Execute(new ListJobsRequest()).Page!.Jobs).ReleaseAvailable);
+        using var asset = typeof(WebConsoleServer).Assembly.GetManifestResourceStream("WebConsole.lib.js")!;
+        using var reader = new StreamReader(asset);
+        var engine = new Jint.Engine();
+        engine.Execute(reader.ReadToEnd());
+        engine.SetValue("jobJson", JsonSerializer.Serialize(view, IpcJson.Default.JobView));
+        Assert.False(engine.Evaluate("AtfLib.canRelease(JSON.parse(jobJson))").AsBoolean());
+        Assert.Equal(JobStatus.NeedsReconciliation, fixture.Store.GetJob(job.JobId)!.Status);
+        Assert.True(fixture.Store.IsSessionFenced(job.JobId));
+    }
 
     [Fact]
     public async Task Retention_settings_validate_persist_and_apply_to_live_sessions()

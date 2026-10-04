@@ -225,6 +225,7 @@ public sealed class WebConsoleServer : IAsyncDisposable
                 Limit = int.TryParse(request.Query["limit"], out var count) && count is > 0 and <= JobActivity.MaxPageSize ? count : 20,
             },
             ("POST", ["jobs", var id, "follow-up"]) when ValidId(id) => await ReadFollowUpAsync(ctx, id),
+            ("POST", ["jobs", var id, "release"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobRelease, JobId = id },
             ("POST", ["jobs", var id, "stop"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStop, JobId = id },
             ("POST", ["jobs", var id, "stop-agent"]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobStopAgent, JobId = id },
             ("POST", ["jobs", "stop-idle-agents"]) => await ReadBulkAsync(ctx, IpcProtocol.JobStopIdle),

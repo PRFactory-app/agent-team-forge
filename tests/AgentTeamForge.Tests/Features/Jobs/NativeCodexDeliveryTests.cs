@@ -222,10 +222,12 @@ public sealed class NativeCodexDeliveryTests
         Assert.Equal("stop_job", recovery.GetProperty("tool").GetString());
         Assert.Equal(child.JobId, recovery.GetProperty("arguments").GetProperty("job_id").GetString());
 
+        Assert.True(fixture.Get().Execute(child.JobId).Job!.ReleaseAvailable);
+        Assert.True(fixture.List().Execute(new ListJobsRequest()).Page!.Jobs.Single(j => j.JobId == child.JobId).ReleaseAvailable);
         var token = WebConsoleServer.NewToken();
         await using var console = await WebConsoleServer.StartAsync(0, token, (request, _) => Task.FromResult(endpoint.Handle(request)));
         using var http = new HttpClient();
-        using var release = new HttpRequestMessage(HttpMethod.Post, console.Url + "api/jobs/" + child.JobId + "/stop");
+        using var release = new HttpRequestMessage(HttpMethod.Post, console.Url + "api/jobs/" + child.JobId + "/release");
         release.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         release.Headers.Add("Origin", console.Url.TrimEnd('/'));
         using var released = await http.SendAsync(release, TestContext.Current.CancellationToken);
@@ -235,6 +237,7 @@ public sealed class NativeCodexDeliveryTests
         Assert.False(fixture.Store.IsSessionFenced(child.JobId));
         Assert.Equal("released", fixture.Store.NativeAttempt(child.JobId)!.State);
         Assert.Empty(fixture.Store.UnresolvedNativeAttempts());
+        Assert.Equal(JobErrors.NativeReleaseUnavailable, endpoint.Handle(new IpcRequest { Op = IpcProtocol.JobRelease, JobId = child.JobId }).Error);
         Assert.NotNull(follow.Execute(new FollowUpRequest(parent.JobId, "retry", "retry")).Job);
         Assert.Equal(1, submits);
         Assert.Equal(0, backend.Terminations);

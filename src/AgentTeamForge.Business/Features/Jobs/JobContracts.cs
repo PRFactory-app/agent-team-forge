@@ -75,6 +75,7 @@ public static class JobErrors
     public const string DaemonUnhealthy = "daemon_unhealthy";
     public const string BackendUnavailable = "backend_unavailable";
     public const string OwnershipNotProven = "owned_agent_not_verified";
+    public const string NativeReleaseUnavailable = "native_release_unavailable";
     public const string ParentNotReady = "parent_not_ready";
     public const string SessionExpired = "session_expired";
     public const string CwdNotGitRepo = "cwd_not_git_repo";
@@ -116,6 +117,7 @@ public sealed record JobView(string JobId, string Status, string? Result, string
     /// <summary>"background_task" while a running turn waits on its agent's background task; otherwise null.</summary>
     public string? Waiting => JobWaiting.From(Status, ReasonCode);
     public bool? AgentLive { get; init; }
+    public bool ReleaseAvailable { get; init; }
     public JobDelivery? Delivery { get; init; }
     public StartupProgress? Startup { get; init; }
     public string? Backend { get; init; }

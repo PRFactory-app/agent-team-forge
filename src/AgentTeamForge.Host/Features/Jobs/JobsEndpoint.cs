@@ -179,7 +179,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         // Reads reach any job in the lead's workspace; stop and follow-up only its own,
         // plus a fenced job whose original lead session was lost during a restart.
         var reads = request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobActivity;
-        if (request.LeadSessionId is not null && (reads || request.Op is IpcProtocol.JobStop or IpcProtocol.JobStopAgent or IpcProtocol.JobRemoveWorktree or IpcProtocol.JobFollowUp)
+        if (request.LeadSessionId is not null && (reads || request.Op is IpcProtocol.JobStop or IpcProtocol.JobRelease or IpcProtocol.JobStopAgent or IpcProtocol.JobRemoveWorktree or IpcProtocol.JobFollowUp)
             && (jobStore is null || request.JobId is null
                 || !jobStore.LeadCanAccess(request.JobId, request.LeadSessionId,
                     reads || jobStore.GetJob(request.JobId)?.Status == JobStatus.NeedsReconciliation ? request.Workspace : null)))
@@ -290,6 +290,10 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 };
                 if (followed.Ok) { MarkParentWakeRead(request, request.JobId); }
                 return followed;
+            case IpcProtocol.JobRelease:
+                var released = stop.Release(request.JobId ?? string.Empty);
+                if (released.Error is null && released.Job is not null) { MarkWakeRead(request, released.Job.JobId, released.Job.Status, released.Job.Revision); }
+                return Map(released);
             case IpcProtocol.JobStop:
                 var stopped = stop.Execute(request.JobId ?? string.Empty, request.Interrupt);
                 if (stopped.Error is null && stopped.Job is not null) { MarkWakeRead(request, stopped.Job.JobId, stopped.Job.Status, stopped.Job.Revision); }

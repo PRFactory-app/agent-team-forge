@@ -373,5 +373,9 @@
     return kind;
   }
 
-  globalThis.AtfLib = { parseMarkdown, safeHref, isSettled, connectorParts, threadChain, groupAgents, soundEvents, pickSound };
+  function canRelease(job) {
+    return job?.status === 'needs_reconciliation' && job.release_available === true;
+  }
+
+  globalThis.AtfLib = { parseMarkdown, safeHref, isSettled, connectorParts, threadChain, groupAgents, soundEvents, pickSound, canRelease };
 })();

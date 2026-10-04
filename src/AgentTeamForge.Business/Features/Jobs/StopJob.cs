@@ -14,7 +14,17 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
 
     public JobResult Execute(string jobId) => Execute(jobId, false);
 
-    public JobResult Execute(string jobId, bool interrupt)
+    /// <summary>Read-only capability; the release operation rechecks and never falls through to closing an agent.</summary>
+    internal static bool ReleaseAvailable(JobStore store, string jobId, string status) =>
+        status == JobStatus.NeedsReconciliation
+        && (store.NativeAttempt(jobId) is { Unresolved: true }
+            || store.NativeClaudeAttempt(jobId) is { State: "posting" or "posted" or "received" });
+
+    public JobResult Release(string jobId) => Execute(jobId, false, true);
+
+    public JobResult Execute(string jobId, bool interrupt) => Execute(jobId, interrupt, false);
+
+    JobResult Execute(string jobId, bool interrupt, bool releaseOnly)
     {
         if (string.IsNullOrWhiteSpace(jobId) || jobId.Length > 64)
         {
@@ -29,9 +39,13 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
                 return JobResult.Fail(JobErrors.NotFound, $"No job {jobId} for this principal/team.");
             }
             // A native Codex or Claude mailbox turn owns no process here; stopping releases its N5 fence.
-            if (!interrupt && releaseNative?.Invoke(current) == true)
+            if (!interrupt && (!releaseOnly || ReleaseAvailable(store, jobId, current.Status)) && releaseNative?.Invoke(current) == true)
             {
                 return JobResult.Ok(GetJob.ToView(store.GetJob(jobId)!), "native_released");
+            }
+            if (releaseOnly)
+            {
+                return JobResult.Fail(JobErrors.NativeReleaseUnavailable, "This job cannot be released without stopping its agent; refresh its status.");
             }
             if (current.Status == JobStatus.NeedsReconciliation)
             {

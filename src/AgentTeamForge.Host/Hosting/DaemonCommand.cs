@@ -267,7 +267,7 @@ public static class DaemonCommand
             return endpoint.Handle(request);
         }
         using var server = new IpcServer(state.Socket, credential, profile.Bound, limits, Handle, Log, endpoint.AfterReply,
-            request => request.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp or IpcProtocol.JobStop ? dispatcher.PauseClaims() : null);
+            request => request.Op is IpcProtocol.JobSubmit or IpcProtocol.JobFollowUp or IpcProtocol.JobStop or IpcProtocol.JobRelease ? dispatcher.PauseClaims() : null);
 
         using var lifetime = new CancellationTokenSource();
         using var sigterm = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; Log("stopping: SIGTERM"); lifetime.Cancel(); });

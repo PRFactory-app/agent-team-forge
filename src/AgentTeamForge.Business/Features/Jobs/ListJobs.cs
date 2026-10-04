@@ -51,6 +51,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
         var hasMore = rows.Count > limit;
         var jobs = rows.Take(limit).Select(r => new JobSummary(r.JobId, r.Status, r.ReasonCode, r.Attempts, r.AcceptedAt, r.UpdatedAt)
         {
+            ReleaseAvailable = StopJob.ReleaseAvailable(store, r.JobId, r.Status),
             Startup = StartupProgress.Read(store, r.JobId, r.Status, r.Backend, r.ReasonCode, interactiveLaunch),
             WorktreePath = r.WorktreePath,
             WorktreeBranch = r.WorktreeBranch,
@@ -95,6 +96,7 @@ public sealed record JobSummary(string JobId, string Status, string? ReasonCode,
     /// <summary>"background_task" while a running turn waits on its agent's background task; otherwise null.</summary>
     public string? Waiting => JobWaiting.From(Status, ReasonCode);
     public bool? AgentLive { get; init; }
+    public bool ReleaseAvailable { get; init; }
     public StartupProgress? Startup { get; init; }
     public string? Backend { get; init; }
     public string? Cwd { get; init; }

@@ -619,13 +619,13 @@
     const send = element('button', 'send-button', state.sending ? 'Sending…' : 'Send');
     send.type = 'submit';
     send.disabled = !canSend || !state.draft.trim() || state.sending || !!state.pending;
-    const stop = element('button', 'danger-action', (stopTarget || target)?.status === 'needs_reconciliation' ? 'Release' : 'Stop');
+    const stop = element('button', 'danger-action', AtfLib.canRelease(stopTarget || target) ? 'Release' : (stopTarget || target)?.status === 'needs_reconciliation' ? 'Stop agent' : 'Stop');
     stop.type = 'button';
     const stoppable = stopTarget || target;
     stop.disabled = !stoppable || (stoppable.status !== 'queued' && stoppable.status !== 'running' && stoppable.backend === 'fake');
     stop.addEventListener('click', () => {
       const chosen = stopTarget || targets.find(j => j.job_id === state.targetJobId);
-      if (chosen) stopJob(chosen.job_id, chosen.status, key);
+      if (chosen) stopJob(chosen.job_id, chosen.status, key, AtfLib.canRelease(chosen));
     });
     const retry = element('button', '', 'Retry same message');
     retry.type = 'button';
@@ -1390,7 +1390,7 @@
           const shared = sessionJobs.get(j.session_id) || 1;
           side.append(tokenSpan('tokens', '', j.session_tokens, ' tok', shared > 1 ? 'session total (shared by ' + shared + ' jobs)' : ''));
         }
-        if (j.status === 'needs_reconciliation') side.append(releaseButton(j, key));
+        if (AtfLib.canRelease(j)) side.append(releaseButton(j, key));
         side.append(element('span', 'elapsed', age(j.accepted_at)));
         if (j.status === 'running' && j.updated_at) side.append(element('span', 'beat', 'last update ' + age(j.updated_at) + ' ago'));
         card.append(open, side);
@@ -1801,12 +1801,12 @@
     return {
       job_id: id, status: s.status ?? d.status, reason_code: s.reason_code ?? d.reason_code,
       accepted_at: s.accepted_at, instruction: d.instruction, result: d.result, delivery: d.delivery,
-      haveDetail: jobDetails.has(id),
+      haveDetail: jobDetails.has(id), release_available: s.release_available ?? d.release_available,
     };
   }
 
   function reconciliationExplanation(job) {
-    if (['native_submission_unresolved', 'native_delivery_unresolved', 'native_claude_delivery_unresolved'].includes(job.reason_code)) return 'Delivery could not be confirmed; this session is blocked until you release the job.';
+    if (['native_submission_unresolved', 'native_delivery_unresolved', 'native_claude_delivery_unresolved'].includes(job.reason_code)) return AtfLib.canRelease(job) ? 'Delivery could not be confirmed; this session is blocked until you release the job.' : 'Delivery could not be confirmed; this session needs recovery.';
     if (job.reason_code === 'daemon_restart_uncertain') return 'The daemon restarted before it could confirm the turn ended; this session needs recovery.';
     if (job.reason_code === 'interactive_completion_unobserved') return 'The agent’s completion could not be confirmed; this session needs recovery.';
     return 'ATF could not confirm the turn ended safely; this session needs recovery.';
@@ -1815,7 +1815,7 @@
   function releaseButton(job, key) {
     const button = element('button', 'danger-action', 'Release');
     button.type = 'button';
-    button.addEventListener('click', () => stopJob(job.job_id, job.status, key));
+    button.addEventListener('click', () => stopJob(job.job_id, job.status, key, true));
     return button;
   }
 
@@ -1838,12 +1838,13 @@
 
   function updateBlock(b, t, index) {
     const sig = (name, value) => b.sigs[name] === value ? false : (b.sigs[name] = value, true);
-    if (sig('head', [t.status, t.reason_code, index].join('|'))) {
+    if (sig('head', [t.status, t.reason_code, t.release_available, index].join('|'))) {
       const tone = { running: 'ok', completed: '', cancelled: '', failed: 'bad', needs_reconciliation: 'bad' }[t.status] ?? 'warn';
       b.head.replaceChildren(element('span', '', 'job ' + t.job_id.slice(-8)), pill(statusText(t), tone));
       if (t.reason_code) b.head.append(element('span', '', t.reason_code));
       if (t.status === 'needs_reconciliation') {
-        b.head.append(element('span', '', reconciliationExplanation(t)), releaseButton(t));
+        b.head.append(element('span', '', reconciliationExplanation(t)));
+        if (AtfLib.canRelease(t)) b.head.append(releaseButton(t));
       }
       if (t.accepted_at) b.head.append(element('span', '', new Date(t.accepted_at).toLocaleString()));
     }
@@ -2077,7 +2078,7 @@
     $('interrupt').checked = state.interrupt;
     $('interrupt').disabled = toLead || n.status !== 'running' || busy;
     $('stop-job').hidden = $('stop-agent').hidden = toLead;
-    $('stop-job').textContent = n?.status === 'needs_reconciliation' ? 'Release' : 'Stop job';
+    $('stop-job').textContent = AtfLib.canRelease(n) ? 'Release' : n?.status === 'needs_reconciliation' ? 'Stop agent' : 'Stop job';
     $('stop-job').disabled = toLead || !['queued', 'running', 'needs_reconciliation'].includes(n.status);
     $('stop-agent').disabled = toLead || n.agent_live === false;
     const draft = $('draft');
@@ -2136,7 +2137,7 @@
     const stop = (agent) => {
       const n = composerContext()?.job;
       // stopJob picks job stop vs agent stop from the status; a settled status means "stop the agent".
-      if (n) stopJob(n.job_id, agent ? 'completed' : n.status, composerKey);
+      if (n) stopJob(n.job_id, agent ? 'completed' : n.status, composerKey, !agent && AtfLib.canRelease(n));
     };
     $('stop-job').addEventListener('click', () => stop(false));
     $('stop-agent').addEventListener('click', () => stop(true));
@@ -2253,11 +2254,11 @@
     n => 'Hide ' + plural(n, 'finished job') + ' from the console? Nothing is deleted; a follow-up brings a chain back.',
     c => c ? 'Archived ' + plural(c.archived, 'job') + '.' : 'No finished jobs to clear.');
 
-  async function stopJob(jobId, status, cardKey) {
+  async function stopJob(jobId, status, cardKey, release = false) {
     const active = status === 'queued' || status === 'running' || status === 'needs_reconciliation';
-    const action = status === 'needs_reconciliation' ? 'Release job ' : active ? 'Stop job ' : 'Stop agent for job ';
+    const action = release ? 'Release job ' : status === 'needs_reconciliation' || !active ? 'Stop agent for job ' : 'Stop job ';
     if (!window.confirm(action + jobId + '?')) return;
-    const r = await api('POST', '/api/jobs/' + encodeURIComponent(jobId) + (active ? '/stop' : '/stop-agent'));
+    const r = await api('POST', '/api/jobs/' + encodeURIComponent(jobId) + (release ? '/release' : active ? '/stop' : '/stop-agent'));
     if (!r) return;
     const message = r.lost || r.error === 'outcome_unknown'
       ? 'Stop outcome unknown; check the job status before trying again.'

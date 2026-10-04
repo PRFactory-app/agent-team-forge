@@ -45,6 +45,7 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal, bool intera
     JobView View(JobRecord job) => ToView(job) with
     {
         Instruction = job.Instruction,
+        ReleaseAvailable = StopJob.ReleaseAvailable(store, job.JobId, job.Status),
         ReasonCode = job.Status == JobStatus.Queued && job.ParentJobId is { } parent && store.IsSessionFenced(parent)
             ? "parent_needs_reconciliation" : job.ReasonCode,
         Startup = StartupProgress.Read(store, job.JobId, job.Status, job.Backend, job.ReasonCode, interactiveLaunch),
