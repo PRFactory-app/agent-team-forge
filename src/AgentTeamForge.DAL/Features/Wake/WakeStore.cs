@@ -10,6 +10,21 @@ public sealed record WakeSnapshot(WakeRegistration Target, int Unread, long Late
 /// <summary>Committed wake routing and unread state. A posted notice is only a doorbell, never a read receipt.</summary>
 public sealed class WakeStore(JobDatabase database)
 {
+    // Uses job alias j and inbox message alias m. Retention must preserve the same evidence the wake scan uses.
+    internal const string CompletionReportPredicate = """
+        m.team_id=j.lead_session_id AND m.recipient='lead'
+        -- A report the lead consumed before the job finished cannot announce the completion.
+        AND (m.read_at IS NULL OR m.read_at >= j.updated_at)
+        AND m.created_at >= (SELECT max(r.started_at) FROM runs r WHERE r.job_id=j.job_id)
+        AND m.created_at <= j.updated_at
+        AND m.sender IN (
+            WITH RECURSIVE ancestors(id,parent) AS (
+                SELECT j.job_id,j.parent_job_id
+                UNION ALL
+                SELECT p.job_id,p.parent_job_id FROM jobs p JOIN ancestors a ON p.job_id=a.parent
+            ) SELECT 'child-'||id FROM ancestors)
+        """;
+
     public WakeRegistration Register(string key, string kind, string address, string secret, string home)
     {
         using var connection = database.OpenConnection();
@@ -179,7 +194,7 @@ public sealed class WakeStore(JobDatabase database)
     {
         using var connection = database.OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = $"""
             SELECT t.target_key, t.generation, t.kind, t.address, t.secret, t.home,
                    count(DISTINCT w.job_id), coalesce(max(e.seq),0), t.notified_seq, t.last_success,
                    sum(CASE WHEN e.seq <= t.notified_seq THEN 1 ELSE 0 END)
@@ -194,17 +209,7 @@ public sealed class WakeStore(JobDatabase database)
               -- Keep failures/attention notices and unread job state independent of that report.
               AND (j.status!='completed' OR NOT EXISTS (
                   SELECT 1 FROM external_messages m
-                  WHERE m.team_id=j.lead_session_id AND m.recipient='lead'
-                    -- A report the lead consumed before the job finished cannot announce the completion.
-                    AND (m.read_at IS NULL OR m.read_at >= j.updated_at)
-                    AND m.created_at >= (SELECT max(r.started_at) FROM runs r WHERE r.job_id=j.job_id)
-                    AND m.created_at <= j.updated_at
-                    AND m.sender IN (
-                        WITH RECURSIVE ancestors(id,parent) AS (
-                            SELECT j.job_id,j.parent_job_id
-                            UNION ALL
-                            SELECT p.job_id,p.parent_job_id FROM jobs p JOIN ancestors a ON p.job_id=a.parent
-                        ) SELECT 'child-'||id FROM ancestors)))
+                  WHERE {CompletionReportPredicate}))
             GROUP BY t.target_key;
             """;
         using var reader = command.ExecuteReader();

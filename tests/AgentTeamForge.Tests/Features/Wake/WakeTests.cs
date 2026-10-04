@@ -219,6 +219,85 @@ public sealed class WakeTests
         Assert.Empty(wake.Pending());
     }
 
+    static (WakeStore Wake, ExternalMemberStore Members, LeadSessionInfo Lead, WakeRegistration Target, RunRef Run)
+        CommittedReport(JobFixture fixture)
+    {
+        var wake = new WakeStore(fixture.Database);
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/report-order", "report-order");
+        var target = wake.Register("codex:report-order", "codex", "thread", "", "/tmp");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        var job = fixture.Accept().Execute(new SubmitJobRequest("report-order", "work", null, false)
+        { LeadSessionId = lead.SessionId, WakeKey = target.Key, WakeGeneration = target.Generation }).Job!;
+        var members = new ExternalMemberStore(fixture.Database);
+        Assert.True(members.EnsureMcpTeam(lead.SessionId, lead.Workspace, DateTimeOffset.UtcNow));
+        var claim = fixture.Store.BeginNextAttempt()!;
+        Assert.True(members.SendToLead(lead.SessionId, "child-" + job.JobId, "report", DateTimeOffset.UtcNow, null));
+        return (wake, members, lead, target, new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation));
+    }
+
+    [Fact]
+    public async Task Read_waiting_for_completion_transaction_does_not_duplicate_the_report_notice()
+    {
+        using var fixture = new JobFixture();
+        var (wake, members, lead, _, run) = CommittedReport(fixture);
+        var poster = new FakePoster();
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        using var writer = fixture.Database.OpenConnection();
+        using var tx = writer.BeginTransaction(deferred: false);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reading = Task.Run(() =>
+        {
+            started.SetResult();
+            return members.ReadLeadCompat(lead.SessionId, null, 10, () => DateTimeOffset.UtcNow, null);
+        }, TestContext.Current.CancellationToken);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.False(reading.IsCompleted);
+        // Commit the completion while the read is waiting for this write transaction.
+        using var complete = writer.CreateCommand();
+        complete.Transaction = tx;
+        complete.CommandText = """
+            UPDATE jobs SET status='completed',updated_at=$now WHERE job_id=$id;
+            INSERT INTO events(job_id,kind,created_at) VALUES ($id,'completed',$now);
+            """;
+        complete.Parameters.AddWithValue("$id", run.JobId);
+        complete.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        complete.ExecuteNonQuery();
+        tx.Commit();
+        Assert.Single((await reading.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken))!.Messages);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(wake.Pending());
+        Assert.Single(poster.Attempts);
+    }
+
+    [Fact]
+    public async Task Retention_preserves_report_evidence_until_the_unread_job_is_retired()
+    {
+        using var fixture = new JobFixture();
+        var (wake, members, lead, target, run) = CommittedReport(fixture);
+        var poster = new FakePoster();
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.True(fixture.Store.Complete(run, "result"));
+        members.ReadLeadCompat(lead.SessionId, null, 10, () => DateTimeOffset.UtcNow, null);
+        Assert.Empty(wake.Pending());
+        var cutoff = DateTimeOffset.UtcNow.AddDays(40);
+        var jobs = new PruneJobs(fixture.Database);
+        Assert.Empty(jobs.Execute(cutoff, dryRun: false));
+        Assert.Equal(0, members.Prune(cutoff, dryRun: true));
+        Assert.Equal(0, members.Prune(cutoff, dryRun: false));
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(wake.Pending());
+        Assert.Single(poster.Attempts);
+
+        // Reading the job retires its pin, so neither the job nor report is kept indefinitely.
+        wake.MarkRead(run.JobId, JobStatus.Completed, target.Key, target.Generation);
+        Assert.Equal(run.JobId, Assert.Single(jobs.Execute(cutoff, dryRun: false)));
+        Assert.Equal(1, members.Prune(cutoff, dryRun: true));
+        Assert.Equal(1, members.Prune(cutoff, dryRun: false));
+    }
+
     [Fact]
     public async Task An_earlier_turn_report_does_not_suppress_completion()
     {

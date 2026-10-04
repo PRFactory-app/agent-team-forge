@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AgentTeamForge.DAL.Sqlite;
+using AgentTeamForge.DAL.Features.Wake;
 using Microsoft.Data.Sqlite;
 
 namespace AgentTeamForge.DAL.Features.External;
@@ -557,7 +558,7 @@ public sealed class ExternalMemberStore(JobDatabase database)
         return inbox;
     }
 
-    public ExternalInbox? ReadLeadCompat(string teamId, long? sinceSeq, int limit, DateTimeOffset now, string? fromAgent, int? maxChars = null)
+    public ExternalInbox? ReadLeadCompat(string teamId, long? sinceSeq, int limit, Func<DateTimeOffset> clock, string? fromAgent, int? maxChars = null)
     {
         using var db = database.OpenConnection();
         using var tx = db.BeginTransaction(deferred: false);
@@ -570,7 +571,9 @@ public sealed class ExternalMemberStore(JobDatabase database)
             return null;
         }
 
-        var inbox = ReadCompat(db, tx, teamId, "lead", sinceSeq, limit, now, fromAgent, maxChars, leadGlobalCursor: true);
+        // Completion timestamps are committed under the same SQLite write lock. Capture the read time
+        // after acquiring it so a read blocked behind completion is ordered after that completion.
+        var inbox = ReadCompat(db, tx, teamId, "lead", sinceSeq, limit, clock(), fromAgent, maxChars, leadGlobalCursor: true);
         tx.Commit();
         return inbox;
     }
@@ -917,9 +920,14 @@ public sealed class ExternalMemberStore(JobDatabase database)
         using var tx = db.BeginTransaction(deferred: false);
         using var command = db.CreateCommand();
         command.Transaction = tx;
-        command.CommandText = dryRun
-            ? "SELECT count(*) FROM external_messages WHERE created_at<$cutoff AND read_at IS NOT NULL"
-            : "DELETE FROM external_messages WHERE created_at<$cutoff AND read_at IS NOT NULL";
+        // An unread job pins the report that suppresses its redundant completion doorbell.
+        // Both pruning modes use the same evidence predicate as the wake scan.
+        command.CommandText = $"""
+            {(dryRun ? "SELECT count(*) FROM" : "DELETE FROM")} external_messages AS m
+            WHERE m.created_at<$cutoff AND m.read_at IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM jobs j JOIN wake_jobs w ON w.job_id=j.job_id AND w.read_at IS NULL
+                WHERE j.status='completed' AND {WakeStore.CompletionReportPredicate})
+            """;
         command.Parameters.AddWithValue("$cutoff", cutoff.ToString("O"));
         var count = dryRun ? Convert.ToInt32(command.ExecuteScalar()) : command.ExecuteNonQuery();
         if (!dryRun)
