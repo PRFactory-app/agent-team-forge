@@ -113,11 +113,11 @@ sealed class ChainHarness : IDisposable
         Server.MultiRepoSupported = true;
     }
 
-    public PRFactoryWorkItems Adapter(bool baseWip = false) => new(ChainServer.Url,
+    public PRFactoryWorkItems Adapter(bool baseWip = false, Func<SubmitJobRequest, JobResult>? submit = null) => new(ChainServer.Url,
         Server.Item.RepositoryId is { } repositoryId
             ? SecondaryId is { } secondary ? [new RepositoryMapping(repositoryId, Repo, ExternalMembers), new RepositoryMapping(secondary, SecondaryRepo!)]
                 : [new RepositoryMapping(repositoryId, Repo, ExternalMembers)] : [], Teams, Server.Client(),
-        Accept.Execute, Store.GetJob, () => { }, log: Logs.Add, externalTeam: External, stopJob: Stop.Execute, followUp: FollowUp.Execute,
+        submit ?? Accept.Execute, Store.GetJob, () => { }, log: Logs.Add, externalTeam: External, stopJob: Stop.Execute, followUp: FollowUp.Execute,
         authority: Authority, workspaces: new PRFactoryWorkspace(Workspaces), workspaceRoot: WorkspaceRoot, accounts: Accounts,
         publications: new PRFactoryPublicationStore(Database),
         interaction: new PRFactoryInteraction(HumanWaits, Teams, Store, FollowUp.Execute), humanWaits: HumanWaits, allowRepoLess: AllowRepoLess,

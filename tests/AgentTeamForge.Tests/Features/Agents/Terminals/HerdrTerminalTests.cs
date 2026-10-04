@@ -1940,7 +1940,14 @@ public class HerdrTerminalTests
     public async Task Prompt_waits_for_stable_ready_state_before_sending(InteractiveAgentKind kind)
     {
         using var state = new AgentTeamForge.Tests.Support.TempStateDir();
-        var fake = new FakeHerdr { BootstrapFromTab = true, AgentStatuses = new Queue<string>(["unknown", "idle", "working", "done"]) };
+        long? readySince = null;
+        var fake = new FakeHerdr
+        {
+            BootstrapFromTab = true,
+            AgentStatuses = new Queue<string>(["unknown", "idle", "working", "done"]),
+            OnAgentStatus = status => readySince = status is "idle" or "done"
+                ? readySince ?? Stopwatch.GetTimestamp() : null,
+        };
         var control = new HerdrAgentControl(Terminal(fake));
         var phases = new List<string>();
         var launch = new InteractiveLaunch(kind, "atftest", state.Path, "resumed-native", state.Path, Path.Combine(state.Path, "bootstrap"))
@@ -1951,7 +1958,11 @@ public class HerdrTerminalTests
         Assert.Equal(kind == InteractiveAgentKind.Claude,
             fake.Calls.Single(c => c.Args is ["tab", "create", ..]).Args.Contains("CLAUDE_CODE_SANDBOXED=1"));
         var promptIndex = fake.Calls.FindIndex(c => c.Args is ["--session", _, "agent", "prompt", ..]);
-        Assert.True(fake.Calls.Take(promptIndex).Count(c => c.Args is ["agent", "get", ..]) >= 8);
+        // Scheduling may stretch a poll past one second. Check the settled-ready condition,
+        // including its reset on "working", rather than assuming four polls per second.
+        Assert.Empty(fake.AgentStatuses);
+        Assert.NotNull(readySince);
+        Assert.True(Stopwatch.GetElapsedTime(readySince.Value, fake.Calls[promptIndex].Timestamp) >= TimeSpan.FromSeconds(1));
         Assert.Single(fake.Calls, c => c.Args is ["--session", _, "agent", "prompt", ..]);
     }
 
@@ -2336,7 +2347,10 @@ public class HerdrTerminalTests
         ShellReplaced,
     }
 
-    private sealed record Call(string[] Args, IDictionary<string, string?> Env);
+    private sealed record Call(string[] Args, IDictionary<string, string?> Env)
+    {
+        public long Timestamp { get; } = Stopwatch.GetTimestamp();
+    }
 
     /// <summary>Scripted Herdr CLI and /proc view; records every command and never runs a process.</summary>
     private sealed class FakeHerdr : IHerdrProcessRunner
@@ -2477,13 +2491,20 @@ public class HerdrTerminalTests
                 ["agent", "start", ..] when RunOnAgentStart() => Err("unreachable"),
                 ["agent", "start", ..] => AgentStartFails ? Err("agent_not_ready") : AgentStartBusy-- > 0 ? Err("agent_pane_busy") : Ok("{}"),
                 ["agent", "read", ..] => Ok((_prompted && ScreenAfterPrompt is { } prompted ? prompted : Screen) ?? "› Ask Codex\n? for shortcuts\n❯ Try a task\nbypass permissions on\n──────\n──────\n/tmp/work"),
-                ["agent", "get", ..] => Ok("{\"result\":{\"agent\":{\"status\":\"" + (AgentStatuses.TryDequeue(out var status) ? status : "idle") + "\"}}}"),
+                ["agent", "get", ..] => AgentStatus(),
                 ["--session", _, "agent", "prompt", ..] => (_prompted = true) && PromptResponse is { } response ? response : Ok("""{"result":{"type":"agent_prompted"}}"""),
                 _ => Err("unexpected " + string.Join(' ', args)),
             };
         }
 
         bool RunOnAgentStart() { OnAgentStart?.Invoke(); return false; }
+
+        CapturedProcess AgentStatus()
+        {
+            var status = AgentStatuses.TryDequeue(out var next) ? next : "idle";
+            OnAgentStatus?.Invoke(status);
+            return Ok("{\"result\":{\"agent\":{\"status\":\"" + status + "\"}}}");
+        }
 
         CapturedProcess RunShellProof()
         {
@@ -2517,6 +2538,7 @@ public class HerdrTerminalTests
         bool _prompted;
 
         public Queue<string> AgentStatuses { get; init; } = new();
+        public Action<string>? OnAgentStatus { get; init; }
 
         string Label() => Calls.Where(c => c.Args is ["workspace", "create", ..]).Select(c => c.Args[Array.IndexOf(c.Args, "--label") + 1]).LastOrDefault() ?? "";
 
