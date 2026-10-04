@@ -11,11 +11,13 @@ tabs, or in a small web console.
 
 ## Watch the 90-second intro
 
-[![Watch the AgentTeamForge intro: the lead and Herdr agents side by side](docs/media/atf-intro-poster.png)](docs/media/atf-intro.mp4)
+https://github.com/user-attachments/assets/c52c29f2-4bf5-422e-b631-0110f7f55f22
 
 See the lead start an agent in Herdr and get its result back.
 
-**Free forever.** Need tickets, shared workflows and teamwork? [PRFactory](https://app.prfactory.dev) is the optional paid companion.
+**Free forever.** Need tickets, shared workf
+
+lows and teamwork? [PRFactory](https://app.prfactory.dev) is the optional paid companion.
 
 ![AgentTeamForge web console: one lead session with its agents running, queued, finished and needing attention](docs/images/web-console.png)
 
