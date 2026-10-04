@@ -619,7 +619,7 @@
     const send = element('button', 'send-button', state.sending ? 'Sending…' : 'Send');
     send.type = 'submit';
     send.disabled = !canSend || !state.draft.trim() || state.sending || !!state.pending;
-    const stop = element('button', 'danger-action', 'Stop');
+    const stop = element('button', 'danger-action', (stopTarget || target)?.status === 'needs_reconciliation' ? 'Release' : 'Stop');
     stop.type = 'button';
     const stoppable = stopTarget || target;
     stop.disabled = !stoppable || (stoppable.status !== 'queued' && stoppable.status !== 'running' && stoppable.backend === 'fake');
@@ -969,7 +969,7 @@
   }
 
   function showDetail(job, meta, output) {
-    meta.textContent = [job.status, job.reason_code, job.backend, job.session_id,
+    meta.textContent = [job.status, job.reason_code, job.status === 'needs_reconciliation' ? reconciliationExplanation(job) : null, job.backend, job.session_id,
       job.parent_job_id ? 'parent ' + job.parent_job_id : null,
       job.cwd, 'attempts ' + job.attempts].filter(Boolean).join(' · ');
     // Render once per result: polls with an unchanged result keep the DOM (and the Raw toggle).
@@ -1379,6 +1379,9 @@
           open.append(element('span', 'card-activity', 'Startup: ' + startup + ' · ' + j.startup.elapsed_seconds + 's'));
           if (j.startup.hint) open.append(element('span', 'card-activity', j.startup.hint));
         }
+        if (j.status === 'needs_reconciliation') {
+          open.append(element('span', 'card-activity', (j.reason_code || 'unknown_reason') + ' · ' + reconciliationExplanation(j)));
+        }
         if (preview) open.append(element('span', 'card-activity', '› ' + preview));
         open.append(cardMeta);
         const side = element('div', 'card-side');
@@ -1386,6 +1389,7 @@
           const shared = sessionJobs.get(j.session_id) || 1;
           side.append(tokenSpan('tokens', '', j.session_tokens, ' tok', shared > 1 ? 'session total (shared by ' + shared + ' jobs)' : ''));
         }
+        if (j.status === 'needs_reconciliation') side.append(releaseButton(j, key));
         side.append(element('span', 'elapsed', age(j.accepted_at)));
         if (j.status === 'running' && j.updated_at) side.append(element('span', 'beat', 'last update ' + age(j.updated_at) + ' ago'));
         card.append(open, side);
@@ -1800,6 +1804,20 @@
     };
   }
 
+  function reconciliationExplanation(job) {
+    if (['native_submission_unresolved', 'native_delivery_unresolved', 'native_claude_delivery_unresolved'].includes(job.reason_code)) return 'Delivery could not be confirmed; this session is blocked until you release the job.';
+    if (job.reason_code === 'daemon_restart_uncertain') return 'The daemon restarted before it could confirm the turn ended; this session needs recovery.';
+    if (job.reason_code === 'interactive_completion_unobserved') return 'The agent’s completion could not be confirmed; this session needs recovery.';
+    return 'ATF could not confirm the turn ended safely; this session needs recovery.';
+  }
+
+  function releaseButton(job, key) {
+    const button = element('button', 'danger-action', 'Release');
+    button.type = 'button';
+    button.addEventListener('click', () => stopJob(job.job_id, job.status, key));
+    return button;
+  }
+
   const deliveryLabel = { pending: 'delivery pending', unconfirmed: 'delivery unconfirmed', acknowledged: 'acknowledged', result_observed: 'result seen' };
 
   function buildBlock(id, who) {
@@ -1823,6 +1841,9 @@
       const tone = { running: 'ok', completed: '', cancelled: '', failed: 'bad', needs_reconciliation: 'bad' }[t.status] ?? 'warn';
       b.head.replaceChildren(element('span', '', 'job ' + t.job_id.slice(-8)), pill(statusText(t), tone));
       if (t.reason_code) b.head.append(element('span', '', t.reason_code));
+      if (t.status === 'needs_reconciliation') {
+        b.head.append(element('span', '', reconciliationExplanation(t)), releaseButton(t));
+      }
       if (t.accepted_at) b.head.append(element('span', '', new Date(t.accepted_at).toLocaleString()));
     }
     const instruction = t.instruction || '';
@@ -2055,6 +2076,7 @@
     $('interrupt').checked = state.interrupt;
     $('interrupt').disabled = toLead || n.status !== 'running' || busy;
     $('stop-job').hidden = $('stop-agent').hidden = toLead;
+    $('stop-job').textContent = n?.status === 'needs_reconciliation' ? 'Release' : 'Stop job';
     $('stop-job').disabled = toLead || !['queued', 'running', 'needs_reconciliation'].includes(n.status);
     $('stop-agent').disabled = toLead || n.agent_live === false;
     const draft = $('draft');
@@ -2232,7 +2254,7 @@
 
   async function stopJob(jobId, status, cardKey) {
     const active = status === 'queued' || status === 'running' || status === 'needs_reconciliation';
-    const action = active ? 'Stop job ' : 'Stop agent for job ';
+    const action = status === 'needs_reconciliation' ? 'Release job ' : active ? 'Stop job ' : 'Stop agent for job ';
     if (!window.confirm(action + jobId + '?')) return;
     const r = await api('POST', '/api/jobs/' + encodeURIComponent(jobId) + (active ? '/stop' : '/stop-agent'));
     if (!r) return;

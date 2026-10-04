@@ -87,7 +87,7 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
                 if (!deferred && (parent.SessionId is null || parent.Status is not (JobStatus.Completed or JobStatus.Cancelled or JobStatus.Failed or JobStatus.NeedsReconciliation)
                     && !interruptRunning))
                 {
-                    return JobResult.Fail(JobErrors.ParentNotReady, JobErrors.ParentNotReadyDetail(store, parent.JobId));
+                    return JobErrors.ParentNotReadyResult(store, parent.JobId);
                 }
 
                 if (interruptRunning && cancelRunning is null)
@@ -114,7 +114,7 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
                 }
                 if (store.IsSessionFenced(parent.JobId))
                 {
-                    return JobResult.Fail(JobErrors.ParentNotReady, JobErrors.ParentNotReadyDetail(store, parent.JobId));
+                    return JobErrors.ParentNotReadyResult(store, parent.JobId);
                 }
                 // A needs_reconciliation row can be committed before its child exits. Only
                 // a terminal run with no live marked process proves this session is idle.
@@ -126,7 +126,7 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
                             || OrphanedBackendProcess.HasMarkedProcess([.. runs.Select(r => r.Correlation)],
                                 [.. runs.Where(r => r.BackendPid.HasValue).Select(r => r.BackendPid!.Value)], readProcessEnvironment))))
                 {
-                    return JobResult.Fail(JobErrors.ParentNotReady, JobErrors.ParentNotReadyDetail(store, parent.JobId));
+                    return JobErrors.ParentNotReadyResult(store, parent.JobId);
                 }
 
             }

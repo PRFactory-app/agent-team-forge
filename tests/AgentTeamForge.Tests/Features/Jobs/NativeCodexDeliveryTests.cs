@@ -4,6 +4,11 @@ using AgentTeamForge.Business.Features.Wake;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Tests.Support;
+using AgentTeamForge.Host.Features.Jobs;
+using AgentTeamForge.Host.Features.WebConsole;
+using AgentTeamForge.Host.Transport;
+using System.Net.Http.Headers;
+using System.Text.Json;
 
 namespace AgentTeamForge.Tests.Features.Jobs;
 
@@ -185,7 +190,7 @@ public sealed class NativeCodexDeliveryTests
     [Fact]
     public async Task Stop_releases_an_unresolved_native_fence_without_resending()
     {
-        var (fixture, catalog, parent, _) = await CompletedParent("thread-stuck");
+        var (fixture, catalog, parent, backend) = await CompletedParent("thread-stuck");
         using var _fixture = fixture;
         var follow = new FollowUpJob(fixture.Store, JobFixture.Operator, Accept(fixture, catalog));
         var child = follow.Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
@@ -196,16 +201,36 @@ public sealed class NativeCodexDeliveryTests
         };
         await dispatcher.RunAttemptAsync(fixture.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home")!, CancellationToken.None);
         Assert.Equal(JobStatus.NeedsReconciliation, fixture.Store.GetJob(child.JobId)!.Status);
-        Assert.Equal(JobErrors.ParentNotReady, follow.Execute(new FollowUpRequest(parent.JobId, "retry", "retry")).Error);
+        var refused = follow.Execute(new FollowUpRequest(parent.JobId, "retry", "retry"));
+        Assert.Equal(JobErrors.ParentNotReady, refused.Error);
+        var endpoint = new JobsEndpoint(Accept(fixture, catalog), fixture.Get(), follow,
+            fixture.List(), new StopJob(fixture.Store, JobFixture.Operator, dispatcher.CancelRunning, releaseNative: dispatcher.ReleaseNative),
+            DurabilityCheckpoints.None, () => { });
+        var response = endpoint.Handle(new IpcRequest { Op = IpcProtocol.JobFollowUp, JobId = parent.JobId, Instruction = "retry", IdempotencyKey = "retry" });
+        var mcp = JobsMcpBridge.ToolResult(response);
+        Assert.True(mcp.IsError);
+        using var wire = JsonDocument.Parse(mcp.StructuredContent!.Value.GetRawText());
+        Assert.Equal(child.JobId, wire.RootElement.GetProperty("fencing_job_id").GetString());
+        var recovery = wire.RootElement.GetProperty("recovery");
+        Assert.Equal("stop_job", recovery.GetProperty("tool").GetString());
+        Assert.Equal(child.JobId, recovery.GetProperty("arguments").GetProperty("job_id").GetString());
 
-        var stop = new StopJob(fixture.Store, JobFixture.Operator, dispatcher.CancelRunning, releaseNative: dispatcher.ReleaseNative);
-        Assert.Equal("native_released", stop.Execute(child.JobId).Outcome);
+        var token = WebConsoleServer.NewToken();
+        await using var console = await WebConsoleServer.StartAsync(0, token, (request, _) => Task.FromResult(endpoint.Handle(request)));
+        using var http = new HttpClient();
+        using var release = new HttpRequestMessage(HttpMethod.Post, console.Url + "api/jobs/" + child.JobId + "/stop");
+        release.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        release.Headers.Add("Origin", console.Url.TrimEnd('/'));
+        using var released = await http.SendAsync(release, TestContext.Current.CancellationToken);
+        released.EnsureSuccessStatusCode();
+        Assert.Equal("stopped", fixture.Store.GetJob(child.JobId)!.ReasonCode);
         Assert.Equal(JobStatus.Cancelled, fixture.Store.GetJob(child.JobId)!.Status);
         Assert.False(fixture.Store.IsSessionFenced(child.JobId));
         Assert.Equal("released", fixture.Store.NativeAttempt(child.JobId)!.State);
         Assert.Empty(fixture.Store.UnresolvedNativeAttempts());
         Assert.NotNull(follow.Execute(new FollowUpRequest(parent.JobId, "retry", "retry")).Job);
         Assert.Equal(1, submits);
+        Assert.Equal(0, backend.Terminations);
     }
 
     [Fact]
