@@ -95,7 +95,7 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
         Process? process;
         try
         {
-            var executable = OperatingSystem.IsWindows() ? WtTabControl.WindowsAgentBinary("codex") : "codex";
+            var executable = QueueExecutable(ToolExecutable.Resolve);
             var start = new ProcessStartInfo(executable)
             {
                 UseShellExecute = false,
@@ -154,6 +154,10 @@ public sealed partial class CodexQueueWake(Func<WakeRegistration, bool>? verify 
             }
         }
     }
+
+    // Queue helpers need the same wrapper bypass as job launches on Linux/macOS.
+    internal static string QueueExecutable(Func<string, string> resolve) =>
+        OperatingSystem.IsWindows() ? WtTabControl.WindowsAgentBinary("codex") : resolve("codex");
 
     /// <summary>
     /// codex 0.157 prints "Queued message &lt;id&gt; for thread &lt;thread&gt;."; a JSON submission_id is also accepted.
