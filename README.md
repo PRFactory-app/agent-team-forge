@@ -9,6 +9,12 @@ results are ready. Close the lead, lose the terminal or restart your
 session — the team keeps working. Watch the agents live in Herdr or terminal
 tabs, or in a small web console.
 
+## Watch the 90-second intro
+
+[![Watch the AgentTeamForge intro: the lead and Herdr agents side by side](docs/media/atf-intro-poster.png)](docs/media/atf-intro.mp4)
+
+See the lead start an agent in Herdr and get its result back.
+
 **Free forever.** Need tickets, shared workflows and teamwork? [PRFactory](https://app.prfactory.dev) is the optional paid companion.
 
 ![AgentTeamForge web console: one lead session with its agents running, queued, finished and needing attention](docs/images/web-console.png)
