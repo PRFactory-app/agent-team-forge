@@ -894,18 +894,21 @@ public sealed class HerdrInteractiveBackendTests
     [Fact]
     public async Task HerdrControlFaultsBecomeEvidenceNotDispatcherFaults()
     {
+        // Wait for terminal evidence, not a polling schedule: a loaded runner may
+        // delay the consecutive failed probes beyond Collect's ordinary two-second bound.
+        var cancellationToken = TestContext.Current.CancellationToken;
         var failedPrompt = new HerdrInteractiveBackend(new FakeControl { FailPrompt = true }, new FakeReader(null), InteractiveAgentKind.Codex, Path.GetTempPath(), startupTimeout: TimeSpan.FromMilliseconds(20));
         await using (var run = failedPrompt.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() }))
         {
             await run.DeliverAsync(CancellationToken.None);
-            Assert.Equal([new BackendEvidence.ProtocolError("interactive_delivery_not_confirmed")], await Collect(run));
+            Assert.Equal([new BackendEvidence.ProtocolError("interactive_delivery_not_confirmed")], await Collect(run, cancellationToken));
         }
 
         var failedStatus = new HerdrInteractiveBackend(new FakeControl { FailStatus = true }, new FakeReader(null), InteractiveAgentKind.Codex, Path.GetTempPath());
         await using (var run = failedStatus.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() }))
         {
             await run.DeliverAsync(CancellationToken.None);
-            var failure = Assert.Single(await Collect(run), evidence => evidence is BackendEvidence.ProtocolError { Code: "interactive_control_failed" });
+            var failure = Assert.Single(await Collect(run, cancellationToken), evidence => evidence is BackendEvidence.ProtocolError { Code: "interactive_control_failed" });
             Assert.Contains("herdr agent get exited 1: io", ((BackendEvidence.ProtocolError)failure).Details);
         }
     }
@@ -1135,9 +1138,14 @@ public sealed class HerdrInteractiveBackendTests
 
     static async Task<List<BackendEvidence>> Collect(IBackendRun run, TimeSpan? timeout = null)
     {
-        var result = new List<BackendEvidence>();
         using var deadline = new CancellationTokenSource(timeout ?? TimeSpan.FromSeconds(2));
-        await foreach (var evidence in run.ReadEvidenceAsync(deadline.Token))
+        return await Collect(run, deadline.Token);
+    }
+
+    static async Task<List<BackendEvidence>> Collect(IBackendRun run, CancellationToken cancellationToken)
+    {
+        var result = new List<BackendEvidence>();
+        await foreach (var evidence in run.ReadEvidenceAsync(cancellationToken))
         {
             result.Add(evidence);
         }
