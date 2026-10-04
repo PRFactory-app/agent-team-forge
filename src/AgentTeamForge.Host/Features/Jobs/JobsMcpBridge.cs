@@ -466,9 +466,10 @@ public static class JobsMcpBridge
         return 0;
     }
 
-    static CallToolResult ToolResult(IpcResponse response) => new()
+    internal static CallToolResult ToolResult(IpcResponse response) => new()
     {
         IsError = !response.Ok,
+        StructuredContent = response.Recovery is null ? null : JsonSerializer.SerializeToElement(response.ForMcp(), IpcJson.Default.IpcResponse),
         Content = [new TextContentBlock { Text = JsonSerializer.Serialize(response.ForMcp(), IpcJson.Default.IpcResponse) }],
     };
 

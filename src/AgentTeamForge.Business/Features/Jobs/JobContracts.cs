@@ -75,6 +75,7 @@ public static class JobErrors
     public const string DaemonUnhealthy = "daemon_unhealthy";
     public const string BackendUnavailable = "backend_unavailable";
     public const string OwnershipNotProven = "owned_agent_not_verified";
+    public const string NativeReleaseUnavailable = "native_release_unavailable";
     public const string ParentNotReady = "parent_not_ready";
     public const string SessionExpired = "session_expired";
     public const string CwdNotGitRepo = "cwd_not_git_repo";
@@ -84,13 +85,15 @@ public static class JobErrors
     public static string FromStorage(StorageException ex) => ex.Failure == StorageFailure.Busy ? StorageBusy : StorageUnavailable;
 
     /// <summary>Names the job blocking a follow-up: the session's fencing peer if any, else the parent itself.</summary>
-    public static string ParentNotReadyDetail(JobStore store, string parentJobId)
+    public static JobResult ParentNotReadyResult(JobStore store, string parentJobId)
     {
-        if (store.FencingPeer(parentJobId) is { } peer)
-        {
-            return $"Session fenced by {peer.JobId} ({peer.Status}{(peer.ReasonCode is null ? "" : ": " + peer.ReasonCode)}); stop_job {peer.JobId}, then retry.";
-        }
-        return $"Parent {parentJobId} is not idle; wait for it to finish or stop_job {parentJobId}, then retry.";
+        var peer = store.FencingPeer(parentJobId);
+        var jobId = peer?.JobId ?? parentJobId;
+        var recovery = new JobRecovery("stop_job", new(jobId));
+        var detail = peer is { } fenced
+            ? $"Session fenced by {jobId} ({fenced.Status}{(fenced.ReasonCode is null ? "" : ": " + fenced.ReasonCode)}); stop_job({{\"job_id\":\"{jobId}\"}}), then retry."
+            : $"Parent {parentJobId} is not idle; wait for it to finish or stop_job({{\"job_id\":\"{jobId}\"}}), then retry.";
+        return JobResult.Fail(ParentNotReady, detail) with { FencingJobId = peer?.JobId, Recovery = recovery };
     }
 
     public static string StorageDetail(StorageException ex) => ex.Failure == StorageFailure.Busy ? "Database busy; retry." : "Job database unavailable.";
@@ -114,6 +117,7 @@ public sealed record JobView(string JobId, string Status, string? Result, string
     /// <summary>"background_task" while a running turn waits on its agent's background task; otherwise null.</summary>
     public string? Waiting => JobWaiting.From(Status, ReasonCode);
     public bool? AgentLive { get; init; }
+    public bool ReleaseAvailable { get; init; }
     public JobDelivery? Delivery { get; init; }
     public StartupProgress? Startup { get; init; }
     public string? Backend { get; init; }
@@ -142,11 +146,16 @@ public sealed record JobDelivery(string State, string? RunId, string? SubmittedA
     public string? NativeSubmissionId { get; init; }
 }
 
+public sealed record JobRecovery(string Tool, JobRecoveryArguments Arguments);
+public sealed record JobRecoveryArguments(string JobId);
+
 public sealed record JobResult(JobView? Job, string? Outcome, string? Error)
 {
     public IReadOnlyList<JobView>? Jobs { get; init; }
 
     public string? Detail { get; init; }
+    public string? FencingJobId { get; init; }
+    public JobRecovery? Recovery { get; init; }
 
     public static JobResult Ok(JobView job, string outcome) => new(job, outcome, null);
 
