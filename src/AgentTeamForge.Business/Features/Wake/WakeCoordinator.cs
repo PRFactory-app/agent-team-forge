@@ -15,7 +15,7 @@ public interface IWakePoster
 public static class WakePost
 {
     public const string Ok = "ok";
-    /// <summary>No bridge relay polled the channel recently: the Claude process or its MCP bridge is gone.</summary>
+    /// <summary>No bridge relay polled recently. Transient: this does not establish that the lead is dead.</summary>
     public const string NoRelay = "no_relay";
     public const string Timeout = "timeout";
     public const string RelayFailed = "relay_failed";

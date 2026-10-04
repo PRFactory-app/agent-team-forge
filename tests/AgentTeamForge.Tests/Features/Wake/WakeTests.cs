@@ -513,6 +513,58 @@ public sealed class WakeTests
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task No_relay_keeps_a_resumable_leads_target_and_reconnect_delivers(bool completedOwner)
+    {
+        using var fixture = new JobFixture();
+        var owner = fixture.Submit("orchestrator");
+        var run = fixture.Store.BeginNextAttempt()!;
+        if (completedOwner)
+        {
+            Assert.True(fixture.Store.Complete(new(run.Job.JobId, run.RunId, run.Generation, run.Correlation), "done"));
+        }
+        var sessions = new LeadSessionStore(fixture.Database);
+        var lead = sessions.Start("/workspace/orchestrator", "managed-child:" + owner.JobId, "claude", "native-lead");
+        var store = new WakeStore(fixture.Database);
+        var target = store.Register("claude:resumable", "claude", fixture.DatabasePath + ".gone.sock", "secret", "2147483647");
+        sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        Finish(fixture, target, "child");
+        var mailbox = new ClaudeWakeMailbox();
+        var time = DateTimeOffset.UtcNow;
+        var logs = new List<string>();
+        var coordinator = new WakeCoordinator(store, mailbox, logs.Add, () => time, TimeSpan.Zero,
+            claudeGone: t => WakeCoordinator.ClaudeTargetGone(t, "linux"));
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Contains(logs, line => line.Contains("reason=no_relay"));
+        time += TimeSpan.FromDays(4);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.True(store.IsCurrent(target));
+        Assert.Equal(0, Assert.Single(store.Pending()).NotifiedSeq);
+
+        // The same channel can reconnect without re-registering or changing generation.
+        Assert.Null(mailbox.Take(target.Address, target.Secret, target.Home));
+        time += TimeSpan.FromMinutes(11);
+        var posting = coordinator.TickAsync(TestContext.Current.CancellationToken);
+        var offer = Assert.IsType<ClaudeWakeNotice>(mailbox.Take(target.Address, target.Secret, target.Home));
+        Assert.True(mailbox.Complete(offer.Id, target.Address, target.Secret, target.Home, posted: true));
+        await posting;
+        var notified = Assert.Single(store.Pending());
+        Assert.Equal(notified.LatestSeq, notified.NotifiedSeq);
+        Assert.True(store.IsCurrent(target));
+
+        // Explicit closure ends resumability: a missing channel and dead PID may now be pruned.
+        if (!completedOwner)
+        {
+            Assert.True(fixture.Store.Complete(new(run.Job.JobId, run.RunId, run.Generation, run.Correlation), "done"));
+        }
+        Assert.True(sessions.Close(lead.SessionId, lead.Workspace));
+        time += TimeSpan.FromMinutes(11);
+        Assert.Equal(target.Key, Assert.Single(store.PruneDead(time, _ => true)));
+        Assert.False(store.IsCurrent(target));
+    }
+
+    [Theory]
     [InlineData("linux")]
     [InlineData("macos")]
     [InlineData("windows")]

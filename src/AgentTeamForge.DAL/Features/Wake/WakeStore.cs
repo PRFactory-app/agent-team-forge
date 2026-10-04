@@ -94,7 +94,8 @@ public sealed class WakeStore(JobDatabase database)
     }
 
     /// <summary>Deactivates Claude targets whose owner is provably <paramref name="gone"/>, once nothing registered
-    /// or posted to them for 10 minutes. Targets of uncertain liveness are never pruned. Unread rows stay;
+    /// or posted to them for 10 minutes. Open lead sessions are resumable even when their managed job has
+    /// completed or their bridge is disconnected, so their targets are never pruned. Unread rows stay;
     /// resume_session rebinds them to a live target.</summary>
     public IReadOnlyList<string> PruneDead(DateTimeOffset now, Func<WakeRegistration, bool> gone)
     {
@@ -125,6 +126,7 @@ public sealed class WakeStore(JobDatabase database)
                 UPDATE wake_targets SET active=0,generation=generation+1,notified_seq=0,last_success=NULL,
                     external_notified_seq=0,last_external_success=NULL
                 WHERE target_key=$key AND generation=$generation AND active=1
+                AND NOT EXISTS (SELECT 1 FROM lead_sessions s WHERE s.wake_key=$key AND s.closed_at IS NULL)
                 """;
             update.Parameters.AddWithValue("$key", target.Key);
             update.Parameters.AddWithValue("$generation", target.Generation);
