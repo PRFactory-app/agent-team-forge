@@ -25,7 +25,7 @@ public abstract record BackendEvidence
     public sealed record Result(string Correlation, string Output) : BackendEvidence;
 
     /// <summary>The agent ended its turn with a reported API failure.</summary>
-    public sealed record AgentError(string Code, string Details) : BackendEvidence;
+    public sealed record AgentError(string Code, string Details, bool TurnEnded = false) : BackendEvidence;
 
     /// <summary>A live interactive agent is waiting for its account limit to reset; its turn is still running.</summary>
     public sealed record AccountLimit(string Details) : BackendEvidence;

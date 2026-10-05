@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 32;
+    public const int CurrentVersion = 33;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -374,7 +374,13 @@ static class Schema
     /// <summary>v32: console-only archive mark; nothing is deleted and MCP/IPC job reads ignore it.</summary>
     internal const string V32 = "ALTER TABLE jobs ADD COLUMN archived_at TEXT;";
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32];
+    /// <summary>v33: preserve addressed ancestry independently of the session queue predecessor.</summary>
+    internal const string V33 = """
+        ALTER TABLE jobs ADD COLUMN requested_parent_job_id TEXT REFERENCES jobs(job_id);
+        UPDATE jobs SET requested_parent_job_id=parent_job_id;
+        """;
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

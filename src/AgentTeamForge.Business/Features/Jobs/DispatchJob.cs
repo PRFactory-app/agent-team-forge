@@ -167,8 +167,19 @@ public sealed class DispatchJob : IDisposable
     {
         if (JobOptions.Read(job.Options, "native_codex") == "1")
         {
-            return store.NativeAttempt(job.JobId) is { } attempt
-                && (attempt.State == "settled" || attempt.State is "sent" or "received" && TrySettleNativeCodex(attempt));
+            if (store.NativeAttempt(job.JobId) is not { } attempt) { return false; }
+            if (attempt.State == "settled" || attempt.State is "sent" or "received" && TrySettleNativeCodex(attempt)) { return true; }
+            // Receipt plus a sustained idle editor proves an interrupted native turn,
+            // even when Escape did not flush a rollout end record.
+            if (attempt.State != "received" || !HasIdleInteractive(job)) { return false; }
+            var settled = store.SettleNativeAttempt(job.JobId, attempt.Correlation, "", JobStatus.Cancelled, "interrupted");
+            if (settled) { RememberNativeTurn(BackendCatalog.Codex, attempt.ThreadId); Signal(); }
+            return settled;
+        }
+        if (JobOptions.Read(job.Options, "native_claude") == "1")
+        {
+            return store.NativeClaudeAttempt(job.JobId) is { } attempt
+                && (attempt.State == "settled" || attempt.State is "posting" or "posted" or "received" && TrySettleNativeClaude(attempt));
         }
         if (backends.Resolve(job.Backend) is not HerdrInteractiveBackend herdr || store.GetRuns(job.JobId) is not [.., var run]
             || !herdr.HasCompletedTurn(job, run.Correlation)) { return false; }
@@ -959,7 +970,7 @@ public sealed class DispatchJob : IDisposable
                             End(run, error.Code == JobErrors.SessionExpired ? JobStatus.Failed : JobStatus.NeedsReconciliation, error.Code, error.Details);
                             return;
                         case BackendEvidence.AgentError error:
-                            End(run, JobStatus.Failed, error.Code, error.Details);
+                            End(run, JobStatus.Failed, error.Code, error.Details, error.TurnEnded);
                             ObserveAgentError(claim.Job.JobId, error.Code, error.Details);
                             return;
                         case BackendEvidence.AccountLimit limit:
@@ -1128,12 +1139,13 @@ public sealed class DispatchJob : IDisposable
     {
         var receipt = InteractiveTranscriptReader.ReadCodexThread(attempt.CodexHome, attempt.ThreadId, attempt.Correlation);
         if (receipt is not null) { store.RecordNativeReceipt(attempt.JobId, attempt.Correlation); }
-        if (receipt is not { Completed: true, ApiError: null })
+        if (receipt is null || !(receipt.Completed || receipt.Interrupted || receipt.Superseded || receipt.ApiError?.TurnEnded == true))
         {
             ObserveNativeTurn(attempt.JobId, attempt.Correlation, attempt.ThreadId, receipt);
             return false;
         }
-        var settled = store.SettleNativeAttempt(attempt.JobId, attempt.Correlation, receipt.Message ?? "");
+        var (status, reason, result) = NativeTurnOutcome(receipt);
+        var settled = store.SettleNativeAttempt(attempt.JobId, attempt.Correlation, result, status, reason);
         if (settled) { RememberNativeTurn(BackendCatalog.Codex, attempt.ThreadId); Signal(); }
         return settled;
     }
@@ -1147,23 +1159,34 @@ public sealed class DispatchJob : IDisposable
     {
         var receipt = InteractiveTranscriptReader.ReadClaudeSession(attempt.ClaudeHome, attempt.SessionId, attempt.Correlation);
         if (receipt is not null) { store.RecordNativeClaudeReceipt(attempt.JobId, attempt.Correlation); }
-        if (receipt is not { Completed: true, ApiError: null })
+        if (receipt is null || !(receipt.Completed || receipt.Interrupted || receipt.Superseded || receipt.ApiError?.TurnEnded == true))
         {
             ObserveNativeTurn(attempt.JobId, attempt.Correlation, attempt.SessionId, receipt);
             return false;
         }
-        if (!store.SettleNativeClaudeAttempt(attempt.JobId, attempt.Correlation, receipt.Message ?? "")) { return false; }
+        var (status, reason, result) = NativeTurnOutcome(receipt);
+        if (!store.SettleNativeClaudeAttempt(attempt.JobId, attempt.Correlation, result, status, reason)) { return false; }
         RememberNativeTurn(BackendCatalog.Claude, attempt.SessionId);
         Signal();
         return true;
     }
 
+    static (string Status, string? Reason, string Result) NativeTurnOutcome(InteractiveTranscript receipt) =>
+        receipt.ApiError is { } error ? (JobStatus.Failed, error.Code, error.Message)
+        : !receipt.Completed && (receipt.Interrupted || receipt.Superseded)
+            ? (JobStatus.Cancelled, "interactive_turn_interrupted", receipt.Message ?? "")
+            : (JobStatus.Completed, null, receipt.Message ?? "");
+
     void ObserveNativeTurn(string jobId, string correlation, string sessionId, InteractiveTranscript? receipt)
     {
-        var activity = receipt?.LastActivityAt ?? DateTimeOffset.Parse(store.GetRuns(jobId)[^1].StartedAt!);
-        var waiting = DateTimeOffset.UtcNow - activity >= TimeSpan.FromSeconds(45)
+        var runs = store.GetRuns(jobId);
+        var activity = receipt?.LastActivityAt;
+        if (activity is null && runs is [.., var run] && DateTimeOffset.TryParse(run.StartedAt, out var started)) { activity = started; }
+        if (activity is null) { log($"{jobId}: native turn has no activity timestamp or started run; correlation={correlation}"); return; }
+        var observedActivity = activity.Value;
+        var waiting = DateTimeOffset.UtcNow - observedActivity >= TimeSpan.FromSeconds(45)
             ? receipt is null ? "awaiting_native_receipt" : "awaiting_turn_end" : null;
-        if (store.ObserveTurn(jobId, correlation, activity, waiting) && waiting is not null)
+        if (store.ObserveTurn(jobId, correlation, observedActivity, waiting) && waiting is not null)
         {
             var diagnostic = $"{waiting}: thread={sessionId}; correlation={correlation}; last_activity_at={activity:O}; native completion not observed";
             log($"{jobId}: {diagnostic}");
@@ -1450,11 +1473,11 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
-    void End(RunRef run, string status, string reason, string? message = null)
+    void End(RunRef run, string status, string reason, string? message = null, bool turnEnded = false)
     {
         try
         {
-            store.EndUnsuccessfully(run, status, reason, message);
+            store.EndUnsuccessfully(run, status, reason, message, turnEnded);
         }
         catch (Exception ex)
         {

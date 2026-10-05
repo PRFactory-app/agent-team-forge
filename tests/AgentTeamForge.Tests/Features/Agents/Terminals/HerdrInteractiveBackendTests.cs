@@ -10,29 +10,105 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 
 public sealed class HerdrInteractiveBackendTests
 {
-    [Fact]
-    public async Task Native_turn_end_after_tool_report_without_text_releases_next_turn()
+    [Theory]
+    [InlineData(InteractiveAgentKind.Codex)]
+    [InlineData(InteractiveAgentKind.Claude)]
+    [InlineData(InteractiveAgentKind.Pi)]
+    public async Task Native_turn_end_after_tool_report_without_text_releases_next_turn(InteractiveAgentKind kind)
     {
         using var f = new JobFixture();
+        using var state = new TempStateDir();
         var lastActivity = DateTimeOffset.UtcNow.AddMinutes(-2);
-        var reader = new BoundMutableReader(new InteractiveTranscript("native-1", null) { LastActivityAt = lastActivity });
+        var file = Path.Combine(state.Path, "native.jsonl");
+        var reader = new FixtureTranscriptReader(file);
         var backend = new HerdrInteractiveBackend(new FakeControl { Status = InteractiveAgentStatus.Working }, reader,
-            InteractiveAgentKind.Codex, Path.GetTempPath());
+            kind, state.Path);
         var parent = f.Submit("tool-report");
         var next = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
             .Execute(new FollowUpRequest(parent.JobId, "next", "after-report") { Defer = true }).Job!;
         using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
-        var run = dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+        var firstClaim = f.Store.BeginNextAttempt()!;
+        WriteInput(firstClaim.Correlation);
+        var run = dispatcher.RunAttemptAsync(firstClaim, TestContext.Current.CancellationToken);
         await Bounded.Until(() => f.Get().Execute(parent.JobId).Job!.Waiting == "awaiting_turn_end", "turn-end diagnostic");
         Assert.Equal(lastActivity.ToUniversalTime().ToString("O"), f.Get().Execute(parent.JobId).Job!.LastActivityAt);
         Assert.Null(f.Store.BeginNextAttempt());
-        reader.Output = new InteractiveTranscript("native-1", null, Completed: true) { LastActivityAt = DateTimeOffset.UtcNow };
+        WriteEnding();
         await run.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
         Assert.Equal(JobStatus.Completed, f.Store.GetJob(parent.JobId)!.Status);
+        Assert.Null(f.Store.GetJob(parent.JobId)!.ReasonCode);
         var claim = f.Store.BeginNextAttempt()!;
         Assert.Equal(next.JobId, claim.Job.JobId);
+        WriteInput(claim.Correlation);
+        WriteEnding();
         await dispatcher.RunAttemptAsync(claim, TestContext.Current.CancellationToken);
         Assert.Equal(JobStatus.Completed, f.Store.GetJob(next.JobId)!.Status);
+
+        void WriteInput(string correlation)
+        {
+            var timestamp = lastActivity.ToString("O");
+            var marker = "atf-corr:" + correlation;
+            string[] lines = kind switch
+            {
+                InteractiveAgentKind.Codex =>
+                [
+                    """{"type":"session_meta","payload":{"id":"native-1","source":"cli"}}""",
+                    $$$"""{"timestamp":"{{{timestamp}}}","type":"event_msg","payload":{"type":"user_message","message":"{{{marker}}}"}}"""
+                ],
+                InteractiveAgentKind.Claude => [$$$"""{"timestamp":"{{{timestamp}}}","type":"user","sessionId":"native-1","message":{"role":"user","content":"{{{marker}}}"}}"""],
+                _ =>
+                [
+                    """{"type":"session","id":"native-1"}""",
+                    $$$"""{"timestamp":"{{{timestamp}}}","type":"message","message":{"role":"user","content":[{"type":"text","text":"{{{marker}}}"}]}}"""
+                ]
+            };
+            File.WriteAllLines(file, lines);
+        }
+
+        void WriteEnding() => File.AppendAllLines(file, kind switch
+        {
+            InteractiveAgentKind.Codex => ["""{"type":"response_item","payload":{"type":"function_call_output","call_id":"report","output":"sent"}}""", """{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":null}}"""],
+            InteractiveAgentKind.Claude => ["""{"type":"user","sessionId":"native-1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"report","content":"sent"}]}}""", """{"type":"assistant","sessionId":"native-1","message":{"role":"assistant","stop_reason":"end_turn","content":[]}}"""],
+            _ => ["""{"type":"message","message":{"role":"toolResult","toolCallId":"report","content":[{"type":"text","text":"sent"}]}}""", """{"type":"message","message":{"role":"assistant","stopReason":"stop","content":[]}}"""]
+        });
+    }
+
+    [Fact]
+    public async Task Aborted_rollout_releases_an_interactive_turn_even_while_the_native_process_lives()
+    {
+        using var f = new JobFixture();
+        using var state = new TempStateDir();
+        var file = Path.Combine(state.Path, "native.jsonl");
+        var backend = new HerdrInteractiveBackend(new FakeControl { Status = InteractiveAgentStatus.Working },
+            new FixtureTranscriptReader(file), InteractiveAgentKind.Codex, state.Path);
+        var parent = f.Submit("abort");
+        var next = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
+            .Execute(new FollowUpRequest(parent.JobId, "next", "next") { Defer = true }).Job!;
+        var claim = f.Store.BeginNextAttempt()!;
+        File.WriteAllLines(file,
+        [
+            """{"type":"session_meta","payload":{"id":"native-1","source":"cli"}}""",
+            $$$"""{"type":"event_msg","payload":{"type":"user_message","message":"atf-corr:{{{claim.Correlation}}}"}}""",
+            """{"type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted"}}"""
+        ]);
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        await dispatcher.RunAttemptAsync(claim, TestContext.Current.CancellationToken);
+        Assert.Equal((JobStatus.Failed, "interactive_turn_interrupted"),
+            (f.Store.GetJob(parent.JobId)!.Status, f.Store.GetJob(parent.JobId)!.ReasonCode));
+        Assert.False(f.Store.IsSessionFenced(parent.JobId));
+        Assert.Contains(f.Store.GetEvents(parent.JobId), e => e.Kind == "failed");
+        Assert.Equal(next.JobId, f.Store.BeginNextAttempt(hasMarkedProcess: (_, _) => true)!.Job.JobId);
+    }
+
+    sealed class FixtureTranscriptReader(string file) : IInteractiveTranscriptReader
+    {
+        readonly InteractiveTranscriptReader _reader = new(_ => null);
+        public InteractiveTranscript? Read(InteractiveLaunch launch, string correlationMarker, DateTimeOffset started)
+        {
+            launch.NativeTranscript = new NativeTranscriptBinding("native-1", file);
+            return _reader.Read(launch, correlationMarker, started);
+        }
+        public string? FindPiSessionDirectory(string root, string sessionId) => null;
     }
 
     [Theory]

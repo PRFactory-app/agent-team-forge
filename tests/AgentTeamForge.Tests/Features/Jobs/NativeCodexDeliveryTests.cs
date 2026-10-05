@@ -205,7 +205,7 @@ public sealed class NativeCodexDeliveryTests
     }
 
     [Fact]
-    public async Task Native_user_receipt_releases_fence_before_model_completion()
+    public async Task Native_user_receipt_acknowledges_delivery_but_holds_queue_until_turn_end()
     {
         using var fixture = new JobFixture();
         var backend = new ScriptedBackend(request =>
@@ -403,6 +403,8 @@ public sealed class NativeCodexDeliveryTests
         Assert.Null(fixture.Store.BeginNextAttempt());
 
         fixture.Store.RecordNativeReceipt(native.JobId, claim.Correlation);
+        Assert.Null(fixture.Store.BeginNextAttempt());
+        Assert.True(fixture.Store.ReleaseNativeAttempt(native.JobId, JobFixture.Operator.Principal, JobFixture.Operator.Team).Changed);
         Assert.Equal(large.JobId, fixture.Store.BeginNextAttempt()!.Job.JobId);
     }
 }

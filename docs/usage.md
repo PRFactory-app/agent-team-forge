@@ -73,9 +73,13 @@ this branch") or call the MCP tools directly:
    (completion not observed), with `last_activity_at`; diagnostics also appear
    in the job and daemon logs. A report to the lead does not end the turn.
    A native completion event can end a turn without an assistant text reply.
+   A confirmed native abort ends the job as interrupted; a confirmed API error
+   ends it as failed with the error reason. Both release the next queued turn.
    `send_message(job_id=..., text=..., idempotency_key=...)` uses this same
    managed follow-up path. `send_message(to=...)` remains inbox messaging.
-5. **Stop** a queued or running job with `stop_job(job_id=...)`. Use
+5. **Stop** a queued or running job with `stop_job(job_id=...)`. Its queued
+   descendants are cancelled. Later turns originally addressed to an earlier
+   job remain queued in order, even if they followed the stopped job. Use
    `interrupt_job` to interrupt without another prompt, `stop_agent` to
    close an idle retained agent, and `revive_agent` to resume a dead session
    with a new instruction and idempotency key.

@@ -273,6 +273,11 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
                     bindNativeSession(nativeId, launch);
                     yield return new BackendEvidence.Session(request.Correlation, nativeId);
                 }
+                if (session is not null && output is { Completed: false } && (output.Interrupted || output.Superseded))
+                {
+                    yield return new BackendEvidence.AgentError("interactive_turn_interrupted", "Native turn was interrupted by a new turn or Escape.", TurnEnded: true);
+                    yield break;
+                }
                 if (output?.ApiError is { } apiError && session is not null)
                 {
                     if (apiError.Code == "agent_rate_limited")
@@ -291,10 +296,10 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
                             _apiErrorProgressCount = output.Progress.Count;
                             _apiErrorSince = DateTimeOffset.UtcNow;
                         }
-                        if (DateTimeOffset.UtcNow - _apiErrorSince >= apiError.QuietWindow)
+                        if (output.Completed || apiError.TurnEnded || DateTimeOffset.UtcNow - _apiErrorSince >= apiError.QuietWindow)
                         {
                             _settled = true;
-                            yield return new BackendEvidence.AgentError(apiError.Code, apiError.Message);
+                            yield return new BackendEvidence.AgentError(apiError.Code, apiError.Message, output.Completed || apiError.TurnEnded);
                             yield break;
                         }
                     }

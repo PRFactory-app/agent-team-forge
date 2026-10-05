@@ -565,6 +565,11 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                     bindNativeSession(nativeId, launch);
                     yield return new BackendEvidence.Session(request.Correlation, nativeId);
                 }
+                if (session is not null && output is { Completed: false } && (output.Interrupted || output.Superseded))
+                {
+                    yield return new BackendEvidence.AgentError("interactive_turn_interrupted", "Native turn was interrupted by a new turn or Escape.", TurnEnded: true);
+                    yield break;
+                }
                 if (output?.ApiError is { } apiError && session is not null)
                 {
                     if (apiError.Code == "agent_rate_limited")
@@ -583,9 +588,9 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                             _apiErrorProgressCount = output.Progress.Count;
                             _apiErrorSince = DateTimeOffset.UtcNow;
                         }
-                        if (DateTimeOffset.UtcNow - _apiErrorSince >= apiError.QuietWindow)
+                        if (output.Completed || apiError.TurnEnded || DateTimeOffset.UtcNow - _apiErrorSince >= apiError.QuietWindow)
                         {
-                            yield return new BackendEvidence.AgentError(apiError.Code, apiError.Message);
+                            yield return new BackendEvidence.AgentError(apiError.Code, apiError.Message, output.Completed || apiError.TurnEnded);
                             yield break;
                         }
                     }
@@ -817,6 +822,7 @@ internal sealed record InteractiveTranscript(string SessionId, string? Message, 
     /// <summary>The latest assistant record ended the turn while background work is still pending (Claude only).</summary>
     public bool WaitingOnBackground { get; init; }
     public DateTimeOffset? LastActivityAt { get; init; }
+    public bool Interrupted { get; init; }
 
     public IReadOnlyList<string> Progress => Messages ?? [];
 

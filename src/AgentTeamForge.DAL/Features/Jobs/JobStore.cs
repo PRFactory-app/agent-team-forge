@@ -31,12 +31,14 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     const string SessionPeers = """
         WITH RECURSIVE ancestors(id,parent) AS (
             SELECT job_id,parent_job_id FROM jobs WHERE job_id=$id
-            UNION SELECT j.job_id,j.parent_job_id FROM jobs j JOIN ancestors a ON j.job_id=a.parent),
+            UNION SELECT j.job_id,j.parent_job_id FROM jobs j JOIN ancestors a ON j.job_id=a.parent
+                WHERE j.backend=(SELECT backend FROM jobs WHERE job_id=$id)),
         peers(id) AS (
             SELECT id FROM ancestors
             UNION SELECT j.job_id FROM jobs j JOIN ancestors a ON j.session_id=(SELECT session_id FROM jobs WHERE job_id=a.id)
                 AND j.backend=(SELECT backend FROM jobs WHERE job_id=$id)
-            UNION SELECT j.job_id FROM jobs j JOIN peers p ON j.parent_job_id=p.id)
+            UNION SELECT j.job_id FROM jobs j JOIN peers p ON j.parent_job_id=p.id
+                WHERE j.backend=(SELECT backend FROM jobs WHERE job_id=$id))
         SELECT id FROM peers
         """;
 
@@ -206,14 +208,14 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         var deferredPeers = SessionPeers;
         if (Scalar(connection, tx, $"""
             SELECT count(*) FROM native_codex_attempts n JOIN jobs j ON j.job_id=n.job_id
-            WHERE n.state='sent' AND j.principal=$p AND j.team=$t AND j.target_agent=$a AND n.job_id NOT IN ({deferredPeers})
+            WHERE n.state IN ('sent','received') AND j.principal=$p AND j.team=$t AND j.target_agent=$a AND n.job_id NOT IN ({deferredPeers})
             """, ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent), ("$id", deferredOn)) > 0)
         {
             return new ParentNotReady();
         }
         if (Scalar(connection, tx, $"""
             SELECT count(*) FROM native_claude_attempts n JOIN jobs j ON j.job_id=n.job_id
-            WHERE n.state IN ('posting','posted') AND j.principal=$p AND j.team=$t AND j.target_agent=$a AND n.job_id NOT IN ({deferredPeers})
+            WHERE n.state IN ('posting','posted','received') AND j.principal=$p AND j.team=$t AND j.target_agent=$a AND n.job_id NOT IN ({deferredPeers})
             """, ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent), ("$id", deferredOn)) > 0)
         {
             return new ParentNotReady();
@@ -245,19 +247,20 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             // N5 is checked in the acceptance transaction, including replacements and
             // ordinary resume attempts. An uncertain queue call may still present later.
             if (parent.SessionId is { } thread && Scalar(connection, tx,
-                $"SELECT count(*) FROM native_codex_attempts WHERE thread_id=$thread AND state='sent' AND job_id NOT IN ({deferredPeers})",
+                $"SELECT count(*) FROM native_codex_attempts WHERE thread_id=$thread AND state IN ('sent','received') AND job_id NOT IN ({deferredPeers})",
                 ("$thread", thread), ("$id", deferredOn)) > 0)
             {
                 return new ParentNotReady();
             }
             if (parent.SessionId is { } claudeSession && Scalar(connection, tx,
-                $"SELECT count(*) FROM native_claude_attempts WHERE session_id=$session AND state IN ('posting','posted') AND job_id NOT IN ({deferredPeers})",
+                $"SELECT count(*) FROM native_claude_attempts WHERE session_id=$session AND state IN ('posting','posted','received') AND job_id NOT IN ({deferredPeers})",
                 ("$session", claudeSession), ("$id", deferredOn)) > 0)
             {
                 return new ParentNotReady();
             }
         }
 
+        var requestedParent = job.ParentJobId;
         if (job.DeferParent && parent is not null)
         {
             using var tail = Command(connection, tx,
@@ -273,15 +276,15 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         var queueDeadline = job.QueueTtlSeconds is int ttl ? acceptedAt.AddSeconds(ttl).ToString("O") : null;
         Execute(connection, tx, """
             INSERT INTO jobs(job_id, principal, team, target_agent, operation, idempotency_key, fingerprint,
-                             instruction, options, backend, cwd, parent_job_id, worktree_path, worktree_branch, worktree_base, timeout_s, queue_deadline, lead_session_id, status, accepted_at, updated_at)
-            VALUES ($id, $p, $t, $a, $o, $k, $f, $i, $opt, $b, $cwd, $parent, $wtpath, $wtbranch, $wtbase, $timeout, $deadline, $lead, 'queued', $now, $now);
+                             instruction, options, backend, cwd, parent_job_id, requested_parent_job_id, worktree_path, worktree_branch, worktree_base, timeout_s, queue_deadline, lead_session_id, status, accepted_at, updated_at)
+            VALUES ($id, $p, $t, $a, $o, $k, $f, $i, $opt, $b, $cwd, $parent, $requestedParent, $wtpath, $wtbranch, $wtbase, $timeout, $deadline, $lead, 'queued', $now, $now);
             INSERT INTO dispatch_intents(job_id, state, created_at) VALUES ($id, 'unattempted', $now);
             INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'accepted', $now);
             """,
             ("$id", jobId), ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent),
             ("$o", job.Operation), ("$k", job.IdempotencyKey), ("$f", job.Fingerprint),
             ("$i", job.Instruction), ("$opt", job.Options), ("$b", job.Backend), ("$cwd", job.Cwd),
-            ("$parent", job.ParentJobId), ("$wtpath", worktreePath), ("$wtbranch", worktreeBranch),
+            ("$parent", job.ParentJobId), ("$requestedParent", requestedParent), ("$wtpath", worktreePath), ("$wtbranch", worktreeBranch),
             ("$wtbase", job.WorktreeBase), ("$timeout", job.TimeoutSeconds),
             ("$deadline", queueDeadline), ("$lead", job.LeadSessionId), ("$now", now));
         if (job.WakeTargetKey is not null && job.WakeGeneration is not null)
@@ -339,9 +342,9 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             WHERE i.state='unattempted' AND j.status='queued'
               AND NOT EXISTS (SELECT 1 FROM jobs p WHERE p.job_id=j.parent_job_id AND p.status='queued')
               AND NOT EXISTS (SELECT 1 FROM jobs p JOIN native_codex_attempts n ON n.thread_id=p.session_id
-                  WHERE p.job_id=j.parent_job_id AND n.state='sent')
+                  WHERE p.job_id=j.parent_job_id AND n.state IN ('sent','received'))
               AND NOT EXISTS (SELECT 1 FROM jobs p JOIN native_claude_attempts n ON n.session_id=p.session_id
-                  WHERE p.job_id=j.parent_job_id AND n.state IN ('posting','posted'))
+                  WHERE p.job_id=j.parent_job_id AND n.state IN ('posting','posted','received'))
               AND (j.queue_deadline IS NULL OR j.queue_deadline > $now) AND NOT EXISTS (
                 SELECT 1 FROM jobs p JOIN jobs k ON (k.status='running' OR k.session_fenced=1 OR {settlingSql})
                 WHERE p.job_id = j.parent_job_id
@@ -362,7 +365,10 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         {
             // Skipped intents stay queued: an owner gate (authority, account window) may reopen later.
             if (eligible is not null && !eligible(candidateJobId)) { continue; }
-            if (parentStatus == JobStatus.Failed && options.Contains(";defer=1", StringComparison.Ordinal))
+            if (parentStatus == JobStatus.Failed && options.Contains(";defer=1", StringComparison.Ordinal)
+                && Scalar(connection, tx, "SELECT count(*) FROM events WHERE job_id=$id AND kind='turn_ended'", ("$id", parentId)) == 0
+                && Scalar(connection, tx, "SELECT count(*) FROM native_codex_attempts WHERE job_id=$id AND state='settled'", ("$id", parentId)) == 0
+                && Scalar(connection, tx, "SELECT count(*) FROM native_claude_attempts WHERE job_id=$id AND state='settled'", ("$id", parentId)) == 0)
             {
                 if (parentSession is null || hasMarkedProcess is null) { continue; }
                 using var runs = Command(connection, tx, "SELECT correlation, backend_pid FROM runs WHERE job_id=$id", ("$id", parentId));
@@ -430,7 +436,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 || Scalar(connection, tx, "SELECT count(*) FROM native_codex_attempts WHERE thread_id=$thread AND state IN ('sent','received')", ("$thread", thread)) > 0
                 || Scalar(connection, tx, """
                     SELECT count(*) FROM native_codex_attempts n JOIN jobs k ON k.job_id=n.job_id
-                    WHERE n.state='sent' AND k.principal=$p AND k.team=$t AND k.target_agent=$a
+                    WHERE n.state IN ('sent','received') AND k.principal=$p AND k.team=$t AND k.target_agent=$a
                     """, ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent)) > 0
                 || !live(parent)) { continue; }
             var runId = "run_" + Guid.CreateVersion7().ToString("N");
@@ -464,10 +470,13 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         foreach (var job in candidates)
         {
             if (job.ParentJobId is not { } parentId || GetJob(connection, tx, parentId) is not { SessionId: { } session } parent
-                || parent.Backend != "claude" || parent.Status is not (JobStatus.Completed or JobStatus.Cancelled)
+                || parent.Backend != "claude"
+                || (parent.Status is not (JobStatus.Completed or JobStatus.Cancelled)
+                    && !(parent.Status == JobStatus.Failed && (Scalar(connection, tx, "SELECT count(*) FROM native_claude_attempts WHERE job_id=$id AND state='settled'", ("$id", parentId)) > 0
+                        || Scalar(connection, tx, "SELECT count(*) FROM events WHERE job_id=$id AND kind='turn_ended'", ("$id", parentId)) > 0)))
                 || SessionFenced(connection, tx, parentId)
-                || Scalar(connection, tx, "SELECT count(*) FROM native_claude_attempts WHERE session_id=$session AND state IN ('posting','posted')", ("$session", session)) > 0
-                || Scalar(connection, tx, "SELECT count(*) FROM native_codex_attempts WHERE thread_id=$session AND state='sent'", ("$session", session)) > 0)
+                || Scalar(connection, tx, "SELECT count(*) FROM native_claude_attempts WHERE session_id=$session AND state IN ('posting','posted','received')", ("$session", session)) > 0
+                || Scalar(connection, tx, "SELECT count(*) FROM native_codex_attempts WHERE thread_id=$session AND state IN ('sent','received')", ("$session", session)) > 0)
             {
                 continue;
             }
@@ -559,18 +568,18 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return 0;
     });
 
-    public bool SettleNativeClaudeAttempt(string jobId, string correlation, string result) => Write(connection =>
+    public bool SettleNativeClaudeAttempt(string jobId, string correlation, string result, string status = JobStatus.Completed, string? reason = null) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         if (Execute(connection, tx, "UPDATE native_claude_attempts SET state='settled' WHERE job_id=$id AND correlation=$corr AND state IN ('posting','posted','received')",
             ("$id", jobId), ("$corr", correlation)) != 1) { return false; }
         var now = Now();
         RearmWake(connection, tx, jobId);
-        Execute(connection, tx, "UPDATE runs SET state='completed',acked=1,acknowledged_at=coalesce(acknowledged_at,$now),finished_at=$now WHERE job_id=$id AND correlation=$corr",
-            ("$id", jobId), ("$corr", correlation), ("$now", now));
-        Execute(connection, tx, "UPDATE jobs SET status='completed',session_fenced=0,reason_code=NULL,result_text=$result,updated_at=$now WHERE job_id=$id",
-            ("$id", jobId), ("$result", result), ("$now", now));
-        Execute(connection, tx, "INSERT INTO events(job_id,kind,created_at) VALUES ($id,'completed',$now)", ("$id", jobId), ("$now", now));
+        Execute(connection, tx, "UPDATE runs SET state=$status,reason_code=$reason,acked=1,acknowledged_at=coalesce(acknowledged_at,$now),finished_at=$now WHERE job_id=$id AND correlation=$corr",
+            ("$id", jobId), ("$corr", correlation), ("$now", now), ("$status", status), ("$reason", reason));
+        Execute(connection, tx, "UPDATE jobs SET status=$status,session_fenced=0,reason_code=$reason,result_text=$result,updated_at=$now WHERE job_id=$id",
+            ("$id", jobId), ("$result", result), ("$now", now), ("$status", status), ("$reason", reason));
+        Execute(connection, tx, "INSERT INTO events(job_id,kind,created_at) VALUES ($id,$status,$now)", ("$id", jobId), ("$now", now), ("$status", status), ("$reason", reason));
         tx.Commit();
         return true;
     });
@@ -637,20 +646,20 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return 0;
     });
 
-    public bool SettleNativeAttempt(string jobId, string correlation, string result) => Write(connection =>
+    public bool SettleNativeAttempt(string jobId, string correlation, string result, string status = JobStatus.Completed, string? reason = null) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         var now = Now();
         RearmWake(connection, tx, jobId);
         // An interrupt may have cancelled the job while the completion record was
         // being read. A quarantined native turn can still complete after restart.
-        if (Execute(connection, tx, "UPDATE jobs SET status='completed',session_fenced=0,reason_code=NULL,result_text=$result,updated_at=$now WHERE job_id=$id AND status IN ('running','needs_reconciliation')",
-            ("$id", jobId), ("$result", result), ("$now", now)) != 1) { return false; }
+        if (Execute(connection, tx, "UPDATE jobs SET status=$status,session_fenced=0,reason_code=$reason,result_text=$result,updated_at=$now WHERE job_id=$id AND status IN ('running','needs_reconciliation')",
+            ("$id", jobId), ("$result", result), ("$now", now), ("$status", status), ("$reason", reason)) != 1) { return false; }
         if (Execute(connection, tx, "UPDATE native_codex_attempts SET state='settled' WHERE job_id=$id AND correlation=$corr AND state IN ('sent','received')",
             ("$id", jobId), ("$corr", correlation)) != 1) { return false; }
-        Execute(connection, tx, "UPDATE runs SET state='completed',acked=1,acknowledged_at=coalesce(acknowledged_at,$now),finished_at=$now WHERE job_id=$id AND correlation=$corr",
-            ("$id", jobId), ("$corr", correlation), ("$now", now));
-        Execute(connection, tx, "INSERT INTO events(job_id,kind,created_at) VALUES ($id,'completed',$now)", ("$id", jobId), ("$now", now));
+        Execute(connection, tx, "UPDATE runs SET state=$status,reason_code=$reason,acked=1,acknowledged_at=coalesce(acknowledged_at,$now),finished_at=$now WHERE job_id=$id AND correlation=$corr",
+            ("$id", jobId), ("$corr", correlation), ("$now", now), ("$status", status), ("$reason", reason));
+        Execute(connection, tx, "INSERT INTO events(job_id,kind,created_at) VALUES ($id,$status,$now)", ("$id", jobId), ("$now", now), ("$status", status), ("$reason", reason));
         tx.Commit();
         return true;
     });
@@ -791,14 +800,14 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     /// <summary>
     /// Fenced non-success end of an attempted run. Never recreates a dispatch intent.
     /// </summary>
-    public bool EndUnsuccessfully(RunRef run, string terminalStatus, string reasonCode, string? message = null)
+    public bool EndUnsuccessfully(RunRef run, string terminalStatus, string reasonCode, string? message = null, bool turnEnded = false)
     {
         if (terminalStatus is not (JobStatus.Failed or JobStatus.NeedsReconciliation))
         {
             throw new ArgumentOutOfRangeException(nameof(terminalStatus));
         }
 
-        return Finish(run, terminalStatus, terminalStatus, reasonCode, message, terminalStatus, null);
+        return Finish(run, terminalStatus, terminalStatus, reasonCode, message, terminalStatus, null, turnEnded);
     }
 
     /// <summary>Atomically cancels queued or running work; terminal jobs are unchanged.</summary>
@@ -844,8 +853,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         using (var command = Command(connection, tx,
             """
             WITH RECURSIVE children(id) AS (
-                SELECT job_id FROM jobs WHERE parent_job_id=$id
-                UNION SELECT j.job_id FROM jobs j JOIN children c ON j.parent_job_id=c.id)
+                SELECT job_id FROM jobs WHERE requested_parent_job_id=$id
+                UNION SELECT j.job_id FROM jobs j JOIN children c ON j.requested_parent_job_id=c.id)
             SELECT job_id FROM jobs WHERE job_id IN (SELECT id FROM children)
                 AND status='queued' AND instr(options, ';defer=1')>0
             """, ("$id", parentJobId)))
@@ -857,6 +866,19 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         {
             CancelInTransaction(connection, tx, GetJob(connection, tx, id)!, "parent_stopped");
         }
+        // Queue predecessors are ordering edges, not cancellation ancestry. Skip
+        // stopped queued predecessors without skipping a live native session.
+        Execute(connection, tx, """
+            WITH RECURSIVE skipped(id,parent) AS (
+                SELECT j.job_id,p.parent_job_id FROM jobs j JOIN jobs p ON j.parent_job_id=p.job_id
+                WHERE j.status='queued' AND p.status='cancelled' AND p.session_id IS NULL
+                UNION ALL
+                SELECT s.id,p.parent_job_id FROM skipped s JOIN jobs p ON s.parent=p.job_id
+                WHERE p.status='cancelled' AND p.session_id IS NULL)
+            UPDATE jobs SET parent_job_id=(SELECT s.parent FROM skipped s WHERE s.id=jobs.job_id
+                AND NOT EXISTS (SELECT 1 FROM jobs p WHERE p.job_id=s.parent AND p.status='cancelled' AND p.session_id IS NULL))
+            WHERE job_id IN (SELECT id FROM skipped)
+            """);
         return ids.Count;
     }
 
@@ -956,7 +978,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return (IReadOnlyList<string>)expired;
     });
 
-    bool Finish(RunRef run, string runState, string jobStatus, string? reason, string? result, string eventKind, string? checkpoint) =>
+    bool Finish(RunRef run, string runState, string jobStatus, string? reason, string? result, string eventKind, string? checkpoint, bool turnEnded = false) =>
         Write(connection =>
         {
             using var tx = connection.BeginTransaction(deferred: false);
@@ -986,6 +1008,11 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             Execute(connection, tx,
                 "INSERT INTO events(job_id, run_id, kind, created_at) VALUES ($id, $run, $kind, $now)",
                 ("$id", run.JobId), ("$run", run.RunId), ("$kind", eventKind), ("$now", now));
+            if (turnEnded)
+            {
+                Execute(connection, tx, "INSERT INTO events(job_id,run_id,kind,created_at) VALUES ($id,$run,'turn_ended',$now)",
+                    ("$id", run.JobId), ("$run", run.RunId), ("$now", now));
+            }
             if (checkpoint is not null)
             {
                 checkpoints.Hit(checkpoint);
