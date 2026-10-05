@@ -204,6 +204,21 @@ public sealed class JobWorktreeTests
     }
 
     [Fact]
+    public async Task Git_output_already_in_the_pipe_is_kept_when_its_reader_runs_after_the_drain_grace()
+    {
+        using var source = new TempStateDir();
+        Git(source.Path, "init");
+        // A starved reader got to the pipe after the post-exit grace and lost git's whole stdout (CI: not_owned_path).
+        JobWorktree.ReaderDelay.Value = TimeSpan.FromSeconds(1.5);
+
+        var result = await JobWorktree.RunAsync(source.Path, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken,
+            "rev-parse", "--absolute-git-dir");
+
+        Assert.Equal(0, result?.ExitCode);
+        Assert.EndsWith(".git", result!.Output.Trim(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Git_success_is_not_held_by_a_descendant_that_keeps_stdout_after_git_exits()
     {
         using var source = new TempStateDir();

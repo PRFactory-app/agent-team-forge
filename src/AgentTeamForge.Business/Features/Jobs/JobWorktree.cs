@@ -1,4 +1,5 @@
 using AgentTeamForge.DAL.Files;
+using System.Buffers;
 using System.Diagnostics;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
@@ -19,6 +20,10 @@ public static class JobWorktree
 
     // Git's own output is already in the pipe when it exits; a hook descendant may keep it open.
     static readonly TimeSpan DrainGrace = TimeSpan.FromSeconds(1);
+    static readonly TimeSpan DrainPoll = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>Test seam: holds each output reader back before its first read, as a loaded machine can.</summary>
+    internal static readonly AsyncLocal<TimeSpan> ReaderDelay = new();
 
     public static string? Head(string cwd)
     {
@@ -213,12 +218,10 @@ public static class JobWorktree
                 return null;
             }
 
-            // A hook descendant may retain stdout or stderr after git exits. Exit shares the
-            // whole deadline; after exit both drains get a short grace and keep what they read.
+            // Each stream is read by its own thread, so a busy thread pool cannot delay reading git's output.
             // Output beyond the cap is discarded while draining continues.
-            using var drain = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
-            var output = DrainAsync(process.StandardOutput.BaseStream, drain.Token);
-            var error = DrainAsync(process.StandardError.BaseStream, drain.Token);
+            var output = new OutputReader(process.StandardOutput.BaseStream);
+            var error = new OutputReader(process.StandardError.BaseStream);
             try
             {
                 await process.WaitForExitAsync(deadline.Token);
@@ -234,16 +237,21 @@ public static class JobWorktree
                     // Git exited meanwhile.
                 }
 
-                drain.Cancel();
-                await Task.WhenAll(output, error);
                 cancellationToken.ThrowIfCancellationRequested();
                 return null;
             }
 
-            drain.CancelAfter(DrainGrace);
-            await Task.WhenAll(output, error);
+            // A hook descendant may keep stdout or stderr open after git exits; git's own output is already in the
+            // pipe by then. A stream is cut only once its reader has waited the whole grace with nothing to read,
+            // never because the reader had not run yet. Until the deadline it keeps what it read.
+            var exited = Stopwatch.GetTimestamp();
+            var both = Task.WhenAll(output.Completion, error.Completion);
+            while (!(output.Settled(exited) && error.Settled(exited)) && !deadline.IsCancellationRequested)
+            {
+                await Task.WhenAny(both, Task.Delay(DrainPoll, deadline.Token));
+            }
             cancellationToken.ThrowIfCancellationRequested();
-            return new(process.ExitCode, output.Result, error.Result);
+            return new(process.ExitCode, output.Text, error.Text);
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
         {
@@ -251,24 +259,60 @@ public static class JobWorktree
         }
     }
 
-    static async Task<string> DrainAsync(Stream stream, CancellationToken cancellationToken)
+    /// <summary>Reads one redirected stream to its end on a dedicated thread, keeping up to the output cap.</summary>
+    sealed class OutputReader
     {
-        using var kept = new MemoryStream();
-        var buffer = new byte[16 * 1024];
-        try
+        const long NotWaiting = -1;
+        readonly ArrayBufferWriter<byte> _kept = new();
+        readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        long _waitingSince = NotWaiting;
+
+        public OutputReader(Stream stream)
         {
-            int n;
-            while ((n = await stream.ReadAsync(buffer, cancellationToken)) > 0)
-            {
-                var room = (int)Math.Min(n, MaxGitOutputBytes - kept.Length);
-                kept.Write(buffer, 0, room);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // Bounded: keep what was read before the deadline or post-exit grace.
+            // A blocking read wakes as soon as the pipe has data or closes; a lingering descendant only parks this
+            // background thread until it closes the pipe or the process disposes the stream.
+            var delay = ReaderDelay.Value;
+            new Thread(() => Read(stream, delay)) { IsBackground = true, Name = "atf-git-output" }.Start();
         }
 
-        return Encoding.UTF8.GetString(kept.GetBuffer(), 0, (int)kept.Length);
+        public Task Completion => _completion.Task;
+
+        public string Text
+        {
+            get
+            {
+                lock (_kept) { return Encoding.UTF8.GetString(_kept.WrittenSpan); }
+            }
+        }
+
+        /// <summary>At end of stream, or blocked in a read with nothing to return for the grace since git exited.</summary>
+        public bool Settled(long exited) =>
+            Completion.IsCompleted
+            || Interlocked.Read(ref _waitingSince) is var since && since != NotWaiting && Stopwatch.GetElapsedTime(Math.Max(since, exited)) >= DrainGrace;
+
+        void Read(Stream stream, TimeSpan delay)
+        {
+            try
+            {
+                if (delay > TimeSpan.Zero) { Thread.Sleep(delay); }
+                var buffer = new byte[16 * 1024];
+                while (true)
+                {
+                    Interlocked.Exchange(ref _waitingSince, Stopwatch.GetTimestamp());
+                    var n = stream.Read(buffer);
+                    Interlocked.Exchange(ref _waitingSince, NotWaiting);
+                    if (n == 0) { break; }
+                    lock (_kept) { _kept.Write(buffer.AsSpan(0, Math.Min(n, MaxGitOutputBytes - _kept.WrittenCount))); }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
+            {
+                // The process disposed the stream after a grace cut; what was read is kept.
+            }
+            finally
+            {
+                _completion.TrySetResult();
+            }
+        }
     }
 }
