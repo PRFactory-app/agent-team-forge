@@ -132,12 +132,24 @@ current session, its stable `lead_token` and recoverable sessions for the
 folder; `resume_session(session_id=...)` adopts a prior session's jobs and
 unread wake notices. Each recoverable session shows `owner_native_id`,
 `owner_live` and `is_current` (owned by this native session; a Pi lead is
-identified by its `pi:<pid>` wake target). A session bound to another live
-Claude or Pi session is not listed, and resuming it fails with `session_owned`;
-pass `force=true` only if that session is dead. Codex owners are never proven
-live, so their sessions are not guarded. A bridge whose
-parent process and folder survive a restart reconnects to the same session
-automatically.
+identified by its `pi:<pid>` wake target). A session with a known live bridge
+or native owner cannot be resumed by another lead without `force=true`.
+A bridge whose parent process and folder survive a restart reconnects to
+the same session automatically.
+
+A job request can implicitly adopt a prior session for 30 days from the job's
+last activity when the workspace, native backend and configuration home match,
+the caller has no jobs, and the old bridge is provably gone. The bridge records
+its PID, creation token and process scope. On Linux the scope is the inode
+identity from `/proc/self/ns/pid`: an invisible PID proves death only when
+that namespace matches the daemon's and `/proc/self/mountinfo` confirms a proc
+mount without restricted `hidepid` options. Missing or unreadable evidence,
+a different namespace, or restricted proc visibility requires explicit
+`resume_session(session_id=...)`. Windows and macOS retain their local process
+checks with a platform scope marker; unverified identities also require explicit
+resume. No heartbeat or inactivity timeout authorizes adoption. `read_messages`
+never adopts another session, and the lead's own jobs remain controllable
+regardless of age.
 
 `set_session_name(name="planner")` gives the current lead a display name in the
 web console and `session_info`. Names are trimmed, limited to 64 characters and

@@ -371,8 +371,11 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                         ended = true;
                         break; // Next native user input: a new turn.
                     }
+                    // Some Codex versions write task_started after input without input turn metadata.
+                    // A start record alone proves a different turn only when both IDs are known.
                     if (kind == InteractiveAgentKind.Codex && EventType(root) == "task_started"
-                        && (nativeTurn is null || !root.TryGetProperty("payload", out var start) || Str(start, "turn_id") != nativeTurn))
+                        && nativeTurn is not null && root.TryGetProperty("payload", out var start)
+                        && Str(start, "turn_id") is { } startedTurn && startedTurn != nativeTurn)
                     {
                         ended = true;
                         break;

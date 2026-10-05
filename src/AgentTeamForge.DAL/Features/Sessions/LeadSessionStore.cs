@@ -23,22 +23,25 @@ public sealed record LeadSessionInfo(string SessionId, string Workspace, string 
 /// <summary>One durable lead per MCP binding. Session IDs are explicit recovery handles.</summary>
 public sealed class LeadSessionStore(JobDatabase database)
 {
-    /// <summary>Whether a bound native session is still running; set by the daemon. Unset means never live.</summary>
+    /// <summary>Positive native liveness evidence. False/unset is unproven and cannot authorize implicit adoption.</summary>
     public Func<LeadSessionOwner, bool>? OwnerLive { get; set; }
 
-    public LeadSessionInfo Start(string workspace, string bindingKey, string? nativeKind = null, string? nativeSessionId = null, string? nativeHome = null)
+    /// <summary>True means live, false means provably gone, null/unset means unknown.</summary>
+    public Func<BridgeProcessIdentity, bool?>? BridgeLive { get; set; }
+
+    public LeadSessionInfo Start(string workspace, string bindingKey, string? nativeKind = null, string? nativeSessionId = null, string? nativeHome = null, BridgeProcessIdentity? bridge = null)
     {
         using var connection = database.OpenConnection();
         using var tx = connection.BeginTransaction(deferred: false);
-        var existing = Sessions(connection, workspace).FirstOrDefault(s => s.BindingKey == bindingKey);
+        var existing = Sessions(connection, workspace, tx).FirstOrDefault(s => s.BindingKey == bindingKey);
         var id = existing?.Id ?? Guid.NewGuid().ToString("D");
         var token = existing?.Token ?? Guid.NewGuid().ToString("N");
         using var command = connection.CreateCommand();
         command.Transaction = tx;
         command.CommandText = """
-            INSERT INTO lead_sessions(session_id,workspace,binding_key,lead_token,updated_at,native_kind,native_session_id,native_home)
-            VALUES ($id,$workspace,$binding,$token,$now,$kind,$native,$home)
-            ON CONFLICT(session_id) DO UPDATE SET binding_key=$binding, updated_at=$now, native_kind=$kind, native_session_id=$native, native_home=$home
+            INSERT INTO lead_sessions(session_id,workspace,binding_key,lead_token,updated_at,native_kind,native_session_id,native_home,bridge_pid,bridge_start_token,bridge_pid_namespace)
+            VALUES ($id,$workspace,$binding,$token,$now,$kind,$native,$home,$pid,$start,$namespace)
+            ON CONFLICT(session_id) DO UPDATE SET binding_key=$binding, updated_at=$now, native_kind=$kind, native_session_id=$native, native_home=$home, bridge_pid=$pid, bridge_start_token=$start,bridge_pid_namespace=$namespace
             """;
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$workspace", workspace);
@@ -46,6 +49,9 @@ public sealed class LeadSessionStore(JobDatabase database)
         command.Parameters.AddWithValue("$kind", (object?)nativeKind ?? DBNull.Value);
         command.Parameters.AddWithValue("$native", (object?)nativeSessionId ?? DBNull.Value);
         command.Parameters.AddWithValue("$home", (object?)nativeHome ?? DBNull.Value);
+        command.Parameters.AddWithValue("$pid", (object?)bridge?.Pid ?? DBNull.Value);
+        command.Parameters.AddWithValue("$start", (object?)bridge?.StartToken ?? DBNull.Value);
+        command.Parameters.AddWithValue("$namespace", (object?)bridge?.PidNamespace ?? DBNull.Value);
         command.Parameters.AddWithValue("$token", token);
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.ExecuteNonQuery();
@@ -56,7 +62,7 @@ public sealed class LeadSessionStore(JobDatabase database)
     }
 
     /// <summary>Adopt a session. A session bound to another live native session is refused (LiveOwner set) unless forced.</summary>
-    public (LeadSessionInfo? Session, string? LiveOwner) Resume(string id, string workspace, string bindingKey, string? nativeKind = null, string? nativeSessionId = null, string? nativeHome = null, bool force = false, string? callerWakeKey = null)
+    public (LeadSessionInfo? Session, string? LiveOwner) Resume(string id, string workspace, string bindingKey, string? nativeKind = null, string? nativeSessionId = null, string? nativeHome = null, bool force = false, string? callerWakeKey = null, BridgeProcessIdentity? bridge = null)
     {
         if (!Guid.TryParseExact(id, "D", out var parsed) || parsed.ToString("D") != id)
         {
@@ -64,10 +70,13 @@ public sealed class LeadSessionStore(JobDatabase database)
         }
         using var connection = database.OpenConnection();
         using var tx = connection.BeginTransaction(deferred: false);
-        if (!force && Sessions(connection, workspace).FirstOrDefault(s => s.Id == id) is { Owner: { } owner }
-            && !owner.Is(nativeSessionId, callerWakeKey) && IsLive(owner))
+        var previous = Sessions(connection, workspace, tx).FirstOrDefault(s => s.Id == id);
+        var sameBridge = bridge is not null && previous?.Bridge == bridge;
+        var sameNative = previous?.Owner?.Is(nativeSessionId, callerWakeKey) == true;
+        if (!force && previous is not null && !sameBridge && !sameNative
+            && (BridgeState(previous) == true || previous.Owner is { } owner && IsLive(owner)))
         {
-            return (null, owner.NativeId);
+            return (null, previous.Name ?? previous.Owner?.NativeId ?? $"bridge {previous.Bridge?.Pid}");
         }
         using var command = connection.CreateCommand();
         command.Transaction = tx;
@@ -75,13 +84,16 @@ public sealed class LeadSessionStore(JobDatabase database)
         // session, so a bridge restart under the same parent re-adopts it, not the
         // empty session it started with.
         command.CommandText = """
-            UPDATE lead_sessions SET binding_key=$binding, updated_at=$now, native_kind=$kind, native_session_id=$native, native_home=$home WHERE session_id=$id AND workspace=$workspace AND closed_at IS NULL;
+            UPDATE lead_sessions SET binding_key=$binding, updated_at=$now, native_kind=$kind, native_session_id=$native, native_home=$home, bridge_pid=$pid, bridge_start_token=$start,bridge_pid_namespace=$namespace WHERE session_id=$id AND workspace=$workspace AND closed_at IS NULL;
             SELECT changes();
             """;
         command.Parameters.AddWithValue("$binding", bindingKey);
         command.Parameters.AddWithValue("$kind", (object?)nativeKind ?? DBNull.Value);
         command.Parameters.AddWithValue("$native", (object?)nativeSessionId ?? DBNull.Value);
         command.Parameters.AddWithValue("$home", (object?)nativeHome ?? DBNull.Value);
+        command.Parameters.AddWithValue("$pid", (object?)bridge?.Pid ?? DBNull.Value);
+        command.Parameters.AddWithValue("$start", (object?)bridge?.StartToken ?? DBNull.Value);
+        command.Parameters.AddWithValue("$namespace", (object?)bridge?.PidNamespace ?? DBNull.Value);
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$workspace", workspace);
@@ -94,6 +106,93 @@ public sealed class LeadSessionStore(JobDatabase database)
         tx.Commit();
         return (Info(id, workspace), null);
     }
+
+    /// <summary>Address a retained job and atomically rebind its prior session. Native kind/home identify
+    /// the local owner across native session changes; unknown identities and managed children never auto-adopt.</summary>
+    public LeadJobReach ReachJob(string jobId, string callerId, string workspace, DateTimeOffset now, bool allowAdopt = true)
+    {
+        using var connection = database.OpenConnection();
+        using var tx = connection.BeginTransaction(deferred: false);
+        using var command = connection.CreateCommand();
+        command.Transaction = tx;
+        command.CommandText = "SELECT lead_session_id,updated_at FROM jobs WHERE job_id=$job";
+        command.Parameters.AddWithValue("$job", jobId);
+        string? lead;
+        DateTimeOffset activity;
+        using (var reader = command.ExecuteReader())
+        {
+            if (!reader.Read()) { return new("unknown_job"); }
+            lead = reader.IsDBNull(0) ? null : reader.GetString(0);
+            activity = DateTimeOffset.Parse(reader.GetString(1), System.Globalization.CultureInfo.InvariantCulture);
+        }
+        if (lead == callerId) { return new(); }
+        if (lead is null) { return new("owned_by_previous_session"); }
+        var expires = activity.AddDays(30);
+        if (now > expires) { return new("expired", PreviousSessionId: lead, ExpiresAt: expires); }
+        var rows = Sessions(connection, workspace, tx);
+        var previous = rows.FirstOrDefault(s => s.Id == lead);
+        var caller = rows.FirstOrDefault(s => s.Id == callerId);
+        if (previous is null || caller is null) { return new("owned_by_previous_session", PreviousSessionId: lead); }
+        // Absence of native liveness is not evidence of death. Legacy/null-owner sessions
+        // and bridges whose process identity cannot be checked require explicit resume.
+        if (previous.Owner is null) { return new("owned_by_previous_session", PreviousSessionId: lead); }
+        var bridgeState = BridgeState(previous);
+        if (bridgeState == true || IsLive(previous.Owner))
+        {
+            return new("owned_by_live_lead", PreviousSessionId: lead, LiveOwner: previous.Name ?? previous.Owner.NativeId);
+        }
+        if (!allowAdopt || bridgeState != false || caller.Count > 0 || caller.Owner is null || !SameOwner(previous, caller))
+        {
+            return new("owned_by_previous_session", PreviousSessionId: lead);
+        }
+        // Reuse resume_session's binding-prune model: keep the durable team/session and its inbox,
+        // rebind it to the caller instead of copying jobs or inventing a new inbox cursor.
+        command.CommandText = """
+            UPDATE lead_sessions SET binding_key=$binding,native_kind=$kind,native_session_id=$native,
+                native_home=$home,bridge_pid=$pid,bridge_start_token=$start,bridge_pid_namespace=$namespace,wake_key=$wake,updated_at=$now WHERE session_id=$lead;
+            UPDATE external_teams SET wake_key=$wake WHERE lead_session_id=$lead AND closed_at IS NULL;
+            UPDATE external_messages SET wake_key=$wake WHERE team_id=$lead AND recipient='lead' AND read_at IS NULL;
+            UPDATE wake_jobs SET target_key=$target WHERE job_id IN (SELECT job_id FROM jobs WHERE lead_session_id=$lead);
+            UPDATE lead_sessions SET binding_key='' WHERE workspace=$workspace AND binding_key=$binding AND session_id<>$lead;
+            """;
+        var wakeKey = caller.ActiveWakeKey;
+        var targetKey = wakeKey ?? "unbound:" + lead;
+        if (wakeKey is null)
+        {
+            using var park = connection.CreateCommand();
+            park.Transaction = tx;
+            park.CommandText = """
+                INSERT INTO wake_targets(target_key,generation,kind,address,secret,home,registered_at,active)
+                VALUES ($key,1,'codex','','','',$now,0) ON CONFLICT(target_key) DO NOTHING;
+                """;
+            park.Parameters.AddWithValue("$key", targetKey);
+            park.Parameters.AddWithValue("$now", now.ToString("O"));
+            park.ExecuteNonQuery();
+        }
+        command.Parameters.AddWithValue("$wake", (object?)wakeKey ?? DBNull.Value);
+        command.Parameters.AddWithValue("$target", targetKey);
+        command.Parameters.AddWithValue("$pid", (object?)caller.Bridge?.Pid ?? DBNull.Value);
+        command.Parameters.AddWithValue("$start", (object?)caller.Bridge?.StartToken ?? DBNull.Value);
+        command.Parameters.AddWithValue("$namespace", (object?)caller.Bridge?.PidNamespace ?? DBNull.Value);
+        command.Parameters.AddWithValue("$binding", caller.BindingKey);
+        command.Parameters.AddWithValue("$kind", (object?)caller.NativeKind ?? DBNull.Value);
+        command.Parameters.AddWithValue("$native", (object?)caller.Owner?.NativeId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$home", (object?)caller.NativeHome ?? DBNull.Value);
+        command.Parameters.AddWithValue("$now", now.ToString("O"));
+        command.Parameters.AddWithValue("$lead", lead);
+        command.Parameters.AddWithValue("$workspace", workspace);
+        command.ExecuteNonQuery();
+        tx.Commit();
+        return new(Session: Info(lead, workspace), PreviousSessionId: lead);
+    }
+
+    bool? BridgeState(SessionRow row) => row.Bridge is { } bridge ? BridgeLive?.Invoke(bridge) : null;
+
+    static bool SameOwner(SessionRow previous, SessionRow caller) =>
+        !previous.BindingKey.StartsWith("managed-child:", StringComparison.Ordinal)
+        && !caller.BindingKey.StartsWith("managed-child:", StringComparison.Ordinal)
+        && previous.NativeKind is { Length: > 0 } && previous.NativeKind == caller.NativeKind
+        && previous.NativeHome is { Length: > 0 } && string.Equals(previous.NativeHome, caller.NativeHome, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     public LeadSessionInfo? Info(string id, string workspace)
     {
@@ -108,7 +207,7 @@ public sealed class LeadSessionStore(JobDatabase database)
         var recoverable = sessions.Where(s => s.Id != id && s.Count > 0)
             .Select(s => (Row: s, IsCurrent: s.Owner is { } owner && current.Owner is { } self && owner.Is(self.NativeId, self.WakeKey)))
             .Select(x => new RecoverableLeadSession(x.Row.Id, x.Row.Count, x.Row.UpdatedAt, x.Row.Owner?.NativeId,
-                x.Row.Owner is { } owner && IsLive(owner), x.IsCurrent))
+                BridgeState(x.Row) == true || x.Row.Owner is { } owner && IsLive(owner), x.IsCurrent))
             .Where(s => s.IsCurrent || !s.OwnerLive).ToList();
         return new LeadSessionInfo(id, workspace, current.Token, current.Count, recoverable)
         {
@@ -242,12 +341,13 @@ public sealed class LeadSessionStore(JobDatabase database)
         }
         return result;
     }
-    static List<SessionRow> Sessions(Microsoft.Data.Sqlite.SqliteConnection connection, string workspace)
+    static List<SessionRow> Sessions(Microsoft.Data.Sqlite.SqliteConnection connection, string workspace, Microsoft.Data.Sqlite.SqliteTransaction? tx = null)
     {
         using var command = connection.CreateCommand();
+        command.Transaction = tx;
         command.CommandText = """
             SELECT s.session_id,s.binding_key,s.lead_token,s.updated_at,count(j.job_id),s.display_name,
-                s.native_session_id,t.target_key,t.kind,t.address,t.secret,t.home
+                s.native_session_id,t.target_key,t.kind,t.address,t.secret,t.home,s.native_kind,s.native_home,s.bridge_pid,s.bridge_start_token,s.bridge_pid_namespace
             FROM lead_sessions s LEFT JOIN jobs j ON j.lead_session_id=s.session_id
             LEFT JOIN wake_targets t ON t.target_key=s.wake_key AND t.active=1
             WHERE s.workspace=$workspace AND s.closed_at IS NULL GROUP BY s.session_id ORDER BY s.updated_at DESC
@@ -260,12 +360,17 @@ public sealed class LeadSessionStore(JobDatabase database)
             string? Text(int i) => reader.IsDBNull(i) ? null : reader.GetString(i);
             var owner = Text(6) is { Length: > 0 } native ? new LeadSessionOwner(native, Text(7), Text(8), Text(9), Text(10), Text(11))
                 : Text(8) == "pi" ? new LeadSessionOwner(Text(7)!, Text(7), "pi", Text(9), Text(10), Text(11)) : null;
-            result.Add(new SessionRow(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt32(4), Text(5), owner));
+            result.Add(new SessionRow(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt32(4), Text(5), owner, Text(12), Text(13), Text(7),
+                reader.IsDBNull(14) || reader.IsDBNull(15) ? null : new BridgeProcessIdentity(reader.GetInt32(14), reader.GetInt64(15), reader.IsDBNull(16) ? null : reader.GetString(16))));
         }
         return result;
     }
 
-    sealed record SessionRow(string Id, string BindingKey, string Token, string UpdatedAt, int Count, string? Name, LeadSessionOwner? Owner);
+    sealed record SessionRow(string Id, string BindingKey, string Token, string UpdatedAt, int Count, string? Name, LeadSessionOwner? Owner, string? NativeKind, string? NativeHome, string? ActiveWakeKey, BridgeProcessIdentity? Bridge);
 }
 
 public sealed record NativeSessionBinding(string SessionId, string Kind, string NativeId, string? Home);
+
+public sealed record LeadJobReach(string? Error = null, LeadSessionInfo? Session = null, string? PreviousSessionId = null, string? LiveOwner = null, DateTimeOffset? ExpiresAt = null);
+
+public sealed record BridgeProcessIdentity(int Pid, long StartToken, string? PidNamespace = null);

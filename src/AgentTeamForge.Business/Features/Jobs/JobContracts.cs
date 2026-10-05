@@ -153,7 +153,11 @@ public sealed record JobDelivery(string State, string? RunId, string? SubmittedA
 }
 
 public sealed record JobRecovery(string Tool, JobRecoveryArguments Arguments);
-public sealed record JobRecoveryArguments(string JobId);
+public sealed record JobRecoveryArguments(string? JobId)
+{
+    public string? SessionId { get; init; }
+    public bool? Force { get; init; }
+}
 
 public sealed record JobResult(JobView? Job, string? Outcome, string? Error)
 {

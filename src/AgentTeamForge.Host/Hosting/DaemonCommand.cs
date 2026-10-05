@@ -237,7 +237,8 @@ public static class DaemonCommand
         dispatcher.ClaudeBridgeReady = claudeMailbox.HasRecentRelay;
         var leadSessions = new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database)
         {
-            OwnerLive = owner => LeadOwnerLiveness.IsLive(owner, claudeMailbox)
+            OwnerLive = owner => LeadOwnerLiveness.IsLive(owner, claudeMailbox),
+            BridgeLive = LeadBridgeLiveness.IsLive
         };
         var worktreeCleanup = new WorktreeCleanup(store, backends);
         var interactiveLaunch = launchMode is "herdr" or "terminal" or "wt";

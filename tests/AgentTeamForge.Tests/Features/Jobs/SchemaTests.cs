@@ -1,3 +1,4 @@
+using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Tests.Support;
@@ -24,7 +25,13 @@ public sealed class SchemaTests
             using var command = connection.CreateCommand();
             command.CommandText = """
                 DROP INDEX events_job_seq;
-                ALTER TABLE jobs DROP COLUMN requested_parent_job_id; DELETE FROM schema_migrations WHERE version=33;
+                ALTER TABLE jobs DROP COLUMN requested_parent_job_id;
+                DELETE FROM schema_migrations WHERE version=35;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_pid_namespace;
+                DELETE FROM schema_migrations WHERE version=34;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_pid;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_start_token;
+                DELETE FROM schema_migrations WHERE version=33;
                 ALTER TABLE jobs DROP COLUMN archived_at;
                 DELETE FROM schema_migrations WHERE version=32;
                 DELETE FROM schema_migrations WHERE version=31;
@@ -85,7 +92,7 @@ public sealed class SchemaTests
         using (var connection = database.OpenConnection())
         {
             using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE jobs DROP COLUMN requested_parent_job_id; DELETE FROM schema_migrations WHERE version=33; ALTER TABLE jobs DROP COLUMN archived_at; DELETE FROM schema_migrations WHERE version=32;";
+            command.CommandText = "ALTER TABLE jobs DROP COLUMN requested_parent_job_id; DELETE FROM schema_migrations WHERE version=35; ALTER TABLE lead_sessions DROP COLUMN bridge_pid_namespace; DELETE FROM schema_migrations WHERE version=34; ALTER TABLE lead_sessions DROP COLUMN bridge_pid; ALTER TABLE lead_sessions DROP COLUMN bridge_start_token; DELETE FROM schema_migrations WHERE version=33; ALTER TABLE jobs DROP COLUMN archived_at; DELETE FROM schema_migrations WHERE version=32;";
             command.ExecuteNonQuery();
         }
         var upgraded = JobDatabase.Open(path, TimeSpan.FromSeconds(1));
@@ -97,6 +104,61 @@ public sealed class SchemaTests
         using var column = query.ExecuteReader();
         Assert.True(column.Read());
         Assert.Equal(("TEXT", 0L), (column.GetString(0), column.GetInt64(1)));
+    }
+
+    [Fact]
+    public void Version_32_backup_copy_upgrades_through_bridge_and_queue_migrations_without_changing_source()
+    {
+        using var fixture = new JobFixture();
+        using var copyDir = new TempStateDir();
+        var root = fixture.Submit("upgrade-root");
+        var claim = fixture.Store.BeginNextAttempt()!;
+        var run = new RunRef(root.JobId, claim.RunId, claim.Generation, claim.Correlation);
+        fixture.Store.RecordSession(run, "upgrade-session");
+        fixture.Store.Complete(run, "preserved result");
+        var child = new FollowUpJob(fixture.Store, JobFixture.Operator, fixture.Accept())
+            .Execute(new FollowUpRequest(root.JobId, "queued child", "upgrade-child") { Defer = true }).Job!;
+        // Build a private v32 fixture, then upgrade only its SQLite backup copy.
+        using (var source = fixture.Database.OpenConnection())
+        using (var downgrade = source.CreateCommand())
+        {
+            downgrade.CommandText = """
+                ALTER TABLE jobs DROP COLUMN requested_parent_job_id;
+                DELETE FROM schema_migrations WHERE version=35;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_pid_namespace;
+                DELETE FROM schema_migrations WHERE version=34;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_pid;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_start_token;
+                DELETE FROM schema_migrations WHERE version=33;
+                """;
+            downgrade.ExecuteNonQuery();
+        }
+        var copy = copyDir.File("upgrade-copy.db");
+        JobDatabase.Backup(fixture.DatabasePath, copy, TimeSpan.FromSeconds(1));
+        var upgraded = JobDatabase.Open(copy, TimeSpan.FromSeconds(1));
+        var recovered = new JobStore(upgraded, DurabilityCheckpoints.None);
+        Assert.Equal("preserved result", recovered.GetJob(root.JobId)!.ResultText);
+        Assert.Equal(JobStatus.Queued, recovered.GetJob(child.JobId)!.Status);
+        using (var check = upgraded.OpenConnection())
+        using (var query = check.CreateCommand())
+        {
+            query.CommandText = "SELECT max(version) FROM schema_migrations";
+            Assert.Equal((long)AgentTeamForge.DAL.Migrations.Schema.CurrentVersion, query.ExecuteScalar());
+            query.CommandText = "SELECT requested_parent_job_id FROM jobs WHERE job_id=$id";
+            query.Parameters.AddWithValue("$id", child.JobId);
+            Assert.Equal(root.JobId, query.ExecuteScalar());
+            query.CommandText = "SELECT bridge_pid,bridge_start_token,bridge_pid_namespace FROM lead_sessions LIMIT 1";
+            using (var bridgeColumns = query.ExecuteReader()) { Assert.Equal(3, bridgeColumns.FieldCount); }
+            query.CommandText = "PRAGMA foreign_key_check";
+            using var violations = query.ExecuteReader();
+            Assert.False(violations.Read());
+        }
+        using var unchanged = fixture.Database.OpenConnection();
+        using var original = unchanged.CreateCommand();
+        original.CommandText = "SELECT max(version) FROM schema_migrations";
+        Assert.Equal(32L, original.ExecuteScalar());
+        original.CommandText = "SELECT count(*) FROM pragma_table_info('jobs') WHERE name='requested_parent_job_id'";
+        Assert.Equal(0L, original.ExecuteScalar());
     }
 
     [Fact]
@@ -220,7 +282,13 @@ public sealed class SchemaTests
             using var command = connection.CreateCommand();
             command.CommandText = """
                 DROP INDEX events_job_seq;
-                ALTER TABLE jobs DROP COLUMN requested_parent_job_id; DELETE FROM schema_migrations WHERE version=33;
+                ALTER TABLE jobs DROP COLUMN requested_parent_job_id;
+                DELETE FROM schema_migrations WHERE version=35;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_pid_namespace;
+                DELETE FROM schema_migrations WHERE version=34;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_pid;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_start_token;
+                DELETE FROM schema_migrations WHERE version=33;
                 ALTER TABLE jobs DROP COLUMN archived_at;
                 DELETE FROM schema_migrations WHERE version=32;
                 DELETE FROM schema_migrations WHERE version=31;
@@ -331,7 +399,13 @@ public sealed class SchemaTests
             using var command = connection.CreateCommand();
             command.CommandText = """
                 DROP INDEX events_job_seq;
-                ALTER TABLE jobs DROP COLUMN requested_parent_job_id; DELETE FROM schema_migrations WHERE version=33;
+                ALTER TABLE jobs DROP COLUMN requested_parent_job_id;
+                DELETE FROM schema_migrations WHERE version=35;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_pid_namespace;
+                DELETE FROM schema_migrations WHERE version=34;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_pid;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_start_token;
+                DELETE FROM schema_migrations WHERE version=33;
                 ALTER TABLE jobs DROP COLUMN archived_at;
                 DELETE FROM schema_migrations WHERE version=32;
                 DELETE FROM schema_migrations WHERE version=31;
