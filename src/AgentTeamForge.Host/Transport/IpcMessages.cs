@@ -50,6 +50,7 @@ public sealed record IpcRequest
     public bool IncludeUsage { get; init; }
     public bool ExcludeArchived { get; init; }
     public bool IncludeInstruction { get; init; }
+    public AgentTeamForge.DAL.Features.Sessions.BridgeProcessIdentity? BridgeProcess { get; init; }
     public string? NativeKind { get; init; }
     public string? NativeSessionId { get; init; }
     public string? NativeHome { get; init; }

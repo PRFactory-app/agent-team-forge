@@ -24,6 +24,9 @@ public sealed class SchemaTests
             using var command = connection.CreateCommand();
             command.CommandText = """
                 DROP INDEX events_job_seq;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_pid;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_start_token;
+                DELETE FROM schema_migrations WHERE version=33;
                 ALTER TABLE jobs DROP COLUMN archived_at;
                 DELETE FROM schema_migrations WHERE version=32;
                 DELETE FROM schema_migrations WHERE version=31;
@@ -84,14 +87,14 @@ public sealed class SchemaTests
         using (var connection = database.OpenConnection())
         {
             using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE jobs DROP COLUMN archived_at; DELETE FROM schema_migrations WHERE version=32;";
+            command.CommandText = "ALTER TABLE lead_sessions DROP COLUMN bridge_pid; ALTER TABLE lead_sessions DROP COLUMN bridge_start_token; DELETE FROM schema_migrations WHERE version=33; ALTER TABLE jobs DROP COLUMN archived_at; DELETE FROM schema_migrations WHERE version=32;";
             command.ExecuteNonQuery();
         }
         var upgraded = JobDatabase.Open(path, TimeSpan.FromSeconds(1));
         using var check = upgraded.OpenConnection();
         using var query = check.CreateCommand();
         query.CommandText = "SELECT max(version) FROM schema_migrations";
-        Assert.Equal(32L, query.ExecuteScalar());
+        Assert.Equal((long)AgentTeamForge.DAL.Migrations.Schema.CurrentVersion, query.ExecuteScalar());
         query.CommandText = "SELECT type, \"notnull\" FROM pragma_table_info('jobs') WHERE name='archived_at'";
         using var column = query.ExecuteReader();
         Assert.True(column.Read());
@@ -219,6 +222,9 @@ public sealed class SchemaTests
             using var command = connection.CreateCommand();
             command.CommandText = """
                 DROP INDEX events_job_seq;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_pid;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_start_token;
+                DELETE FROM schema_migrations WHERE version=33;
                 ALTER TABLE jobs DROP COLUMN archived_at;
                 DELETE FROM schema_migrations WHERE version=32;
                 DELETE FROM schema_migrations WHERE version=31;
@@ -329,6 +335,9 @@ public sealed class SchemaTests
             using var command = connection.CreateCommand();
             command.CommandText = """
                 DROP INDEX events_job_seq;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_pid;
+                ALTER TABLE lead_sessions DROP COLUMN bridge_start_token;
+                DELETE FROM schema_migrations WHERE version=33;
                 ALTER TABLE jobs DROP COLUMN archived_at;
                 DELETE FROM schema_migrations WHERE version=32;
                 DELETE FROM schema_migrations WHERE version=31;

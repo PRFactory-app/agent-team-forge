@@ -105,7 +105,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             {
                 return new IpcResponse(false, JobErrors.InvalidRequest);
             }
-            return new IpcResponse(true, Outcome: "session", Session: sessions.Start(request.Workspace!, request.BindingKey!, request.NativeKind, request.NativeSessionId, request.NativeHome));
+            return new IpcResponse(true, Outcome: "session", Session: sessions.Start(request.Workspace!, request.BindingKey!, request.NativeKind, request.NativeSessionId, request.NativeHome, request.BridgeProcess));
         }
         if (request.Op == IpcProtocol.SessionResume)
         {
@@ -113,7 +113,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             {
                 return new IpcResponse(false, JobErrors.InvalidRequest);
             }
-            var (resumed, liveOwner) = sessions.Resume(request.LeadSessionId, request.Workspace!, request.BindingKey!, request.NativeKind, request.NativeSessionId, request.NativeHome, request.Force, request.WakeKey);
+            var (resumed, liveOwner) = sessions.Resume(request.LeadSessionId, request.Workspace!, request.BindingKey!, request.NativeKind, request.NativeSessionId, request.NativeHome, request.Force, request.WakeKey, request.BridgeProcess);
             return liveOwner is not null
                 ? new IpcResponse(false, JobErrors.SessionOwned, ErrorDetail: $"Session {request.LeadSessionId} is bound to live native session {liveOwner}; adopting it would take over that lead's wakes and results. Pass force=true only if that session is dead.")
                 : resumed is null ? new IpcResponse(false, JobErrors.NotFound) : new IpcResponse(true, Outcome: "resumed", Session: resumed);
@@ -181,21 +181,17 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
         if (addressed && request.LeadSessionId is { } caller && request.Workspace is { } workspace && sessions is not null)
         {
             var jobId = request.JobId;
-            if (request.Op == IpcProtocol.ExternalLeadRead && jobId is null)
-            {
-                jobId = sessions.RecoverableJob(caller, workspace, DateTimeOffset.UtcNow);
-            }
             if (jobId is not null || request.Op != IpcProtocol.ExternalLeadRead)
             {
-                var reach = sessions.ReachJob(jobId ?? string.Empty, caller, workspace, DateTimeOffset.UtcNow);
+                var reach = sessions.ReachJob(jobId ?? string.Empty, caller, workspace, DateTimeOffset.UtcNow, allowAdopt: request.Op != IpcProtocol.ExternalLeadRead);
                 if (reach.Error is { } error)
                 {
-                    var tool = error is "owned_by_live_lead" or "owned_by_previous_session" ? "resume_session" : "list_jobs";
+                    var tool = reach.PreviousSessionId is not null && (error is "owned_by_live_lead" or "owned_by_previous_session") ? "resume_session" : "list_jobs";
                     return new IpcResponse(false, error, ErrorDetail: error switch
                     {
                         "owned_by_live_lead" => $"Job {jobId} belongs to live lead {reach.LiveOwner}. Explicit resume_session with force=true is required to take over.",
-                        "owned_by_previous_session" => "Automatic ownership cannot be established. Use explicit resume_session for the previous session if it is yours.",
-                        "expired" => "The job's 30-day reach window has expired. List jobs or submit new work.",
+                        "owned_by_previous_session" => "Implicit adoption is unavailable (unknown owner/liveness, caller already has jobs, or inbox read). Use explicit resume_session for a known prior session if it is yours; unscoped jobs require the local operator.",
+                        "expired" => "The job's 30-day cross-session reach window since last activity has expired. List jobs or submit new work.",
                         _ => "Unknown job. Use list_jobs to find an existing job."
                     })
                     {
@@ -507,7 +503,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     void MarkParentWakeRead(IpcRequest request, string? parentJobId)
     {
         if (parentJobId is not null && jobStore is not null
-            && (request.LeadSessionId is null || jobStore.LeadCanAccess(parentJobId, request.LeadSessionId, null))
+            && (request.LeadSessionId is null || jobStore.LeadOwnsJob(parentJobId, request.LeadSessionId))
             && jobStore.GetJob(parentJobId) is { } parent)
         {
             MarkWakeRead(request, parent.JobId, parent.Status, parent.Revision);

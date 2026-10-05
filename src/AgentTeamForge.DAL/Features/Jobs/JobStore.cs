@@ -1308,16 +1308,10 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return (IReadOnlyList<JobSummaryRecord>)jobs;
     });
 
-    /// <summary>
-    /// Whether a lead may address this job by id: its own jobs and unscoped (CLI,
-    /// connector or pre-session) jobs always; with a workspace, also sibling leads'
-    /// jobs there, so jobs shown by list_jobs(all_workspace) can be inspected.
-    /// </summary>
-    public bool LeadCanAccess(string jobId, string leadSessionId, string? workspace) => Read(connection =>
-        Scalar(connection, null, """
-            SELECT count(*) FROM jobs WHERE job_id=$id AND (lead_session_id IS NULL OR lead_session_id=$lead
-                OR ($workspace IS NOT NULL AND lead_session_id IN (SELECT session_id FROM lead_sessions WHERE workspace=$workspace)))
-            """, ("$id", jobId), ("$lead", leadSessionId), ("$workspace", workspace)) == 1);
+    /// <summary>Whether a lead owns this job for scoped wake acknowledgments.</summary>
+    public bool LeadOwnsJob(string jobId, string leadSessionId) => Read(connection =>
+        Scalar(connection, null, "SELECT count(*) FROM jobs WHERE job_id=$id AND lead_session_id=$lead",
+            ("$id", jobId), ("$lead", leadSessionId)) == 1);
 
     public long CountUnattemptedIntents() => Read(connection => Scalar(connection, null, "SELECT count(*) FROM dispatch_intents WHERE state='unattempted'"));
 

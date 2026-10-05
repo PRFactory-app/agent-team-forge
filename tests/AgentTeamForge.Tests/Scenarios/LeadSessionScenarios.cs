@@ -12,7 +12,7 @@ public sealed class LeadSessionScenarios
         using var rig = new SpikeRig();
         await rig.InitAsync();
         await rig.StartDaemonAsync();
-        var (_, first) = await rig.StartBridgeAsync("lead-one", environment: new Dictionary<string, string> { ["CLAUDE_CODE_SESSION_ID"] = "old-native" });
+        var (firstProcess, first) = await rig.StartBridgeAsync("lead-one", environment: new Dictionary<string, string> { ["CLAUDE_CODE_SESSION_ID"] = "old-native" });
         var (_, second) = await rig.StartBridgeAsync("lead-two", environment: new Dictionary<string, string> { ["CLAUDE_CODE_SESSION_ID"] = "new-native" });
         var submitted = await SpikeRig.CallAsync(first, "submit_job", new()
         {
@@ -23,6 +23,8 @@ public sealed class LeadSessionScenarios
         });
         var jobId = submitted.Job!.JobId;
         await rig.WaitForStatusAsync(jobId, AgentTeamForge.DAL.Features.Jobs.JobStatus.NeedsReconciliation);
+        Assert.Equal("owned_by_live_lead", (await SpikeRig.CallAsync(second, "get_job", new() { ["job_id"] = jobId })).Error);
+        OwnedProcesses.KillAbruptly(firstProcess);
         Assert.True((await SpikeRig.CallAsync(second, "get_job", new() { ["job_id"] = jobId })).Ok);
         var stopped = await SpikeRig.CallAsync(second, "stop_job", new() { ["job_id"] = jobId });
         Assert.True(stopped.Ok);
