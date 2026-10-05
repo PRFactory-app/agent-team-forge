@@ -95,6 +95,81 @@ public sealed class LeadSessionStore(JobDatabase database)
         return (Info(id, workspace), null);
     }
 
+    /// <summary>Address a retained job and atomically rebind its prior session. Native kind/home identify
+    /// the local owner across native session changes; unknown identities and managed children never auto-adopt.</summary>
+    public LeadJobReach ReachJob(string jobId, string callerId, string workspace, DateTimeOffset now)
+    {
+        using var connection = database.OpenConnection();
+        using var tx = connection.BeginTransaction(deferred: false);
+        using var command = connection.CreateCommand();
+        command.Transaction = tx;
+        command.CommandText = "SELECT lead_session_id,accepted_at FROM jobs WHERE job_id=$job";
+        command.Parameters.AddWithValue("$job", jobId);
+        string? lead;
+        DateTimeOffset accepted;
+        using (var reader = command.ExecuteReader())
+        {
+            if (!reader.Read()) { return new("unknown_job"); }
+            lead = reader.IsDBNull(0) ? null : reader.GetString(0);
+            accepted = DateTimeOffset.Parse(reader.GetString(1), System.Globalization.CultureInfo.InvariantCulture);
+        }
+        var expires = accepted.AddDays(30);
+        if (now > expires) { return new("expired", PreviousSessionId: lead, ExpiresAt: expires); }
+        if (lead is null || lead == callerId) { return new(); }
+        var rows = Sessions(connection, workspace);
+        var previous = rows.FirstOrDefault(s => s.Id == lead);
+        var caller = rows.FirstOrDefault(s => s.Id == callerId);
+        if (previous is null || caller is null) { return new("owned_by_previous_session", PreviousSessionId: lead); }
+        if (previous.Owner is { } owner && !owner.Is(caller.Owner?.NativeId, caller.Owner?.WakeKey) && IsLive(owner))
+        {
+            return new("owned_by_live_lead", PreviousSessionId: lead, LiveOwner: previous.Name ?? owner.NativeId);
+        }
+        if (!SameOwner(previous, caller)) { return new("owned_by_previous_session", PreviousSessionId: lead); }
+        // Reuse resume_session's binding-prune model: keep the durable team/session and its inbox,
+        // rebind it to the caller instead of copying jobs or inventing a new inbox cursor.
+        command.CommandText = """
+            UPDATE lead_sessions SET binding_key=$binding,native_kind=$kind,native_session_id=$native,
+                native_home=$home,updated_at=$now WHERE session_id=$lead;
+            UPDATE lead_sessions SET binding_key='' WHERE workspace=$workspace AND binding_key=$binding AND session_id<>$lead;
+            """;
+        command.Parameters.AddWithValue("$binding", caller.BindingKey);
+        command.Parameters.AddWithValue("$kind", (object?)caller.NativeKind ?? DBNull.Value);
+        command.Parameters.AddWithValue("$native", (object?)caller.Owner?.NativeId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$home", (object?)caller.NativeHome ?? DBNull.Value);
+        command.Parameters.AddWithValue("$now", now.ToString("O"));
+        command.Parameters.AddWithValue("$lead", lead);
+        command.Parameters.AddWithValue("$workspace", workspace);
+        command.ExecuteNonQuery();
+        tx.Commit();
+        return new(Session: Info(lead, workspace), PreviousSessionId: lead);
+    }
+
+    // read_messages has no required job id. Recover the most recently active eligible prior team
+    // when this bridge has no jobs, or when a sender names a managed child via job_id.
+    public string? RecoverableJob(string callerId, string workspace, DateTimeOffset now)
+    {
+        using var connection = database.OpenConnection();
+        var rows = Sessions(connection, workspace);
+        var caller = rows.FirstOrDefault(s => s.Id == callerId);
+        if (caller is null || caller.Count > 0) { return null; }
+        foreach (var row in rows.Where(s => s.Count > 0 && SameOwner(s, caller)
+            && (s.Owner is null || s.Owner.Is(caller.Owner?.NativeId, caller.Owner?.WakeKey) || !IsLive(s.Owner))))
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT job_id FROM jobs WHERE lead_session_id=$lead AND accepted_at >= $cutoff ORDER BY updated_at DESC LIMIT 1";
+            command.Parameters.AddWithValue("$lead", row.Id);
+            command.Parameters.AddWithValue("$cutoff", now.AddDays(-30).ToString("O"));
+            if (command.ExecuteScalar() is string job) { return job; }
+        }
+        return null;
+    }
+
+    static bool SameOwner(SessionRow previous, SessionRow caller) =>
+        !previous.BindingKey.StartsWith("managed-child:", StringComparison.Ordinal)
+        && !caller.BindingKey.StartsWith("managed-child:", StringComparison.Ordinal)
+        && previous.NativeKind is { Length: > 0 } && previous.NativeKind == caller.NativeKind
+        && previous.NativeHome is { Length: > 0 } && string.Equals(previous.NativeHome, caller.NativeHome, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
     public LeadSessionInfo? Info(string id, string workspace)
     {
         using var connection = database.OpenConnection();
@@ -247,7 +322,7 @@ public sealed class LeadSessionStore(JobDatabase database)
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT s.session_id,s.binding_key,s.lead_token,s.updated_at,count(j.job_id),s.display_name,
-                s.native_session_id,t.target_key,t.kind,t.address,t.secret,t.home
+                s.native_session_id,t.target_key,t.kind,t.address,t.secret,t.home,s.native_kind,s.native_home
             FROM lead_sessions s LEFT JOIN jobs j ON j.lead_session_id=s.session_id
             LEFT JOIN wake_targets t ON t.target_key=s.wake_key AND t.active=1
             WHERE s.workspace=$workspace AND s.closed_at IS NULL GROUP BY s.session_id ORDER BY s.updated_at DESC
@@ -260,12 +335,14 @@ public sealed class LeadSessionStore(JobDatabase database)
             string? Text(int i) => reader.IsDBNull(i) ? null : reader.GetString(i);
             var owner = Text(6) is { Length: > 0 } native ? new LeadSessionOwner(native, Text(7), Text(8), Text(9), Text(10), Text(11))
                 : Text(8) == "pi" ? new LeadSessionOwner(Text(7)!, Text(7), "pi", Text(9), Text(10), Text(11)) : null;
-            result.Add(new SessionRow(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt32(4), Text(5), owner));
+            result.Add(new SessionRow(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt32(4), Text(5), owner, Text(12), Text(13)));
         }
         return result;
     }
 
-    sealed record SessionRow(string Id, string BindingKey, string Token, string UpdatedAt, int Count, string? Name, LeadSessionOwner? Owner);
+    sealed record SessionRow(string Id, string BindingKey, string Token, string UpdatedAt, int Count, string? Name, LeadSessionOwner? Owner, string? NativeKind, string? NativeHome);
 }
 
 public sealed record NativeSessionBinding(string SessionId, string Kind, string NativeId, string? Home);
+
+public sealed record LeadJobReach(string? Error = null, LeadSessionInfo? Session = null, string? PreviousSessionId = null, string? LiveOwner = null, DateTimeOffset? ExpiresAt = null);

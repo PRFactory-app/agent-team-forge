@@ -176,16 +176,40 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             return new IpcResponse(false, JobErrors.InvalidRequest,
                 ErrorDetail: "Unknown lead session for this workspace; restart the MCP bridge (session_info) and retry.");
         }
-        // Reads reach any job in the lead's workspace; stop and follow-up only its own,
-        // plus a fenced job whose original lead session was lost during a restart.
-        var reads = request.Op is IpcProtocol.JobGet or IpcProtocol.JobOutput or IpcProtocol.JobActivity;
-        if (request.LeadSessionId is not null && (reads || request.Op is IpcProtocol.JobStop or IpcProtocol.JobRelease or IpcProtocol.JobStopAgent or IpcProtocol.JobRemoveWorktree or IpcProtocol.JobFollowUp)
-            && (jobStore is null || request.JobId is null
-                || !jobStore.LeadCanAccess(request.JobId, request.LeadSessionId,
-                    reads || jobStore.GetJob(request.JobId)?.Status == JobStatus.NeedsReconciliation ? request.Workspace : null)))
+        var addressed = request.Op is IpcProtocol.JobGet or IpcProtocol.JobFollowUp or IpcProtocol.JobStop or IpcProtocol.ExternalLeadRead
+            or IpcProtocol.JobOutput or IpcProtocol.JobActivity or IpcProtocol.JobRelease or IpcProtocol.JobStopAgent or IpcProtocol.JobRemoveWorktree;
+        if (addressed && request.LeadSessionId is { } caller && request.Workspace is { } workspace && sessions is not null)
         {
-            return new IpcResponse(false, JobErrors.NotFound,
-                ErrorDetail: $"Job {request.JobId} is not visible to this lead session (another lead's job, or pruned).");
+            var jobId = request.JobId;
+            if (request.Op == IpcProtocol.ExternalLeadRead && jobId is null)
+            {
+                jobId = sessions.RecoverableJob(caller, workspace, DateTimeOffset.UtcNow);
+            }
+            if (jobId is not null || request.Op != IpcProtocol.ExternalLeadRead)
+            {
+                var reach = sessions.ReachJob(jobId ?? string.Empty, caller, workspace, DateTimeOffset.UtcNow);
+                if (reach.Error is { } error)
+                {
+                    var tool = error is "owned_by_live_lead" or "owned_by_previous_session" ? "resume_session" : "list_jobs";
+                    return new IpcResponse(false, error, ErrorDetail: error switch
+                    {
+                        "owned_by_live_lead" => $"Job {jobId} belongs to live lead {reach.LiveOwner}. Explicit resume_session with force=true is required to take over.",
+                        "owned_by_previous_session" => "Automatic ownership cannot be established. Use explicit resume_session for the previous session if it is yours.",
+                        "expired" => "The job's 30-day reach window has expired. List jobs or submit new work.",
+                        _ => "Unknown job. Use list_jobs to find an existing job."
+                    })
+                    {
+                        Recovery = new JobRecovery(tool, new JobRecoveryArguments(null)
+                        { SessionId = tool == "resume_session" ? reach.PreviousSessionId : null, Force = error == "owned_by_live_lead" ? true : null }),
+                        OwnerLead = reach.LiveOwner,
+                        ReachExpiresAt = reach.ExpiresAt
+                    };
+                }
+                if (reach.Session is { } adopted)
+                {
+                    return Handle(request with { LeadSessionId = adopted.SessionId }) with { Session = adopted };
+                }
+            }
         }
         switch (request.Op)
         {

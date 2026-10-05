@@ -83,6 +83,8 @@ public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome 
 {
     public string? FencingJobId { get; init; }
     public JobRecovery? Recovery { get; init; }
+    public string? OwnerLead { get; init; }
+    public DateTimeOffset? ReachExpiresAt { get; init; }
 
     // Flat aliases keep the external MCP replies usable by win-agent-teams skills.
     public bool Success => Ok;

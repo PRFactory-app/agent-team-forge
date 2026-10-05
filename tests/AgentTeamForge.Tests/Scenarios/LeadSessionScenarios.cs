@@ -12,8 +12,8 @@ public sealed class LeadSessionScenarios
         using var rig = new SpikeRig();
         await rig.InitAsync();
         await rig.StartDaemonAsync();
-        var (_, first) = await rig.StartBridgeAsync("lead-one");
-        var (_, second) = await rig.StartBridgeAsync("lead-two");
+        var (_, first) = await rig.StartBridgeAsync("lead-one", environment: new Dictionary<string, string> { ["CLAUDE_CODE_SESSION_ID"] = "old-native" });
+        var (_, second) = await rig.StartBridgeAsync("lead-two", environment: new Dictionary<string, string> { ["CLAUDE_CODE_SESSION_ID"] = "new-native" });
         var submitted = await SpikeRig.CallAsync(first, "submit_job", new()
         {
             ["backend"] = "fake",
@@ -75,7 +75,7 @@ public sealed class LeadSessionScenarios
         await rig.StartDaemonAsync();
         var (ownerProcess, owner) = await rig.StartBridgeAsync("lead-one", environment: new Dictionary<string, string> { ["CLAUDE_CODE_SESSION_ID"] = "native-a" });
         var ownerSession = (await SpikeRig.CallAsync(owner, "session_info", [])).Session!;
-        Assert.True((await SpikeRig.CallAsync(owner, "submit_job", new() { ["backend"] = "fake", ["instruction"] = "x", ["idempotency_key"] = "k" })).Ok);
+        var jobId = (await SpikeRig.CallAsync(owner, "submit_job", new() { ["backend"] = "fake", ["instruction"] = "x", ["idempotency_key"] = "k" })).Job!.JobId;
         // Bind the owner's session to a Claude wake target whose host pid is the live owner bridge.
         using (var connection = new SqliteConnection($"Data Source={Path.Combine(rig.StateDir, "jobs.db")}"))
         {
@@ -94,6 +94,9 @@ public sealed class LeadSessionScenarios
         var (_, other) = await rig.StartBridgeAsync("lead-two", environment: new Dictionary<string, string> { ["CLAUDE_CODE_SESSION_ID"] = "native-b" });
         Assert.DoesNotContain((await SpikeRig.CallAsync(other, "session_info", [])).Session!.RecoverableSessions,
             s => s.SessionId == ownerSession.SessionId);
+        var denied = await SpikeRig.CallAsync(other, "get_job", new() { ["job_id"] = jobId });
+        Assert.Equal("owned_by_live_lead", denied.Error);
+        Assert.Equal(ownerSession.SessionId, denied.Recovery!.Arguments.SessionId);
         var refused = await SpikeRig.CallAsync(other, "resume_session", new() { ["session_id"] = ownerSession.SessionId });
         Assert.Equal("session_owned", refused.Error);
 
@@ -101,6 +104,7 @@ public sealed class LeadSessionScenarios
         var listed = Assert.Single((await SpikeRig.CallAsync(other, "session_info", [])).Session!.RecoverableSessions,
             s => s.SessionId == ownerSession.SessionId);
         Assert.Equal(("native-a", false), (listed.OwnerNativeId, listed.OwnerLive));
-        Assert.True((await SpikeRig.CallAsync(other, "resume_session", new() { ["session_id"] = ownerSession.SessionId })).Ok);
+        Assert.True((await SpikeRig.CallAsync(other, "get_job", new() { ["job_id"] = jobId })).Ok);
+        Assert.Equal(ownerSession.SessionId, (await SpikeRig.CallAsync(other, "session_info", [])).Session!.SessionId);
     }
 }
