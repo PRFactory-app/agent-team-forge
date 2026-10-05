@@ -293,10 +293,13 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             {
                 return null;
             }
+            DateTimeOffset? lastActivity = null;
+            string? nativeTurn = null;
             var markerSeen = false;
             var completed = false;
             var ended = false;
             var incomplete = false;
+            var interrupted = false;
             string? last = null;
             InteractiveApiError? apiError = null;
             DateTimeOffset? rateLimitReset = null;
@@ -329,8 +332,15 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                     {
                         // Bind only on a native user record; echoes and metadata never bind.
                         markerSeen = userText?.Contains(marker, StringComparison.Ordinal) == true;
+                        if (markerSeen && root.TryGetProperty("payload", out var input)
+                            && input.TryGetProperty("internal_chat_message_metadata_passthrough", out var metadata))
+                        {
+                            nativeTurn = Str(metadata, "turn_id");
+                        }
+                        if (markerSeen && DateTimeOffset.TryParse(Str(root, "timestamp"), out var inputAt)) { lastActivity = inputAt; }
                         continue;
                     }
+                    if (DateTimeOffset.TryParse(Str(root, "timestamp"), out var activityAt)) { lastActivity = activityAt; }
                     if (kind == InteractiveAgentKind.Claude && Str(root, "type") == "user"
                         && root.TryGetProperty("message", out var notificationMessage)
                         && notificationMessage.TryGetProperty("content", out var notificationContent)
@@ -361,7 +371,11 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                         ended = true;
                         break; // Next native user input: a new turn.
                     }
-                    if (kind == InteractiveAgentKind.Codex && EventType(root) == "task_started")
+                    // Some Codex versions write task_started after input without input turn metadata.
+                    // A start record alone proves a different turn only when both IDs are known.
+                    if (kind == InteractiveAgentKind.Codex && EventType(root) == "task_started"
+                        && nativeTurn is not null && root.TryGetProperty("payload", out var start)
+                        && Str(start, "turn_id") is { } startedTurn && startedTurn != nativeTurn)
                     {
                         ended = true;
                         break;
@@ -387,14 +401,21 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                             endedOnBackground = turnEnded && !completed;
                             apiError = ApiError(root, rateLimitReset);
                         }
-                        else if (apiError is not null && Str(root, "type") == "system" && Str(root, "subtype") == "turn_duration")
+                        else if (Str(root, "type") == "system" && Str(root, "subtype") == "turn_duration")
                         {
-                            apiError = apiError with { TurnEnded = true };
+                            if (apiError is not null) { apiError = apiError with { TurnEnded = true }; }
+                            completed = backgroundTools.Count == 0 && backgroundTasks.Count == 0;
                         }
                     }
                     else
                     {
-                        completed |= CompletedTurn(root, kind);
+                        var matchesTurn = nativeTurn is null || !root.TryGetProperty("payload", out var completion)
+                            || Str(completion, "turn_id") is null || Str(completion, "turn_id") == nativeTurn;
+                        completed |= matchesTurn && CompletedTurn(root, kind);
+                        interrupted |= matchesTurn && kind == InteractiveAgentKind.Codex && EventType(root) == "turn_aborted";
+                        if (interrupted) { break; }
+                        if (completed && last is null && kind == InteractiveAgentKind.Codex
+                            && root.TryGetProperty("payload", out var final)) { last = Str(final, "last_agent_message"); }
                         if (kind == InteractiveAgentKind.Codex && (CodexLoginError(root) ?? CodexTurnError(root)) is { } turnError) { apiError = turnError; }
                     }
                     if (AssistantText(root, kind) is { } text)
@@ -409,7 +430,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             if (!markerSeen) { return null; }
             return new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress, completed, pending,
                 ApiError: backgroundTools.Count == 0 && backgroundTasks.Count == 0 ? apiError : null, Times: times, Superseded: ended, Incomplete: incomplete)
-            { WaitingOnBackground = pending && endedOnBackground };
+            { WaitingOnBackground = pending && endedOnBackground, LastActivityAt = lastActivity, Interrupted = interrupted };
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
@@ -700,10 +721,12 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
         }
         if (kind == InteractiveAgentKind.Claude)
         {
-            // Claude writes each content block as its own record; a thinking-only end_turn
-            // record can precede the final text, so only a text-bearing one completes the turn.
+            // Claude can end after a tool report with empty content. A thinking-only
+            // block can precede final text, so it alone still needs turn_duration.
             return Str(root, "type") == "assistant" && root.TryGetProperty("message", out var message)
-                && Str(message, "stop_reason") == "end_turn" && AssistantText(root, kind) is not null;
+                && Str(message, "stop_reason") == "end_turn"
+                && (!message.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array
+                    || content.GetArrayLength() == 0 || content.EnumerateArray().Any(block => Str(block, "type") != "thinking"));
         }
         return Str(root, "type") == "message" && root.TryGetProperty("message", out var piMessage)
             && Str(piMessage, "role") == "assistant" && Str(piMessage, "stopReason") is "stop" or "end_turn";

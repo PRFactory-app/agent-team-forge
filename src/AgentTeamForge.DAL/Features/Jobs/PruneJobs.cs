@@ -12,7 +12,7 @@ public sealed class PruneJobs(JobDatabase database)
         {
             using var connection = database.OpenConnection();
             using var tx = connection.BeginTransaction(deferred: false);
-            var rows = new List<(string Id, string? Parent, bool Expired)>();
+            var rows = new List<(string Id, string? Parent, string? RequestedParent, bool Expired)>();
             using (var select = connection.CreateCommand())
             {
                 select.Transaction = tx;
@@ -25,7 +25,7 @@ public sealed class PruneJobs(JobDatabase database)
                                ON t.server=m.server AND t.work_item_id=m.work_item_id
                                WHERE m.job_id=j.job_id AND t.state='claimed')
                            OR EXISTS (SELECT 1 FROM account_parks p WHERE p.job_id=j.job_id AND p.state<>'resumed'),
-                           j.worktree_path
+                           j.worktree_path, j.requested_parent_job_id
                     FROM jobs j
                     """;
                 using var reader = select.ExecuteReader();
@@ -36,27 +36,27 @@ public sealed class PruneJobs(JobDatabase database)
                     var expired = !hasWorktree && reader.GetInt64(4) == 0 && status is "completed" or "failed" or "cancelled"
                         && DateTimeOffset.TryParse(reader.GetString(3), System.Globalization.CultureInfo.InvariantCulture,
                             System.Globalization.DateTimeStyles.None, out var updated) && updated < cutoff;
-                    rows.Add((reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1), expired));
+                    rows.Add((reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1), reader.IsDBNull(6) ? null : reader.GetString(6), expired));
                 }
             }
 
-            var parentById = rows.ToDictionary(row => row.Id, row => row.Parent, StringComparer.Ordinal);
+            var parentById = rows.ToDictionary(row => row.Id, row => new[] { row.Parent, row.RequestedParent }.OfType<string>().Distinct(StringComparer.Ordinal).ToArray(), StringComparer.Ordinal);
             var retained = rows.Where(row => !row.Expired).Select(row => row.Id).ToHashSet(StringComparer.Ordinal);
             // A retained descendant pins every ancestor, including an old terminal parent.
             var keepQueue = new Queue<string>(retained);
             while (keepQueue.TryDequeue(out var keepId))
             {
-                if (parentById[keepId] is { } parent && retained.Add(parent))
+                foreach (var parent in parentById[keepId])
                 {
-                    keepQueue.Enqueue(parent);
+                    if (retained.Add(parent)) { keepQueue.Enqueue(parent); }
                 }
             }
 
-            var pending = rows.Where(row => !retained.Contains(row.Id)).ToDictionary(row => row.Id, row => row.Parent, StringComparer.Ordinal);
+            var pending = rows.Where(row => !retained.Contains(row.Id)).ToDictionary(row => row.Id, row => new[] { row.Parent, row.RequestedParent }.OfType<string>().Distinct(StringComparer.Ordinal).ToArray(), StringComparer.Ordinal);
             var childCounts = pending.Keys.ToDictionary(id => id, _ => 0, StringComparer.Ordinal);
-            foreach (var parent in pending.Values)
+            foreach (var parent in pending.Values.SelectMany(parents => parents))
             {
-                if (parent is not null && childCounts.TryGetValue(parent, out var count))
+                if (childCounts.TryGetValue(parent, out var count))
                 {
                     childCounts[parent] = count + 1;
                 }
@@ -91,13 +91,11 @@ public sealed class PruneJobs(JobDatabase database)
                     }
                 }
                 deleted.Add(id);
-                if (pending[id] is { } parent && childCounts.TryGetValue(parent, out var count))
+                foreach (var parent in pending[id])
                 {
+                    if (!childCounts.TryGetValue(parent, out var count)) { continue; }
                     childCounts[parent] = count - 1;
-                    if (count == 1)
-                    {
-                        leaves.Enqueue(parent);
-                    }
+                    if (count == 1) { leaves.Enqueue(parent); }
                 }
             }
 

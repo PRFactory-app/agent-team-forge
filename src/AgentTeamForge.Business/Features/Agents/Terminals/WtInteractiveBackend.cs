@@ -234,6 +234,8 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
         public async IAsyncEnumerable<BackendEvidence> ReadEvidenceAsync([EnumeratorCancellation] CancellationToken cancellationToken)
         {
             var acknowledged = false;
+            var observedActivity = DateTimeOffset.MinValue;
+            string? observedWaiting = null;
             var confirmationDeadline = DateTimeOffset.UtcNow.Add(startupTimeout);
             var session = request.ResumeSessionId;
             if (session is not null)
@@ -271,6 +273,11 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
                     bindNativeSession(nativeId, launch);
                     yield return new BackendEvidence.Session(request.Correlation, nativeId);
                 }
+                if (session is not null && output is { Completed: false } && (output.Interrupted || output.Superseded))
+                {
+                    yield return new BackendEvidence.AgentError("interactive_turn_interrupted", "Native turn was interrupted by a new turn or Escape.", TurnEnded: true);
+                    yield break;
+                }
                 if (output?.ApiError is { } apiError && session is not null)
                 {
                     if (apiError.Code == "agent_rate_limited")
@@ -289,21 +296,33 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
                             _apiErrorProgressCount = output.Progress.Count;
                             _apiErrorSince = DateTimeOffset.UtcNow;
                         }
-                        if (DateTimeOffset.UtcNow - _apiErrorSince >= apiError.QuietWindow)
+                        if (output.Completed || apiError.TurnEnded || DateTimeOffset.UtcNow - _apiErrorSince >= apiError.QuietWindow)
                         {
                             _settled = true;
-                            yield return new BackendEvidence.AgentError(apiError.Code, apiError.Message);
+                            yield return new BackendEvidence.AgentError(apiError.Code, apiError.Message, output.Completed || apiError.TurnEnded);
                             yield break;
                         }
                     }
                 }
                 else { _apiErrorSince = null; _observedApiError = null; _reportedLimitDetails = null; }
-                if (output is { Completed: true, ApiError: null, Message: { Length: > 0 } message } && session is not null)
+                if (output is { Completed: true, ApiError: null } && session is not null)
                 {
                     _settled = true;
-                    yield return new BackendEvidence.Result(request.Correlation, message);
+                    yield return new BackendEvidence.Result(request.Correlation, output.Message ?? "");
                     yield return new BackendEvidence.EndOfOutput();
                     yield break;
+                }
+                if (acknowledged && output?.ApiError is null)
+                {
+                    var activity = output?.LastActivityAt ?? started;
+                    var waiting = DateTimeOffset.UtcNow - activity >= TimeSpan.FromSeconds(45) ? "awaiting_turn_end" : null;
+                    if ((output?.LastActivityAt is not null || waiting is not null)
+                        && (activity != observedActivity || waiting != observedWaiting))
+                    {
+                        observedActivity = activity;
+                        observedWaiting = waiting;
+                        yield return new BackendEvidence.TurnObservation(activity, waiting);
+                    }
                 }
                 // The agent ended its turn on a background task and waits for it to report back; the turn
                 // stays running. Reattach after a restart clears the marker.

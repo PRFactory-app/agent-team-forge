@@ -71,6 +71,7 @@ public sealed class ListJobs(JobStore store, BoundPrincipal principal, JobLogs? 
             Unread = r.Unread,
             Archived = r.Archived,
             Revision = r.Revision,
+            LastActivityAt = store.LastTurnActivity(r.JobId),
             LastActivity = logs?.LastActivity(r.JobId, r.Backend ?? ""),
         }).ToList();
         return new JobListResult(new JobListPage(jobs, limit, hasMore, hasMore ? jobs[^1].JobId : null), null);
@@ -98,6 +99,7 @@ public sealed record JobSummary(string JobId, string Status, string? ReasonCode,
     public bool? AgentLive { get; init; }
     public bool ReleaseAvailable { get; init; }
     public StartupProgress? Startup { get; init; }
+    public string? LastActivityAt { get; init; }
     public string? Backend { get; init; }
     public string? Cwd { get; init; }
     public string? Model { get; init; }

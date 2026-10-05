@@ -63,14 +63,23 @@ this branch") or call the MCP tools directly:
    resumes the same native agent session, backend and worktree. Add
    `interrupt=true` to replace a running turn. A verified live Codex TUI
    receives a prompt through `codex queue` even while busy; it runs after the
-   current turn. Other busy follow-ups wait durably; `defer=false` returns
-   `parent_not_ready` for a busy parent. `get_job` shows the native submission
-   ID when Codex acknowledges the queue call. Until Codex shows the prompt,
-   later follow-ups to that agent return `parent_not_ready`; `stop_job` on the
-   stuck job releases them, but the queued prompt may still run.
+   current turn. With the default `defer=true`, addressing any job in the
+   session chain appends durably to its tail. Queued turns retain acceptance
+   order across restarts; `defer=false` returns `parent_not_ready` for a busy
+   parent. `get_job` shows the native submission ID when Codex acknowledges the
+   queue call. Delivery is attempted once; later turns wait for native completion.
+   After 45 seconds without native activity, `get_job` and the console show
+   `awaiting_native_receipt` (prompt not observed) or `awaiting_turn_end`
+   (completion not observed), with `last_activity_at`; diagnostics also appear
+   in the job and daemon logs. A report to the lead does not end the turn.
+   A native completion event can end a turn without an assistant text reply.
+   A confirmed native abort ends the job as interrupted; a confirmed API error
+   ends it as failed with the error reason. Both release the next queued turn.
    `send_message(job_id=..., text=..., idempotency_key=...)` uses this same
    managed follow-up path. `send_message(to=...)` remains inbox messaging.
-5. **Stop** a queued or running job with `stop_job(job_id=...)`. Use
+5. **Stop** a queued or running job with `stop_job(job_id=...)`. Its queued
+   descendants are cancelled. Later turns originally addressed to an earlier
+   job remain queued in order, even if they followed the stopped job. Use
    `interrupt_job` to interrupt without another prompt, `stop_agent` to
    close an idle retained agent, and `revive_agent` to resume a dead session
    with a new instruction and idempotency key.

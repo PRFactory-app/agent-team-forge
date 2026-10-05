@@ -95,6 +95,12 @@ public sealed class InteractiveTranscriptReaderTests
             """{"type":"message","message":{"role":"user","content":[{"type":"image","data":"AA==","mimeType":"image/png"}]}}""",
             PiAssistant("human reply", "stop")], "interim", false },
         { InteractiveAgentKind.Codex, [CodexMeta, CodexStarted, CodexUser(Marker), CodexAssistant("interim")], "interim", false },
+        // A tool-only turn still ends, and a same-turn start after the input is not a new turn.
+        { InteractiveAgentKind.Codex, [CodexMeta,
+            """{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"atf-corr:turn-1"}],"internal_chat_message_metadata_passthrough":{"turn_id":"native-turn"}}}""",
+            """{"type":"event_msg","payload":{"type":"task_started","turn_id":"native-turn"}}""",
+            """{"type":"response_item","payload":{"type":"function_call_output","output":"report sent"}}""",
+            """{"type":"event_msg","payload":{"type":"task_complete","turn_id":"native-turn","last_agent_message":null}}"""], null, true },
         // Codex records the marked input twice (response_item + event_msg, either order); both are the same turn.
         { InteractiveAgentKind.Codex, [CodexMeta, CodexStarted, CodexUser(Marker), CodexEventUser(Marker), CodexAssistant("final"), CodexComplete], "final", true },
         { InteractiveAgentKind.Codex, [CodexMeta, CodexStarted, CodexEventUser(Marker), CodexUser(Marker), CodexAssistant("final"), CodexComplete], "final", true },
@@ -118,6 +124,52 @@ public sealed class InteractiveTranscriptReaderTests
         { InteractiveAgentKind.Pi, [PiHeader, PiUser(Marker), PiAssistant("interim", "toolUse"),
             PiUser("human takes over"), PiAssistant("human reply", "stop")], "interim", false },
     };
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void Task_started_after_unidentified_input_does_not_supersede_the_live_turn(bool eventInput, bool startedHasId)
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Codex);
+        File.WriteAllLines(file,
+        [
+            CodexMeta,
+            eventInput ? CodexEventUser(Marker) : CodexUser(Marker),
+            startedHasId ? """{"type":"event_msg","payload":{"type":"task_started","turn_id":"native-turn"}}""" : CodexStarted,
+            CodexAssistant("working")
+        ]);
+        var live = reader.Read(launch, Marker, DateTimeOffset.UtcNow)!;
+        Assert.False(live.Superseded);
+        Assert.False(live.Completed);
+        Assert.Equal("working", live.Message);
+        File.AppendAllLines(file, [CodexComplete]);
+        var finished = reader.Read(launch, Marker, DateTimeOffset.UtcNow)!;
+        Assert.False(finished.Superseded);
+        Assert.True(finished.Completed);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Task_started_supersedes_identified_input_only_with_a_known_different_id(bool differentId)
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Codex);
+        File.WriteAllLines(file,
+        [
+            CodexMeta,
+            """{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"atf-corr:turn-1"}],"internal_chat_message_metadata_passthrough":{"turn_id":"current-turn"}}}""",
+            differentId ? """{"type":"event_msg","payload":{"type":"task_started","turn_id":"next-turn"}}""" : CodexStarted,
+            CodexAssistant("final"),
+            CodexComplete
+        ]);
+        var transcript = reader.Read(launch, Marker, DateTimeOffset.UtcNow)!;
+        Assert.Equal(differentId, transcript.Superseded);
+        Assert.Equal(!differentId, transcript.Completed);
+    }
 
     [Theory]
     [MemberData(nameof(Turns))]
