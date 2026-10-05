@@ -57,15 +57,15 @@ public sealed class LeadSessionTests
             Workspace = first.Workspace,
             AllWorkspace = true
         }).Page!.Jobs.Count);
-        // A sibling's job listed with all_workspace can be read, but not stopped unless it is fenced.
-        Assert.True(endpoint.Handle(new IpcRequest
+        // Listing the workspace does not establish native ownership for adopting a sibling's jobs.
+        Assert.Equal("owned_by_previous_session", endpoint.Handle(new IpcRequest
         {
             Op = IpcProtocol.JobGet,
             LeadSessionId = second.SessionId,
             Workspace = second.Workspace,
             JobId = a
-        }).Ok);
-        Assert.Equal("not_found", endpoint.Handle(new IpcRequest
+        }).Error);
+        Assert.Equal("owned_by_previous_session", endpoint.Handle(new IpcRequest
         {
             Op = IpcProtocol.JobStop,
             LeadSessionId = second.SessionId,
@@ -73,7 +73,7 @@ public sealed class LeadSessionTests
             JobId = a
         }).Error);
         var other = sessions.Start("/workspace/other", "parent=3");
-        Assert.Equal("not_found", endpoint.Handle(new IpcRequest
+        Assert.Equal("owned_by_previous_session", endpoint.Handle(new IpcRequest
         {
             Op = IpcProtocol.JobGet,
             LeadSessionId = other.SessionId,

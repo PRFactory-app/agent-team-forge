@@ -50,6 +50,7 @@ public sealed record IpcRequest
     public bool IncludeUsage { get; init; }
     public bool ExcludeArchived { get; init; }
     public bool IncludeInstruction { get; init; }
+    public AgentTeamForge.DAL.Features.Sessions.BridgeProcessIdentity? BridgeProcess { get; init; }
     public string? NativeKind { get; init; }
     public string? NativeSessionId { get; init; }
     public string? NativeHome { get; init; }
@@ -83,6 +84,8 @@ public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome 
 {
     public string? FencingJobId { get; init; }
     public JobRecovery? Recovery { get; init; }
+    public string? OwnerLead { get; init; }
+    public DateTimeOffset? ReachExpiresAt { get; init; }
 
     // Flat aliases keep the external MCP replies usable by win-agent-teams skills.
     public bool Success => Ok;

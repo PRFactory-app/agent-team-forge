@@ -847,7 +847,7 @@ public sealed class WakeTests
     }
 
     [Fact]
-    public void Another_lead_reading_the_child_does_not_acknowledge_its_parent()
+    public void Another_lead_denied_the_child_does_not_acknowledge_its_parent()
     {
         using var fixture = new JobFixture();
         var (endpoint, wake, lead) = FollowUpSetup(fixture);
@@ -879,13 +879,13 @@ public sealed class WakeTests
             WakeKey = target.Key,
             WakeGeneration = target.Generation
         }).Ok);
-        Assert.True(endpoint.Handle(new IpcRequest
+        Assert.Equal("owned_by_previous_session", endpoint.Handle(new IpcRequest
         {
             Op = IpcProtocol.JobGet,
             LeadSessionId = other.SessionId,
             Workspace = other.Workspace,
             JobId = followed.Job!.JobId
-        }).Ok);
+        }).Error);
         Assert.Equal(1, Assert.Single(wake.Pending()).Unread);
     }
 
