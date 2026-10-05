@@ -80,6 +80,18 @@ on that machine. Defects found and fixed in that pass:
 - **Intel.** The private-file check only knew the arm64 `stat` layout and
   refused every state file on x86_64.
 
+## Windows results (v0.1.5, 2026-10-05)
+
+- **Claude native wake from an elevated host.** When Claude Code runs elevated
+  (an administrator without a UAC split token), Windows makes
+  BUILTIN\Administrators the owner of its `cc-msg` pipe. The bridge required
+  the pipe owner to be the current user, so every Claude lead wake failed with
+  `relay_failed` (seen on v0.1.4). Fixed: after the server PID check, an
+  Administrators-owned pipe is accepted only when the server process runs as
+  the current user. Verified on Windows 11 with a self-contained
+  `PublishAot=false` build: a real Codex job completed and the elevated Claude
+  lead received the automatic wake notice.
+
 ## Windows results (v0.1.0, 2026-09-30)
 
 Validation notes: [Claude native wake](fixes/windows-claude-native-wake-validation.md),
