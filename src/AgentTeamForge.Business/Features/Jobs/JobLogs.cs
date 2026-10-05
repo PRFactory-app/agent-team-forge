@@ -152,6 +152,8 @@ public sealed class JobLogs(string stateDirectory, Action<string>? diagnostic = 
         return last;
     }
 
+    public void WriteDiagnostic(string jobId, string text) => TryAppend(jobId, Encoding.UTF8.GetBytes("[status]\n" + text + "\n"));
+
     /// <summary>Returns a synchronous sink used by the backend's stdout and stderr readers.</summary>
     public Action<string, ReadOnlyMemory<byte>> BeginRun(string jobId, string runId, string backend)
     {

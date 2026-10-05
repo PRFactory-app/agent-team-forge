@@ -10,6 +10,31 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 
 public sealed class HerdrInteractiveBackendTests
 {
+    [Fact]
+    public async Task Native_turn_end_after_tool_report_without_text_releases_next_turn()
+    {
+        using var f = new JobFixture();
+        var lastActivity = DateTimeOffset.UtcNow.AddMinutes(-2);
+        var reader = new BoundMutableReader(new InteractiveTranscript("native-1", null) { LastActivityAt = lastActivity });
+        var backend = new HerdrInteractiveBackend(new FakeControl { Status = InteractiveAgentStatus.Working }, reader,
+            InteractiveAgentKind.Codex, Path.GetTempPath());
+        var parent = f.Submit("tool-report");
+        var next = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
+            .Execute(new FollowUpRequest(parent.JobId, "next", "after-report") { Defer = true }).Job!;
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        var run = dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+        await Bounded.Until(() => f.Get().Execute(parent.JobId).Job!.Waiting == "awaiting_turn_end", "turn-end diagnostic");
+        Assert.Equal(lastActivity.ToUniversalTime().ToString("O"), f.Get().Execute(parent.JobId).Job!.LastActivityAt);
+        Assert.Null(f.Store.BeginNextAttempt());
+        reader.Output = new InteractiveTranscript("native-1", null, Completed: true) { LastActivityAt = DateTimeOffset.UtcNow };
+        await run.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(parent.JobId)!.Status);
+        var claim = f.Store.BeginNextAttempt()!;
+        Assert.Equal(next.JobId, claim.Job.JobId);
+        await dispatcher.RunAttemptAsync(claim, TestContext.Current.CancellationToken);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(next.JobId)!.Status);
+    }
+
     [Theory]
     [InlineData(InteractiveAgentKind.Codex, "review", "job_01234567", "codex: review")]
     [InlineData(InteractiveAgentKind.Claude, null, "job_01234567", "claude: job_0123")]

@@ -1375,6 +1375,9 @@
         const preview = j.last_activity || j.reason_code;
         row.append(chips, state);
         open.append(row);
+        if (j.waiting === 'awaiting_turn_end' || j.waiting === 'awaiting_native_receipt') {
+          open.append(element('span', 'card-activity', j.waiting + ' · last activity ' + (j.last_activity_at || 'unknown')));
+        }
         if (j.startup) {
           const startup = j.startup.no_marker_since_launch ? 'no state marker since launch' : j.startup.phase;
           open.append(element('span', 'card-activity', 'Startup: ' + startup + ' · ' + j.startup.elapsed_seconds + 's'));
@@ -1906,6 +1909,9 @@
     v.tail.replaceChildren();
     const line = (text, cls) => v.tail.append(element('div', cls || 'sys', text));
     if (n.status === 'queued' && n.parent_job_id) line('queued behind job ' + n.parent_job_id.slice(-8));
+    if (n.waiting === 'awaiting_turn_end' || n.waiting === 'awaiting_native_receipt') {
+      line(n.waiting + ' · last activity ' + (n.last_activity_at || 'unknown'), 'sys boxed info');
+    }
     if (n.startup) {
       line('Startup: ' + (n.startup.no_marker_since_launch ? 'no state marker since launch' : n.startup.phase) + ' · ' + n.startup.elapsed_seconds + 's');
       if (n.startup.hint) line(n.startup.hint, 'sys boxed info');

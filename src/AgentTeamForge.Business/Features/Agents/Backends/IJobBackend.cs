@@ -34,6 +34,7 @@ public abstract record BackendEvidence
     public sealed record AgentBlocked(bool Blocked) : BackendEvidence;
 
     /// <summary>A live interactive agent ended its turn on a pending background task and waits for it; the turn is still running.</summary>
+    public sealed record TurnObservation(DateTimeOffset LastActivityAt, string? Waiting) : BackendEvidence;
     public sealed record BackgroundWait(bool Waiting) : BackendEvidence;
 
     public sealed record ProtocolError(string Code, string? Details = null) : BackendEvidence;

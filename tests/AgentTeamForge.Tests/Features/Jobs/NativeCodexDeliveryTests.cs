@@ -20,6 +20,127 @@ public sealed class NativeCodexDeliveryTests
         new(fixture.Store, JobFixture.Operator, fixture.Limits, fixture.TestProfile, fixture.Admission, catalog.Names);
 
     [Fact]
+    public async Task Live_Codex_report_then_turn_end_starts_durable_follow_up()
+    {
+        Assert.SkipUnless(Environment.GetEnvironmentVariable("ATF_REAL_TURN_QUEUE") == "1", "set ATF_REAL_TURN_QUEUE=1 for the isolated live probe");
+        using var rig = new SpikeRig();
+        var (exit, _, _) = await rig.RunToExitAsync(["init", "--state-dir", rig.StateDir]);
+        Assert.Equal(0, exit);
+        using var port = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        port.Start();
+        var webPort = ((System.Net.IPEndPoint)port.LocalEndpoint).Port;
+        port.Stop();
+        File.WriteAllText(Path.Combine(rig.StateDir, "launch-mode.json"), $$"""{"mode":"herdr","web_port":{{webPort}}}""");
+        if (!OperatingSystem.IsWindows()) { File.SetUnixFileMode(Path.Combine(rig.StateDir, "launch-mode.json"), UnixFileMode.UserRead | UnixFileMode.UserWrite); }
+        var codexHome = Path.Combine(rig.StateDir, "scratch-codex");
+        Directory.CreateDirectory(codexHome);
+        var sourceHome = Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        File.Copy(Path.Combine(sourceHome, "auth.json"), Path.Combine(codexHome, "auth.json"));
+        File.WriteAllText(Path.Combine(codexHome, "config.toml"), "check_for_update_on_startup = false\n");
+        try { await rig.StartDaemonWithEnvironmentAsync(new Dictionary<string, string> { ["CODEX_HOME"] = codexHome }); }
+        catch (Exception error) { throw new InvalidOperationException(string.Join("\n", rig.DaemonLog), error); }
+        var (_, lead) = await rig.StartBridgeAsync("turn-queue-scratch-lead", environment: new Dictionary<string, string> { ["CODEX_THREAD_ID"] = "" });
+        var root = await SpikeRig.CallAsync(lead, "submit_job", new()
+        {
+            ["backend"] = "codex",
+            ["model"] = "gpt-6.1-sol",
+            ["effort"] = "high",
+            ["cwd"] = rig.StateDir,
+            ["idempotency_key"] = "live-root",
+            ["name"] = "turn-queue-probe",
+            ["instruction"] = "This is a scratch integration probe. Run sleep 8 with your shell tool, then discover the AgentTeamForge send_message tool if necessary and call mcp__agentteamforge__send_message(to=\"team-lead\", text=\"TURN_QUEUE_FIRST_REPORT\"). Immediately finish your turn with a short final reply. Do no other work."
+        });
+        Assert.True(root.Ok, root.ErrorDetail);
+        var rootId = root.Job!.JobId;
+        string? nextId = null;
+        try
+        {
+            await Bounded.Until<IpcResponse>(async () =>
+            {
+                var job = await rig.GetAsync(rootId);
+                return job.Job?.SessionId is not null ? job : null;
+            }, "scratch Codex session binding", TimeSpan.FromMinutes(2));
+            var next = await SpikeRig.CallAsync(lead, "follow_up", new()
+            {
+                ["job_id"] = rootId,
+                ["idempotency_key"] = "live-next",
+                ["defer"] = true,
+                ["instruction"] = "Discover the AgentTeamForge send_message tool if necessary and call mcp__agentteamforge__send_message(to=\"team-lead\", text=\"TURN_QUEUE_SECOND_REPORT\"), then immediately finish your turn with a short final reply. Do no other work."
+            });
+            Assert.True(next.Ok, next.ErrorDetail);
+            nextId = next.Job!.JobId;
+            var firstDone = await Bounded.Until<IpcResponse>(async () =>
+            {
+                var job = await rig.GetAsync(rootId);
+                return job.Job?.Status == JobStatus.Completed ? job : null;
+            }, "live first turn completion", TimeSpan.FromMinutes(3));
+            var secondDone = await Bounded.Until<IpcResponse>(async () =>
+            {
+                var job = await rig.GetAsync(nextId);
+                return job.Job?.Status == JobStatus.Completed ? job : null;
+            }, "live next turn completion", TimeSpan.FromMinutes(3));
+            Assert.Equal(firstDone.Job!.SessionId, secondDone.Job!.SessionId);
+            var inbox = await SpikeRig.CallAsync(lead, "read_messages", new() { ["full"] = true });
+            var serialized = JsonSerializer.Serialize(inbox, IpcJson.Default.IpcResponse);
+            var output = Environment.GetEnvironmentVariable("ATF_LIVE_TURN_QUEUE_EVIDENCE");
+            if (output is not null)
+            {
+                Directory.CreateDirectory(output);
+                File.WriteAllText(Path.Combine(output, "results.json"), JsonSerializer.Serialize(firstDone, IpcJson.Default.IpcResponse) + "\n" + JsonSerializer.Serialize(secondDone, IpcJson.Default.IpcResponse) + "\n" + serialized);
+                File.WriteAllLines(Path.Combine(output, "daemon.log"), rig.DaemonLog);
+                foreach (var log in Directory.EnumerateFiles(Path.Combine(rig.StateDir, "logs"))) { File.Copy(log, Path.Combine(output, Path.GetFileName(log)), true); }
+                foreach (var rollout in Directory.EnumerateFiles(Path.Combine(codexHome, "sessions"), "*.jsonl", SearchOption.AllDirectories)) { File.Copy(rollout, Path.Combine(output, Path.GetFileName(rollout)), true); }
+            }
+            Assert.Collection(inbox.Messages!,
+                message => Assert.Equal("TURN_QUEUE_FIRST_REPORT", message.Text),
+                message => Assert.Equal("TURN_QUEUE_SECOND_REPORT", message.Text));
+        }
+        finally
+        {
+            if (nextId is not null) { await rig.ClientAsync("stop", "--job", nextId); }
+            await rig.ClientAsync("stop", "--job", rootId);
+            await rig.ClientAsync("stop-agent", "--job", rootId);
+        }
+    }
+
+    [Fact]
+    public void Deferred_follow_ups_addressing_root_and_queued_tail_keep_durable_order()
+    {
+        using var fixture = new JobFixture();
+        var catalog = Catalog(new ScriptedBackend(_ => []));
+        var parent = Accept(fixture, catalog).Execute(new SubmitJobRequest("chain-root", "root", null, false)
+        { Backend = BackendCatalog.Codex }).Job!;
+        var root = fixture.Store.BeginNextAttempt()!;
+        var rootRun = new RunRef(parent.JobId, root.RunId, root.Generation, root.Correlation);
+        fixture.Store.RecordSession(rootRun, "thread-chain");
+        var follow = new FollowUpJob(fixture.Store, JobFixture.Operator, Accept(fixture, catalog));
+        var first = follow.Execute(new FollowUpRequest(parent.JobId, "first", "chain-1") { Defer = true }).Job!;
+        var active = fixture.Store.BeginNativeCodexAttempt(_ => true, Path.GetTempPath())!;
+        var second = follow.Execute(new FollowUpRequest(first.JobId, "second", "chain-2") { Defer = true });
+        Assert.Equal("accepted", second.Outcome);
+        var thirdRequest = new FollowUpRequest(parent.JobId, "third", "chain-3") { Defer = true };
+        var third = follow.Execute(thirdRequest);
+        Assert.Equal("accepted", third.Outcome);
+        var fourth = follow.Execute(new FollowUpRequest(second.Job!.JobId, "fourth", "chain-4") { Defer = true });
+        Assert.Equal("accepted", fourth.Outcome);
+        Assert.Equal(JobErrors.ParentNotReady, follow.Execute(new FollowUpRequest(first.JobId, "refused", "chain-no") { Defer = false }).Error);
+        Assert.Equal(third.Job!.JobId, follow.Execute(thirdRequest).Job!.JobId);
+        fixture.Store.Complete(rootRun, "root done");
+        var restarted = fixture.NewStore();
+        Assert.Null(restarted.BeginNativeCodexAttempt(_ => true, Path.GetTempPath()));
+        Assert.True(restarted.SettleNativeAttempt(first.JobId, active.Correlation, "first done"));
+        foreach (var job in new[] { second.Job!, third.Job!, fourth.Job! })
+        {
+            var claim = restarted.BeginNativeCodexAttempt(_ => true, Path.GetTempPath())!;
+            Assert.Equal(job.JobId, claim.Job.JobId);
+            Assert.Null(restarted.BeginNativeCodexAttempt(_ => true, Path.GetTempPath()));
+            Assert.True(restarted.SettleNativeAttempt(job.JobId, claim.Correlation, "done"));
+            Assert.False(restarted.SettleNativeAttempt(job.JobId, claim.Correlation, "duplicate"));
+        }
+        Assert.Null(restarted.BeginNextAttempt());
+    }
+
+    [Fact]
     public async Task Busy_codex_follow_up_is_claimed_without_ending_the_parent_and_fenced_once()
     {
         using var fixture = new JobFixture();
@@ -39,7 +160,7 @@ public sealed class NativeCodexDeliveryTests
         Assert.Equal(child.JobId, native.Job.JobId);
         Assert.Equal(JobStatus.Running, fixture.Store.GetJob(parent.JobId)!.Status);
         Assert.Null(fixture.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home"));
-        Assert.Equal(JobErrors.ParentNotReady, follow.Execute(new FollowUpRequest(parent.JobId, "duplicate carrier", "other") { Defer = true }).Error);
+        Assert.Equal("accepted", follow.Execute(new FollowUpRequest(parent.JobId, "later carrier", "other") { Defer = true }).Outcome);
         Assert.Equal("existing", follow.Execute(new FollowUpRequest(parent.JobId, "next", "next") { Defer = true }).Outcome);
 
         dispatcher.CancelRunning(parent.JobId);
@@ -102,9 +223,10 @@ public sealed class NativeCodexDeliveryTests
         fixture.Store.RecordNativeReceipt(first.JobId, claim.Correlation);
         Assert.Equal(JobStatus.Running, fixture.Store.GetJob(first.JobId)!.Status);
         Assert.True(fixture.Store.GetRuns(first.JobId).Single().Acked);
-        var second = follow.Execute(new FollowUpRequest(parent.JobId, "second", "second")).Job!;
-        Assert.Equal(second.JobId, fixture.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home")!.Job.JobId);
+        var second = follow.Execute(new FollowUpRequest(parent.JobId, "second", "second") { Defer = true }).Job!;
+        Assert.Null(fixture.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home"));
         Assert.True(fixture.Store.SettleNativeAttempt(first.JobId, claim.Correlation, "first result"));
+        Assert.Equal(second.JobId, fixture.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home")!.Job.JobId);
         Assert.Equal("first result", fixture.Store.GetJob(first.JobId)!.ResultText);
     }
 

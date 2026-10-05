@@ -95,6 +95,12 @@ public sealed class InteractiveTranscriptReaderTests
             """{"type":"message","message":{"role":"user","content":[{"type":"image","data":"AA==","mimeType":"image/png"}]}}""",
             PiAssistant("human reply", "stop")], "interim", false },
         { InteractiveAgentKind.Codex, [CodexMeta, CodexStarted, CodexUser(Marker), CodexAssistant("interim")], "interim", false },
+        // A tool-only turn still ends, and a same-turn start after the input is not a new turn.
+        { InteractiveAgentKind.Codex, [CodexMeta,
+            """{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"atf-corr:turn-1"}],"internal_chat_message_metadata_passthrough":{"turn_id":"native-turn"}}}""",
+            """{"type":"event_msg","payload":{"type":"task_started","turn_id":"native-turn"}}""",
+            """{"type":"response_item","payload":{"type":"function_call_output","output":"report sent"}}""",
+            """{"type":"event_msg","payload":{"type":"task_complete","turn_id":"native-turn","last_agent_message":null}}"""], null, true },
         // Codex records the marked input twice (response_item + event_msg, either order); both are the same turn.
         { InteractiveAgentKind.Codex, [CodexMeta, CodexStarted, CodexUser(Marker), CodexEventUser(Marker), CodexAssistant("final"), CodexComplete], "final", true },
         { InteractiveAgentKind.Codex, [CodexMeta, CodexStarted, CodexEventUser(Marker), CodexUser(Marker), CodexAssistant("final"), CodexComplete], "final", true },

@@ -981,6 +981,14 @@ public sealed class DispatchJob : IDisposable
                             // Informational only: a prompt wait counts against the turn's runtime/timeout_s.
                             TryRecordWaiting(run, "interactive_agent_blocked", blocked.Blocked);
                             break;
+                        case BackendEvidence.TurnObservation observation:
+                            if (store.ObserveTurn(run.JobId, run.Correlation, observation.LastActivityAt, observation.Waiting) && observation.Waiting is not null)
+                            {
+                                var diagnostic = $"{observation.Waiting}: native completion not observed; last_activity_at={observation.LastActivityAt:O}";
+                                log($"{run.JobId}: {diagnostic}");
+                                jobLogs?.WriteDiagnostic(run.JobId, diagnostic);
+                            }
+                            break;
                         case BackendEvidence.BackgroundWait wait:
                             // Informational only, like a prompt wait: the turn stays running until the task reports back.
                             TryRecordWaiting(run, JobWaiting.BackgroundTaskReason, wait.Waiting);
@@ -1120,8 +1128,12 @@ public sealed class DispatchJob : IDisposable
     {
         var receipt = InteractiveTranscriptReader.ReadCodexThread(attempt.CodexHome, attempt.ThreadId, attempt.Correlation);
         if (receipt is not null) { store.RecordNativeReceipt(attempt.JobId, attempt.Correlation); }
-        if (receipt is not { Completed: true, Message: { Length: > 0 } message }) { return false; }
-        var settled = store.SettleNativeAttempt(attempt.JobId, attempt.Correlation, message);
+        if (receipt is not { Completed: true, ApiError: null })
+        {
+            ObserveNativeTurn(attempt.JobId, attempt.Correlation, attempt.ThreadId, receipt);
+            return false;
+        }
+        var settled = store.SettleNativeAttempt(attempt.JobId, attempt.Correlation, receipt.Message ?? "");
         if (settled) { RememberNativeTurn(BackendCatalog.Codex, attempt.ThreadId); Signal(); }
         return settled;
     }
@@ -1135,11 +1147,28 @@ public sealed class DispatchJob : IDisposable
     {
         var receipt = InteractiveTranscriptReader.ReadClaudeSession(attempt.ClaudeHome, attempt.SessionId, attempt.Correlation);
         if (receipt is not null) { store.RecordNativeClaudeReceipt(attempt.JobId, attempt.Correlation); }
-        if (receipt is not { Completed: true, Message: { Length: > 0 } message }
-            || !store.SettleNativeClaudeAttempt(attempt.JobId, attempt.Correlation, message)) { return false; }
+        if (receipt is not { Completed: true, ApiError: null })
+        {
+            ObserveNativeTurn(attempt.JobId, attempt.Correlation, attempt.SessionId, receipt);
+            return false;
+        }
+        if (!store.SettleNativeClaudeAttempt(attempt.JobId, attempt.Correlation, receipt.Message ?? "")) { return false; }
         RememberNativeTurn(BackendCatalog.Claude, attempt.SessionId);
         Signal();
         return true;
+    }
+
+    void ObserveNativeTurn(string jobId, string correlation, string sessionId, InteractiveTranscript? receipt)
+    {
+        var activity = receipt?.LastActivityAt ?? DateTimeOffset.Parse(store.GetRuns(jobId)[^1].StartedAt!);
+        var waiting = DateTimeOffset.UtcNow - activity >= TimeSpan.FromSeconds(45)
+            ? receipt is null ? "awaiting_native_receipt" : "awaiting_turn_end" : null;
+        if (store.ObserveTurn(jobId, correlation, activity, waiting) && waiting is not null)
+        {
+            var diagnostic = $"{waiting}: thread={sessionId}; correlation={correlation}; last_activity_at={activity:O}; native completion not observed";
+            log($"{jobId}: {diagnostic}");
+            jobLogs?.WriteDiagnostic(jobId, diagnostic);
+        }
     }
 
     async Task RunNativeCodexAsync(RunRef run, NativeCodexAttempt attempt, CancellationToken daemonLifetime, CancellationToken stopRequested)

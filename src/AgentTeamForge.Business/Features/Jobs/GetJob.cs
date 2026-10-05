@@ -49,6 +49,7 @@ public sealed class GetJob(JobStore store, BoundPrincipal principal, bool intera
         ReasonCode = job.Status == JobStatus.Queued && job.ParentJobId is { } parent && store.IsSessionFenced(parent)
             ? "parent_needs_reconciliation" : job.ReasonCode,
         Startup = StartupProgress.Read(store, job.JobId, job.Status, job.Backend, job.ReasonCode, interactiveLaunch),
+        LastActivityAt = store.LastTurnActivity(job.JobId),
         Delivery = Delivery(job)
     };
 

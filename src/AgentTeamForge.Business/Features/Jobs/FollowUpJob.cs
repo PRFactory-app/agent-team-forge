@@ -52,11 +52,20 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
             return JobResult.Fail(deliveryError);
         }
 
-        var nativeCodex = parent.Backend == BackendCatalog.Codex && parent.SessionId is not null
+        // Queued descendants have no own session yet; inherit native delivery
+        // capability from the chain, while retaining the addressed job for idempotency.
+        string? sessionId;
+        try
+        {
+            sessionId = parent.SessionId ?? store.GetSessionJobs(parent.JobId)
+                .Select(store.GetJob).FirstOrDefault(j => j?.SessionId is not null)?.SessionId;
+        }
+        catch (StorageException ex) { return JobResult.Fail(JobErrors.FromStorage(ex)); }
+        var nativeCodex = parent.Backend == BackendCatalog.Codex && sessionId is not null
             && !request.Interrupt && request.ReplaceIfIdle && Encoding.UTF8.GetByteCount(request.Instruction) <= 16 * 1024
             && request.Model is null && request.Effort is null;
         // Leave room for the fixed correlation marker in Claude's 16 KiB inbox line.
-        var nativeClaude = parent.Backend == BackendCatalog.Claude && parent.SessionId is not null
+        var nativeClaude = parent.Backend == BackendCatalog.Claude && sessionId is not null
             && !request.Interrupt && request.ReplaceIfIdle && Encoding.UTF8.GetByteCount(request.Instruction) <= 16 * 1024 - 256
             && request.Model is null && request.Effort is null;
         var defer = request.Defer;

@@ -105,7 +105,12 @@ public static class JobWaiting
     public const string BackgroundTaskReason = "waiting_background_task";
 
     public static string? From(string status, string? reasonCode) =>
-        status == JobStatus.Running && reasonCode == BackgroundTaskReason ? "background_task" : null;
+        status != JobStatus.Running ? null : reasonCode switch
+        {
+            BackgroundTaskReason => "background_task",
+            "awaiting_turn_end" or "awaiting_native_receipt" => reasonCode,
+            _ => null,
+        };
 }
 
 /// <summary>The public view of a job. Never a raw storage record.</summary>
@@ -120,6 +125,7 @@ public sealed record JobView(string JobId, string Status, string? Result, string
     public bool ReleaseAvailable { get; init; }
     public JobDelivery? Delivery { get; init; }
     public StartupProgress? Startup { get; init; }
+    public string? LastActivityAt { get; init; }
     public string? Backend { get; init; }
     public string? Model { get; init; }
     public string? Effort { get; init; }

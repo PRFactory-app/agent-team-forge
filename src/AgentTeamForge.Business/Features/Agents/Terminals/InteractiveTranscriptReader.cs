@@ -293,6 +293,8 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             {
                 return null;
             }
+            DateTimeOffset? lastActivity = null;
+            string? nativeTurn = null;
             var markerSeen = false;
             var completed = false;
             var ended = false;
@@ -329,8 +331,15 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                     {
                         // Bind only on a native user record; echoes and metadata never bind.
                         markerSeen = userText?.Contains(marker, StringComparison.Ordinal) == true;
+                        if (markerSeen && root.TryGetProperty("payload", out var input)
+                            && input.TryGetProperty("internal_chat_message_metadata_passthrough", out var metadata))
+                        {
+                            nativeTurn = Str(metadata, "turn_id");
+                        }
+                        if (markerSeen && DateTimeOffset.TryParse(Str(root, "timestamp"), out var inputAt)) { lastActivity = inputAt; }
                         continue;
                     }
+                    if (DateTimeOffset.TryParse(Str(root, "timestamp"), out var activityAt)) { lastActivity = activityAt; }
                     if (kind == InteractiveAgentKind.Claude && Str(root, "type") == "user"
                         && root.TryGetProperty("message", out var notificationMessage)
                         && notificationMessage.TryGetProperty("content", out var notificationContent)
@@ -361,7 +370,8 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                         ended = true;
                         break; // Next native user input: a new turn.
                     }
-                    if (kind == InteractiveAgentKind.Codex && EventType(root) == "task_started")
+                    if (kind == InteractiveAgentKind.Codex && EventType(root) == "task_started"
+                        && (nativeTurn is null || !root.TryGetProperty("payload", out var start) || Str(start, "turn_id") != nativeTurn))
                     {
                         ended = true;
                         break;
@@ -394,7 +404,11 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                     }
                     else
                     {
-                        completed |= CompletedTurn(root, kind);
+                        var matchesTurn = nativeTurn is null || !root.TryGetProperty("payload", out var completion)
+                            || Str(completion, "turn_id") is null || Str(completion, "turn_id") == nativeTurn;
+                        completed |= matchesTurn && CompletedTurn(root, kind);
+                        if (completed && last is null && kind == InteractiveAgentKind.Codex
+                            && root.TryGetProperty("payload", out var final)) { last = Str(final, "last_agent_message"); }
                         if (kind == InteractiveAgentKind.Codex && (CodexLoginError(root) ?? CodexTurnError(root)) is { } turnError) { apiError = turnError; }
                     }
                     if (AssistantText(root, kind) is { } text)
@@ -409,7 +423,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             if (!markerSeen) { return null; }
             return new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress, completed, pending,
                 ApiError: backgroundTools.Count == 0 && backgroundTasks.Count == 0 ? apiError : null, Times: times, Superseded: ended, Incomplete: incomplete)
-            { WaitingOnBackground = pending && endedOnBackground };
+            { WaitingOnBackground = pending && endedOnBackground, LastActivityAt = lastActivity };
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {

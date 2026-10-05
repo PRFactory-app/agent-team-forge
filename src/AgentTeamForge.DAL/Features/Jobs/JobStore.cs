@@ -29,11 +29,15 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         """;
 
     const string SessionPeers = """
-        SELECT k.job_id FROM jobs j LEFT JOIN jobs p ON p.job_id=j.parent_job_id
-        JOIN jobs k ON k.backend=j.backend
-        LEFT JOIN jobs q ON q.job_id=k.parent_job_id
-        WHERE j.job_id=$id AND (k.job_id=j.job_id OR
-            coalesce(k.session_id,q.session_id)=coalesce(j.session_id,p.session_id))
+        WITH RECURSIVE ancestors(id,parent) AS (
+            SELECT job_id,parent_job_id FROM jobs WHERE job_id=$id
+            UNION SELECT j.job_id,j.parent_job_id FROM jobs j JOIN ancestors a ON j.job_id=a.parent),
+        peers(id) AS (
+            SELECT id FROM ancestors
+            UNION SELECT j.job_id FROM jobs j JOIN ancestors a ON j.session_id=(SELECT session_id FROM jobs WHERE job_id=a.id)
+                AND j.backend=(SELECT backend FROM jobs WHERE job_id=$id)
+            UNION SELECT j.job_id FROM jobs j JOIN peers p ON j.parent_job_id=p.id)
+        SELECT id FROM peers
         """;
 
     static bool SessionFenced(SqliteConnection connection, SqliteTransaction? tx, string jobId) =>
@@ -149,6 +153,33 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         Scalar(connection, null, "SELECT count(*) FROM jobs WHERE principal=$p AND team=$t AND operation=$o AND idempotency_key=$k",
             ("$p", principal), ("$t", team), ("$o", operation), ("$k", key)) > 0);
 
+    public string? LastTurnActivity(string jobId) => Read(connection =>
+    {
+        using var command = Command(connection, null,
+            "SELECT created_at FROM events WHERE job_id=$id AND kind='turn_activity' ORDER BY seq DESC LIMIT 1", ("$id", jobId));
+        return command.ExecuteScalar() as string;
+    });
+
+    public bool ObserveTurn(string jobId, string correlation, DateTimeOffset activity, string? waiting) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        if (Scalar(connection, tx, "SELECT count(*) FROM runs r JOIN jobs j ON j.job_id=r.job_id WHERE r.job_id=$id AND r.correlation=$corr AND r.state='started' AND j.status='running'",
+            ("$id", jobId), ("$corr", correlation)) == 0) { return false; }
+        var at = activity.ToUniversalTime().ToString("O");
+        Execute(connection, tx, "INSERT INTO events(job_id,kind,created_at) SELECT $id,'turn_activity',$at WHERE NOT EXISTS (SELECT 1 FROM events WHERE job_id=$id AND kind='turn_activity' AND created_at=$at)",
+            ("$id", jobId), ("$at", at));
+        var changed = Execute(connection, tx,
+            "UPDATE jobs SET reason_code=$waiting WHERE job_id=$id AND reason_code IS NOT $waiting AND (reason_code IS NULL OR reason_code IN ('awaiting_turn_end','awaiting_native_receipt'))",
+            ("$id", jobId), ("$waiting", waiting)) > 0;
+        if (changed)
+        {
+            Execute(connection, tx, "INSERT INTO events(job_id,kind,created_at) VALUES ($id,$kind,$now)",
+                ("$id", jobId), ("$kind", waiting ?? "turn_active"), ("$now", Now()));
+        }
+        tx.Commit();
+        return changed;
+    });
+
     public string WorktreeRoot => Path.Combine(Path.GetDirectoryName(database.Path)!, "worktrees");
 
     /// <summary>
@@ -169,21 +200,21 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
                 : new Conflict();
         }
 
-        // A deferred child waits behind its own parent's unacknowledged native turn: the
-        // dispatcher keeps that fence (BeginNextAttempt, BeginNative*Attempt) before any effect.
-        var deferredOn = job.DeferParent && job.ParentJobId is { } deferParentId
-            && GetJob(connection, tx, deferParentId) is { Status: JobStatus.Queued or JobStatus.Running } ? deferParentId : null;
-        if (Scalar(connection, tx, """
+        // Exempt only this session's durable queue. Other agents' uncertain native
+        // submissions remain fenced. The tail is chosen inside this transaction.
+        var deferredOn = job.DeferParent ? job.ParentJobId : null;
+        var deferredPeers = SessionPeers;
+        if (Scalar(connection, tx, $"""
             SELECT count(*) FROM native_codex_attempts n JOIN jobs j ON j.job_id=n.job_id
-            WHERE n.state='sent' AND j.principal=$p AND j.team=$t AND j.target_agent=$a AND n.job_id IS NOT $deferred
-            """, ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent), ("$deferred", deferredOn)) > 0)
+            WHERE n.state='sent' AND j.principal=$p AND j.team=$t AND j.target_agent=$a AND n.job_id NOT IN ({deferredPeers})
+            """, ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent), ("$id", deferredOn)) > 0)
         {
             return new ParentNotReady();
         }
-        if (Scalar(connection, tx, """
+        if (Scalar(connection, tx, $"""
             SELECT count(*) FROM native_claude_attempts n JOIN jobs j ON j.job_id=n.job_id
-            WHERE n.state IN ('posting','posted') AND j.principal=$p AND j.team=$t AND j.target_agent=$a AND n.job_id IS NOT $deferred
-            """, ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent), ("$deferred", deferredOn)) > 0)
+            WHERE n.state IN ('posting','posted') AND j.principal=$p AND j.team=$t AND j.target_agent=$a AND n.job_id NOT IN ({deferredPeers})
+            """, ("$p", job.Principal), ("$t", job.Team), ("$a", job.TargetAgent), ("$id", deferredOn)) > 0)
         {
             return new ParentNotReady();
         }
@@ -214,17 +245,24 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             // N5 is checked in the acceptance transaction, including replacements and
             // ordinary resume attempts. An uncertain queue call may still present later.
             if (parent.SessionId is { } thread && Scalar(connection, tx,
-                "SELECT count(*) FROM native_codex_attempts WHERE thread_id=$thread AND state='sent' AND job_id IS NOT $deferred",
-                ("$thread", thread), ("$deferred", deferredOn)) > 0)
+                $"SELECT count(*) FROM native_codex_attempts WHERE thread_id=$thread AND state='sent' AND job_id NOT IN ({deferredPeers})",
+                ("$thread", thread), ("$id", deferredOn)) > 0)
             {
                 return new ParentNotReady();
             }
             if (parent.SessionId is { } claudeSession && Scalar(connection, tx,
-                "SELECT count(*) FROM native_claude_attempts WHERE session_id=$session AND state IN ('posting','posted') AND job_id IS NOT $deferred",
-                ("$session", claudeSession), ("$deferred", deferredOn)) > 0)
+                $"SELECT count(*) FROM native_claude_attempts WHERE session_id=$session AND state IN ('posting','posted') AND job_id NOT IN ({deferredPeers})",
+                ("$session", claudeSession), ("$id", deferredOn)) > 0)
             {
                 return new ParentNotReady();
             }
+        }
+
+        if (job.DeferParent && parent is not null)
+        {
+            using var tail = Command(connection, tx,
+                $"SELECT job_id FROM jobs WHERE job_id IN ({SessionPeers}) AND (status IN ('queued','running') OR session_id IS NOT NULL) ORDER BY rowid DESC LIMIT 1", ("$id", parent.JobId));
+            job = job with { ParentJobId = (string?)tail.ExecuteScalar() ?? parent.JobId };
         }
 
         var jobId = "job_" + Guid.CreateVersion7().ToString("N");
@@ -387,8 +425,9 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         {
             if (eligible is not null && !eligible(job.JobId)) { continue; }
             if (job.ParentJobId is not { } parentId || GetJob(connection, tx, parentId) is not { SessionId: { } thread } parent
+                || parent.Status == JobStatus.Queued
                 || parent.Backend != "codex" || SessionFenced(connection, tx, parentId)
-                || Scalar(connection, tx, "SELECT count(*) FROM native_codex_attempts WHERE thread_id=$thread AND state='sent'", ("$thread", thread)) > 0
+                || Scalar(connection, tx, "SELECT count(*) FROM native_codex_attempts WHERE thread_id=$thread AND state IN ('sent','received')", ("$thread", thread)) > 0
                 || Scalar(connection, tx, """
                     SELECT count(*) FROM native_codex_attempts n JOIN jobs k ON k.job_id=n.job_id
                     WHERE n.state='sent' AND k.principal=$p AND k.team=$t AND k.target_agent=$a
@@ -803,7 +842,13 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
     {
         var ids = new List<string>();
         using (var command = Command(connection, tx,
-            "SELECT job_id FROM jobs WHERE parent_job_id=$id AND status='queued' AND instr(options, ';defer=1')>0", ("$id", parentJobId)))
+            """
+            WITH RECURSIVE children(id) AS (
+                SELECT job_id FROM jobs WHERE parent_job_id=$id
+                UNION SELECT j.job_id FROM jobs j JOIN children c ON j.parent_job_id=c.id)
+            SELECT job_id FROM jobs WHERE job_id IN (SELECT id FROM children)
+                AND status='queued' AND instr(options, ';defer=1')>0
+            """, ("$id", parentJobId)))
         using (var reader = command.ExecuteReader())
         {
             while (reader.Read()) { ids.Add(reader.GetString(0)); }
