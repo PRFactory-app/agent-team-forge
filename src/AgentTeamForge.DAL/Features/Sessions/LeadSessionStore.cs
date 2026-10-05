@@ -39,9 +39,9 @@ public sealed class LeadSessionStore(JobDatabase database)
         using var command = connection.CreateCommand();
         command.Transaction = tx;
         command.CommandText = """
-            INSERT INTO lead_sessions(session_id,workspace,binding_key,lead_token,updated_at,native_kind,native_session_id,native_home,bridge_pid,bridge_start_token)
-            VALUES ($id,$workspace,$binding,$token,$now,$kind,$native,$home,$pid,$start)
-            ON CONFLICT(session_id) DO UPDATE SET binding_key=$binding, updated_at=$now, native_kind=$kind, native_session_id=$native, native_home=$home, bridge_pid=$pid, bridge_start_token=$start
+            INSERT INTO lead_sessions(session_id,workspace,binding_key,lead_token,updated_at,native_kind,native_session_id,native_home,bridge_pid,bridge_start_token,bridge_pid_namespace)
+            VALUES ($id,$workspace,$binding,$token,$now,$kind,$native,$home,$pid,$start,$namespace)
+            ON CONFLICT(session_id) DO UPDATE SET binding_key=$binding, updated_at=$now, native_kind=$kind, native_session_id=$native, native_home=$home, bridge_pid=$pid, bridge_start_token=$start,bridge_pid_namespace=$namespace
             """;
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$workspace", workspace);
@@ -51,6 +51,7 @@ public sealed class LeadSessionStore(JobDatabase database)
         command.Parameters.AddWithValue("$home", (object?)nativeHome ?? DBNull.Value);
         command.Parameters.AddWithValue("$pid", (object?)bridge?.Pid ?? DBNull.Value);
         command.Parameters.AddWithValue("$start", (object?)bridge?.StartToken ?? DBNull.Value);
+        command.Parameters.AddWithValue("$namespace", (object?)bridge?.PidNamespace ?? DBNull.Value);
         command.Parameters.AddWithValue("$token", token);
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.ExecuteNonQuery();
@@ -83,7 +84,7 @@ public sealed class LeadSessionStore(JobDatabase database)
         // session, so a bridge restart under the same parent re-adopts it, not the
         // empty session it started with.
         command.CommandText = """
-            UPDATE lead_sessions SET binding_key=$binding, updated_at=$now, native_kind=$kind, native_session_id=$native, native_home=$home, bridge_pid=$pid, bridge_start_token=$start WHERE session_id=$id AND workspace=$workspace AND closed_at IS NULL;
+            UPDATE lead_sessions SET binding_key=$binding, updated_at=$now, native_kind=$kind, native_session_id=$native, native_home=$home, bridge_pid=$pid, bridge_start_token=$start,bridge_pid_namespace=$namespace WHERE session_id=$id AND workspace=$workspace AND closed_at IS NULL;
             SELECT changes();
             """;
         command.Parameters.AddWithValue("$binding", bindingKey);
@@ -92,6 +93,7 @@ public sealed class LeadSessionStore(JobDatabase database)
         command.Parameters.AddWithValue("$home", (object?)nativeHome ?? DBNull.Value);
         command.Parameters.AddWithValue("$pid", (object?)bridge?.Pid ?? DBNull.Value);
         command.Parameters.AddWithValue("$start", (object?)bridge?.StartToken ?? DBNull.Value);
+        command.Parameters.AddWithValue("$namespace", (object?)bridge?.PidNamespace ?? DBNull.Value);
         command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$id", id);
         command.Parameters.AddWithValue("$workspace", workspace);
@@ -147,7 +149,7 @@ public sealed class LeadSessionStore(JobDatabase database)
         // rebind it to the caller instead of copying jobs or inventing a new inbox cursor.
         command.CommandText = """
             UPDATE lead_sessions SET binding_key=$binding,native_kind=$kind,native_session_id=$native,
-                native_home=$home,bridge_pid=$pid,bridge_start_token=$start,wake_key=$wake,updated_at=$now WHERE session_id=$lead;
+                native_home=$home,bridge_pid=$pid,bridge_start_token=$start,bridge_pid_namespace=$namespace,wake_key=$wake,updated_at=$now WHERE session_id=$lead;
             UPDATE external_teams SET wake_key=$wake WHERE lead_session_id=$lead AND closed_at IS NULL;
             UPDATE external_messages SET wake_key=$wake WHERE team_id=$lead AND recipient='lead' AND read_at IS NULL;
             UPDATE wake_jobs SET target_key=$target WHERE job_id IN (SELECT job_id FROM jobs WHERE lead_session_id=$lead);
@@ -171,6 +173,7 @@ public sealed class LeadSessionStore(JobDatabase database)
         command.Parameters.AddWithValue("$target", targetKey);
         command.Parameters.AddWithValue("$pid", (object?)caller.Bridge?.Pid ?? DBNull.Value);
         command.Parameters.AddWithValue("$start", (object?)caller.Bridge?.StartToken ?? DBNull.Value);
+        command.Parameters.AddWithValue("$namespace", (object?)caller.Bridge?.PidNamespace ?? DBNull.Value);
         command.Parameters.AddWithValue("$binding", caller.BindingKey);
         command.Parameters.AddWithValue("$kind", (object?)caller.NativeKind ?? DBNull.Value);
         command.Parameters.AddWithValue("$native", (object?)caller.Owner?.NativeId ?? DBNull.Value);
@@ -344,7 +347,7 @@ public sealed class LeadSessionStore(JobDatabase database)
         command.Transaction = tx;
         command.CommandText = """
             SELECT s.session_id,s.binding_key,s.lead_token,s.updated_at,count(j.job_id),s.display_name,
-                s.native_session_id,t.target_key,t.kind,t.address,t.secret,t.home,s.native_kind,s.native_home,s.bridge_pid,s.bridge_start_token
+                s.native_session_id,t.target_key,t.kind,t.address,t.secret,t.home,s.native_kind,s.native_home,s.bridge_pid,s.bridge_start_token,s.bridge_pid_namespace
             FROM lead_sessions s LEFT JOIN jobs j ON j.lead_session_id=s.session_id
             LEFT JOIN wake_targets t ON t.target_key=s.wake_key AND t.active=1
             WHERE s.workspace=$workspace AND s.closed_at IS NULL GROUP BY s.session_id ORDER BY s.updated_at DESC
@@ -358,7 +361,7 @@ public sealed class LeadSessionStore(JobDatabase database)
             var owner = Text(6) is { Length: > 0 } native ? new LeadSessionOwner(native, Text(7), Text(8), Text(9), Text(10), Text(11))
                 : Text(8) == "pi" ? new LeadSessionOwner(Text(7)!, Text(7), "pi", Text(9), Text(10), Text(11)) : null;
             result.Add(new SessionRow(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetInt32(4), Text(5), owner, Text(12), Text(13), Text(7),
-                reader.IsDBNull(14) || reader.IsDBNull(15) ? null : new BridgeProcessIdentity(reader.GetInt32(14), reader.GetInt64(15))));
+                reader.IsDBNull(14) || reader.IsDBNull(15) ? null : new BridgeProcessIdentity(reader.GetInt32(14), reader.GetInt64(15), reader.IsDBNull(16) ? null : reader.GetString(16))));
         }
         return result;
     }
@@ -370,4 +373,4 @@ public sealed record NativeSessionBinding(string SessionId, string Kind, string 
 
 public sealed record LeadJobReach(string? Error = null, LeadSessionInfo? Session = null, string? PreviousSessionId = null, string? LiveOwner = null, DateTimeOffset? ExpiresAt = null);
 
-public sealed record BridgeProcessIdentity(int Pid, long StartToken);
+public sealed record BridgeProcessIdentity(int Pid, long StartToken, string? PidNamespace = null);

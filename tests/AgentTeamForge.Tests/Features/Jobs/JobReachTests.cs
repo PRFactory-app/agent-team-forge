@@ -16,6 +16,35 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 public sealed class JobReachTests
 {
     [Theory]
+    [InlineData(null)]
+    [InlineData("foreign-pid-namespace")]
+    public void Invisible_bridge_without_verified_namespace_requires_explicit_resume(string? scope)
+    {
+        var dead = DeadBridge();
+        var unverified = dead with { PidNamespace = scope };
+        Assert.Null(LeadBridgeLiveness.IsLive(unverified));
+        // A visible PID from another namespace cannot establish identity either.
+        Assert.Null(LeadBridgeLiveness.IsLive(LeadBridgeLiveness.Current()! with { PidNamespace = scope }));
+        using var f = new JobFixture();
+        var workspace = Path.GetDirectoryName(f.DatabasePath)!;
+        var sessions = Sessions(f);
+        var old = sessions.Start(workspace, "old", "codex", "old-native", workspace, unverified);
+        var job = f.Accept().Execute(new SubmitJobRequest("old-job", "hello", null, false) { LeadSessionId = old.SessionId }).Job!;
+        var caller = sessions.Start(workspace, "new", "codex", "new-native", workspace, LeadBridgeLiveness.Current());
+        var result = Endpoint(f, sessions).Handle(new IpcRequest
+        {
+            Op = IpcProtocol.JobGet,
+            JobId = job.JobId,
+            LeadSessionId = caller.SessionId,
+            Workspace = workspace
+        });
+        Assert.Equal("owned_by_previous_session", result.Error);
+        Assert.Equal("resume_session", result.Recovery?.Tool);
+        Assert.Equal(old.SessionId, result.Recovery?.Arguments.SessionId);
+        Assert.Null(result.Session);
+    }
+
+    [Theory]
     [InlineData(IpcProtocol.JobGet)]
     [InlineData(IpcProtocol.JobFollowUp)]
     [InlineData(IpcProtocol.JobStop)]

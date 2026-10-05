@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 33;
+    public const int CurrentVersion = 34;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -379,7 +379,9 @@ static class Schema
         ALTER TABLE lead_sessions ADD COLUMN bridge_start_token INTEGER;
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33];
+    internal const string V34 = "ALTER TABLE lead_sessions ADD COLUMN bridge_pid_namespace TEXT;";
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused
