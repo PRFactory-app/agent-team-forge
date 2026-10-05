@@ -42,6 +42,12 @@ public sealed class ClaudeMemberWakeTests
         Assert.True(ClaudePipe.SameUser("S-1-5-21-1", "S-1-5-21-1"));
         Assert.False(ClaudePipe.SameUser("S-1-5-21-1", "S-1-5-32-544"));
         Assert.False(ClaudePipe.SameUser(null, null));
+        Assert.True(ClaudePipe.TrustedOwner("S-1-5-21-1", "S-1-5-21-1", null));
+        Assert.True(ClaudePipe.TrustedOwner("S-1-5-21-1", "S-1-5-32-544", "S-1-5-21-1"));
+        Assert.False(ClaudePipe.TrustedOwner("S-1-5-21-1", "S-1-5-32-544", "S-1-5-21-2"));
+        Assert.False(ClaudePipe.TrustedOwner("S-1-5-21-1", "S-1-5-32-544", null));
+        Assert.False(ClaudePipe.TrustedOwner("S-1-5-21-1", "S-1-5-21-2", "S-1-5-21-1"));
+        Assert.False(ClaudePipe.TrustedOwner(null, "S-1-5-32-544", null));
         Assert.True(ClaudePipe.Options.HasFlag(PipeOptions.Asynchronous));
         Assert.True(ClaudeChannel.Valid(@"\\.\pipe\claude", "token", "123", "windows"));
         Assert.False(ClaudeChannel.Valid(@"\\.\pipe\claude", "token", "", "windows"));
