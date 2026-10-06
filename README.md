@@ -15,9 +15,7 @@ https://github.com/user-attachments/assets/d80740ff-4354-414d-9f49-ef16c5bbfbd1
 
 See the lead start an agent in Herdr and get its result back.
 
-**Free forever.** Need tickets, shared workf
-
-lows and teamwork? [PRFactory](https://app.prfactory.dev) is the optional paid companion.
+**Free forever.** Need tickets, shared workflows and teamwork? [PRFactory](https://app.prfactory.dev) is the optional paid companion.
 
 ![AgentTeamForge web console: one lead session with its agents running, queued, finished and needing attention](docs/images/web-console.png)
 
