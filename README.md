@@ -57,6 +57,35 @@ submit_job(backend="codex", instruction="Review this branch for bugs", idempoten
 The lead is notified when the job finishes. Run `atf web --open` to watch the
 team. More in the [usage guide](docs/usage.md).
 
+## One ticket, end to end with TDD
+
+Give the lead a ticket with testable acceptance criteria. The lead only
+orchestrates: it hands out work, collects results and sends findings back for
+fixes. Claude writes; Codex reviews. Nobody reviews their own work.
+
+1. **Plan.** Claude writes the plan; Codex reviews it against the ticket
+   (opposite-family review).
+2. **Red.** Claude turns each acceptance criterion into tests and runs them
+   before implementing. They must fail first.
+3. **Green.** Claude implements until those tests pass.
+4. **Code review.** Codex checks the diff against the plan and criteria,
+   including whether the tests would fail if the code were wrong.
+5. **Visual QA.** For a change with a screen, a desktop agent joins the team
+   and tests the running app in a real browser using the
+   [desktop-visual-qa skill](.claude/skills/desktop-visual-qa/SKILL.md).
+   It reads and clicks, then reports findings to the lead; it never edits code.
+6. **Pull request.** After fixes and reviews, the developer reads the evidence
+   and can run the result. The lead opens the PR; a person decides to merge.
+
+Follow the agents in [Herdr on Linux, Windows Terminal on Windows, or terminal
+tabs on macOS](docs/terminal-modes.md), and in the
+[ATF web console](docs/web-console.md). Keep the plan, test results and reviews
+alongside the ticket so every acceptance criterion can be traced to the PR.
+
+### Video: one ticket, end to end (4:32)
+
+<!-- VIDEO: replace this line with the user-attachments URL for atf-process-v2-github.mp4 -->
+
 ## How it works
 
 - Your lead talks to `atf` through MCP; one daemon per user runs all jobs.
