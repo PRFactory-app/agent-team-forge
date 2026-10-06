@@ -11,7 +11,7 @@ tabs, or in a small web console.
 
 ## Watch the 90-second intro
 
-https://github.com/user-attachments/assets/c52c29f2-4bf5-422e-b631-0110f7f55f22
+https://github.com/user-attachments/assets/d80740ff-4354-414d-9f49-ef16c5bbfbd1
 
 See the lead start an agent in Herdr and get its result back.
 
@@ -84,7 +84,10 @@ alongside the ticket so every acceptance criterion can be traced to the PR.
 
 ### Video: one ticket, end to end (4:32)
 
-<!-- VIDEO: replace this line with the user-attachments URL for atf-process-v2-github.mp4 -->
+
+https://github.com/user-attachments/assets/f6d3ff0b-b2ca-43ad-a7ee-ab781a966ac4
+
+
 
 ## How it works
 
