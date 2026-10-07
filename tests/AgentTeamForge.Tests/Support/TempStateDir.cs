@@ -34,6 +34,19 @@ public sealed class TempStateDir : IDisposable
 
         if (Directory.Exists(Path))
         {
+            if (OperatingSystem.IsWindows())
+            {
+                // Git objects are read-only on Windows. Include hidden entries, but never follow links.
+                var options = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint };
+                foreach (var entry in Directory.EnumerateFileSystemEntries(Path, "*", options).Prepend(Path))
+                {
+                    var attributes = System.IO.File.GetAttributes(entry);
+                    if ((attributes & FileAttributes.ReadOnly) != 0)
+                    {
+                        System.IO.File.SetAttributes(entry, attributes & ~FileAttributes.ReadOnly);
+                    }
+                }
+            }
             Directory.Delete(Path, recursive: true);
         }
     }
