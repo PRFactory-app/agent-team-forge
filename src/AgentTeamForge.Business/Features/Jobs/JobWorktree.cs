@@ -1,5 +1,9 @@
 using AgentTeamForge.DAL.Files;
+using System.Buffers;
 using System.Diagnostics;
+using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Agents.Terminals;
 using System.Text;
@@ -9,7 +13,7 @@ using AgentTeamForge.Business.Features.Processes;
 namespace AgentTeamForge.Business.Features.Jobs;
 
 /// <summary>Git worktrees are created by the daemon from a pinned submit-time HEAD.</summary>
-public static class JobWorktree
+public static partial class JobWorktree
 {
     static readonly TimeSpan QueryTimeout = TimeSpan.FromSeconds(10);
 
@@ -19,6 +23,13 @@ public static class JobWorktree
 
     // Git's own output is already in the pipe when it exits; a hook descendant may keep it open.
     static readonly TimeSpan DrainGrace = TimeSpan.FromSeconds(1);
+    static readonly TimeSpan DrainPoll = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>Test seam: holds each output reader back before its first read, as a loaded machine can.</summary>
+    internal static readonly AsyncLocal<TimeSpan> ReaderDelay = new();
+
+    /// <summary>Test seam: collects each output reader's completion, to prove a cut reader is released.</summary>
+    internal static readonly AsyncLocal<List<Task>?> ReaderCompletions = new();
 
     public static string? Head(string cwd)
     {
@@ -213,12 +224,10 @@ public static class JobWorktree
                 return null;
             }
 
-            // A hook descendant may retain stdout or stderr after git exits. Exit shares the
-            // whole deadline; after exit both drains get a short grace and keep what they read.
+            // Each stream is read by its own thread, so a busy thread pool cannot delay reading git's output.
             // Output beyond the cap is discarded while draining continues.
-            using var drain = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
-            var output = DrainAsync(process.StandardOutput.BaseStream, drain.Token);
-            var error = DrainAsync(process.StandardError.BaseStream, drain.Token);
+            var output = new OutputReader(process.StandardOutput.BaseStream);
+            var error = new OutputReader(process.StandardError.BaseStream);
             try
             {
                 await process.WaitForExitAsync(deadline.Token);
@@ -234,16 +243,25 @@ public static class JobWorktree
                     // Git exited meanwhile.
                 }
 
-                drain.Cancel();
-                await Task.WhenAll(output, error);
+                await Task.WhenAll(output.ReleaseAsync(), error.ReleaseAsync());
                 cancellationToken.ThrowIfCancellationRequested();
                 return null;
             }
 
-            drain.CancelAfter(DrainGrace);
-            await Task.WhenAll(output, error);
+            // A hook descendant may keep stdout or stderr open after git exits; git's own output is already in the
+            // pipe by then. A stream is cut only once its reader has waited the whole grace with nothing to read,
+            // never because the reader had not run yet.
+            var exited = Stopwatch.GetTimestamp();
+            var both = Task.WhenAll(output.Completion, error.Completion);
+            while (!(output.Settled(exited) && error.Settled(exited)) && !deadline.IsCancellationRequested)
+            {
+                await Task.WhenAny(both, Task.Delay(DrainPoll, deadline.Token));
+            }
+            // At the deadline a reader that has not caught up may leave git's output unread: no result, not a partial one.
+            var complete = output.Complete(exited) && error.Complete(exited);
+            await Task.WhenAll(output.ReleaseAsync(), error.ReleaseAsync());
             cancellationToken.ThrowIfCancellationRequested();
-            return new(process.ExitCode, output.Result, error.Result);
+            return complete ? new(process.ExitCode, output.Text, error.Text) : null;
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
         {
@@ -251,24 +269,164 @@ public static class JobWorktree
         }
     }
 
-    static async Task<string> DrainAsync(Stream stream, CancellationToken cancellationToken)
+    /// <summary>Reads one redirected stream to its end on a dedicated thread, keeping up to the output cap.</summary>
+    sealed class OutputReader
     {
-        using var kept = new MemoryStream();
-        var buffer = new byte[16 * 1024];
-        try
+        const long NotWaiting = -1;
+        static readonly TimeSpan ReleaseLimit = TimeSpan.FromSeconds(5);
+        const int PollMilliseconds = 100;
+        readonly Stream _stream;
+        readonly ArrayBufferWriter<byte> _kept = new();
+        readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        long _waitingSince = NotWaiting;
+        volatile bool _released;
+        SafeWaitHandle? _thread;
+
+        public OutputReader(Stream stream)
         {
-            int n;
-            while ((n = await stream.ReadAsync(buffer, cancellationToken)) > 0)
-            {
-                var room = (int)Math.Min(n, MaxGitOutputBytes - kept.Length);
-                kept.Write(buffer, 0, room);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // Bounded: keep what was read before the deadline or post-exit grace.
+            _stream = stream;
+            var delay = ReaderDelay.Value;
+            new Thread(() => Read(delay)) { IsBackground = true, Name = "atf-git-output" }.Start();
+            ReaderCompletions.Value?.Add(Completion);
         }
 
-        return Encoding.UTF8.GetString(kept.GetBuffer(), 0, (int)kept.Length);
+        public Task Completion => _completion.Task;
+
+        public string Text
+        {
+            get
+            {
+                lock (_kept) { return Encoding.UTF8.GetString(_kept.WrittenSpan); }
+            }
+        }
+
+        SafeHandle? Handle => _stream switch { PipeStream pipe => pipe.SafePipeHandle, FileStream file => file.SafeFileHandle, _ => null };
+
+        /// <summary>At end of stream, or waiting for data with nothing to read for the grace since git exited.</summary>
+        public bool Settled(long exited) =>
+            Completion.IsCompleted
+            || Interlocked.Read(ref _waitingSince) is var since && since != NotWaiting && Stopwatch.GetElapsedTime(Math.Max(since, exited)) >= DrainGrace;
+
+        /// <summary>Settled, or waiting for data since after git exited, so everything git wrote has been read.</summary>
+        public bool Complete(long exited) =>
+            Settled(exited) || Interlocked.Read(ref _waitingSince) is var since && since != NotWaiting && since >= exited;
+
+        /// <summary>
+        /// Ends a reader that a lingering descendant keeps waiting, so it gives back its thread and pipe handle.
+        /// On Unix the reader waits in bounded polls and sees the release itself. On Windows its pending ReadFile
+        /// holds the handle through disposal, so the I/O is cancelled. Bounded: a reader that will not stop is left.
+        /// </summary>
+        public async Task ReleaseAsync()
+        {
+            _released = true;
+            var watch = Stopwatch.StartNew();
+            while (!Completion.IsCompleted && watch.Elapsed < ReleaseLimit)
+            {
+                if (OperatingSystem.IsWindows()) { CancelWindowsRead(); }
+                try { await Completion.WaitAsync(DrainPoll); }
+                catch (TimeoutException) { /* Not stopped yet: cancel again. */ }
+            }
+            _stream.Dispose();
+        }
+
+        void CancelWindowsRead()
+        {
+            try
+            {
+                if (Handle is { } handle) { Native.CancelIoEx(handle, 0); }
+                if (Volatile.Read(ref _thread) is { } thread) { Native.CancelSynchronousIo(thread); }
+            }
+            catch (ObjectDisposedException)
+            {
+                // The reader finished and gave its handles back meanwhile.
+            }
+        }
+
+        void Read(TimeSpan delay)
+        {
+            var handle = OperatingSystem.IsWindows() ? null : Handle;
+            var added = false;
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    // CancelSynchronousIo needs this thread's own handle.
+                    var thread = new SafeWaitHandle(Native.OpenThread(Native.ThreadTerminate, false, Native.GetCurrentThreadId()), true);
+                    if (!thread.IsInvalid) { Volatile.Write(ref _thread, thread); } else { thread.Dispose(); }
+                }
+                // The fd stays ours (not closed and reused) while this thread polls it.
+                handle?.DangerousAddRef(ref added);
+                var fd = added ? (int)handle!.DangerousGetHandle() : -1;
+                if (delay > TimeSpan.Zero) { Thread.Sleep(delay); }
+                var buffer = new byte[16 * 1024];
+                while (!_released)
+                {
+                    Interlocked.Exchange(ref _waitingSince, Stopwatch.GetTimestamp());
+                    // A read(2) blocked on a pipe that a descendant holds cannot be interrupted, so Unix waits for data
+                    // in bounded polls that notice a release; the read after them returns at once.
+                    while (fd >= 0 && !_released && !Readable(fd)) { }
+                    if (_released) { break; }
+                    var n = _stream.Read(buffer);
+                    Interlocked.Exchange(ref _waitingSince, NotWaiting);
+                    if (n == 0) { break; }
+                    lock (_kept) { _kept.Write(buffer.AsSpan(0, Math.Min(n, MaxGitOutputBytes - _kept.WrittenCount))); }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException or InvalidOperationException)
+            {
+                // Released (cancelled) after a cut; what was read is kept.
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _waitingSince, NotWaiting);
+                if (added) { handle!.DangerousRelease(); }
+                _thread?.Dispose();
+                _completion.TrySetResult();
+            }
+        }
+
+        /// <summary>Data, end of stream or an error to let the read report; false on timeout or an interrupted poll.</summary>
+        static bool Readable(int fd)
+        {
+            var poll = new Native.PollFd { Fd = fd, Events = Native.PollIn };
+            return Native.Poll(ref poll, 1, PollMilliseconds) switch
+            {
+                0 => false,
+                < 0 => Marshal.GetLastPInvokeError() != Native.EINTR,
+                _ => true,
+            };
+        }
+    }
+
+    static partial class Native
+    {
+        public const int ThreadTerminate = 0x0001;
+        public const short PollIn = 0x0001;
+        public const int EINTR = 4;
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct PollFd
+        {
+            public int Fd;
+            public short Events;
+            public short Revents;
+        }
+
+        [LibraryImport("libc", EntryPoint = "poll", SetLastError = true)]
+        public static partial int Poll(ref PollFd fds, nuint count, int timeout);
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static partial bool CancelIoEx(SafeHandle file, nint overlapped);
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static partial bool CancelSynchronousIo(SafeHandle thread);
+
+        [LibraryImport("kernel32.dll", SetLastError = true)]
+        public static partial nint OpenThread(int access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint threadId);
+
+        [LibraryImport("kernel32.dll")]
+        public static partial uint GetCurrentThreadId();
     }
 }

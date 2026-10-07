@@ -204,6 +204,62 @@ public sealed class JobWorktreeTests
     }
 
     [Fact]
+    public async Task Git_output_already_in_the_pipe_is_kept_when_its_reader_runs_after_the_drain_grace()
+    {
+        using var source = new TempStateDir();
+        Git(source.Path, "init");
+        // A starved reader got to the pipe after the post-exit grace and lost git's whole stdout (CI: not_owned_path).
+        JobWorktree.ReaderDelay.Value = TimeSpan.FromSeconds(1.5);
+
+        var result = await JobWorktree.RunAsync(source.Path, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken,
+            "rev-parse", "--absolute-git-dir");
+
+        Assert.Equal(0, result?.ExitCode);
+        Assert.EndsWith(".git", result!.Output.Trim(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Readers_cut_while_a_descendant_still_holds_the_pipes_are_released()
+    {
+        // Windows takes the CancelIoEx/CancelSynchronousIo path, which needs a Windows run; CI tests run on Linux.
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "sh descendant; the Windows cancel path is not exercised here");
+        using var source = new TempStateDir();
+        Git(source.Path, "init");
+        var pidFile = Path.Combine(source.Path, "child.pid");
+        var script = Script(source.Path, $"sleep 30 &\necho $! > '{pidFile}'\necho ready");
+        var readers = new List<Task>();
+        JobWorktree.ReaderCompletions.Value = readers;
+        try
+        {
+            var result = await JobWorktree.GitAsync(source.Path, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken,
+                "-c", $"alias.atf-probe=!{script}", "atf-probe");
+
+            Assert.Contains("ready", result);
+            Assert.Equal(2, readers.Count);
+            Assert.All(readers, r => Assert.True(r.IsCompleted, "a cut reader still holds its thread and pipe"));
+            using var child = Process.GetProcessById(int.Parse(File.ReadAllText(pidFile).Trim()));
+            Assert.False(child.HasExited);
+        }
+        finally
+        {
+            KillRecorded(pidFile);
+        }
+    }
+
+    [Fact]
+    public async Task Deadline_before_the_readers_catch_up_is_no_result_rather_than_partial_success()
+    {
+        using var source = new TempStateDir();
+        Git(source.Path, "init");
+        JobWorktree.ReaderDelay.Value = TimeSpan.FromSeconds(3);
+
+        var result = await JobWorktree.RunAsync(source.Path, TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken,
+            "rev-parse", "--absolute-git-dir");
+
+        Assert.Null(result);
+    }
+
+    [Fact]
     public async Task Git_success_is_not_held_by_a_descendant_that_keeps_stdout_after_git_exits()
     {
         using var source = new TempStateDir();
