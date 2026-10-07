@@ -53,6 +53,8 @@ public sealed class NativeAotScriptTests
         start.Environment["DOTNET"] = Path.Combine(tools, "dotnet");
         start.Environment["PATH"] = tools + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
         start.Environment.Remove("RID");
+        // The copied gate script must own its cleanup directory, not the test runner's.
+        start.Environment.Remove("ATF_TEST_TMP_ROOT");
         start.Environment["ATF_PUBLISH_ARGS"] = temp.File("publish-args");
         using var process = Process.Start(start)!;
         var output = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
