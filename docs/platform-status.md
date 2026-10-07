@@ -10,7 +10,7 @@ those machines).
 | **Linux x64** (glibc) | Tested end to end with real Claude Code, Codex and Pi agents, in Herdr and headless modes. v0.0.2 was tagged after a full Linux run. |
 | **Windows x64** | Supported as of v0.1.0. Tested on Windows 11 with real Claude Code and Codex agents in Windows Terminal tabs, including native wake. Pi, `install.ps1` upgrade/uninstall and headless Claude are not yet verified; see open items. |
 | **macOS arm64** | Tested on macOS 26.7 (Apple silicon) with real Claude Code, Codex and Pi agents: headless, kitty, Terminal.app and Herdr, install, upgrade, uninstall and login autostart, from a local Native AOT release bundle. Native wake and external members are untested. |
-| macOS x64 (Intel) | No release bundle. A local osx-x64 build ran under Rosetta (private state files, a fake-backend job); real agents untested. |
+| macOS x64 (Intel) | `osx-x64` tester bundle configured in the release workflow on a native Intel runner. Untested on Intel hardware until a tester confirms it. A local osx-x64 build ran under Rosetta (private state files, a fake-backend job); real agents untested. |
 | Linux arm64, musl | Not supported. |
 
 ## Feature matrix

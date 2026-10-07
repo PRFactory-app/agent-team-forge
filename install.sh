@@ -24,10 +24,11 @@ done
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) rid=linux-x64; hash_tool=sha256sum; sums=SHA256SUMS;;
   Darwin-arm64) rid=osx-arm64; hash_tool=shasum; sums=SHA256SUMS-osx-arm64;;
-  *) fail "unsupported platform $(uname -s)-$(uname -m); available Unix bundles: linux-x64, osx-arm64";;
+  Darwin-x86_64) rid=osx-x64; hash_tool=shasum; sums=SHA256SUMS-osx-x64;;
+  *) fail "unsupported platform $(uname -s)-$(uname -m); available Unix bundles: linux-x64, osx-arm64, osx-x64";;
 esac
 platform_tools=
-[ "$rid" = osx-arm64 ] && platform_tools=xattr
+case "$rid" in osx-*) platform_tools=xattr;; esac
 for tool in tar "$hash_tool" mktemp readlink $platform_tools; do command -v "$tool" >/dev/null 2>&1 || fail "missing $tool"; done
 sha_file() { if [ "$hash_tool" = shasum ]; then shasum -a 256 "$@"; else sha256sum "$@"; fi; }
 # SemVer precedence: true when $1 sorts before $2 (build metadata ignored).

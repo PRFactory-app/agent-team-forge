@@ -18,6 +18,21 @@ jobs:
         with:
           name: atf-${{ github.ref_name }}-osx-arm64
           path: ${{ runner.temp }}/release/*
+  osx-x64:
+    runs-on: macos-15-intel
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100-rc.1.26425.128
+      - name: Native AOT bundle
+        run: scripts/release-build.sh "${GITHUB_REF_NAME#v}" "$RUNNER_TEMP/release"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atf-${{ github.ref_name }}-osx-x64
+          path: ${{ runner.temp }}/release/*
   linux-x64:
     runs-on: ubuntu-24.04
     permissions:
@@ -113,7 +128,7 @@ jobs:
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "AgentTeamForge $GITHUB_REF_NAME" --generate-notes "${prerelease[@]}"
   attach-osx:
-    needs: [publish-linux, osx-arm64]
+    needs: [publish-linux, osx-arm64, osx-x64]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -122,11 +137,15 @@ jobs:
         with:
           name: atf-${{ github.ref_name }}-osx-arm64
           path: release
+      - uses: actions/download-artifact@v4
+        with:
+          name: atf-${{ github.ref_name }}-osx-x64
+          path: release
       - name: Attach macOS tester assets
         env:
           GH_TOKEN: ${{ github.token }}
         # install.sh is already published (and listed in SHA256SUMS) by the Linux job.
-        run: gh release upload "$GITHUB_REF_NAME" release/atf-* release/SHA256SUMS-osx-arm64 --repo "$GITHUB_REPOSITORY" --clobber
+        run: gh release upload "$GITHUB_REF_NAME" release/atf-* release/SHA256SUMS-osx-* --repo "$GITHUB_REPOSITORY" --clobber
   attach-win:
     needs: [publish-linux, win-x64]
     runs-on: ubuntu-24.04

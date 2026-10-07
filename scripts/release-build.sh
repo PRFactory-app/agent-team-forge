@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Build a local Unix Native AOT release bundle for the host (linux-x64 or
-# osx-arm64, the platforms install.sh and the release workflow support), run the
-# published scenario smoke on it, and package debug symbols as a separate asset.
+# Build a local Unix Native AOT release bundle for linux-x64, osx-arm64 or osx-x64,
+# run the published scenario smoke, and package debug symbols as a separate asset.
 # Uploading/publishing is separate.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,7 +10,8 @@ VERSION="${1:?usage: release-build.sh VERSION [OUTPUT_DIR]}"
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) RID=linux-x64; LIB_EXT=so; HASH=(sha256sum); SUMS=SHA256SUMS;;
   Darwin-arm64) RID=osx-arm64; LIB_EXT=dylib; HASH=(shasum -a 256); SUMS=SHA256SUMS-osx-arm64;;
-  *) echo 'linux-x64 or osx-arm64 host required (the bundles install.sh and the release workflow ship)' >&2; exit 2;;
+  Darwin-x86_64) RID=osx-x64; LIB_EXT=dylib; HASH=(shasum -a 256); SUMS=SHA256SUMS-osx-x64;;
+  *) echo 'linux-x64, osx-arm64 or osx-x64 host required (the bundles install.sh and the release workflow ship)' >&2; exit 2;;
 esac
 if [[ -z "${DOTNET:-}" ]]; then
   common="$(git rev-parse --path-format=absolute --git-common-dir)"

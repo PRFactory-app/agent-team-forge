@@ -114,6 +114,7 @@ https://github.com/user-attachments/assets/f6d3ff0b-b2ca-43ad-a7ee-ab781a966ac4
 ## Platform status
 
 - **Linux x64:** tested end to end with real agents.
+- **macOS Intel x64:** `osx-x64` tester bundle; untested on Intel hardware until a tester confirms it.
 - **Windows x64:** supported as of v0.1.0; tested with real Claude Code and Codex agents in Windows Terminal tabs (Pi on Windows not yet tested).
 - **macOS arm64:** tested on macOS 26 with real Claude Code, Codex and Pi agents, headless and in kitty, Terminal.app and Herdr; native wake untested.
 
