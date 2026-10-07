@@ -31,7 +31,11 @@ OUTPUT="$(realpath "$OUTPUT")"
 PUBLISH_ARGS=()
 # On a Mac with only the Command Line Tools, the ILCompiler's `xcodebuild -version`
 # probe prints an error that fails the publish; skip it (it only selects -ld_classic for Xcode 15/16).
-if [[ "$RID" == osx-* ]] && ! xcodebuild -version >/dev/null 2>&1; then PUBLISH_ARGS=(-p:UseLdClassicXCodeLinker=false); fi
+# Intel macOS also needs the new linker with full Xcode: ld_classic rejects
+# unaligned pointers in the .NET 11 System.Net.Security native archive.
+if [[ "$RID" == osx-x64 ]] || { [[ "$RID" == osx-* ]] && ! xcodebuild -version >/dev/null 2>&1; }; then
+  PUBLISH_ARGS=(-p:UseLdClassicXCodeLinker=false)
+fi
 work="$(mktemp -d)"
 trap 'rm -rf -- "$work"' EXIT
 
