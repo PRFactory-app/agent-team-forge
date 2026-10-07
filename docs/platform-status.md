@@ -8,9 +8,9 @@ those machines).
 | Platform | Status |
 | --- | --- |
 | **Linux x64** (glibc) | Tested end to end with real Claude Code, Codex and Pi agents, in Herdr and headless modes. v0.0.2 was tagged after a full Linux run. |
-| **Windows x64** | Supported as of v0.1.0. Tested on Windows 11 with real Claude Code and Codex agents in Windows Terminal tabs, including native wake. Pi, `install.ps1` upgrade/uninstall and headless Claude are not yet verified; see open items. |
+| **Windows x64** | Supported as of v0.1.0. v0.1.7 live smoke passed on Windows 11 with real Claude Code and Codex agents in Windows Terminal tabs, including native wake (validated on v0.1.7-rc2). Pi, `install.ps1` upgrade/uninstall and headless Claude are not yet verified; see open items. |
 | **macOS arm64** | Tested on macOS 26.7 (Apple silicon) with real Claude Code, Codex and Pi agents: headless, kitty, Terminal.app and Herdr, install, upgrade, uninstall and login autostart, from a local Native AOT release bundle. Native wake and external members are untested. |
-| macOS x64 (Intel) | `osx-x64` tester bundle configured in the release workflow on a native Intel runner. Untested on Intel hardware until a tester confirms it. A local osx-x64 build ran under Rosetta (private state files, a fake-backend job); real agents untested. |
+| **macOS x64 (Intel)** | `osx-x64` release bundle tested on real Intel hardware as of v0.1.7: a tester confirmed v0.1.7-rc2 works on a real Intel Mac. Native AOT bundles build in CI on a native Intel runner. |
 | Linux arm64, musl | Not supported. |
 
 ## Feature matrix
@@ -28,7 +28,18 @@ those machines).
 | External members (Codex Desktop) | Tested | Untested | Untested |
 | Web console | Tested | Tested (v0.0.3) | Tested (follow-up, stop, new agent, settings, token rotation) |
 | Login autostart | systemd user unit | Run key + hidden launcher; untested | LaunchAgent: load, unload, `launchctl kickstart` lazy start; tested in an isolated HOME |
-| Native AOT release build | CI + local | CI (`windows-latest`) | Local build script, including the published-binary smoke run |
+| Native AOT release build | CI + local | CI (`windows-latest`) | CI (`osx-arm64`, `osx-x64`) + local; Intel bundle confirmed on real hardware for v0.1.7 |
+
+## v0.1.7 platform validation (2026-10-07)
+
+The v0.1.7 release uses the same source commit as v0.1.7-rc2. A tester confirmed
+the `osx-x64` bundle works on a real Intel Mac; it is tested on Intel hardware.
+
+The Windows 11 live smoke on v0.1.7-rc2 passed install, console HTTP 200,
+Claude Code and Codex submit, result, same-session follow-up and stop, five
+worktree cleanup cycles, ignored-file preservation, native wake and unread
+clearing. No leftover `git.exe` processes remained. The reader-cancel path with
+a descendant holding pipes was reviewed but was not executed on Windows.
 
 ## Linux daemon lifetime
 
@@ -170,7 +181,7 @@ locked; `atf stop` printed raw `taskkill` output.
 - Windows: custom-home client restart and lead resume for Codex wake; pipe ACLs, server PID proof and stalled-reader cancellation for Claude wake.
 - Windows: fix the unit tests that fail there on Unix-only assumptions.
 - Validate specific Claude Desktop channel exports; sessions without an exported channel or recognizable host retain manual `external_read`.
-- macOS: native wake (Claude, Codex and Pi leads), external members, and a release built by CI rather than locally.
+- macOS: native wake (Claude, Codex and Pi leads) and external members.
 - win-agent-teams parity gaps: see the
   [migration guide](migrating-from-win-agent-teams.md).
 

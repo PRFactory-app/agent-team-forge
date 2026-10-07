@@ -1,7 +1,7 @@
 # Install and startup
 
 After a release is published, install the latest Linux x64 release (tested glibc
-distributions) or macOS arm64 / Intel x64 tester bundle with:
+distributions) or macOS arm64 / Intel x64 release bundle with:
 
 ```sh
 curl -fsSL https://github.com/PRFactory-app/agent-team-forge/releases/latest/download/install.sh | sh
@@ -73,7 +73,8 @@ use `atf start --state-dir DIR` or `atf mcp --state-dir DIR` instead.
 
 Linux arm64 and musl are not supported. The macOS bundles are `osx-arm64` and
 `osx-x64`, with checksum files `SHA256SUMS-osx-arm64` and `SHA256SUMS-osx-x64`.
-macOS arm64 is tested; Intel x64 is untested on hardware until a tester confirms it. See
+macOS arm64 is tested; Intel x64 is tested on real Intel hardware as of v0.1.7
+(tester confirmed v0.1.7-rc2). Windows had a passing v0.1.7 live smoke on Windows 11. See
 [platform status](platform-status.md). See [usage](usage.md)
 for use, and `"$HOME/.local/bin/atf" uninstall` for removal. See
 [Upgrade and uninstall](#upgrade-and-uninstall).
