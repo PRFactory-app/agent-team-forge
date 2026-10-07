@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.DAL.Features.Jobs;
@@ -108,7 +109,8 @@ public sealed class JobWorktreeTests
         Assert.Equal(Path.Combine(job.WorktreePath!, "sub"), f.Get().Execute(job.JobId).Job!.Cwd);
 
         // The whole checkout gone: the views fall back to the worktree itself.
-        Directory.Delete(source.Path, recursive: true);
+        if (OperatingSystem.IsWindows()) { source.Dispose(); }
+        else { Directory.Delete(source.Path, recursive: true); }
         Assert.Equal(job.WorktreePath, f.Get().Execute(job.JobId).Job!.Cwd);
         Assert.Contains(f.List().Execute(new ListJobsRequest()).Page!.Jobs, j => j.JobId == job.JobId);
     }
@@ -221,12 +223,10 @@ public sealed class JobWorktreeTests
     [Fact]
     public async Task Readers_cut_while_a_descendant_still_holds_the_pipes_are_released()
     {
-        // Windows takes the CancelIoEx/CancelSynchronousIo path, which needs a Windows run; CI tests run on Linux.
-        Assert.SkipWhen(OperatingSystem.IsWindows(), "sh descendant; the Windows cancel path is not exercised here");
         using var source = new TempStateDir();
         Git(source.Path, "init");
         var pidFile = Path.Combine(source.Path, "child.pid");
-        var script = Script(source.Path, $"sleep 30 &\necho $! > '{pidFile}'\necho ready");
+        var script = Script(source.Path, $"sleep 30 &\necho $! > '{pidFile}'\necho ready", WindowsDescendant(pidFile, 30));
         var readers = new List<Task>();
         JobWorktree.ReaderCompletions.Value = readers;
         try
@@ -266,7 +266,7 @@ public sealed class JobWorktreeTests
         Git(source.Path, "init");
         var pidFile = Path.Combine(source.Path, "child.pid");
         // An alias runs with git's own stdout and stderr; the background child keeps both open after git exits.
-        var script = Script(source.Path, $"sleep 10 &\necho $! > '{pidFile}'\necho ready");
+        var script = Script(source.Path, $"sleep 10 &\necho $! > '{pidFile}'\necho ready", WindowsDescendant(pidFile, 10));
         var watch = Stopwatch.StartNew();
         try
         {
@@ -346,12 +346,49 @@ public sealed class JobWorktreeTests
     {
         using var source = new TempStateDir();
         Git(source.Path, "init");
-        var script = Script(source.Path, "sleep 10 &\nwait");
-        using var cancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var pidFile = Path.Combine(source.Path, "child.pid");
+        var script = Script(source.Path, "sleep 10 &\nwait", WindowsDescendant(pidFile, 30, wait: true));
+        using var cancel = new CancellationTokenSource();
+        if (!OperatingSystem.IsWindows()) { cancel.CancelAfter(300); }
         var watch = Stopwatch.StartNew();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => JobWorktree.GitAsync(source.Path, TimeSpan.FromSeconds(5), cancel.Token,
-            "-c", $"alias.atf-probe=!{script}", "atf-probe"));
-        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"git cancellation took {watch.Elapsed}");
+        var run = JobWorktree.GitAsync(source.Path, TimeSpan.FromSeconds(OperatingSystem.IsWindows() ? 30 : 5), cancel.Token,
+            "-c", $"alias.atf-probe=!{script}", "atf-probe");
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                // PowerShell startup can exceed 300ms: prove a descendant exists before cancelling.
+                while (!File.Exists(pidFile))
+                {
+                    Assert.False(run.IsCompleted, "git exited before its descendant started");
+                    Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), "the descendant never started");
+                    await Task.Delay(20, TestContext.Current.CancellationToken);
+                }
+                watch.Restart();
+                cancel.Cancel();
+            }
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run);
+            Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"git cancellation took {watch.Elapsed}");
+            if (OperatingSystem.IsWindows())
+            {
+                try
+                {
+                    using var child = Process.GetProcessById(int.Parse(File.ReadAllText(pidFile).Trim()));
+                    Assert.True(child.WaitForExit(5_000), "cancellation left the descendant running");
+                }
+                catch (ArgumentException)
+                {
+                    // Already killed and reaped.
+                }
+            }
+        }
+        finally
+        {
+            cancel.Cancel();
+            try { await run; }
+            catch (OperationCanceledException) { }
+            KillRecorded(pidFile);
+        }
     }
 
     [Fact]
@@ -361,7 +398,7 @@ public sealed class JobWorktreeTests
         Git(source.Path, "init");
         var data = Path.Combine(source.Path, "output");
         File.WriteAllText(data, new string('x', 2 * 1024 * 1024));
-        var script = Script(source.Path, $"cat '{data}'");
+        var script = Script(source.Path, $"cat '{data}'", PowerShell($"[Console]::Write([IO.File]::ReadAllText({PowerShellLiteral(data)}))"));
 
         var output = await JobWorktree.GitAsync(source.Path, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken,
             "-c", $"alias.atf-probe=!{script}", "atf-probe");
@@ -427,17 +464,67 @@ public sealed class JobWorktreeTests
         WorktreeLock.Acquire(dir.Path, ct, TimeSpan.Zero).Dispose();
     }
 
-    static string Script(string directory, string body)
+    [Fact]
+    public void Temp_directory_cleanup_removes_nested_read_only_git_objects()
     {
+        var source = new TempStateDir();
+        try
+        {
+            var objects = Directory.CreateDirectory(Path.Combine(source.Path, ".git", "objects", "ab")).FullName;
+            var path = Path.Combine(objects, "object");
+            File.WriteAllText(path, "object");
+            File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.ReadOnly);
+            source.Dispose();
+            Assert.False(Directory.Exists(source.Path));
+        }
+        finally
+        {
+            source.Dispose();
+        }
+    }
+
+    static string Script(string directory, string body, string windowsBody)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            File.WriteAllText(Path.Combine(directory, "git-probe.cmd"), "@echo off\r\n" + windowsBody + "\r\n");
+            // Git aliases run in the repository root. A bare filename avoids nested cmd/sh path quoting.
+            // Disable MSYS argument conversion so /d and /c reach cmd unchanged.
+            return "MSYS_NO_PATHCONV=1 cmd.exe /d /c git-probe.cmd";
+        }
         var path = Path.Combine(directory, "git-probe.sh");
         Executable(path, body);
         return path;
     }
 
+    static string PowerShellLiteral(string value) => "'" + value.Replace("'", "''") + "'";
+
+    static string PowerShell(string body) =>
+        "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand " +
+        Convert.ToBase64String(Encoding.Unicode.GetBytes(body));
+
+    static string WindowsDescendant(string pidFile, int seconds, bool wait = false)
+    {
+        var file = PowerShellLiteral(pidFile);
+        // /b inherits both pipes without opening a window. The child records its own PID before sleeping.
+        // EncodedCommand keeps PowerShell syntax and paths out of cmd's quoting/expansion rules.
+        var child = PowerShell($"[IO.File]::WriteAllText({file} + '.tmp', [string]$PID); " +
+            $"[IO.File]::Move({file} + '.tmp', {file}); Start-Sleep -Seconds {seconds}");
+        var ready = PowerShell($"$limit = [DateTime]::UtcNow.AddSeconds(10); " +
+            $"while (!(Test-Path -LiteralPath {file})) {{ " +
+            "if ([DateTime]::UtcNow -gt $limit) { exit 1 }; Start-Sleep -Milliseconds 20 }");
+        return $"start \"\" /b {child}\r\n{ready}\r\nif errorlevel 1 exit /b 1\r\n" +
+            (wait ? PowerShell($"Wait-Process -Id ([int][IO.File]::ReadAllText({file}))") : "echo ready");
+    }
+
     static void Executable(string path, string body)
     {
         File.WriteAllText(path, "#!/bin/sh\n" + body + "\n");
-        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        // Git for Windows runs shebang hooks with its bundled sh; Windows has no Unix execute bit.
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
     }
 
     static async Task Dispatch(JobFixture f, BackendCatalog catalog)
