@@ -140,6 +140,21 @@ public sealed class DeliveryTests
         Assert.Equal(JobOptions.Read(f.Jobs.GetJob(id)!.Options, "model"), f.Completion.Usage.Model);
     }
 
+    [Fact]
+    public async Task Completion_with_a_joined_external_member_reports_unknown_figures_but_keeps_lead_metadata()
+    {
+        using var f = new Fixture();
+        f.Item.AgentType = PRFactoryAgentType.ClaudeCode;
+        await f.Adapter().TickAsync(null, CancellationToken.None);
+        var id = f.Teams.MemberJob(Fixture.Url, f.Item.Id, "lead", 0)!;
+        // The managed lead is fully readable; only the joined external member's spend is invisible to the worker.
+        f.Teams.RecordExternal(Fixture.Url, f.Item.Id, "reviewer", "reviewer", "team-1", "ticket", DateTimeOffset.UtcNow.AddHours(1));
+        f.Finish(id, "done", session: "thread");
+        await f.Adapter(_ => new TokenUsage(10, 2, 3, 4)).TickAsync(null, CancellationToken.None);
+        Assert.Equal(new PRFactoryUsageReport(PRFactoryAgentType.ClaudeCode, JobOptions.Read(f.Jobs.GetJob(id)!.Options, "model"),
+            null, null, null, null), f.Completion!.Usage);
+    }
+
     static void Git(string cwd, params string[] args)
     {
         var start = new ProcessStartInfo("git") { WorkingDirectory = cwd, RedirectStandardOutput = true, RedirectStandardError = true };
