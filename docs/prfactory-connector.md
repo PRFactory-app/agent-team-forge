@@ -288,9 +288,13 @@ documentation (unverified). Claude and pi figures are summed per assistant
 message; a figure that any counted message lacks is omitted for the session.
 
 The transcripts are read to the end at completion time, whatever their size.
+A single transcript record larger than 8 MiB is not parsed; a claude or pi
+session containing one reports every figure as unknown, and a codex session does
+so only when no later cumulative `token_count` follows it.
 Figures are summed over the distinct sessions of the item's member jobs, so
 follow-up turns that resume a session count once. If any member job has no
-session or its transcript cannot be read, every figure is omitted and only the
+session or its transcript cannot be read, or the team has an external (joined)
+member whose session ATF does not own, every figure is omitted and only the
 backend and model are sent, which tells PRFactory the worker reported but could
 not read. A team whose members ran different backends reports the lead's backend
 and model and the sums over all sessions; cache write is then omitted whenever

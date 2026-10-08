@@ -76,7 +76,8 @@ public sealed class SessionTokenUsage
             var entry = new Entry { Path = InteractiveTranscriptReader.LocateSession(home!, sessionId, agent) };
             if (entry.Path is null) { return null; }
             while (ReadChunk(entry, kind, final: true) > 0) { }
-            return entry.Usage;
+            // A skipped oversized record may have carried usage: the total is unknown, never a silent partial sum.
+            return entry.Unparsed ? null : entry.Usage;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
     }
@@ -112,6 +113,7 @@ public sealed class SessionTokenUsage
             entry.Usage = null;
             entry.Seen.Clear();
             entry.SkippingLine = false;
+            entry.Unparsed = false;
         }
         var count = (int)Math.Min(MaxBytes, stream.Length - entry.Offset);
         if (count == 0) { return 0; }
@@ -139,7 +141,7 @@ public sealed class SessionTokenUsage
             start = read;
         }
         // Oversized lines are skipped in bounded chunks; normal partial tails wait.
-        else if (start == 0 && read == MaxBytes) { entry.SkippingLine = true; start = read; }
+        else if (start == 0 && read == MaxBytes) { entry.SkippingLine = entry.Unparsed = true; start = read; }
         entry.Offset += start;
         return start;
     }
@@ -162,6 +164,7 @@ public sealed class SessionTokenUsage
                 var cached = Number(usage, "cached_input_tokens");
                 entry.Usage = new(input is null || cached is null ? null : Math.Max(0, input.Value - cached.Value),
                     Number(usage, "output_tokens"), cached, null);
+                entry.Unparsed = false; // Cumulative: a later total supersedes anything skipped before it.
                 return;
             }
             if (Text(root, "type") != (kind == "claude" ? "assistant" : "message")
@@ -191,6 +194,8 @@ public sealed class SessionTokenUsage
         public DateTime RetryAfter;
         public TokenUsage? Usage;
         public bool SkippingLine;
+        /// <summary>An oversized line was skipped since the last cumulative (Codex) total.</summary>
+        public bool Unparsed;
         public HashSet<string> Seen = [];
     }
 }

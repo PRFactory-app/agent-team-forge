@@ -44,6 +44,14 @@ public sealed class UsageReportTests
     }
 
     [Fact]
+    public void Joined_external_member_makes_figures_unknown_but_keeps_lead_metadata()
+    {
+        var lead = Job("a", "claude", "s1", "model=opus");
+        var report = PRFactoryWorkItems.UsageFor(Item, lead, [lead], _ => new TokenUsage(10, 2, 3, 4), hasExternalMembers: true);
+        Assert.Equal(new PRFactoryUsageReport(PRFactoryAgentType.ClaudeCode, "opus", null, null, null, null), report);
+    }
+
+    [Fact]
     public void Worker_native_item_sends_no_usage() =>
         Assert.Null(PRFactoryWorkItems.UsageFor(Item, null, [], _ => throw new InvalidOperationException()));
 

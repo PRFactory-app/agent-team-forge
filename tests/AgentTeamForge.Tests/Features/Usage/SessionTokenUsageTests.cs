@@ -171,6 +171,28 @@ public sealed class SessionTokenUsageTests : IDisposable
     }
 
     [Fact]
+    public void ReadFinal_reports_unknown_when_an_oversized_usage_record_cannot_be_parsed()
+    {
+        var huge = "{\"type\":\"assistant\",\"sessionId\":\"claude-session\",\"message\":{\"id\":\"big\",\"content\":\""
+            + new string('x', 9 * 1024 * 1024)
+            + "\",\"usage\":{\"input_tokens\":500,\"output_tokens\":5,\"cache_read_input_tokens\":5,\"cache_creation_input_tokens\":5}}}\n";
+        Transcript("claude", "claude-session", Claude("one") + huge + Claude("three"));
+        Assert.Null(SessionTokenUsage.ReadFinal("claude", "claude-session", home));
+    }
+
+    [Fact]
+    public void ReadFinal_keeps_Codex_cumulative_total_after_an_oversized_line()
+    {
+        var huge = "{\"type\":\"response_item\",\"payload\":{\"text\":\"" + new string('x', 9 * 1024 * 1024) + "\"}}\n";
+        Transcript("codex", "thread", "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread\",\"source\":\"cli\"}}\n"
+            + Codex(100, 40, 10) + huge + Codex(200, 80, 30));
+        Assert.Equal(new TokenUsage(120, 30, 80, null), SessionTokenUsage.ReadFinal("codex", "thread", home));
+        Transcript("codex", "thread", "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread\",\"source\":\"cli\"}}\n"
+            + Codex(100, 40, 10) + huge);
+        Assert.Null(SessionTokenUsage.ReadFinal("codex", "thread", home));
+    }
+
+    [Fact]
     public void Pi_sums_assistant_usage_and_missing_sessions_are_unknown()
     {
         Transcript("pi", "pi-session", "{\"type\":\"session\",\"id\":\"pi-session\"}\n"

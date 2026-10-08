@@ -1560,7 +1560,8 @@ public sealed partial class PRFactoryWorkItems(
                 : item.RepositoryId is null || workspace is not null || item.ReadOnly || cwd is null ? (null, null) : (JobWorktree.Branch(cwd), JobWorktree.Head(cwd));
             var publication = receipt is null ? null : new PRFactoryRemotePublication(true, branch!, commit!, true);
             var usage = sessionUsage is null ? null
-                : UsageFor(item, job, teams.MemberJobs(server, item.Id).Select(getJob).OfType<JobRecord>(), sessionUsage);
+                : UsageFor(item, job, teams.MemberJobs(server, item.Id).Select(getJob).OfType<JobRecord>(), sessionUsage,
+                    hasExternalMembers: teams.ExternalMembers(server, item.Id).Count > 0);
             string? cleanupWip = null;
             await Guard(item.Id, async () => cleanupWip = await client.CompleteAsync(item.Id, item.LeaseToken, result, ct, branch, commit,
                 publication, repositoryResults, usage), ct);
