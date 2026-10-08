@@ -2,6 +2,7 @@ using System.Text.Json;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Business.Features.Jobs.Publication;
 using AgentTeamForge.Business.Features.External;
+using AgentTeamForge.Business.Features.Usage;
 using AgentTeamForge.DAL.Features.Jobs;
 
 namespace AgentTeamForge.Host.Features.PRFactory;
@@ -18,7 +19,8 @@ public sealed partial class PRFactoryWorkItems(
     PRFactoryInteraction? interaction = null, HumanWaitStore? humanWaits = null,
     bool allowRepoLess = false, PRFactoryHandoverStore? handovers = null,
     PRFactoryRepositorySet? repositorySets = null, Action<PRFactoryServerLimit?>? onLimit = null,
-    PRFactoryPullRequests? pullRequests = null, Func<JobRecord, bool>? reconcileIdleInteractive = null)
+    PRFactoryPullRequests? pullRequests = null, Func<JobRecord, bool>? reconcileIdleInteractive = null,
+    Func<JobRecord, TokenUsage?>? sessionUsage = null)
 {
     // Parked turns share one account binding per backend until configured accounts exist.
     public const string DefaultAccount = "default";
@@ -1557,9 +1559,11 @@ public sealed partial class PRFactoryWorkItems(
             var (branch, commit) = receipt is not null ? (receipt.Intent.PublishBranch, receipt.Intent.HeadSha)
                 : item.RepositoryId is null || workspace is not null || item.ReadOnly || cwd is null ? (null, null) : (JobWorktree.Branch(cwd), JobWorktree.Head(cwd));
             var publication = receipt is null ? null : new PRFactoryRemotePublication(true, branch!, commit!, true);
+            var usage = sessionUsage is null ? null
+                : UsageFor(item, job, teams.MemberJobs(server, item.Id).Select(getJob).OfType<JobRecord>(), sessionUsage);
             string? cleanupWip = null;
             await Guard(item.Id, async () => cleanupWip = await client.CompleteAsync(item.Id, item.LeaseToken, result, ct, branch, commit,
-                publication, repositoryResults), ct);
+                publication, repositoryResults, usage), ct);
             if (cleanupWip is not null)
             {
                 var protectedBranches = item.RepositoryId is { } repositoryId && publications is not null

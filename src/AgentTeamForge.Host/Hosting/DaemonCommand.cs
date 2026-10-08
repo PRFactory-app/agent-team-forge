@@ -370,6 +370,7 @@ public static class DaemonCommand
                         handovers: connectorHandovers, repositorySets: connectorRepositorySets,
                         reconcileIdleInteractive: dispatcher.ReconcileIdleInteractive,
                         onLimit: limit => PRFactoryConnection.PublishLimit(state, limit),
+                        sessionUsage: job => job.SessionId is null ? null : AgentTeamForge.Business.Features.Usage.SessionTokenUsage.ReadFinal(job.Backend, job.SessionId, null, job.Cwd),
                         pullRequests: new PRFactoryPullRequests(settings.Url, settings.Repositories, settings.GitHubUser, client,
                             connectorPublications, Log)).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);

@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using AgentTeamForge.Business;
 using AgentTeamForge.Business.Features.Jobs;
+using AgentTeamForge.Business.Features.Usage;
 using AgentTeamForge.DAL.Features.Jobs;
 using AgentTeamForge.DAL.Sqlite;
 using AgentTeamForge.Host.Features.PRFactory;
@@ -108,6 +109,37 @@ public sealed class DeliveryTests
         Assert.Equal(readOnly ? null : JobWorktree.Head(cwd), f.Completion.ResultCommitSha);
     }
 
+    [Theory]
+    [InlineData(PRFactoryAgentType.ClaudeCode)]
+    [InlineData(PRFactoryAgentType.Codex)]
+    public async Task Completion_carries_usage_read_from_the_session_it_ran(PRFactoryAgentType agent)
+    {
+        using var f = new Fixture();
+        f.Item.AgentType = agent;
+        await f.Adapter().TickAsync(null, CancellationToken.None);
+        var id = f.Teams.MemberJob(Fixture.Url, f.Item.Id, "lead", 0)!;
+        var home = f.Dir.File("agent-home");
+        if (agent == PRFactoryAgentType.Codex)
+        {
+            var dir = Directory.CreateDirectory(Path.Combine(home, "sessions", "test")).FullName;
+            File.WriteAllText(Path.Combine(dir, "rollout-test-thread.jsonl"), "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread\",\"source\":\"cli\"}}\n"
+                + "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":200,\"cached_input_tokens\":80,\"output_tokens\":30}}}}\n");
+        }
+        else
+        {
+            var dir = Directory.CreateDirectory(Path.Combine(home, "projects", "test")).FullName;
+            File.WriteAllText(Path.Combine(dir, "thread.jsonl"),
+                "{\"type\":\"assistant\",\"sessionId\":\"thread\",\"isSidechain\":false,\"message\":{\"id\":\"m1\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"cache_read_input_tokens\":3,\"cache_creation_input_tokens\":4}}}\n"
+                + "{\"type\":\"assistant\",\"sessionId\":\"thread\",\"isSidechain\":false,\"message\":{\"id\":\"m2\",\"usage\":{\"input_tokens\":10,\"output_tokens\":2,\"cache_read_input_tokens\":3,\"cache_creation_input_tokens\":4}}}\n");
+        }
+        f.Finish(id, "done", session: "thread");
+        await f.Adapter(j => SessionTokenUsage.ReadFinal(j.Backend, j.SessionId!, home, j.Cwd)).TickAsync(null, CancellationToken.None);
+        Assert.Equal(agent == PRFactoryAgentType.Codex
+            ? new PRFactoryUsageReport(PRFactoryAgentType.Codex, null, 120, 30, 80, null)
+            : new PRFactoryUsageReport(PRFactoryAgentType.ClaudeCode, null, 20, 4, 6, 8), f.Completion!.Usage! with { Model = null });
+        Assert.Equal(JobOptions.Read(f.Jobs.GetJob(id)!.Options, "model"), f.Completion.Usage.Model);
+    }
+
     static void Git(string cwd, params string[] args)
     {
         var start = new ProcessStartInfo("git") { WorkingDirectory = cwd, RedirectStandardOutput = true, RedirectStandardError = true };
@@ -145,18 +177,19 @@ public sealed class DeliveryTests
             Teams = new(db);
             Logs = new(Dir.Path);
             var principal = new BoundPrincipal("prfactory", "connector", "connector-lead");
-            accept = new(Jobs, principal, new SpikeLimits(), false, new AdmissionGate(), ["codex"]);
+            accept = new(Jobs, principal, new SpikeLimits(), false, new AdmissionGate(), ["codex", "claude"]);
             follow = new(Jobs, principal, accept);
             stop = new(Jobs, principal, _ => { });
             http = PRFactoryClient.CreateHttpClient(Url, "token", new Handler(Reply));
             Client = new(http);
         }
-        public PRFactoryWorkItems Adapter() => new(Url, [new(Item.RepositoryId!.Value, Dir.Path)], Teams, Client,
-            accept.Execute, Jobs.GetJob, () => { }, stopJob: stop.Execute, followUp: follow.Execute, jobLogs: Logs);
-        public void Finish(string id, string result)
+        public PRFactoryWorkItems Adapter(Func<JobRecord, TokenUsage?>? sessionUsage = null) => new(Url, [new(Item.RepositoryId!.Value, Dir.Path)], Teams, Client,
+            accept.Execute, Jobs.GetJob, () => { }, stopJob: stop.Execute, followUp: follow.Execute, jobLogs: Logs, sessionUsage: sessionUsage);
+        public void Finish(string id, string result, string? session = null)
         {
             var run = Jobs.BeginNextAttempt()!;
             Assert.Equal(id, run.Job.JobId);
+            if (session is not null) { Assert.True(Jobs.RecordSession(new(id, run.RunId, run.Generation, run.Correlation), session)); }
             Assert.True(Jobs.Complete(new(id, run.RunId, run.Generation, run.Correlation), result));
         }
         HttpResponseMessage Reply(HttpRequestMessage request)
