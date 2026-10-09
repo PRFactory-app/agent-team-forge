@@ -296,10 +296,10 @@ public sealed partial class PRFactoryClient(HttpClient httpClient, TimeProvider?
     /// <summary>Returns the remote WIP branch the server asks this machine to delete once the ticket completed.</summary>
     public async Task<string?> CompleteAsync(Guid id, Guid? lease, string? markdown, CancellationToken ct,
         string? branch = null, string? commit = null, PRFactoryRemotePublication? publication = null,
-        List<PRFactoryRepositoryFreshnessRequest>? repositoryResults = null)
+        List<PRFactoryRepositoryFreshnessRequest>? repositoryResults = null, PRFactoryUsageReport? usage = null)
     {
         using var response = await httpClient.PostAsJsonAsync($"api/worker/complete/{id:D}",
-            new PRFactoryCompletionRequest(true, markdown, branch, commit, string.Empty, lease, publication, repositoryResults), PRFactoryWorkItemJson.Default.PRFactoryCompletionRequest, ct);
+            new PRFactoryCompletionRequest(true, markdown, branch, commit, string.Empty, lease, publication, repositoryResults, usage), PRFactoryWorkItemJson.Default.PRFactoryCompletionRequest, ct);
         RejectToken(response.StatusCode);
         RejectLostLease(response.StatusCode, id);
         response.EnsureSuccessStatusCode();

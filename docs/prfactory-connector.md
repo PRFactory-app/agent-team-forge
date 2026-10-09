@@ -261,6 +261,47 @@ a persisted diagnostic. Network errors, HTTP 408/429 and server errors retry;
 token rejection and lease fencing retain their existing handling. An execution
 failure never depends on a successful artefact upload.
 
+## Token usage
+
+From 0.1.8, each completion of an agent-run work item carries an optional
+`usage` object: the backend and model of the lead job, and the input, output,
+cache-read and cache-write token figures read from the native session
+transcripts of the item's member jobs. PRFactory only records the figures;
+the run is paid for by the machine's own claude or codex sign-in, so nothing is
+billed. The field names and server-side rules are in PRFactory's
+`docs/WORKFLOW.md`, section "Usage report on completion".
+
+A figure ATF cannot read is omitted, never sent as zero: PRFactory treats an
+absent figure as unknown. What each backend can report:
+
+| Backend | Input | Output | Cache read | Cache write |
+| --- | --- | --- | --- | --- |
+| claude | `input_tokens` | `output_tokens` | `cache_read_input_tokens` | `cache_creation_input_tokens` |
+| codex | `input_tokens` minus `cached_input_tokens` | `output_tokens` | `cached_input_tokens` | none, always omitted |
+| pi | `input` | `output` | `cacheRead` | `cacheWrite` |
+| cursor, droid | omitted | omitted | omitted | omitted |
+
+Codex figures come from the last cumulative `token_count` event. That Codex
+has no cache-write figure, and that its `output_tokens` already include any
+reasoning tokens, is read from the transcripts ATF parses, not from Codex's own
+documentation (unverified). Claude and pi figures are summed per assistant
+message; a figure that any counted message lacks is omitted for the session.
+
+The transcripts are read to the end at completion time, whatever their size.
+A single transcript record larger than 8 MiB is not parsed; a claude or pi
+session containing one reports every figure as unknown, and a codex session does
+so only when no later cumulative `token_count` follows it.
+Figures are summed over the distinct sessions of the item's member jobs, so
+follow-up turns that resume a session count once. If any member job has no
+session or its transcript cannot be read, or the team has an external (joined)
+member whose session ATF does not own, every figure is omitted and only the
+backend and model are sent, which tells PRFactory the worker reported but could
+not read. A team whose members ran different backends reports the lead's backend
+and model and the sums over all sessions; cache write is then omitted whenever
+any session lacks it (a claude lead with a codex member reports cache write as
+unknown). Pull-request items, where no agent ran, send no
+`usage` object. Failures (`/fail`) carry no usage.
+
 ## Diff and binary attachments
 
 ATF discovers `blob-attachments-v1` through

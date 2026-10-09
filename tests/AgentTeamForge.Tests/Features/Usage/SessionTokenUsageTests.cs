@@ -51,7 +51,7 @@ public sealed class SessionTokenUsageTests : IDisposable
             + "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"atf-corr:large\"}}\n"
             + "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"DONE\"}}\n"
             + "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}\n");
-        Assert.Equal(new TokenUsage(60, 10, 40, 0), reader.Read("codex", "thread", home));
+        Assert.Equal(new TokenUsage(60, 10, 40, null), reader.Read("codex", "thread", home));
         var receipt = AgentTeamForge.Business.Features.Agents.Terminals.InteractiveTranscriptReader.ReadCodexThread(home, "thread", "large");
         if (source == "cli") { Assert.True(receipt!.Completed); }
         else { Assert.Null(receipt); }
@@ -120,9 +120,76 @@ public sealed class SessionTokenUsageTests : IDisposable
     {
         var path = Transcript("codex", "thread", "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread\",\"source\":\"cli\"}}\n"
             + Codex(100, 40, 10) + Codex(200, 80, 30));
-        Assert.Equal(new TokenUsage(120, 30, 80, 0), reader.Read("codex", "thread", home));
+        Assert.Equal(new TokenUsage(120, 30, 80, null), reader.Read("codex", "thread", home));
         File.AppendAllText(path, Codex(300, 90, 40));
         Assert.Equal(340, reader.Read("codex", "thread", home)!.Total);
+    }
+
+    [Fact]
+    public void Codex_reports_no_cache_write_figure()
+    {
+        Transcript("codex", "thread", "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread\",\"source\":\"cli\"}}\n"
+            + Codex(100, 40, 10) + Codex(200, 80, 30));
+        var usage = SessionTokenUsage.ReadFinal("codex", "thread", home)!;
+        Assert.Equal(120, usage.Input);
+        Assert.Equal(30, usage.Output);
+        Assert.Equal(80, usage.CacheRead);
+        Assert.Null(usage.CacheWrite);
+    }
+
+    [Fact]
+    public void Claude_reports_all_four_figures()
+    {
+        Transcript("claude", "claude-session", Claude("one") + Claude("two") + Claude("one"));
+        Assert.Equal(new TokenUsage(20, 4, 6, 8), SessionTokenUsage.ReadFinal("claude", "claude-session", home));
+    }
+
+    [Fact]
+    public void Missing_figure_is_unknown_not_zero()
+    {
+        Transcript("claude", "claude-session", Claude("one")
+            + "{\"type\":\"assistant\",\"message\":{\"id\":\"two\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1,\"cache_read_input_tokens\":2}}}\n");
+        Assert.Equal(new TokenUsage(15, 3, 5, null), SessionTokenUsage.ReadFinal("claude", "claude-session", home));
+        Assert.Equal(new TokenUsage(15, 3, 5, null), reader.Read("claude", "claude-session", home));
+    }
+
+    [Fact]
+    public void ReadFinal_reads_a_transcript_larger_than_one_chunk()
+    {
+        var padding = new string('x', 4_800);
+        var lines = new System.Text.StringBuilder();
+        for (var i = 0; i < 2_000; i++)
+        {
+            lines.Append("{\"type\":\"assistant\",\"sessionId\":\"claude-session\",\"isSidechain\":false,\"pad\":\"").Append(padding).Append("\",\"message\":{\"id\":\"m").Append(i)
+                .Append("\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}");
+            if (i < 1_999) { lines.Append('\n'); }
+        }
+        var path = Transcript("claude", "claude-session", lines.ToString());
+        Assert.True(new FileInfo(path).Length > 9 * 1024 * 1024);
+        Assert.True(reader.Read("claude", "claude-session", home)!.Input < 2_000);
+        Assert.Equal(2_000, SessionTokenUsage.ReadFinal("claude", "claude-session", home)!.Input);
+    }
+
+    [Fact]
+    public void ReadFinal_reports_unknown_when_an_oversized_usage_record_cannot_be_parsed()
+    {
+        var huge = "{\"type\":\"assistant\",\"sessionId\":\"claude-session\",\"message\":{\"id\":\"big\",\"content\":\""
+            + new string('x', 9 * 1024 * 1024)
+            + "\",\"usage\":{\"input_tokens\":500,\"output_tokens\":5,\"cache_read_input_tokens\":5,\"cache_creation_input_tokens\":5}}}\n";
+        Transcript("claude", "claude-session", Claude("one") + huge + Claude("three"));
+        Assert.Null(SessionTokenUsage.ReadFinal("claude", "claude-session", home));
+    }
+
+    [Fact]
+    public void ReadFinal_keeps_Codex_cumulative_total_after_an_oversized_line()
+    {
+        var huge = "{\"type\":\"response_item\",\"payload\":{\"text\":\"" + new string('x', 9 * 1024 * 1024) + "\"}}\n";
+        Transcript("codex", "thread", "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread\",\"source\":\"cli\"}}\n"
+            + Codex(100, 40, 10) + huge + Codex(200, 80, 30));
+        Assert.Equal(new TokenUsage(120, 30, 80, null), SessionTokenUsage.ReadFinal("codex", "thread", home));
+        Transcript("codex", "thread", "{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread\",\"source\":\"cli\"}}\n"
+            + Codex(100, 40, 10) + huge);
+        Assert.Null(SessionTokenUsage.ReadFinal("codex", "thread", home));
     }
 
     [Fact]
@@ -134,6 +201,8 @@ public sealed class SessionTokenUsageTests : IDisposable
         Assert.Null(reader.Read("claude", "missing", home));
         Assert.Null(reader.Read("fake", "missing", home));
         Assert.Null(reader.Read("claude", "../invalid", home));
+        Assert.Null(SessionTokenUsage.ReadFinal("claude", "missing", home));
+        Assert.Null(SessionTokenUsage.ReadFinal("cursor", "pi-session", home));
     }
 
     [Fact]

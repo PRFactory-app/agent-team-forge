@@ -97,7 +97,16 @@ public sealed record PRFactoryLeaseHeartbeatRequest(Guid LeaseToken);
 public sealed record PRFactoryArtefactFile(string FileName, string Content, string? Kind);
 public sealed record PRFactoryArtefactRequest(List<PRFactoryArtefactFile> Artefacts, Guid? LeaseToken);
 public sealed record PRFactoryCompletionRequest(bool Success, string? ResultMarkdown, string? ResultBranch, string? ResultCommitSha, string Metadata, Guid? LeaseToken,
-    PRFactoryRemotePublication? Publication = null, List<PRFactoryRepositoryFreshnessRequest>? RepositoryResults = null);
+    PRFactoryRemotePublication? Publication = null, List<PRFactoryRepositoryFreshnessRequest>? RepositoryResults = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PRFactoryUsageReport? Usage = null);
+// Usage report on completion: a figure the worker cannot read is omitted, because PRFactory reads absent as unknown, never zero.
+public sealed record PRFactoryUsageReport(
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] PRFactoryAgentType? Backend,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Model,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? InputTokens,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? OutputTokens,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? CacheReadTokens,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? CacheWriteTokens);
 // remote-publication-v1: the branch/head were pushed and verified with ls-remote; the server opens the PR remotely.
 public sealed record PRFactoryRemotePublication(bool Remote, string Branch, string HeadSha, bool Verified);
 public sealed record PRFactoryFailureRequest(string ErrorMessage, string ErrorDetails, bool ShouldRetry, string PartialResult, Guid? LeaseToken);
@@ -131,6 +140,7 @@ public sealed record PRFactoryStreamResponse(bool Accepted, Dictionary<string, l
 [JsonSerializable(typeof(PRFactoryArtefactRequest))]
 [JsonSerializable(typeof(PRFactoryPlanBasis))]
 [JsonSerializable(typeof(PRFactoryCompletionRequest))]
+[JsonSerializable(typeof(PRFactoryUsageReport))]
 [JsonSerializable(typeof(PRFactoryFailureRequest))]
 [JsonSerializable(typeof(PRFactoryPullRequestRequest))]
 [JsonSerializable(typeof(PRFactoryPullRequestResult))]

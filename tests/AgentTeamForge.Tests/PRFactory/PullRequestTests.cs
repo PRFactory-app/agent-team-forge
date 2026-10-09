@@ -268,6 +268,7 @@ public sealed class PullRequestTests
 
         var completion = Assert.Single(f.Completions);
         Assert.Equal("prfactory/PRF-1", completion.GetProperty("resultBranch").GetString());
+        Assert.False(completion.TryGetProperty("usage", out _));
         Assert.Equal(Sha, completion.GetProperty("resultCommitSha").GetString());
         var result = JsonElement.Parse(completion.GetProperty("resultMarkdown").GetString()!);
         Assert.Equal(7, result.GetProperty("number").GetInt32());
