@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Features.Wake;
 public sealed record WakeRegistration(string Key, long Generation, string Kind, string Address, string Secret, string Home);
 public sealed record WakeRegistrationStatus(bool Registered, string? Key, long? Generation, string? Kind, string? Address, bool Usable = false);
 public sealed record WakeSnapshot(WakeRegistration Target, int Unread, long LatestSeq, long NotifiedSeq, DateTimeOffset? LastSuccess, bool Outstanding, bool External = false,
-    string? ParkJobId = null, string? ReaderId = null);
+    string? ParkJobId = null, string? ReaderId = null, bool ReadSincePost = false);
 
 /// <summary>Committed wake routing and unread state. A posted notice is only a doorbell, never a read receipt.</summary>
 public sealed class WakeStore(JobDatabase database)
@@ -231,7 +231,10 @@ public sealed class WakeStore(JobDatabase database)
         command.CommandText = """
             SELECT t.target_key,t.generation,t.kind,t.address,t.secret,t.home,
                    count(m.seq),max(m.seq),t.external_notified_seq,t.last_external_success,
-                   sum(CASE WHEN m.seq<=t.external_notified_seq THEN 1 ELSE 0 END)
+                   sum(CASE WHEN m.seq<=t.external_notified_seq THEN 1 ELSE 0 END),
+                   -- Read evidence includes already-read rows: any read since the last post means the notice was consumed.
+                   EXISTS (SELECT 1 FROM external_messages r WHERE r.wake_key=t.target_key AND r.read_at IS NOT NULL
+                           AND r.read_at>=t.last_external_success)
             FROM wake_targets t JOIN external_messages m ON m.wake_key=t.target_key AND m.read_at IS NULL
             WHERE t.active=1
             GROUP BY t.target_key
@@ -243,7 +246,7 @@ public sealed class WakeStore(JobDatabase database)
             var target = new WakeRegistration(reader.GetString(0), reader.GetInt64(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetString(5));
             result.Add(new WakeSnapshot(target, reader.GetInt32(6), reader.GetInt64(7), reader.GetInt64(8),
                 reader.IsDBNull(9) ? null : DateTimeOffset.Parse(reader.GetString(9), System.Globalization.CultureInfo.InvariantCulture),
-                reader.GetInt64(10) > 0, true));
+                reader.GetInt64(10) > 0, true, ReadSincePost: reader.GetInt64(11) > 0));
         }
         return result;
     }
