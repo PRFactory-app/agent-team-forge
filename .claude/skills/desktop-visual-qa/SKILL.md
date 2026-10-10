@@ -200,6 +200,8 @@ Use only the `agentteamforge-external` MCP tools: join_team, external_read, exte
 
 ## 2. Wait for GO
 Do NOT start testing until a message starting with `GO <T>` arrives. It names the commits under test and the files to read. A wake is only a doorbell: read with `external_read(member_token=...)`; without wake, poll every 2–3 minutes.
+During testing, call `external_read(member_token=...)` between test cases/M-cases and before any long-running step (e.g. a long E2E run), so lead messages are handled without waiting for the turn to end.
+One `external_read` returns every unread message; queued wake rows that arrive afterwards can be ignored.
 
 ## 3. Rules (non-negotiable)
 - Test only. Do not edit, commit, push, stash or check out anything in any repository. No migrations, no writes to the database; read-only queries against <local db> are allowed.
@@ -227,6 +229,7 @@ GO tells the tester to:
 
 **Every later change to the brief, the deltas or the stack gets its own
 message to the tester immediately.** It does not re-read files on its own.
+Batch messages to a busy tester into one message instead of many small ones.
 
 ## Phase 5 — Watch and triage
 
