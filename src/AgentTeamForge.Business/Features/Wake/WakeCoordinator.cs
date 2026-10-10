@@ -45,6 +45,7 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
         public DateTimeOffset? FirstNew;
         public WakeBackoff Backoff = new();
         public int Renotifies;
+        public bool Held;
         public long LatestSeq;
     }
     static readonly TimeSpan MaxRenotify = TimeSpan.FromMinutes(60);
@@ -116,7 +117,10 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
                 states[stateKey] = state;
             }
             var current = now();
-            if (snapshot.LatestSeq > state.LatestSeq)
+            // Codex queues notices until its turn ends. While the member has read nothing since the last post, that
+            // queued notice already covers newer revisions; only the doubling reminder posts again.
+            var held = target.Kind == "codex" && snapshot.External && snapshot.ParkJobId is null && snapshot.LastSuccess is not null && !snapshot.ReadSincePost;
+            if (snapshot.LatestSeq > state.LatestSeq && !held || state.Held && !held)
             {
                 // A newly finished job must not wait behind retry/reminder backoff earned by older ones.
                 state.LatestSeq = snapshot.LatestSeq;
@@ -124,6 +128,11 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
                 state.Renotifies = 0;
                 state.FirstNew = current;
             }
+            else if (snapshot.LatestSeq > state.LatestSeq)
+            {
+                state.LatestSeq = snapshot.LatestSeq;
+            }
+            state.Held = held;
             if (current < state.Backoff.Until)
             {
                 continue;
@@ -131,7 +140,7 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
 
             // A newly finished job wakes after the coalesce window; an unchanged unread set is
             // reminded at doubling intervals (renotify, 2x, 4x ... capped at an hour).
-            var isNew = snapshot.LatestSeq > snapshot.NotifiedSeq;
+            var isNew = !held && snapshot.LatestSeq > snapshot.NotifiedSeq;
             var interval = TimeSpan.FromTicks(Math.Min(MaxRenotify.Ticks, renotifyWindow.Ticks << Math.Min(state.Renotifies, 8)));
             var expired = snapshot.ParkJobId is null && !isNew && snapshot.LastSuccess is not null && current - snapshot.LastSuccess >= interval;
             if (!isNew && !expired)

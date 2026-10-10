@@ -1561,6 +1561,106 @@ public sealed class WakeTests
         Assert.Equal(3, poster.Attempts.Count);
     }
 
+    sealed class CodexExternal
+    {
+        public DateTimeOffset Time = DateTimeOffset.UtcNow;
+        public bool Accept = true;
+        public readonly FakePoster Poster;
+        public readonly WakeStore Wake;
+        public readonly ExternalTeam Team;
+        public readonly LeadSessionInfo Lead;
+        readonly string token;
+        readonly WakeCoordinator coordinator;
+
+        public CodexExternal(JobFixture fixture)
+        {
+            Poster = new FakePoster((_, _) => Accept);
+            Wake = new WakeStore(fixture.Database);
+            var sessions = new LeadSessionStore(fixture.Database);
+            Lead = sessions.Start("/workspace/codex-held", "codex-held-lead");
+            var target = Wake.Register("codex:held", "codex", "thread", "", "/tmp");
+            sessions.BindWake(Lead.SessionId, target.Key, target.Generation);
+            Team = new ExternalTeam(new ExternalMemberStore(fixture.Database), Wake, () => Time);
+            token = Team.Join(Lead.SessionId, Team.CreateTicket(Lead.SessionId, Lead.Workspace, "worker", null).Ticket!.Token).Member!.MemberToken;
+            coordinator = new WakeCoordinator(Wake, Poster, _ => { }, () => Time, TimeSpan.Zero);
+        }
+
+        public Task Send(string text, TimeSpan after = default)
+        {
+            Time += after;
+            Assert.True(Team.Send(token, text).Ok);
+            return Tick();
+        }
+
+        public Task Tick(TimeSpan after = default)
+        {
+            Time += after;
+            return coordinator.TickAsync(TestContext.Current.CancellationToken);
+        }
+
+        public void Read(int limit) => Team.ReadLead(Lead.SessionId, Lead.Workspace, null, limit);
+    }
+
+    [Fact]
+    public async Task Codex_external_notice_is_held_while_nothing_is_read_and_rearms_after_a_read()
+    {
+        using var fixture = new JobFixture();
+        var codex = new CodexExternal(fixture);
+        await codex.Send("one");
+        foreach (var text in new[] { "two", "three", "four" }) { await codex.Send(text, TimeSpan.FromMinutes(1)); }
+        Assert.Single(codex.Poster.Attempts);
+
+        codex.Read(50);
+        await codex.Send("five");
+        Assert.Equal(2, codex.Poster.Attempts.Count);
+    }
+
+    [Fact]
+    public async Task Codex_external_partial_read_counts_as_consumed()
+    {
+        using var fixture = new JobFixture();
+        var codex = new CodexExternal(fixture);
+        await codex.Send("one");
+        await codex.Send("two", TimeSpan.FromSeconds(10));
+        await codex.Send("three", TimeSpan.FromSeconds(10));
+        Assert.Single(codex.Poster.Attempts);
+
+        codex.Read(1);
+        await codex.Send("four", TimeSpan.FromSeconds(10));
+        Assert.Equal(2, codex.Poster.Attempts.Count);
+    }
+
+    [Fact]
+    public async Task Held_codex_notice_reminds_on_the_doubling_cadence_with_the_latest_revision()
+    {
+        using var fixture = new JobFixture();
+        var codex = new CodexExternal(fixture);
+        await codex.Send("one");
+        for (var minute = 1; minute <= 16; minute++) { await codex.Send("more " + minute, TimeSpan.FromMinutes(1)); }
+        // Posts at +0, +5 and +15 minutes (reminders double), not once per message.
+        Assert.Equal(3, codex.Poster.Attempts.Count);
+        var latest = Assert.Single(codex.Wake.PendingExternal()).LatestSeq;
+        Assert.Contains($"inbox revision {latest - 1}", codex.Poster.Attempts[^1].Notice);
+    }
+
+    [Fact]
+    public async Task Codex_held_to_unheld_after_failed_reminders_wakes_without_waiting_for_backoff()
+    {
+        using var fixture = new JobFixture();
+        var codex = new CodexExternal(fixture);
+        await codex.Send("A");
+        await codex.Send("B", TimeSpan.FromMinutes(1));
+        codex.Accept = false;
+        for (var i = 0; i < 12; i++) { await codex.Tick(TimeSpan.FromMinutes(1)); }
+        var failed = codex.Poster.Attempts.Count;
+        Assert.True(failed > 1);
+
+        codex.Accept = true;
+        codex.Read(1); // reads A only; B stays unread and unannounced
+        await codex.Tick();
+        Assert.Equal(failed + 1, codex.Poster.Attempts.Count);
+    }
+
     [Fact]
     public async Task Job_read_while_needs_reconciliation_wakes_again_when_it_completes()
     {
