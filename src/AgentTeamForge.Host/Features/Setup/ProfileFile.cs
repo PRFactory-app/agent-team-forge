@@ -23,6 +23,9 @@ public sealed record ProfileFile
     public bool AutoPrune { get; init; } = true;
     public int PruneOlderThanDays { get; init; } = 30;
 
+    /// <summary>Launch mode of local jobs that name none (<c>sandboxed</c> or <c>fullAccess</c>); null is fullAccess.</summary>
+    public string? SafetyMode { get; init; }
+
     public const int MaxQueueLimit = 1_000;
     public const int MaxConcurrencyLimit = 64;
     public const string FakeBackends = "fake";
@@ -57,6 +60,11 @@ public sealed record ProfileFile
         {
             // Explicit selection only: there is no fallback from a real backend to fake.
             throw new StateDirectoryException("backend_unsupported", $"{state.ProfileFile} has backend \"{profile.Backend}\"; expected \"{FakeBackends}\" or \"{AgentBackends}\"");
+        }
+
+        if (profile.SafetyMode is not null && !Business.Features.Jobs.SafetyMode.Valid(profile.SafetyMode))
+        {
+            throw new StateDirectoryException("profile_invalid_safety_mode", $"{state.ProfileFile}: safety_mode must be \"sandboxed\" or \"fullAccess\"");
         }
 
         if (!LimitsAreValid(profile.QueueLimit, profile.MaxFakeRuntimeSeconds)

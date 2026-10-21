@@ -1264,6 +1264,17 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return (IReadOnlyList<JobRecord>)jobs;
     });
 
+    /// <summary>Worktree and origin checkout of every job that was accepted as effectively sandboxed (ADR 0013), for daemon git hardening after a restart.</summary>
+    public IReadOnlyList<(string WorktreePath, string? Cwd)> SandboxedWorktrees() => Read(connection =>
+    {
+        using var command = Command(connection, null,
+            "SELECT DISTINCT worktree_path, cwd FROM jobs WHERE worktree_path IS NOT NULL AND options LIKE '%;sandbox_effective=1%'");
+        using var reader = command.ExecuteReader();
+        var rows = new List<(string, string?)>();
+        while (reader.Read()) { rows.Add((reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1))); }
+        return (IReadOnlyList<(string, string?)>)rows;
+    });
+
     public IReadOnlyList<EventRecord> GetEvents(string jobId) => Read(connection =>
     {
         using var command = Command(connection, null, "SELECT seq, job_id, run_id, kind FROM events WHERE job_id=$id ORDER BY seq", ("$id", jobId));

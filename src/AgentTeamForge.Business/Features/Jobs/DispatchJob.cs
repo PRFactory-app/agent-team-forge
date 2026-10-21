@@ -43,6 +43,7 @@ public sealed class DispatchJob : IDisposable
     readonly JobLogs? jobLogs;
     readonly ManagedChildContext? childContext;
     readonly string? piHome;
+    readonly string sandboxDirectory;
     readonly string codexHome = CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
     internal Func<string, string, string, CancellationToken, Task<CodexSubmission>> SubmitNativeCodex { get; init; } = CodexQueueWake.SubmitAsync;
     string? _haltReason;
@@ -53,7 +54,7 @@ public sealed class DispatchJob : IDisposable
     {
     }
 
-    public DispatchJob(JobStore store, BackendCatalog backends, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log, JobLogs? jobLogs = null, ManagedChildContext? childContext = null, string? piHome = null)
+    public DispatchJob(JobStore store, BackendCatalog backends, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log, JobLogs? jobLogs = null, ManagedChildContext? childContext = null, string? piHome = null, string? stateRoot = null)
     {
         // Validated before the daemon reports readiness; CancelAfter would otherwise fault the loop.
         if (limits.MaxFakeRuntime <= TimeSpan.Zero || limits.MaxFakeRuntime > MaxAllowedRuntime)
@@ -72,6 +73,7 @@ public sealed class DispatchJob : IDisposable
         this.jobLogs = jobLogs;
         this.childContext = childContext;
         this.piHome = piHome;
+        sandboxDirectory = Path.Combine(stateRoot ?? Path.Combine(Path.GetTempPath(), "atf-sandbox"), "sandbox");
     }
 
     /// <summary>
@@ -898,7 +900,8 @@ public sealed class DispatchJob : IDisposable
                 }
                 if (!JobWorktree.Prepare(claim.Job, deadline.Token))
                 {
-                    End(run, JobStatus.Failed, "worktree_unavailable");
+                    End(run, JobStatus.Failed, claim.Job.WorktreePath is not null && SandboxedWorktrees.Tampered(claim.Job.WorktreePath)
+                        ? SandboxedWorktrees.TamperedReason : "worktree_unavailable");
                     return;
                 }
                 var request = new BackendRequest(claim.Job.JobId, claim.Correlation, claim.Job.Instruction, claim.Job.Options)
@@ -914,6 +917,15 @@ public sealed class DispatchJob : IDisposable
                     Output = jobLogs?.BeginRun(claim.Job.JobId, claim.RunId, claim.Job.Backend),
                 };
                 request = childContext?.Prepare(request) ?? request;
+                if (JobSafety.Read(claim.Job.Options).EffectiveSandboxed)
+                {
+                    try { request = request with { Sandbox = SandboxLaunch.Create(request.WorkingDirectory ?? Environment.CurrentDirectory, claim.Job.Backend, sandboxDirectory, claim.Job.JobId) }; }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        End(run, JobStatus.Failed, "sandbox_setup_failed", ex.Message);
+                        return;
+                    }
+                }
                 if (claim.Job.Backend == BackendCatalog.Pi && request.ManagedMcpConfig is not null && !PiMcpAdapter.IsInstalled(piHome))
                 {
                     End(run, JobStatus.Failed, "pi_mcp_adapter_missing", PiMcpAdapter.InstallHint);
@@ -961,6 +973,13 @@ public sealed class DispatchJob : IDisposable
                             TryRecordSession(run, session.SessionId);
                             break;
                         case BackendEvidence.Result result when result.Correlation == claim.Correlation:
+                            // A sandboxed agent can rewrite its worktree's git admin files; a job whose worktree no longer validates is not a result.
+                            if (claim.Job.WorktreePath is { } sandboxedPath && JobSafety.Read(claim.Job.Options).EffectiveSandboxed
+                                && SandboxedWorktrees.Tampered(sandboxedPath))
+                            {
+                                End(run, JobStatus.Failed, SandboxedWorktrees.TamperedReason);
+                                return;
+                            }
                             Complete(run, result.Output);
                             return;
                         case BackendEvidence.Ack or BackendEvidence.Result or BackendEvidence.Session:

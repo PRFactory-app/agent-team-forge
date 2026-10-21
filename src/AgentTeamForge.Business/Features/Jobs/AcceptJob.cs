@@ -13,11 +13,14 @@ namespace AgentTeamForge.Business.Features.Jobs;
 /// </summary>
 public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLimits limits, bool testProfile, AdmissionGate admission,
     IReadOnlyCollection<string>? backends = null, Func<string, IReadOnlyCollection<string>>? discoverModels = null, TierMap? tierMap = null,
-    HerdrPlacement? herdrPlacement = null, Func<string, string?>? checkHerdrSession = null, string? launchMode = null)
+    HerdrPlacement? herdrPlacement = null, Func<string, string?>? checkHerdrSession = null, string? launchMode = null,
+    string? defaultSafetyMode = null, SandboxProbe? sandboxProbe = null)
 {
     public const string Operation = "job_submit";
 
     const int MaxCwdChars = 4_096;
+
+    readonly SandboxProbe _sandboxProbe = sandboxProbe ?? SandboxCapability.Default;
 
     readonly IReadOnlyCollection<string> _backends = backends ?? [BackendCatalog.Fake];
 
@@ -36,6 +39,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
             ?? (request.ExpectedOutputs is { } outputs && (outputs.Length > 100 || outputs.Any(p => string.IsNullOrWhiteSpace(p) || p.Length > 4096))
                 ? "Invalid expected_outputs: at most 100 non-blank paths of at most 4096 characters." : null)
             ?? OptionError("model", request.Model) ?? OptionError("effort", request.Effort)
+            ?? (request.SafetyMode is not null && !SafetyMode.Valid(request.SafetyMode) ? "Invalid safety_mode: expected sandboxed or fullAccess." : null)
             ?? (request.TargetAgent is not null && !ValidAgentName(request.TargetAgent)
                 ? "Invalid name: 1 to 64 letters, digits, '-' or '_', starting with a letter or digit." : null);
         string? cwd = null;
@@ -74,6 +78,10 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         }
 
         var options = $"behavior={behavior};hold={(request.Hold ? 1 : 0)};worktree={(request.Worktree ? 1 : 0)}";
+        // A child started by a sandboxed agent inherits sandboxed and cannot lower it (ADR 0013, accepted containment limit).
+        var requestedMode = request.InheritedSafetyMode == SafetyMode.Sandboxed ? SafetyMode.Sandboxed
+            : request.SafetyMode ?? defaultSafetyMode ?? SafetyMode.FullAccess;
+        options += JobSafety.Decide(requestedMode, backend, cwd, _sandboxProbe).ToOptions();
         if (request.ExpectedOutputs is { Length: > 0 } paths)
         {
             options += ";expected_outputs=" + string.Join(",", paths.Select(p => Convert.ToBase64String(Encoding.UTF8.GetBytes(p))));

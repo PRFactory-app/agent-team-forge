@@ -171,6 +171,8 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
         {
             options += ";effort=" + selection.effort;
         }
+        // The session keeps the mode it started in; a follow-up or revive can neither raise nor lower it.
+        options += JobSafety.Read(parent.Options).ToOptions();
         if (JobOptions.Read(parent.Options, "herdr_placement") is { } placement)
         {
             options += ";herdr_placement=" + placement;

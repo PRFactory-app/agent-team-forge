@@ -30,6 +30,13 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
             ? connectorGet.Execute(request.JobId ?? string.Empty) : result;
     }
 
+    /// <summary>The requested mode of the sandboxed agent behind a managed-child lead session, else null. Resolved from the daemon's own binding, never from a caller-supplied job id.</summary>
+    string? CallerSafetyMode(IpcRequest request) =>
+        sessions is not null && jobStore is not null && request.LeadSessionId is not null && request.Workspace is not null
+        && sessions.ManagedChildJobId(request.LeadSessionId, request.Workspace) is { } callerJobId
+        && jobStore.GetJob(callerJobId) is { } caller && JobSafety.Read(caller.Options).RequestedSandboxed
+            ? SafetyMode.Sandboxed : null;
+
     public IpcResponse Handle(IpcRequest request)
     {
         // Relay requests must not acquire WakeRoutingGate: the coordinator holds it while awaiting this receipt.
@@ -277,6 +284,8 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                     Model = request.Model,
                     Effort = request.Effort,
                     HerdrPlacement = request.HerdrPlacement,
+                    SafetyMode = request.SafetyMode,
+                    InheritedSafetyMode = CallerSafetyMode(request),
                     Cwd = request.Cwd,
                     Worktree = request.Worktree,
                     TimeoutSeconds = request.TimeoutSeconds,

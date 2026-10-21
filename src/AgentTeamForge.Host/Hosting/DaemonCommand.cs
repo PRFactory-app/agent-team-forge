@@ -210,7 +210,8 @@ public static class DaemonCommand
         var admission = new AdmissionGate();
         var externalTeam = new ExternalTeam(externalMembers, wakeStore);
         var childContext = new ManagedChildContext(store, externalTeam, state.Path, Environment.ProcessPath!);
-        using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs, childContext);
+        using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs, childContext, stateRoot: state.Path);
+        SandboxedWorktrees.Restore(store);
         dispatcher.RestoreAfterRestart(store.RestartCandidates());
         var modelDiscovery = new BackendModelDiscovery();
         // Settings and list_backends read the cached catalog; fill it now instead of on the first submit.
@@ -224,7 +225,7 @@ public static class DaemonCommand
         var herdrPlacement = herdrTerminal is null ? null : new HerdrPlacement(state.Path, Log);
         Func<string, string?>? checkHerdrSession = herdrTerminal is null ? null : herdrTerminal.CheckSharedSession;
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap,
-            herdrPlacement, checkHerdrSession, launchMode);
+            herdrPlacement, checkHerdrSession, launchMode, profile.SafetyMode);
         // Remote claims have their own lead identity and cannot borrow the local MCP lead.
         var connectorAccept = new AcceptJob(store, new BoundPrincipal("prfactory", "connector", "connector-lead"),
             limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap, herdrPlacement, checkHerdrSession, launchMode);

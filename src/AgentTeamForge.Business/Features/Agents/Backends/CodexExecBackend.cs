@@ -33,6 +33,7 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
             info.WorkingDirectory = cwd;
         }
         ManagedChildContext.ClearInheritedIdentity(info);
+        if (request.Sandbox is not null) { SandboxEnvironment.Scrub(info.Environment); }
         OrphanedBackendProcess.Mark(info, request.Correlation);
 
         foreach (var argument in BuildArguments(request))
@@ -59,8 +60,11 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
     {
         // `exec resume` has no -C; the working directory is the process cwd for both forms.
         List<string> args = request.ResumeSessionId is not null ? ["exec", "resume"] : ["exec"];
-        args.AddRange(["--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"]);
-        args.AddRange(ManagedChildContext.Arguments("codex", request.ManagedMcpConfig));
+        // `exec` never asks for approval, so the sandbox profile needs no -a; the bypass flag is what it replaces.
+        args.AddRange(request.Sandbox is null ? ["--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"] : ["--json", "--skip-git-repo-check"]);
+        var managed = ManagedChildContext.Arguments("codex", request.ManagedMcpConfig);
+        args.AddRange(managed);
+        if (request.Sandbox is { } sandbox) { args.AddRange(sandbox.CodexArguments(managed.Count > 0)); }
         foreach (var part in request.Options.Split(';', StringSplitOptions.RemoveEmptyEntries))
         {
             if (part.Split('=', 2) is ["model", var model] && model.Length > 0)

@@ -11,6 +11,9 @@ public sealed record BackendRequest(string JobId, string Correlation, string Ins
     /// <summary>Working directory for the agent; null uses the daemon default.</summary>
     public string? WorkingDirectory { get; init; }
 
+    /// <summary>The sandboxed launch (ADR 0013); null launches with the bypass flags of ADR 0006.</summary>
+    public SandboxLaunch? Sandbox { get; init; }
+
     /// <summary>Receives each raw stdout/stderr read as soon as it arrives.</summary>
     public Action<string, ReadOnlyMemory<byte>>? Output { get; init; }
 }
