@@ -853,6 +853,7 @@ public sealed class DispatchJob : IDisposable
         _running[run.JobId] = active;
         IBackendRun? backendRun = null;
         HeadlessRun? headless = null;
+        string? liveRoot = null;
         var nativeCarrier = claim.Job.Backend == BackendCatalog.Codex && claim.Job.SessionId is not null
             && JobOptions.Read(claim.Job.Options, "native_codex") == "1";
         var enteredNative = false;
@@ -904,6 +905,18 @@ public sealed class DispatchJob : IDisposable
                         ? SandboxedWorktrees.TamperedReason : "worktree_unavailable");
                     return;
                 }
+                var workingDirectory = JobWorktree.WorkingDirectory(claim.Job);
+                var sandboxed = JobSafety.Read(claim.Job.Options).EffectiveSandboxed;
+                if (sandboxed && claim.Job.WorktreePath is { } worktreeRoot)
+                {
+                    // A subdirectory the agent replaced with a link would make the sandbox grant whatever it points at.
+                    workingDirectory = SandboxedWorktrees.ContainedWorkingDirectory(worktreeRoot, workingDirectory);
+                    if (workingDirectory is null)
+                    {
+                        End(run, JobStatus.Failed, SandboxedWorktrees.TamperedReason, "the working directory resolves outside the job worktree");
+                        return;
+                    }
+                }
                 var request = new BackendRequest(claim.Job.JobId, claim.Correlation, claim.Job.Instruction, claim.Job.Options)
                 {
                     DisplayName = claim.Job.TargetAgent,
@@ -913,13 +926,24 @@ public sealed class DispatchJob : IDisposable
                         catch (StorageException) { }
                     },
                     ResumeSessionId = resumeSessionId,
-                    WorkingDirectory = JobWorktree.WorkingDirectory(claim.Job),
+                    WorkingDirectory = workingDirectory,
                     Output = jobLogs?.BeginRun(claim.Job.JobId, claim.RunId, claim.Job.Backend),
                 };
                 request = childContext?.Prepare(request) ?? request;
-                if (JobSafety.Read(claim.Job.Options).EffectiveSandboxed)
+                if (sandboxed)
                 {
-                    try { request = request with { Sandbox = SandboxLaunch.Create(request.WorkingDirectory ?? Environment.CurrentDirectory, claim.Job.Backend, sandboxDirectory, claim.Job.JobId) }; }
+                    try
+                    {
+                        var launchDirectory = request.WorkingDirectory ?? Environment.CurrentDirectory;
+                        // Every launch that gets a writable worktree admin dir is recorded, so daemon git there is validated and pinned.
+                        SandboxedWorktrees.RegisterLaunch(GitLayout.Find(launchDirectory));
+                        if (SandboxedWorktrees.Validate(launchDirectory) is { } invalid)
+                        {
+                            End(run, JobStatus.Failed, SandboxedWorktrees.TamperedReason, invalid);
+                            return;
+                        }
+                        request = request with { Sandbox = SandboxLaunch.Create(launchDirectory, claim.Job.Backend, sandboxDirectory, claim.Job.JobId) };
+                    }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                     {
                         End(run, JobStatus.Failed, "sandbox_setup_failed", ex.Message);
@@ -934,7 +958,12 @@ public sealed class DispatchJob : IDisposable
                 // A stop or timeout during worktree preparation must not launch an agent.
                 deadline.Token.ThrowIfCancellationRequested();
                 var starting = Task.Run(() => backend.Start(request), CancellationToken.None);
-                try { backendRun = await BackendCall(() => starting.WaitAsync(deadline.Token), "launch_failed"); }
+                try
+                {
+                    backendRun = await BackendCall(() => starting.WaitAsync(deadline.Token), "launch_failed");
+                    // From here an agent runs in the worktree: daemon git there waits until it has ended.
+                    if (request.Sandbox is not null) { liveRoot = SandboxedWorktrees.MarkLive(request.WorkingDirectory ?? Environment.CurrentDirectory); }
+                }
                 catch (OperationCanceledException)
                 {
                     TerminateLateStart(starting, run, daemonLifetime.IsCancellationRequested
@@ -1122,6 +1151,12 @@ public sealed class DispatchJob : IDisposable
             }
             else { await DisposeQuietly(backendRun); }
             if (headless is not null) { ReapHeadless(headless); }
+            if (liveRoot is not null)
+            {
+                // No process of a sandboxed headless run may outlive it: the daemon's git must not race a helper writing git metadata.
+                if (headless is not null) { OrphanedBackendProcess.TerminateMarked([run.Correlation]); }
+                SandboxedWorktrees.ClearLive(liveRoot);
+            }
             _running.TryRemove(run.JobId, out _);
             if (backendRun?.OwnedSessionStopped == true)
             {

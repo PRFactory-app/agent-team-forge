@@ -55,7 +55,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
                 onCreated: created => { session = created; HerdrOwnedSessions.Save(launch, created); },
                 exclusivePiMcp: launch.Kind == InteractiveAgentKind.Pi && InteractiveAgentCommand.ManagedConfigPath(launch) is { } config
                     && File.Exists(config),
-                scrubbedEnvironment: launch.Sandbox is null ? null : SandboxEnvironment.PresentCredentials());
+                scrubbedEnvironment: launch.Sandbox is null ? null : SandboxEnvironment.Blocked(session.ServerPid));
             // The in-memory session carries the shell identity too, so PaneIsGone sees the same proof as the binding.
             session = session with { ShellPid = binding.ShellPid, ShellStartTicks = binding.ShellStartTicks };
             _runs[launch.AgentName] = (session, binding);

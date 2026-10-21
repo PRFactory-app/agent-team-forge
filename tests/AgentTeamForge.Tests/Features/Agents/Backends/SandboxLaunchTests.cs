@@ -84,39 +84,70 @@ public sealed class SandboxLaunchTests : IDisposable
     }
 
     [Theory]
-    [InlineData("AWS_ACCESS_KEY_ID", true)]
-    [InlineData("AWS_PROFILE", true)]
-    [InlineData("GITHUB_TOKEN", true)]
-    [InlineData("gh_token", true)]
-    [InlineData("SSH_AUTH_SOCK", true)]
-    [InlineData("GOOGLE_APPLICATION_CREDENTIALS", true)]
-    [InlineData("MY_SERVICE_API_KEY", true)]
-    [InlineData("NPM_TOKEN", true)]
-    [InlineData("ANTHROPIC_API_KEY", false)]
-    [InlineData("OPENAI_API_KEY", false)]
-    [InlineData("CODEX_API_KEY", false)]
-    [InlineData("CLAUDE_CODE_OAUTH_TOKEN", false)]
-    [InlineData("PATH", false)]
-    [InlineData("HOME", false)]
-    public void Credential_variables_are_recognized_and_the_agents_own_sign_in_is_kept(string name, bool credential) =>
-        Assert.Equal(credential, SandboxEnvironment.IsCredential(name));
+    [InlineData("AWS_ACCESS_KEY_ID", false)]
+    [InlineData("GITHUB_TOKEN", false)]
+    [InlineData("SSH_AUTH_SOCK", false)]
+    [InlineData("GOOGLE_APPLICATION_CREDENTIALS", false)]
+    [InlineData("A_CREDENTIAL_NOBODY_LISTED", false)]
+    [InlineData("INTERNAL_BUILD_PASSPHRASE", false)]
+    [InlineData("ANTHROPIC_API_KEY", true)]
+    [InlineData("OPENAI_API_KEY", true)]
+    [InlineData("CODEX_API_KEY", true)]
+    [InlineData("CLAUDE_CODE_OAUTH_TOKEN", true)]
+    [InlineData("PATH", true)]
+    [InlineData("HOME", true)]
+    [InlineData("LC_ALL", true)]
+    public void Only_listed_variables_reach_a_sandboxed_agent(string name, bool allowed) =>
+        Assert.Equal(allowed, SandboxEnvironment.IsAllowed(name));
 
     [Fact]
-    public void Scrub_removes_only_credential_variables()
+    public void Restrict_keeps_only_the_allow_list_so_an_unlisted_credential_is_dropped()
     {
-        var environment = new Dictionary<string, string?> { ["AWS_SECRET_ACCESS_KEY"] = "x", ["GITHUB_TOKEN"] = "y", ["ANTHROPIC_API_KEY"] = "k", ["PATH"] = "/bin" };
+        var environment = new Dictionary<string, string?> { ["A_CREDENTIAL_NOBODY_LISTED"] = "x", ["AWS_SECRET_ACCESS_KEY"] = "y", ["ANTHROPIC_API_KEY"] = "k", ["PATH"] = "/bin" };
 
-        SandboxEnvironment.Scrub(environment);
+        SandboxEnvironment.Restrict(environment);
 
         Assert.Equal(["ANTHROPIC_API_KEY", "PATH"], environment.Keys.Order());
+    }
+
+    [Fact]
+    public async Task The_terminal_prologue_unsets_every_unlisted_variable_in_a_real_shell()
+    {
+        var info = new System.Diagnostics.ProcessStartInfo("sh") { RedirectStandardOutput = true, UseShellExecute = false };
+        info.Environment.Clear();
+        foreach (var (name, value) in new Dictionary<string, string> { ["PATH"] = "/usr/bin:/bin", ["HOME"] = "/home/x", ["LC_ALL"] = "C", ["A_CREDENTIAL_NOBODY_LISTED"] = "secret", ["GH_TOKEN"] = "t", ["ANTHROPIC_API_KEY"] = "k" })
+        {
+            info.Environment[name] = value;
+        }
+        info.ArgumentList.Add("-c");
+        info.ArgumentList.Add(SandboxEnvironment.ShellPrologue() + "env");
+        using var process = System.Diagnostics.Process.Start(info)!;
+        var output = await process.StandardOutput.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        Assert.Contains("HOME=/home/x", output);
+        Assert.Contains("LC_ALL=C", output);
+        Assert.Contains("ANTHROPIC_API_KEY=k", output);
+        Assert.DoesNotContain("A_CREDENTIAL_NOBODY_LISTED", output);
+        Assert.DoesNotContain("GH_TOKEN", output);
+    }
+
+    [Fact]
+    public void Terminal_tabs_blank_every_inherited_variable_off_the_list_including_those_of_a_shared_server()
+    {
+        const string name = "ATF_TEST_UNLISTED_CREDENTIAL";
+        Environment.SetEnvironmentVariable(name, "secret");
+        try { Assert.Contains(name, SandboxEnvironment.Blocked(Environment.ProcessId)); }
+        finally { Environment.SetEnvironmentVariable(name, null); }
+        Assert.DoesNotContain("PATH", SandboxEnvironment.Blocked(Environment.ProcessId));
     }
 
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Headless_launch_hands_a_sandboxed_agent_no_credential_variable(bool sandboxed)
+    public async Task Headless_launch_hands_a_sandboxed_agent_only_listed_variables(bool sandboxed)
     {
-        const string name = "ATF_TEST_SCRUB_TOKEN";
+        const string name = "ATF_TEST_UNLISTED_CREDENTIAL";
         var script = _dir.File("claude-" + Guid.NewGuid().ToString("N"));
         var envFile = _dir.File("env-" + sandboxed);
         File.WriteAllText(script, $"#!/usr/bin/env bash\nprintenv > '{envFile}'\ncat > /dev/null\necho '{{\"type\":\"result\",\"result\":\"ok\"}}'\n".ReplaceLineEndings("\n"));
@@ -132,37 +163,36 @@ public sealed class SandboxLaunchTests : IDisposable
         }
         finally { Environment.SetEnvironmentVariable(name, null); }
 
-        Assert.Equal(!sandboxed, File.ReadAllText(envFile).Contains(name + "=secret", StringComparison.Ordinal));
+        var environment = File.ReadAllText(envFile);
+        Assert.Equal(!sandboxed, environment.Contains(name + "=secret", StringComparison.Ordinal));
+        Assert.Contains("PATH=", environment);
     }
 
     [Theory]
     [InlineData("sandbox_mode = \"danger-full-access\"", true)]
-    [InlineData("default_permissions = \"open\"", true)]
-    [InlineData("[sandbox_workspace_write]\nwritable_roots = [\"/\"]", true)]
-    [InlineData("[permissions.open]\nx = 1", true)]
-    [InlineData("[projects.\"/work/repo\"]\ntrust_level = \"trusted\"", true)]
-    [InlineData("[projects.\"/work/repo\"]\ntrust_level = \"untrusted\"", false)]
-    [InlineData("[projects.\"/elsewhere\"]\ntrust_level = \"trusted\"", false)]
-    [InlineData("model = \"gpt-5\"\n[mcp_servers.x]\ncommand = \"y\"", false)]
-    [InlineData("# sandbox_mode = \"danger-full-access\"", false)]
-    public void Codex_user_config_that_widens_the_sandbox_is_detected(string toml, bool widens)
+    [InlineData("[projects.\"/repo\"] # trusted\ntrust_level=\"trusted\" # untrusted", true)]
+    [InlineData("\"projects\".\"/repo\".trust_level = \"trusted\"", true)]
+    [InlineData("model = \"gpt-5\"", true)]
+    [InlineData("", false)]
+    [InlineData("   \n\n  ", false)]
+    [InlineData("# only a comment\n   # and another", false)]
+    public void Any_codex_user_config_with_content_counts_without_parsing_it(string toml, bool hasContent)
     {
         var path = _dir.File("config-" + Guid.NewGuid().ToString("N") + ".toml");
         File.WriteAllText(path, toml);
 
-        Assert.Equal(widens, CodexConfigCheck.WidensSandbox("/work/repo/sub", path));
+        Assert.Equal(hasContent, CodexConfigCheck.HasContent(path));
     }
 
     [Fact]
-    public void A_missing_codex_config_does_not_widen_the_sandbox() =>
-        Assert.False(CodexConfigCheck.WidensSandbox("/work/repo", _dir.File("absent.toml")));
+    public void A_missing_codex_config_has_no_content() => Assert.False(CodexConfigCheck.HasContent(_dir.File("absent.toml")));
 
     [Fact]
     public void Default_capability_downgrades_backends_without_a_sandbox_and_unverified_platforms()
     {
-        Assert.Equal(SafetyDowngrade.UnsupportedBackend, SandboxCapability.Default(BackendCatalog.Pi, null));
-        Assert.Equal(SafetyDowngrade.UnsupportedBackend, SandboxCapability.Default(BackendCatalog.Cursor, null));
-        Assert.Equal(SafetyDowngrade.UnsupportedBackend, SandboxCapability.Default(BackendCatalog.Droid, null));
-        Assert.Equal(OperatingSystem.IsLinux() ? null : SafetyDowngrade.Unavailable, SandboxCapability.Default(BackendCatalog.Claude, null));
+        Assert.Equal(SafetyDowngrade.UnsupportedBackend, SandboxCapability.Default(BackendCatalog.Pi, null, false));
+        Assert.Equal(SafetyDowngrade.UnsupportedBackend, SandboxCapability.Default(BackendCatalog.Cursor, null, false));
+        Assert.Equal(SafetyDowngrade.UnsupportedBackend, SandboxCapability.Default(BackendCatalog.Droid, null, false));
+        Assert.Equal(OperatingSystem.IsLinux() ? null : SafetyDowngrade.Unavailable, SandboxCapability.Default(BackendCatalog.Claude, null, false));
     }
 }

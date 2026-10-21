@@ -33,7 +33,7 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
             info.WorkingDirectory = cwd;
         }
         ManagedChildContext.ClearInheritedIdentity(info);
-        if (request.Sandbox is not null) { SandboxEnvironment.Scrub(info.Environment); }
+        if (request.Sandbox is not null) { SandboxEnvironment.Restrict(info.Environment); }
         OrphanedBackendProcess.Mark(info, request.Correlation);
 
         foreach (var argument in BuildArguments(request))
@@ -61,7 +61,9 @@ public sealed class CodexExecBackend(string executable = "codex") : IJobBackend
         // `exec resume` has no -C; the working directory is the process cwd for both forms.
         List<string> args = request.ResumeSessionId is not null ? ["exec", "resume"] : ["exec"];
         // `exec` never asks for approval, so the sandbox profile needs no -a; the bypass flag is what it replaces.
-        args.AddRange(request.Sandbox is null ? ["--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"] : ["--json", "--skip-git-repo-check"]);
+        // The user's config.toml (sandbox keys, project trust, MCP servers) and execpolicy rules do not apply to a sandboxed exec.
+        args.AddRange(request.Sandbox is null ? ["--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"]
+            : ["--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"]);
         var managed = ManagedChildContext.Arguments("codex", request.ManagedMcpConfig);
         args.AddRange(managed);
         if (request.Sandbox is { } sandbox) { args.AddRange(sandbox.CodexArguments(managed.Count > 0)); }

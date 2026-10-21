@@ -81,7 +81,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         // A child started by a sandboxed agent inherits sandboxed and cannot lower it (ADR 0013, accepted containment limit).
         var requestedMode = request.InheritedSafetyMode == SafetyMode.Sandboxed ? SafetyMode.Sandboxed
             : request.SafetyMode ?? defaultSafetyMode ?? SafetyMode.FullAccess;
-        options += JobSafety.Decide(requestedMode, backend, cwd, _sandboxProbe).ToOptions();
+        options += JobSafety.Decide(requestedMode, backend, cwd, launchMode is not null and not "headless", _sandboxProbe).ToOptions();
         if (request.ExpectedOutputs is { Length: > 0 } paths)
         {
             options += ";expected_outputs=" + string.Join(",", paths.Select(p => Convert.ToBase64String(Encoding.UTF8.GetBytes(p))));

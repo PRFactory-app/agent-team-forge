@@ -211,6 +211,7 @@ public static class DaemonCommand
         var externalTeam = new ExternalTeam(externalMembers, wakeStore);
         var childContext = new ManagedChildContext(store, externalTeam, state.Path, Environment.ProcessPath!);
         using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs, childContext, stateRoot: state.Path);
+        SandboxedWorktrees.Configure(state.Path);
         SandboxedWorktrees.Restore(store);
         dispatcher.RestoreAfterRestart(store.RestartCandidates());
         var modelDiscovery = new BackendModelDiscovery();

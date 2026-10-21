@@ -28,6 +28,7 @@ public sealed class CodexSandboxArgumentTests : IDisposable
 
         Assert.Equal(resume ? ["exec", "resume"] : ["exec"], args.Take(resume ? 2 : 1));
         Assert.Contains("--dangerously-bypass-approvals-and-sandbox", args);
+        Assert.DoesNotContain("--ignore-user-config", args);
         Assert.DoesNotContain(args, a => a.StartsWith("permissions.", StringComparison.Ordinal) || a.StartsWith("default_permissions", StringComparison.Ordinal));
         Assert.Equal("-", args[^1]);
     }
@@ -43,6 +44,9 @@ public sealed class CodexSandboxArgumentTests : IDisposable
         Assert.DoesNotContain("-s", args);
         Assert.DoesNotContain("-a", args);
         Assert.Contains("--skip-git-repo-check", args);
+        // The user config (sandbox keys, project trust) and execpolicy rules never apply to a sandboxed exec.
+        Assert.Contains("--ignore-user-config", args);
+        Assert.Contains("--ignore-rules", args);
         Assert.Contains("default_permissions='atf'", args);
         Assert.Contains("permissions.atf.network.enabled=false", args);
         var filesystem = args.Single(a => a.StartsWith("permissions.atf.filesystem=", StringComparison.Ordinal));

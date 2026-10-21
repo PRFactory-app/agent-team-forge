@@ -385,7 +385,7 @@ internal sealed class MacTabControl(string provider, string? kittyAddress, strin
         var startError = ShellQuote(Path.ChangeExtension(sidecar, ".start-error"));
         return "#!/bin/sh\nset -eu\n" +
             "unset " + identityNames + "\n" +
-            (launch.Sandbox is null ? "" : string.Concat(SandboxEnvironment.PresentCredentials().Select(name => "unset " + name + "\n"))) +
+            (launch.Sandbox is null ? "" : SandboxEnvironment.ShellPrologue()) +
             "for name in $(env | cut -d= -f1 | grep -E '^(" + identityPrefixes + ")' || :); do unset \"$name\"; done\n" +
             (trust is { } env ? "export " + env.Name + "=" + ShellQuote(env.Value) + "\n" : "") +
             // A framework-dependent atf needs the daemon's runtime; the tab starts from the terminal's environment.

@@ -28,7 +28,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             RedirectStandardError = true,
         };
         var sessionId = request.ResumeSessionId ?? Guid.NewGuid().ToString();
-        if (request.Sandbox is not null) { SandboxEnvironment.Scrub(info.Environment); }
+        if (request.Sandbox is not null) { SandboxEnvironment.Restrict(info.Environment); }
         foreach (var argument in Arguments(request, sessionId))
         {
             info.ArgumentList.Add(argument);

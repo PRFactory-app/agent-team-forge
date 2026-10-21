@@ -322,7 +322,7 @@ internal sealed class WtTabControl : IWtTabControl
         };
         if (launch.Sandbox is not null)
         {
-            lines.InsertRange(2, SandboxEnvironment.PresentCredentials().Select(name => "Remove-Item -LiteralPath " + Quote("Env:" + name) + " -ErrorAction SilentlyContinue"));
+            lines.Insert(2, SandboxEnvironment.PowerShellPrologue());
         }
         if (InteractiveAgentCommand.WorkspaceTrustEnvironment(launch.Kind) is { } trust)
         {

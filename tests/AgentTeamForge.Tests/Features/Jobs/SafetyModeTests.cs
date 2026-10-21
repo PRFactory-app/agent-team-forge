@@ -18,7 +18,7 @@ public sealed class SafetyModeTests
     static readonly string[] AllBackends = [BackendCatalog.Fake, BackendCatalog.Claude, BackendCatalog.Codex, BackendCatalog.Pi, BackendCatalog.Cursor, BackendCatalog.Droid];
 
     /// <summary>Claude and Codex enforce, as on a verified Linux machine; every other backend gets the real default (no sandbox).</summary>
-    static string? Enforcing(string backend, string? cwd) => backend is BackendCatalog.Claude or BackendCatalog.Codex or BackendCatalog.Fake ? null : SandboxCapability.Default(backend, cwd);
+    static string? Enforcing(string backend, string? cwd, bool interactive) => backend is BackendCatalog.Claude or BackendCatalog.Codex or BackendCatalog.Fake ? null : SandboxCapability.Default(backend, cwd, interactive);
 
     static AcceptJob Accept(JobFixture f, SandboxProbe? probe = null, string? defaultMode = null) =>
         new(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, AllBackends, sandboxProbe: probe ?? Enforcing, defaultSafetyMode: defaultMode);
@@ -75,7 +75,7 @@ public sealed class SafetyModeTests
     {
         using var f = new JobFixture();
 
-        var job = Accept(f, (_, _) => SafetyDowngrade.Unavailable).Execute(new SubmitJobRequest("k", "task", null, false) { Backend = BackendCatalog.Claude, SafetyMode = SafetyMode.Sandboxed }).Job!;
+        var job = Accept(f, (_, _, _) => SafetyDowngrade.Unavailable).Execute(new SubmitJobRequest("k", "task", null, false) { Backend = BackendCatalog.Claude, SafetyMode = SafetyMode.Sandboxed }).Job!;
 
         Assert.Equal(new JobSafety(SafetyMode.Sandboxed, SafetyMode.FullAccess, "sandbox_unavailable"), Safety(f, job.JobId));
     }
@@ -161,7 +161,7 @@ public sealed class SafetyModeTests
     public async Task Follow_up_and_revive_keep_the_mode_of_the_parent(string mode, string? reason)
     {
         using var f = new JobFixture();
-        var accept = Accept(f, (_, _) => reason);
+        var accept = Accept(f, (_, _, _) => reason);
         var backend = new ScriptedBackend(r => [new BackendEvidence.Session(r.Correlation, r.ResumeSessionId ?? "s-" + r.JobId), new BackendEvidence.Result(r.Correlation, "ok")]);
         var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
         async Task RunNext()
@@ -216,7 +216,7 @@ public sealed class SafetyModeTests
     public void A_downgraded_job_launches_without_a_sandbox()
     {
         using var f = new JobFixture();
-        var job = Accept(f, (_, _) => SafetyDowngrade.Unavailable).Execute(new SubmitJobRequest("k", "task", null, false) { SafetyMode = SafetyMode.Sandboxed }).Job!;
+        var job = Accept(f, (_, _, _) => SafetyDowngrade.Unavailable).Execute(new SubmitJobRequest("k", "task", null, false) { SafetyMode = SafetyMode.Sandboxed }).Job!;
 
         Assert.False(JobSafety.Read(f.Store.GetJob(job.JobId)!.Options).EffectiveSandboxed);
     }

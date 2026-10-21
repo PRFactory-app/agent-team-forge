@@ -104,7 +104,7 @@ public sealed class SandboxedWorktreeTests : IDisposable
     public async Task A_tampered_sandboxed_job_fails_instead_of_completing()
     {
         using var f = new JobFixture();
-        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, [BackendCatalog.Fake], sandboxProbe: (_, _) => null);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, [BackendCatalog.Fake], sandboxProbe: (_, _, _) => null);
         var job = accept.Execute(new SubmitJobRequest("k", "task", null, false) { Cwd = _repo, Worktree = true, SafetyMode = SafetyMode.Sandboxed }).Job!;
         var backend = new ScriptedBackend(r =>
         {
@@ -129,14 +129,167 @@ public sealed class SandboxedWorktreeTests : IDisposable
     public void Restore_registers_the_worktrees_of_sandboxed_jobs_from_the_store()
     {
         using var f = new JobFixture();
-        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, [BackendCatalog.Fake], sandboxProbe: (_, _) => null);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, [BackendCatalog.Fake], sandboxProbe: (_, _, _) => null);
         var job = accept.Execute(new SubmitJobRequest("k", "task", null, false) { Cwd = _repo, Worktree = true, SafetyMode = SafetyMode.Sandboxed }).Job!;
-        Directory.CreateDirectory(job.WorktreePath!);
+        Directory.CreateDirectory(Path.GetDirectoryName(job.WorktreePath!)!);
+        Git(_repo, "worktree", "add", "-b", "restored", job.WorktreePath!);
+        SandboxedWorktrees.Forget(job.WorktreePath!);
 
         SandboxedWorktrees.Restore(f.Store);
 
-        // No .git in the empty directory: a registered path fails validation, an unregistered one would be null.
-        Assert.Equal("git_missing", SandboxedWorktrees.Validate(job.WorktreePath!));
+        File.WriteAllText(Path.Combine(_repo, ".git", "worktrees", Path.GetFileName(job.WorktreePath!), "commondir"), _dir.Path + "\n");
+        Assert.Equal("common_dir_changed", SandboxedWorktrees.Validate(job.WorktreePath!));
+    }
+
+    [Fact]
+    public async Task Daemon_git_is_pinned_to_the_recorded_dirs_so_a_swap_after_validation_is_never_read()
+    {
+        var info = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        SandboxedWorktrees.ApplyGuard(info, _worktree, "rev-parse");
+        // The sandboxed process is still running: it redirects the common dir between the validation and the git run.
+        var evil = _dir.File("evil.git");
+        Git(_dir.Path, "init", "--bare", evil);
+        File.WriteAllText(Path.Combine(_admin, "commondir"), evil + "\n");
+        foreach (var argument in new[] { "-C", _worktree, "rev-parse", "--path-format=absolute", "--git-common-dir" }) { info.ArgumentList.Add(argument); }
+
+        using var process = Process.Start(info)!;
+        var output = (await process.StandardOutput.ReadToEndAsync()).Trim();
+        await process.WaitForExitAsync();
+
+        Assert.Equal(Path.Combine(_repo, ".git"), output);
+    }
+
+    [Fact]
+    public async Task Daemon_git_refuses_to_run_while_an_agent_of_the_worktree_is_alive()
+    {
+        var root = SandboxedWorktrees.MarkLive(_worktree);
+        Assert.NotNull(root);
+        try { Assert.Null(await JobWorktree.GitAsync(_worktree, TimeSpan.FromSeconds(10), CancellationToken.None, "rev-parse", "HEAD")); }
+        finally { SandboxedWorktrees.ClearLive(root); }
+
+        Assert.NotNull(await JobWorktree.GitAsync(_worktree, TimeSpan.FromSeconds(10), CancellationToken.None, "rev-parse", "HEAD"));
+    }
+
+    [Fact]
+    public async Task A_filter_driver_naming_a_workspace_script_does_not_run_in_daemon_git()
+    {
+        var marker = _dir.File("filter-ran");
+        var script = Path.Combine(_worktree, "evil.sh");
+        File.WriteAllText(script, $"#!/bin/sh\ntouch '{marker}'\ncat\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        File.WriteAllText(Path.Combine(_worktree, ".gitattributes"), "data.txt filter=evil\n");
+        File.WriteAllText(Path.Combine(_worktree, "data.txt"), "x");
+        Git(_repo, "config", "filter.evil.clean", script);
+        Git(_repo, "config", "diff.evil.textconv", script);
+
+        Assert.NotNull(await JobWorktree.GitAsync(_worktree, TimeSpan.FromSeconds(10), CancellationToken.None, "add", "data.txt"));
+        Assert.False(File.Exists(marker), "the driver ran under the daemon's guarded git");
+
+        // Control: the same command without the guard runs the driver, so the assertion above has teeth.
+        SandboxedWorktrees.Forget(_worktree);
+        Git(_worktree, "add", "--renormalize", "data.txt");
+        Assert.True(File.Exists(marker));
+    }
+
+    [Fact]
+    public void Only_the_real_lfs_filter_survives_and_every_other_driver_is_blanked()
+    {
+        const string lfs = "filter.lfs.clean\ngit-lfs clean -- %f\0filter.lfs.process\ngit-lfs filter-process\0filter.lfs.required\ntrue\0";
+
+        Assert.Empty(SandboxedWorktrees.Overrides(lfs, "/ws"));
+        var inside = SandboxedWorktrees.Overrides("filter.lfs.clean\n/ws/bin/git-lfs clean\0", "/ws");
+        Assert.Contains("filter.lfs.clean=", inside);
+        var other = SandboxedWorktrees.Overrides("filter.x.smudge\n/usr/bin/cat\0diff.y.textconv\n/ws/t\0diff.y.command\nz\0merge.m.driver\nq\0core.editor\nvi\0", "/ws");
+        string[] expected = ["filter.x.clean=", "filter.x.smudge=", "filter.x.process=", "filter.x.required=false", "diff.y.textconv=", "diff.y.command=", "merge.m.driver="];
+        Assert.Equal(expected.Order(), other.Where(a => a != "-c").Order());
+    }
+
+    [Fact]
+    public void A_working_directory_that_is_a_link_out_of_the_worktree_is_refused()
+    {
+        var sub = Directory.CreateDirectory(Path.Combine(_worktree, "sub")).FullName;
+        Assert.Equal(Path.GetFullPath(sub), SandboxedWorktrees.ContainedWorkingDirectory(_worktree, sub));
+        Directory.Delete(sub);
+        var outside = Directory.CreateDirectory(_dir.File("home")).FullName;
+        Directory.CreateSymbolicLink(sub, outside);
+
+        Assert.Null(SandboxedWorktrees.ContainedWorkingDirectory(_worktree, sub));
+        Assert.Null(SandboxedWorktrees.ContainedWorkingDirectory(_worktree, outside));
+    }
+
+    [Fact]
+    public async Task A_cold_follow_up_does_not_launch_when_a_subdirectory_became_a_link_to_the_home_directory()
+    {
+        using var f = new JobFixture();
+        var sub = Directory.CreateDirectory(Path.Combine(_repo, "sub")).FullName;
+        File.WriteAllText(Path.Combine(sub, "tracked.txt"), "x");
+        Git(_repo, "add", "-A");
+        Git(_repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "sub");
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, [BackendCatalog.Fake], sandboxProbe: (_, _, _) => null);
+        var backend = new ScriptedBackend(r => [new BackendEvidence.Session(r.Correlation, r.ResumeSessionId ?? "s-1"), new BackendEvidence.Result(r.Correlation, "ok")]);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        async Task RunNext()
+        {
+            using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+            await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+        }
+        var parent = accept.Execute(new SubmitJobRequest("k", "task", null, false) { Cwd = sub, Worktree = true, SafetyMode = SafetyMode.Sandboxed }).Job!;
+        await RunNext();
+        Assert.Equal(Path.Combine(parent.WorktreePath!, "sub"), backend.Started[0].WorkingDirectory);
+        var inWorktree = Path.Combine(parent.WorktreePath!, "sub");
+        Directory.Delete(inWorktree, recursive: true);
+        Directory.CreateSymbolicLink(inWorktree, Directory.CreateDirectory(_dir.File("home")).FullName);
+
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "again", "k2")).Job!;
+        await RunNext();
+
+        Assert.Single(backend.Started);
+        Assert.Equal(JobStatus.Failed, f.Store.GetJob(child.JobId)!.Status);
+        Assert.Equal(SandboxedWorktrees.TamperedReason, f.Store.GetJob(child.JobId)!.ReasonCode);
+    }
+
+    [Fact]
+    public async Task A_sandboxed_job_in_an_existing_linked_worktree_is_registered_and_survives_a_restart()
+    {
+        using var f = new JobFixture();
+        var existing = _dir.File("wt-existing");
+        Git(_repo, "worktree", "add", "-b", "existing", existing);
+        var admin = Path.Combine(_repo, ".git", "worktrees", "wt-existing");
+        File.WriteAllText(Path.Combine(admin, "config.worktree"), "[core]\n");
+        Assert.Null(SandboxedWorktrees.Validate(existing));
+        File.Delete(Path.Combine(admin, "config.worktree"));
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, [BackendCatalog.Fake], sandboxProbe: (_, _, _) => null);
+        var backend = new ScriptedBackend(r => [new BackendEvidence.Session(r.Correlation, "s-1"), new BackendEvidence.Result(r.Correlation, "ok")]);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        accept.Execute(new SubmitJobRequest("k", "task", null, false) { Cwd = existing, Worktree = false, SafetyMode = SafetyMode.Sandboxed });
+
+        using (var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { }))
+        {
+            await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+        }
+
+        // The launch granted this admin dir as writable, so it is now recorded and checked.
+        Assert.Equal(admin, backend.Started[0].Sandbox!.GitDir);
+        File.WriteAllText(Path.Combine(admin, "config.worktree"), "[core]\n");
+        Assert.Equal("config_worktree_present", SandboxedWorktrees.Validate(existing));
+        File.Delete(Path.Combine(admin, "config.worktree"));
+        var file = _dir.File("registry/worktrees.json");
+        SandboxedWorktrees.SaveTo(file);
+        SandboxedWorktrees.Forget(existing);
+        Assert.Null(SandboxedWorktrees.Validate(existing));
+        SandboxedWorktrees.LoadFrom(file);
+        File.WriteAllText(Path.Combine(admin, "commondir"), _dir.Path + "\n");
+        Assert.Equal("common_dir_changed", SandboxedWorktrees.Validate(existing));
+    }
+
+    [Fact]
+    public void The_workspace_label_of_a_tampered_sandboxed_worktree_is_not_read_from_the_redirected_common_dir()
+    {
+        var evil = _dir.File("evil.git");
+        Git(_dir.Path, "init", "--bare", evil);
+        File.WriteAllText(Path.Combine(_admin, "commondir"), evil + "\n");
+
+        Assert.Equal("wt", AgentTeamForge.Business.Features.Agents.Terminals.HerdrTerminal.WorkspaceLabel(_worktree));
     }
 
     static string Git(string cwd, params string[] args)

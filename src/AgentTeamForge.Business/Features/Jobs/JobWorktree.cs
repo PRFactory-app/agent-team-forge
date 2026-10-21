@@ -129,7 +129,7 @@ public static partial class JobWorktree
             PrivateFiles.CreateDirectory(parent);
 
             var created = Prepare(job.Cwd, job.WorktreePath, job.WorktreeBranch, job.WorktreeBase, cancellationToken);
-            if (created && sandboxed) { SandboxedWorktrees.RegisterJob(job); }
+            if (created && sandboxed) { SandboxedWorktrees.RegisterCreated(job.WorktreePath, job.Cwd); }
             return created;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -215,13 +215,10 @@ public static partial class JobWorktree
                 UseShellExecute = false,
             };
             info.Environment["GIT_TERMINAL_PROMPT"] = "0";
+            // A worktree a sandboxed agent can write into is validated, pinned and hardened before git runs there (ADR 0013).
+            SandboxedWorktrees.ApplyGuard(info, cwd, args.Length > 0 ? args[0] : null);
             info.ArgumentList.Add("-C");
             info.ArgumentList.Add(cwd);
-            // A worktree a sandboxed agent could write into is validated and hardened before git runs there (ADR 0013).
-            foreach (var hardening in SandboxedWorktrees.Guard(cwd, args.Length > 0 ? args[0] : null) ?? [])
-            {
-                info.ArgumentList.Add(hardening);
-            }
             foreach (var arg in args)
             {
                 info.ArgumentList.Add(arg);

@@ -111,19 +111,21 @@ public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? C
 }
 
 /// <summary>Where a working directory's git data lives: <c>.git</c> is a directory, or a file naming a linked worktree's admin dir.</summary>
-public sealed record GitLayout(string GitDir, string CommonDir)
+public sealed record GitLayout(string GitDir, string CommonDir, string Root)
 {
+    public bool Linked => !string.Equals(GitDir, CommonDir, StringComparison.Ordinal);
+
     public static GitLayout? Find(string directory)
     {
         for (var current = Path.GetFullPath(directory); current is not null; current = Path.GetDirectoryName(current))
         {
             var marker = Path.Combine(current, ".git");
-            if (Directory.Exists(marker)) { return new(marker, marker); }
+            if (Directory.Exists(marker)) { return new(marker, marker, current); }
             if (!File.Exists(marker)) { continue; }
             var line = File.ReadLines(marker).FirstOrDefault(l => l.StartsWith("gitdir:", StringComparison.Ordinal));
             if (line is null) { return null; }
             var gitDir = Path.GetFullPath(line["gitdir:".Length..].Trim(), current);
-            return new(gitDir, ResolveCommon(gitDir));
+            return new(gitDir, ResolveCommon(gitDir), current);
         }
         return null;
     }
@@ -136,36 +138,71 @@ public sealed record GitLayout(string GitDir, string CommonDir)
     }
 }
 
-/// <summary>Credential environment variables a sandboxed launch does not hand to the agent (ADR 0013, "Environment").</summary>
+/// <summary>
+/// The environment a sandboxed launch hands the agent (ADR 0013, "Environment"): an allow-list, not a deny-list, so a credential
+/// variable nobody thought of is dropped too. The agent's own sign-in (<c>ANTHROPIC_*</c>, <c>CLAUDE_*</c>, <c>CODEX_*</c>,
+/// <c>OPENAI_*</c>) is kept because the CLI starts before any shell the sandbox confines. Cloud credentials (<c>AWS_*</c>,
+/// <c>GOOGLE_*</c>), tokens and agent sockets are not on the list.
+/// </summary>
 public static class SandboxEnvironment
 {
-    static readonly string[] ExactNames =
-    [
-        "GITHUB_TOKEN", "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "BITBUCKET_TOKEN", "NPM_TOKEN", "NODE_AUTH_TOKEN",
-        "NUGET_API_KEY", "HF_TOKEN", "SSH_AUTH_SOCK", "GPG_AGENT_INFO", "DOCKER_CONFIG", "KUBECONFIG", "VAULT_TOKEN", "OP_SERVICE_ACCOUNT_TOKEN",
-    ];
-
-    static readonly string[] Prefixes = ["AWS_", "AZURE_", "ARM_", "GOOGLE_", "GCP_", "GCLOUD_", "CLOUDSDK_", "DIGITALOCEAN_", "TF_VAR_"];
-
-    static readonly string[] Suffixes = ["_TOKEN", "_SECRET", "_PASSWORD", "_API_KEY", "_ACCESS_KEY", "_SECRET_KEY", "_CREDENTIALS", "_PAT"];
-
-    // The agent CLI's own sign-in must survive; the CLI starts before any shell the sandbox confines.
-    static readonly string[] KeptPrefixes = ["ANTHROPIC_", "CLAUDE_", "CODEX_", "OPENAI_"];
-
-    public static bool IsCredential(string name)
+    static readonly HashSet<string> Names = new(StringComparer.Ordinal)
     {
-        if (KeptPrefixes.Any(p => name.StartsWith(p, StringComparison.OrdinalIgnoreCase))) { return false; }
-        return ExactNames.Contains(name, StringComparer.OrdinalIgnoreCase)
-            || Prefixes.Any(p => name.StartsWith(p, StringComparison.OrdinalIgnoreCase))
-            || Suffixes.Any(s => name.EndsWith(s, StringComparison.OrdinalIgnoreCase));
+        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "COLORTERM", "LANG", "TZ", "TMPDIR", "TMP", "TEMP", "PWD",
+        "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+        "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+        "CODEX_HOME", "CLAUDE_CONFIG_DIR",
+        // Windows: a process without these cannot start.
+        "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "OS",
+    };
+
+    internal static readonly string[] Prefixes = ["LC_", "XDG_", "MISE_", "DOTNET_", "CLAUDE_CODE_", "ANTHROPIC_", "OPENAI_", "CODEX_"];
+
+    public static bool IsAllowed(string name) =>
+        Names.Contains(name) || Prefixes.Any(p => name.StartsWith(p, StringComparison.Ordinal))
+        || OperatingSystem.IsWindows() && Names.Contains(name.ToUpperInvariant());
+
+    /// <summary>Removes every variable that is not on the allow-list. Run it before ATF adds its own markers.</summary>
+    public static void Restrict(IDictionary<string, string?> environment)
+    {
+        foreach (var name in environment.Keys.Where(n => !IsAllowed(n)).ToList()) { environment.Remove(name); }
     }
 
-    public static void Scrub(IDictionary<string, string?> environment)
+    /// <summary>The names a pane or terminal may inherit that a sandboxed launch must blank: this process's and, on Linux, another process's.</summary>
+    public static IReadOnlyList<string> Blocked(int? inheritedFromPid = null)
     {
-        foreach (var name in environment.Keys.Where(IsCredential).ToList()) { environment.Remove(name); }
+        var names = Environment.GetEnvironmentVariables().Keys.Cast<string>().ToHashSet(StringComparer.Ordinal);
+        if (inheritedFromPid is { } pid && OperatingSystem.IsLinux())
+        {
+            try
+            {
+                foreach (var entry in File.ReadAllText($"/proc/{pid}/environ").Split('\0', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (entry.IndexOf('=') is > 0 and var at) { names.Add(entry[..at]); }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        return [.. names.Where(n => n.Length > 1 && n[0] != '_' && !IsAllowed(n) && !n.StartsWith("HERDR_", StringComparison.Ordinal) && n.All(c => char.IsAsciiLetterOrDigit(c) || c == '_')).Order(StringComparer.Ordinal)];
     }
 
-    /// <summary>The variables of this process that a sandboxed terminal launch must not inherit.</summary>
-    public static IReadOnlyList<string> PresentCredentials() =>
-        [.. Environment.GetEnvironmentVariables().Keys.Cast<string>().Where(IsCredential).Order(StringComparer.Ordinal)];
+    /// <summary>A PowerShell prologue that removes everything off the allow-list from the tab's environment.</summary>
+    public static string PowerShellPrologue()
+    {
+        static string Quote(string value) => "'" + value + "'";
+        var exact = string.Join(',', Names.Where(n => n.All(c => char.IsAsciiLetterOrDigit(c) || c == '_')).Select(n => Quote(n.ToUpperInvariant())).Distinct().Order(StringComparer.Ordinal));
+        var prefixes = string.Join(" -or ", Prefixes.Select(p => "$n.StartsWith(" + Quote(p) + ", [System.StringComparison]::Ordinal)"));
+        return "Get-ChildItem Env: | Where-Object { $n = $_.Name.ToUpperInvariant(); -not (@(" + exact + ") -contains $n -or " + prefixes
+            + ") } | ForEach-Object { Remove-Item -LiteralPath ('Env:' + $_.Name) }";
+    }
+
+    /// <summary>A POSIX sh prologue that unsets everything off the allow-list in the terminal's own environment.</summary>
+    public static string ShellPrologue()
+    {
+        var exact = string.Join('|', Names.Where(n => n.All(c => char.IsAsciiLetterOrDigit(c) || c == '_')).Order(StringComparer.Ordinal));
+        var prefixes = string.Join('|', Prefixes.Select(p => p + "*"));
+        return "for name in $(env | cut -d= -f1); do case \"$name\" in " + exact + "|" + prefixes
+            + ") ;; *) unset \"$name\" 2>/dev/null || true ;; esac; done\n";
+    }
 }
