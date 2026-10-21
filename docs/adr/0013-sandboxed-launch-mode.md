@@ -19,8 +19,9 @@ worktree: the agent cwd holds a `.git` *file* pointing at
 
 ATF gains a second launch mode, `sandboxed`, next to today's `fullAccess`
 (ADR 0006, unchanged). The mode is chosen per job. In `sandboxed` mode ATF
-launches only Codex and Claude, with the arguments below. Pi, Cursor and Droid
-have no enforceable sandbox and refuse a sandboxed job.
+sandboxes only Codex and Claude, with the arguments below. Pi, Cursor and Droid
+have no enforceable sandbox: they run a Sandboxed job with full access and
+report the downgrade (see below).
 
 ### Arguments per backend and OS
 
@@ -34,7 +35,7 @@ JSON, see the PowerShell 5.1 note in `InteractiveAgentCommand.cs`).
 | Codex TUI | same `-c` set plus `-a never -C <wt>` and the existing trusted-project override, instead of `--dangerously-bypass-approvals-and-sandbox` | same, not verified | not verified |
 | Claude headless (`claude -p`) | `-p --output-format stream-json --verbose --permission-mode dontAsk --settings <settings>` instead of `--dangerously-skip-permissions` | same; Seatbelt — not verified | **no sandbox** (Claude Code's sandbox supports macOS, Linux and WSL2, not native Windows): downgrades to full access, see below |
 | Claude interactive | `--permission-mode dontAsk --settings <settings>` instead of `bypassPermissions` + `skipDangerousModePermissionPrompt`; keep env `CLAUDE_CODE_SANDBOXED=1` | same, not verified | no sandbox: downgrades to full access |
-| Pi, Cursor, Droid | refuse: `sandbox_unsupported_backend` | refuse | refuse |
+| Pi, Cursor, Droid | no sandbox: downgrade to full access (today's ADR 0006 flags), reason `sandbox_unsupported_backend` | same | same |
 
 Claude `<settings>`:
 
@@ -130,11 +131,16 @@ three; it cannot be combined with `-s`.
 
 ### A worker without a sandbox downgrades (PO decision)
 
-- A worker that cannot enforce a sandbox for a job (today: Claude on native
-  Windows) **runs a Sandboxed job with full access**. It does not refuse it.
+- A worker that cannot enforce a sandbox for a job **runs a Sandboxed job with
+  full access**. It never refuses the job.
 - It reports the downgrade on durable acceptance: `effectiveSafetyMode`
-  (`fullAccess`) and `safetyDowngradeReason` (`sandbox_unavailable`). An
-  enforced job reports `effectiveSafetyMode=sandboxed` and no reason.
+  (`fullAccess`) and `safetyDowngradeReason`:
+  - `sandbox_unavailable`: the backend has a sandbox but this machine cannot
+    enforce it (Claude on native Windows, or an A3 self-test that failed, for
+    example no bubblewrap or blocked user namespaces);
+  - `sandbox_unsupported_backend`: the backend has no enforceable sandbox at
+    all (Pi, Cursor, Droid), on every OS.
+- An enforced job reports `effectiveSafetyMode=sandboxed` and no reason.
 - `sandbox-v1` means "this worker understands the `safetyMode` contract and
   reports the mode it enforced". It does **not** mean "this worker can always
   enforce a sandbox". A Windows worker reports `sandbox-v1` too.
@@ -148,7 +154,10 @@ three; it cannot be combined with `-s`.
 ## Consequences
 
 - A2 adds `SafetyMode` per job, carried through follow-up and revive, and
-  builds the arguments above from a per-job settings file.
+  builds the arguments above from a per-job settings file. For Pi, Cursor and
+  Droid it does not refuse a Sandboxed job: it launches with the ADR 0006
+  flags and records `effectiveSafetyMode=fullAccess`,
+  `safetyDowngradeReason=sandbox_unsupported_backend`.
 - A2: **child jobs that a sandboxed agent starts over MCP** (`submit_job`,
   `follow_up` and the like through `atf mcp`, which runs outside the sandbox)
   **inherit `sandboxed`**. A child request cannot lower the mode; otherwise the
