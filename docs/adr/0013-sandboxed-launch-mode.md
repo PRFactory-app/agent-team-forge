@@ -32,8 +32,8 @@ JSON, see the PowerShell 5.1 note in `InteractiveAgentCommand.cs`).
 |---|---|---|---|
 | Codex headless (`codex exec`) | `exec --json --skip-git-repo-check -c 'permissions.atf.filesystem={"/"="read",":workspace_roots"="write","~/.ssh"="none","<gd>/worktrees/<name>"="write","<gd>/objects"="write","<gd>/refs"="write","<gd>/logs"="write", <cache dirs>}' -c permissions.atf.network.enabled=<Q4> -c default_permissions="atf" -c mcp_servers.agentteamforge.default_tools_approval_mode="approve"` (no `-s`; `exec` never asks for approval) | same; Seatbelt instead of bubblewrap — **not verified** | Codex has a native Windows sandbox (`windows.sandbox`); **not verified**, see below |
 | Codex TUI | same `-c` set plus `-a never -C <wt>` and the existing trusted-project override, instead of `--dangerously-bypass-approvals-and-sandbox` | same, not verified | not verified |
-| Claude headless (`claude -p`) | `-p --output-format stream-json --verbose --permission-mode dontAsk --settings <settings>` instead of `--dangerously-skip-permissions` | same; Seatbelt — not verified | **no sandbox** (Claude Code's sandbox supports macOS, Linux and WSL2, not native Windows) |
-| Claude interactive | `--permission-mode dontAsk --settings <settings>` instead of `bypassPermissions` + `skipDangerousModePermissionPrompt`; keep env `CLAUDE_CODE_SANDBOXED=1` | same, not verified | no sandbox |
+| Claude headless (`claude -p`) | `-p --output-format stream-json --verbose --permission-mode dontAsk --settings <settings>` instead of `--dangerously-skip-permissions` | same; Seatbelt — not verified | **no sandbox** (Claude Code's sandbox supports macOS, Linux and WSL2, not native Windows): downgrades to full access, see below |
+| Claude interactive | `--permission-mode dontAsk --settings <settings>` instead of `bypassPermissions` + `skipDangerousModePermissionPrompt`; keep env `CLAUDE_CODE_SANDBOXED=1` | same, not verified | no sandbox: downgrades to full access |
 | Pi, Cursor, Droid | refuse: `sandbox_unsupported_backend` | refuse | refuse |
 
 Claude `<settings>`:
@@ -126,25 +126,43 @@ three; it cannot be combined with `-s`.
 - Codex: **yes, feasible** — Codex ships a native Windows sandbox
   (`windows.sandbox`, with an elevated setup and a legacy variant).
 - Claude Code: **no** native Windows sandbox; only under WSL2.
-- Product owner requirement: on Windows, **when no sandbox is available the job
-  runs with full access.**
-- **Open conflict for the PO:** the Epic 52 S2 plan has PRFactory refuse a
-  claim for a Sandboxed repository with `409 sandbox_v1_required` when the
-  worker does not report `sandbox-v1`. A Windows worker (or a Claude job on
-  Windows) cannot report it honestly, so under S2 it receives no Sandboxed
-  work, while the requirement above says it should run that work with full
-  access. ATF must not report `sandbox-v1` on a machine whose self-test fails.
-  The PO must choose: keep the 409 (Windows Claude workers never run Sandboxed
-  repositories), or add an explicit per-repository/tenant "allow full-access
-  fallback" in PRFactory so the downgrade is a recorded decision, not a
-  silent one.
+- Claude on Windows therefore has no enforceable sandbox.
+
+### A worker without a sandbox downgrades (PO decision)
+
+- A worker that cannot enforce a sandbox for a job (today: Claude on native
+  Windows) **runs a Sandboxed job with full access**. It does not refuse it.
+- It reports the downgrade on durable acceptance: `effectiveSafetyMode`
+  (`fullAccess`) and `safetyDowngradeReason` (`sandbox_unavailable`). An
+  enforced job reports `effectiveSafetyMode=sandboxed` and no reason.
+- `sandbox-v1` means "this worker understands the `safetyMode` contract and
+  reports the mode it enforced". It does **not** mean "this worker can always
+  enforce a sandbox". A Windows worker reports `sandbox-v1` too.
+- The A3 startup self-test decides `effectiveSafetyMode` for each CLI on the
+  machine. It does not decide whether `sandbox-v1` is reported.
+- This replaces the Epic 52 S2 plan's reading of `409 sandbox_v1_required` as
+  "worker cannot sandbox". The 409 still applies to a worker that does not
+  speak the contract at all (no `sandbox-v1`, for example ATF v0.1.8), and
+  PRFactory shows the reported downgrade instead of blocking it.
 
 ## Consequences
 
-- A2 adds `SafetyMode` per job, carried through follow-up, revive and MCP
-  child submissions, and builds the arguments above from a per-job settings
-  file. A3's self-test must check, per CLI: an outside write fails, a
-  `~/.ssh`-style read fails, and the CLI did not fall back to unsandboxed.
+- A2 adds `SafetyMode` per job, carried through follow-up and revive, and
+  builds the arguments above from a per-job settings file.
+- A2: **child jobs that a sandboxed agent starts over MCP** (`submit_job`,
+  `follow_up` and the like through `atf mcp`, which runs outside the sandbox)
+  **inherit `sandboxed`**. A child request cannot lower the mode; otherwise the
+  sandbox is escaped through ATF itself.
+- A2: **the git hooks and config stay read-only** for the agent. Only
+  `<gd>/worktrees/<name>`, `objects`, `refs` and `logs` are writable for Codex;
+  `<gd>/hooks` and `<gd>/config` must never be added. Claude already keeps them
+  read-only. The daemon still runs its own git in such worktrees with hooks
+  disabled (`-c core.hooksPath=/dev/null`).
+- A3's self-test must check, per CLI: an outside write fails, a
+  `~/.ssh`-style read fails, and the CLI did not fall back to unsandboxed. Its
+  result is the `effectiveSafetyMode` for Sandboxed jobs on that CLI.
+- A4 adds `effectiveSafetyMode` and `safetyDowngradeReason` to the acceptance
+  report, and sends `sandbox-v1` whenever ATF implements the contract.
 - ADR 0006 stays the rule for `fullAccess` jobs and local jobs by default.
 - The network rule (A5, Q4) chooses Codex network on/off and the Claude
   domain list; the cache directories are part of it.
