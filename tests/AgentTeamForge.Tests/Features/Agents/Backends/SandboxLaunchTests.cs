@@ -132,16 +132,6 @@ public sealed class SandboxLaunchTests : IDisposable
         Assert.DoesNotContain("GH_TOKEN", output);
     }
 
-    [Fact]
-    public void Terminal_tabs_blank_every_inherited_variable_off_the_list_including_those_of_a_shared_server()
-    {
-        const string name = "ATF_TEST_UNLISTED_CREDENTIAL";
-        Environment.SetEnvironmentVariable(name, "secret");
-        try { Assert.Contains(name, SandboxEnvironment.Blocked(Environment.ProcessId)); }
-        finally { Environment.SetEnvironmentVariable(name, null); }
-        Assert.DoesNotContain("PATH", SandboxEnvironment.Blocked(Environment.ProcessId));
-    }
-
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -168,31 +158,24 @@ public sealed class SandboxLaunchTests : IDisposable
         Assert.Contains("PATH=", environment);
     }
 
-    [Theory]
-    [InlineData("sandbox_mode = \"danger-full-access\"", true)]
-    [InlineData("[projects.\"/repo\"] # trusted\ntrust_level=\"trusted\" # untrusted", true)]
-    [InlineData("\"projects\".\"/repo\".trust_level = \"trusted\"", true)]
-    [InlineData("model = \"gpt-5\"", true)]
-    [InlineData("", false)]
-    [InlineData("   \n\n  ", false)]
-    [InlineData("# only a comment\n   # and another", false)]
-    public void Any_codex_user_config_with_content_counts_without_parsing_it(string toml, bool hasContent)
-    {
-        var path = _dir.File("config-" + Guid.NewGuid().ToString("N") + ".toml");
-        File.WriteAllText(path, toml);
-
-        Assert.Equal(hasContent, CodexConfigCheck.HasContent(path));
-    }
-
-    [Fact]
-    public void A_missing_codex_config_has_no_content() => Assert.False(CodexConfigCheck.HasContent(_dir.File("absent.toml")));
-
     [Fact]
     public void Default_capability_downgrades_backends_without_a_sandbox_and_unverified_platforms()
     {
-        Assert.Equal(SafetyDowngrade.UnsupportedBackend, SandboxCapability.Default(BackendCatalog.Pi, null, false));
-        Assert.Equal(SafetyDowngrade.UnsupportedBackend, SandboxCapability.Default(BackendCatalog.Cursor, null, false));
-        Assert.Equal(SafetyDowngrade.UnsupportedBackend, SandboxCapability.Default(BackendCatalog.Droid, null, false));
-        Assert.Equal(OperatingSystem.IsLinux() ? null : SafetyDowngrade.Unavailable, SandboxCapability.Default(BackendCatalog.Claude, null, false));
+        Assert.Equal(SafetyDowngrade.UnsupportedBackend, SandboxCapability.Default(BackendCatalog.Pi, null, null));
+        Assert.Equal(SafetyDowngrade.UnsupportedBackend, SandboxCapability.Default(BackendCatalog.Cursor, null, null));
+        Assert.Equal(SafetyDowngrade.UnsupportedBackend, SandboxCapability.Default(BackendCatalog.Droid, null, null));
+        Assert.Equal(OperatingSystem.IsLinux() ? null : SafetyDowngrade.Unavailable, SandboxCapability.Default(BackendCatalog.Claude, null, null));
+    }
+
+    [Theory]
+    [InlineData("herdr")]
+    [InlineData("terminal")]
+    [InlineData("wt")]
+    public void An_interactive_launch_is_never_sandboxed_because_its_pane_outlives_the_turn_and_its_environment_is_not_ours(string launchMode)
+    {
+        // Herdr starts the canonical executable in a shell whose startup files run first, and no launch path proves when a pane ends.
+        Assert.Equal(SafetyDowngrade.Unavailable, SandboxCapability.Default(BackendCatalog.Claude, null, launchMode));
+        Assert.Equal(SafetyDowngrade.Unavailable, SandboxCapability.Default(BackendCatalog.Codex, null, launchMode));
+        Assert.Equal(OperatingSystem.IsLinux() ? null : SafetyDowngrade.Unavailable, SandboxCapability.Default(BackendCatalog.Codex, null, "headless"));
     }
 }

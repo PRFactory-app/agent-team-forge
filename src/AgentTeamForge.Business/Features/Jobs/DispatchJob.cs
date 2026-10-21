@@ -44,6 +44,7 @@ public sealed class DispatchJob : IDisposable
     readonly ManagedChildContext? childContext;
     readonly string? piHome;
     readonly string sandboxDirectory;
+    readonly string? stateRoot;
     readonly string codexHome = CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
     internal Func<string, string, string, CancellationToken, Task<CodexSubmission>> SubmitNativeCodex { get; init; } = CodexQueueWake.SubmitAsync;
     string? _haltReason;
@@ -73,6 +74,7 @@ public sealed class DispatchJob : IDisposable
         this.jobLogs = jobLogs;
         this.childContext = childContext;
         this.piHome = piHome;
+        this.stateRoot = stateRoot;
         sandboxDirectory = Path.Combine(stateRoot ?? Path.Combine(Path.GetTempPath(), "atf-sandbox"), "sandbox");
     }
 
@@ -936,7 +938,14 @@ public sealed class DispatchJob : IDisposable
                     {
                         var launchDirectory = request.WorkingDirectory ?? Environment.CurrentDirectory;
                         // Every launch that gets a writable worktree admin dir is recorded, so daemon git there is validated and pinned.
-                        SandboxedWorktrees.RegisterLaunch(GitLayout.Find(launchDirectory));
+                        var layout = GitLayout.Find(launchDirectory);
+                        // The agent must not be able to write ATF's database, registry, settings or tokens.
+                        if (SandboxLaunch.OverlapsState(stateRoot, launchDirectory, layout))
+                        {
+                            End(run, JobStatus.Failed, "sandbox_state_overlap", "a writable root contains or reaches into the ATF state directory");
+                            return;
+                        }
+                        SandboxedWorktrees.RegisterLaunch(layout);
                         if (SandboxedWorktrees.Validate(launchDirectory) is { } invalid)
                         {
                             End(run, JobStatus.Failed, SandboxedWorktrees.TamperedReason, invalid);

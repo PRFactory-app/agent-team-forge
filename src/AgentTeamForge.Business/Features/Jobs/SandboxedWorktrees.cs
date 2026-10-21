@@ -20,10 +20,7 @@ public static class SandboxedWorktrees
 {
     public const string TamperedReason = "sandbox_worktree_tampered";
 
-    sealed record Entry(string Root, string Common, string Admin)
-    {
-        public string[]? Drivers { get; set; }
-    }
+    sealed record Entry(string Root, string Common, string Admin);
 
     static readonly ConcurrentDictionary<string, Entry> Entries = new(StringComparer.Ordinal);
     static readonly ConcurrentDictionary<string, int> Live = new(StringComparer.Ordinal);
@@ -198,7 +195,7 @@ public static class SandboxedWorktrees
         Pin(info, entry);
         foreach (var argument in HardeningArguments) { info.ArgumentList.Add(argument); }
         if (command is null || !NetworkCommands.Contains(command)) { foreach (var argument in CredentialHardening) { info.ArgumentList.Add(argument); } }
-        foreach (var argument in entry.Drivers ??= DriverOverrides(entry)) { info.ArgumentList.Add(argument); }
+        foreach (var argument in DriverOverrides(entry)) { info.ArgumentList.Add(argument); }
     }
 
     static void Pin(ProcessStartInfo info, Entry entry)
@@ -211,14 +208,33 @@ public static class SandboxedWorktrees
     }
 
     /// <summary>
-    /// Blanks every filter, diff and merge driver in the effective config, except the LFS filter when its command is the real git-lfs
-    /// outside the workspace. The repo config is read-only to the agent, but a driver can name a script the agent edits.
+    /// Blanks every filter, diff and merge driver that any config file the git run could read defines, except the LFS filter when it is
+    /// the real git-lfs. Computed for every invocation from the pinned config and never cached. Conditional includes (<c>includeIf</c>) are
+    /// neutralised by reading every included file whatever its condition and blanking by name: a driver that a branch switch would switch
+    /// on is already blank. An include file inside a writable root is refused. The repo config is read-only to the agent, but a driver
+    /// can name a script the agent edits.
     /// </summary>
     static string[] DriverOverrides(Entry entry)
     {
+        string[] roots = [entry.Root, entry.Admin, entry.Common];
+        var items = new List<string>();
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var pending = new Queue<(string Origin, string Path, int Depth)>();
+        Collect(entry, ["config", "--list", "--no-includes", "--show-origin", "-z"], items, pending, visited, roots, 0);
+        while (pending.Count > 0)
+        {
+            var (_, file, depth) = pending.Dequeue();
+            if (depth > 10) { throw new TamperedWorktreeException(entry.Root, "config_include_depth"); }
+            Collect(entry, ["config", "--file", file, "--list", "--no-includes", "--show-origin", "-z"], items, pending, visited, roots, depth + 1);
+        }
+        return Overrides(string.Join('\0', items), roots, Environment.GetEnvironmentVariable("PATH"));
+    }
+
+    static void Collect(Entry entry, string[] arguments, List<string> items, Queue<(string, string, int)> pending, HashSet<string> visited, string[] roots, int depth)
+    {
         var info = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         Pin(info, entry);
-        foreach (var argument in new[] { "config", "--list", "-z" }) { info.ArgumentList.Add(argument); }
+        foreach (var argument in arguments) { info.ArgumentList.Add(argument); }
         string listing;
         try
         {
@@ -232,12 +248,31 @@ public static class SandboxedWorktrees
         {
             throw new TamperedWorktreeException(entry.Root, "git_config_unreadable");
         }
-        return Overrides(listing, entry.Root);
+        // With --show-origin and -z each entry is "origin\0key\nvalue\0".
+        var fields = listing.Split('\0');
+        for (var i = 0; i + 1 < fields.Length; i += 2)
+        {
+            var origin = fields[i];
+            var item = fields[i + 1];
+            items.Add(item);
+            var split = item.IndexOf('\n');
+            var key = (split < 0 ? item : item[..split]).ToLowerInvariant();
+            if (key != "include.path" && !(key.StartsWith("includeif.", StringComparison.Ordinal) && key.EndsWith(".path", StringComparison.Ordinal))) { continue; }
+            var value = split < 0 ? "" : item[(split + 1)..];
+            var baseDirectory = origin.StartsWith("file:", StringComparison.Ordinal) ? Path.GetDirectoryName(origin[5..]) : null;
+            var home = Environment.GetEnvironmentVariable("HOME") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var path = value.StartsWith("~/", StringComparison.Ordinal) ? Path.Combine(home, value[2..]) : baseDirectory is null ? null : Path.GetFullPath(value, baseDirectory);
+            if (path is null) { throw new TamperedWorktreeException(entry.Root, "config_include_unresolvable"); }
+            if (roots.Any(r => Within(r, PhysicalPath.Resolve(path) ?? path))) { throw new TamperedWorktreeException(entry.Root, "config_include_in_workspace"); }
+            if (File.Exists(path) && visited.Add(path)) { pending.Enqueue((origin, path, depth)); }
+        }
     }
 
-    internal static string[] Overrides(string configList, string root)
+    static readonly (string Variable, string Command)[] LfsGrammar = [("clean", "clean -- %f"), ("smudge", "smudge -- %f"), ("process", "filter-process")];
+
+    internal static string[] Overrides(string configList, string[] writableRoots, string? path)
     {
-        var filters = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        var filters = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
         var overrides = new List<string>();
         foreach (var item in configList.Split('\0', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -251,8 +286,8 @@ public static class SandboxedWorktrees
             switch (parts[0].ToLowerInvariant(), variable)
             {
                 case ("filter", "clean" or "smudge" or "process" or "required"):
-                    if (!filters.TryGetValue(name, out var values)) { filters[name] = values = []; }
-                    if (variable != "required") { values.Add(value); }
+                    if (!filters.TryGetValue(name, out var values)) { filters[name] = values = new(StringComparer.Ordinal); }
+                    values[variable] = value;
                     break;
                 case ("diff", "textconv" or "command"):
                     overrides.AddRange(["-c", $"diff.{name}.{variable}="]);
@@ -262,29 +297,58 @@ public static class SandboxedWorktrees
                     break;
             }
         }
-        foreach (var (name, commands) in filters)
+        foreach (var (name, values) in filters)
         {
-            if (name == "lfs" && commands.All(c => IsRealLfs(c, root))) { continue; }
+            if (name == "lfs" && IsRealLfs(values, writableRoots, path)) { continue; }
             foreach (var variable in new[] { "clean", "smudge", "process" }) { overrides.AddRange(["-c", $"filter.{name}.{variable}="]); }
             overrides.AddRange(["-c", $"filter.{name}.required=false"]);
         }
         return [.. overrides];
     }
 
-    /// <summary>The LFS filter commands are <c>git-lfs filter-process</c> and the like: the real binary, not a path inside the workspace.</summary>
-    static bool IsRealLfs(string command, string root)
+    /// <summary>
+    /// The LFS filter is kept only when every command it defines is exactly git-lfs's own (<c>git-lfs clean -- %f</c> and the like)
+    /// and its executable resolves, through links, to an absolute path outside every writable root. Anything else, including a relative
+    /// path or a bare name that a workspace PATH entry could shadow, is blanked.
+    /// </summary>
+    static bool IsRealLfs(Dictionary<string, string> commands, string[] writableRoots, string? path)
     {
-        var token = command.Split(' ', 2)[0];
-        if (Path.GetFileName(token) != "git-lfs" || Path.IsPathRooted(token) && Within(root, token)) { return false; }
-        // A bare name resolves through PATH: no PATH entry may be inside the workspace.
-        return Path.IsPathRooted(token) || !(Environment.GetEnvironmentVariable("PATH") ?? "")
-            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries).Any(d => Within(root, d));
+        var any = false;
+        foreach (var (variable, grammar) in LfsGrammar)
+        {
+            if (!commands.TryGetValue(variable, out var command)) { continue; }
+            var space = command.IndexOf(' ');
+            if (space < 0 || command[(space + 1)..] != grammar || !ExecutableOutside(command[..space], writableRoots, path)) { return false; }
+            any = true;
+        }
+        return any;
+    }
+
+    static bool ExecutableOutside(string token, string[] writableRoots, string? path)
+    {
+        if (token.Any(char.IsWhiteSpace) || token.Contains('"') || token.Contains('\'')) { return false; }
+        string? candidate = null;
+        if (Path.IsPathRooted(token)) { candidate = token; }
+        else if (token == "git-lfs")
+        {
+            foreach (var directory in (path ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            {
+                // A relative PATH entry means the current directory, which is the workspace.
+                if (!Path.IsPathRooted(directory)) { return false; }
+                var probe = Path.Combine(directory, token);
+                if (File.Exists(probe)) { candidate = probe; break; }
+            }
+        }
+        if (candidate is null || Path.GetFileName(candidate) != "git-lfs" || !File.Exists(candidate)) { return false; }
+        var real = PhysicalPath.Resolve(candidate);
+        return real is not null && Path.IsPathRooted(real) && !writableRoots.Any(r => Within(r, real));
     }
 
     static bool Within(string root, string path)
     {
-        var full = Path.GetFullPath(path, root);
-        return full.Equals(root, StringComparison.Ordinal) || full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path, root));
+        var comparison = OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        return full.Equals(root, comparison) || full.StartsWith(root + Path.DirectorySeparatorChar, comparison);
     }
 }
 

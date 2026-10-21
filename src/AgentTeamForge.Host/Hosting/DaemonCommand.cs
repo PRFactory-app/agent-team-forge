@@ -226,10 +226,10 @@ public static class DaemonCommand
         var herdrPlacement = herdrTerminal is null ? null : new HerdrPlacement(state.Path, Log);
         Func<string, string?>? checkHerdrSession = herdrTerminal is null ? null : herdrTerminal.CheckSharedSession;
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap,
-            herdrPlacement, checkHerdrSession, launchMode, profile.SafetyMode);
+            herdrPlacement, checkHerdrSession, launchMode, profile.SafetyMode, stateRoot: state.Path);
         // Remote claims have their own lead identity and cannot borrow the local MCP lead.
         var connectorAccept = new AcceptJob(store, new BoundPrincipal("prfactory", "connector", "connector-lead"),
-            limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap, herdrPlacement, checkHerdrSession, launchMode);
+            limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap, herdrPlacement, checkHerdrSession, launchMode, stateRoot: state.Path);
         var connectorTeams = new PRFactoryTeamStore(database);
         var connectorSessions = new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database);
         var connectorPrincipal = new BoundPrincipal("prfactory", "connector", "connector-lead");

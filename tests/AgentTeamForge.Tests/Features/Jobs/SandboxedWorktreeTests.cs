@@ -191,17 +191,173 @@ public sealed class SandboxedWorktreeTests : IDisposable
         Assert.True(File.Exists(marker));
     }
 
+    string[] Roots => [_worktree, _admin, Path.Combine(_repo, ".git")];
+
+    string RealLfs()
+    {
+        var bin = Directory.CreateDirectory(_dir.File("bin")).FullName;
+        var lfs = Path.Combine(bin, "git-lfs");
+        File.WriteAllText(lfs, "#!/bin/sh\n");
+        File.SetUnixFileMode(lfs, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return lfs;
+    }
+
+    static string LfsConfig(string executable) =>
+        $"filter.lfs.clean\n{executable} clean -- %f\0filter.lfs.smudge\n{executable} smudge -- %f\0filter.lfs.process\n{executable} filter-process\0filter.lfs.required\ntrue\0";
+
     [Fact]
     public void Only_the_real_lfs_filter_survives_and_every_other_driver_is_blanked()
     {
-        const string lfs = "filter.lfs.clean\ngit-lfs clean -- %f\0filter.lfs.process\ngit-lfs filter-process\0filter.lfs.required\ntrue\0";
+        var lfs = RealLfs();
+        var bin = Path.GetDirectoryName(lfs)!;
 
-        Assert.Empty(SandboxedWorktrees.Overrides(lfs, "/ws"));
-        var inside = SandboxedWorktrees.Overrides("filter.lfs.clean\n/ws/bin/git-lfs clean\0", "/ws");
-        Assert.Contains("filter.lfs.clean=", inside);
-        var other = SandboxedWorktrees.Overrides("filter.x.smudge\n/usr/bin/cat\0diff.y.textconv\n/ws/t\0diff.y.command\nz\0merge.m.driver\nq\0core.editor\nvi\0", "/ws");
+        Assert.Empty(SandboxedWorktrees.Overrides(LfsConfig(lfs), Roots, "/usr/bin"));
+        Assert.Empty(SandboxedWorktrees.Overrides(LfsConfig("git-lfs"), Roots, bin));
         string[] expected = ["filter.x.clean=", "filter.x.smudge=", "filter.x.process=", "filter.x.required=false", "diff.y.textconv=", "diff.y.command=", "merge.m.driver="];
+        var other = SandboxedWorktrees.Overrides("filter.x.smudge\n/usr/bin/cat\0diff.y.textconv\n/ws/t\0diff.y.command\nz\0merge.m.driver\nq\0core.editor\nvi\0", Roots, bin);
         Assert.Equal(expected.Order(), other.Where(a => a != "-c").Order());
+    }
+
+    [Fact]
+    public void An_lfs_command_that_is_relative_shadowed_inside_the_workspace_or_off_grammar_is_blanked()
+    {
+        var lfs = RealLfs();
+        var bin = Path.GetDirectoryName(lfs)!;
+        var inside = Path.Combine(_worktree, "git-lfs");
+        File.WriteAllText(inside, "#!/bin/sh\n");
+        var linked = Directory.CreateDirectory(_dir.File("linkbin")).FullName;
+        File.CreateSymbolicLink(Path.Combine(linked, "git-lfs"), inside);
+
+        Assert.Contains("filter.lfs.clean=", SandboxedWorktrees.Overrides(LfsConfig("./git-lfs"), Roots, bin));
+        Assert.Contains("filter.lfs.clean=", SandboxedWorktrees.Overrides(LfsConfig("git-lfs"), Roots, "." + Path.PathSeparator + bin));
+        Assert.Contains("filter.lfs.clean=", SandboxedWorktrees.Overrides(LfsConfig("git-lfs"), Roots, _worktree + Path.PathSeparator + bin));
+        Assert.Contains("filter.lfs.clean=", SandboxedWorktrees.Overrides(LfsConfig(inside), Roots, bin));
+        // An outside path whose real target is inside the workspace.
+        Assert.Contains("filter.lfs.clean=", SandboxedWorktrees.Overrides(LfsConfig(Path.Combine(linked, "git-lfs")), Roots, bin));
+        Assert.Contains("filter.lfs.clean=", SandboxedWorktrees.Overrides($"filter.lfs.clean\n{lfs} clean -- %f; touch /tmp/x\0", Roots, bin));
+        Assert.Contains("filter.lfs.clean=", SandboxedWorktrees.Overrides($"filter.lfs.clean\n{lfs} clean %f\0", Roots, bin));
+        Assert.Contains("filter.lfs.clean=", SandboxedWorktrees.Overrides($"filter.lfs.clean\n\"{lfs}\" clean -- %f\0", Roots, bin));
+    }
+
+    string ArmFilter(string name, string marker)
+    {
+        var script = Path.Combine(_worktree, name);
+        File.WriteAllText(script, $"#!/bin/sh\ntouch '{marker}'\ncat\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        File.WriteAllText(Path.Combine(_worktree, ".gitattributes"), "data.txt filter=evil\n");
+        File.WriteAllText(Path.Combine(_worktree, "data.txt"), "x");
+        return script;
+    }
+
+    [Fact]
+    public async Task A_workspace_relative_lfs_command_does_not_run_in_daemon_git()
+    {
+        var marker = _dir.File("lfs-ran");
+        ArmFilter("git-lfs", marker);
+        File.WriteAllText(Path.Combine(_worktree, ".gitattributes"), "data.txt filter=lfs\n");
+        Git(_repo, "config", "filter.lfs.clean", "./git-lfs clean -- %f");
+        Git(_repo, "config", "filter.lfs.smudge", "./git-lfs smudge -- %f");
+
+        Assert.NotNull(await JobWorktree.GitAsync(_worktree, TimeSpan.FromSeconds(10), CancellationToken.None, "add", "data.txt"));
+        Assert.False(File.Exists(marker), "the workspace executable ran as git-lfs");
+
+        SandboxedWorktrees.Forget(_worktree);
+        Git(_worktree, "add", "--renormalize", "data.txt");
+        Assert.True(File.Exists(marker));
+    }
+
+    [Fact]
+    public async Task A_driver_that_a_branch_switch_turns_on_through_includeif_is_blank_before_the_switch_and_after()
+    {
+        var marker = _dir.File("filter-ran");
+        var script = ArmFilter("evil.sh", marker);
+        var include = _dir.File("evil.inc");
+        File.WriteAllText(include, $"[filter \"evil\"]\n\tclean = {script}\n");
+        File.AppendAllText(Path.Combine(_repo, ".git", "config"), $"[includeIf \"onbranch:evilbranch\"]\n\tpath = {include}\n");
+        // The agent switches HEAD (its own git is unguarded); only then does the include apply.
+        Git(_worktree, "checkout", "-b", "evilbranch");
+
+        Assert.NotNull(await JobWorktree.GitAsync(_worktree, TimeSpan.FromSeconds(10), CancellationToken.None, "add", "data.txt"));
+        Assert.False(File.Exists(marker), "the conditional include activated a workspace driver");
+
+        SandboxedWorktrees.Forget(_worktree);
+        Git(_worktree, "add", "--renormalize", "data.txt");
+        Assert.True(File.Exists(marker));
+    }
+
+    [Fact]
+    public async Task Driver_overrides_are_recomputed_for_every_invocation()
+    {
+        var marker = _dir.File("filter-ran");
+        var script = ArmFilter("evil.sh", marker);
+        Assert.NotNull(await JobWorktree.GitAsync(_worktree, TimeSpan.FromSeconds(10), CancellationToken.None, "add", "data.txt"));
+        // The config gains a driver after the first guarded run (an operator edit, or an include that now matches).
+        Git(_repo, "config", "filter.evil.clean", script);
+
+        Assert.NotNull(await JobWorktree.GitAsync(_worktree, TimeSpan.FromSeconds(10), CancellationToken.None, "add", "--renormalize", "data.txt"));
+
+        Assert.False(File.Exists(marker));
+    }
+
+    [Fact]
+    public async Task A_config_include_inside_the_workspace_makes_daemon_git_refuse()
+    {
+        var include = Path.Combine(_worktree, "evil.inc");
+        File.WriteAllText(include, "[core]\n");
+        File.AppendAllText(Path.Combine(_repo, ".git", "config"), $"[include]\n\tpath = {include}\n");
+
+        Assert.Null(await JobWorktree.GitAsync(_worktree, TimeSpan.FromSeconds(10), CancellationToken.None, "rev-parse", "HEAD"));
+    }
+
+    [Fact]
+    public void A_writable_root_that_contains_or_reaches_into_the_state_dir_overlaps_it_but_a_job_worktree_does_not()
+    {
+        var state = Directory.CreateDirectory(_dir.File("state")).FullName;
+        Directory.CreateDirectory(Path.Combine(state, "worktrees", "job-1"));
+        Directory.CreateDirectory(Path.Combine(state, "sandbox"));
+        var elsewhere = Directory.CreateDirectory(_dir.File("elsewhere")).FullName;
+
+        Assert.True(SandboxLaunch.OverlapsState(state, _dir.Path));
+        Assert.True(SandboxLaunch.OverlapsState(state, state));
+        Assert.True(SandboxLaunch.OverlapsState(state, Path.Combine(state, "sandbox")));
+        Assert.True(SandboxLaunch.OverlapsState(state, Path.Combine(state, "worktrees")));
+        Assert.False(SandboxLaunch.OverlapsState(state, Path.Combine(state, "worktrees", "job-1")));
+        Assert.False(SandboxLaunch.OverlapsState(state, elsewhere));
+        Assert.False(SandboxLaunch.OverlapsState(null, _dir.Path));
+    }
+
+    [Fact]
+    public void A_sandboxed_submit_with_cwd_around_the_state_dir_is_downgraded_with_a_reason()
+    {
+        using var f = new JobFixture();
+        var state = Directory.CreateDirectory(_dir.File("state")).FullName;
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, [BackendCatalog.Fake], sandboxProbe: (_, _, _) => null, stateRoot: state);
+
+        var home = accept.Execute(new SubmitJobRequest("a", "t", null, false) { Cwd = _dir.Path, SafetyMode = SafetyMode.Sandboxed }).Job!;
+        var inside = accept.Execute(new SubmitJobRequest("b", "t", null, false) { Cwd = state, SafetyMode = SafetyMode.Sandboxed }).Job!;
+        var fine = accept.Execute(new SubmitJobRequest("c", "t", null, false) { Cwd = _repo, SafetyMode = SafetyMode.Sandboxed }).Job!;
+
+        Assert.Equal((SafetyMode.FullAccess, SafetyDowngrade.Unavailable), (home.EffectiveSafetyMode, home.SafetyDowngradeReason));
+        Assert.Equal((SafetyMode.FullAccess, SafetyDowngrade.Unavailable), (inside.EffectiveSafetyMode, inside.SafetyDowngradeReason));
+        Assert.Equal(SafetyMode.Sandboxed, fine.EffectiveSafetyMode);
+    }
+
+    [Fact]
+    public async Task A_stored_sandboxed_job_whose_writable_root_reaches_the_state_dir_fails_before_launch()
+    {
+        using var f = new JobFixture();
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, [BackendCatalog.Fake], sandboxProbe: (_, _, _) => null);
+        var job = accept.Execute(new SubmitJobRequest("a", "t", null, false) { Cwd = _dir.Path, SafetyMode = SafetyMode.Sandboxed }).Job!;
+        var backend = new ScriptedBackend(r => [new BackendEvidence.Result(r.Correlation, "ok")]);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+
+        using (var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { }, stateRoot: Directory.CreateDirectory(_dir.File("daemon-state")).FullName))
+        {
+            await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+        }
+
+        Assert.Empty(backend.Started);
+        Assert.Equal("sandbox_state_overlap", f.Store.GetJob(job.JobId)!.ReasonCode);
     }
 
     [Fact]

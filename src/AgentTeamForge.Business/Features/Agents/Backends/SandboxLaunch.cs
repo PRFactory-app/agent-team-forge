@@ -28,6 +28,44 @@ public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? C
 
     static readonly string[] GitWritableNames = ["objects", "refs", "logs"];
 
+    /// <summary>The directories a sandboxed shell can write: the workspace, the worktree's git allowances and the cache directories.</summary>
+    public static IReadOnlyList<string> WritableRoots(string workingDirectory, GitLayout? layout)
+    {
+        List<string> roots = [workingDirectory, .. SandboxPolicy.CacheDirectories];
+        if (layout is not null)
+        {
+            if (layout.Linked) { roots.Add(layout.GitDir); }
+            roots.AddRange(GitWritableNames.Select(name => Path.Combine(layout.CommonDir, name)));
+        }
+        return roots;
+    }
+
+    /// <summary>
+    /// Whether a writable root contains ATF's state dir (the database, the registry, the settings files and the managed MCP tokens live
+    /// there) or reaches into it anywhere but the job worktrees. A job worktree under the state dir is the normal case and is fine.
+    /// </summary>
+    public static bool OverlapsState(string? stateRoot, string workingDirectory, GitLayout? layout = null)
+    {
+        if (stateRoot is null) { return false; }
+        var state = Canonical(stateRoot);
+        var worktrees = Path.Combine(state, "worktrees");
+        foreach (var root in WritableRoots(workingDirectory, layout ?? GitLayout.Find(workingDirectory)).Select(Canonical))
+        {
+            var jobWorktree = root != worktrees && Contains(worktrees, root);
+            if (Contains(root, state) || Contains(state, root) && !jobWorktree) { return true; }
+        }
+        return false;
+    }
+
+    static bool Contains(string parent, string child) =>
+        child.Equals(parent, StringComparison.Ordinal) || child.StartsWith(parent + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+
+    static string Canonical(string path)
+    {
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        return AgentTeamForge.Business.Features.Agents.Terminals.PhysicalPath.Resolve(full) is { } physical ? Path.TrimEndingDirectorySeparator(physical) : full;
+    }
+
     /// <summary>Resolves the git layout of the working directory and writes the Claude settings file when the backend needs one.</summary>
     public static SandboxLaunch Create(string workingDirectory, string backend, string settingsDirectory, string jobId)
     {
@@ -167,24 +205,6 @@ public static class SandboxEnvironment
     public static void Restrict(IDictionary<string, string?> environment)
     {
         foreach (var name in environment.Keys.Where(n => !IsAllowed(n)).ToList()) { environment.Remove(name); }
-    }
-
-    /// <summary>The names a pane or terminal may inherit that a sandboxed launch must blank: this process's and, on Linux, another process's.</summary>
-    public static IReadOnlyList<string> Blocked(int? inheritedFromPid = null)
-    {
-        var names = Environment.GetEnvironmentVariables().Keys.Cast<string>().ToHashSet(StringComparer.Ordinal);
-        if (inheritedFromPid is { } pid && OperatingSystem.IsLinux())
-        {
-            try
-            {
-                foreach (var entry in File.ReadAllText($"/proc/{pid}/environ").Split('\0', StringSplitOptions.RemoveEmptyEntries))
-                {
-                    if (entry.IndexOf('=') is > 0 and var at) { names.Add(entry[..at]); }
-                }
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-        }
-        return [.. names.Where(n => n.Length > 1 && n[0] != '_' && !IsAllowed(n) && !n.StartsWith("HERDR_", StringComparison.Ordinal) && n.All(c => char.IsAsciiLetterOrDigit(c) || c == '_')).Order(StringComparer.Ordinal)];
     }
 
     /// <summary>A PowerShell prologue that removes everything off the allow-list from the tab's environment.</summary>

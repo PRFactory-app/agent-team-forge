@@ -18,7 +18,7 @@ public sealed class SafetyModeTests
     static readonly string[] AllBackends = [BackendCatalog.Fake, BackendCatalog.Claude, BackendCatalog.Codex, BackendCatalog.Pi, BackendCatalog.Cursor, BackendCatalog.Droid];
 
     /// <summary>Claude and Codex enforce, as on a verified Linux machine; every other backend gets the real default (no sandbox).</summary>
-    static string? Enforcing(string backend, string? cwd, bool interactive) => backend is BackendCatalog.Claude or BackendCatalog.Codex or BackendCatalog.Fake ? null : SandboxCapability.Default(backend, cwd, interactive);
+    static string? Enforcing(string backend, string? cwd, string? launchMode) => backend is BackendCatalog.Claude or BackendCatalog.Codex or BackendCatalog.Fake ? null : SandboxCapability.Default(backend, cwd, launchMode);
 
     static AcceptJob Accept(JobFixture f, SandboxProbe? probe = null, string? defaultMode = null) =>
         new(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, AllBackends, sandboxProbe: probe ?? Enforcing, defaultSafetyMode: defaultMode);

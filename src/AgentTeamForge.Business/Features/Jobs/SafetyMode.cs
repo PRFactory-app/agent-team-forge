@@ -25,17 +25,19 @@ public static class SafetyDowngrade
 /// Decides whether this machine can enforce a Sandboxed launch for one backend: null means it can, otherwise the downgrade reason.
 /// The startup self-test of work item A3 replaces <see cref="SandboxCapability.Default"/> without touching callers.
 /// </summary>
-public delegate string? SandboxProbe(string backend, string? cwd, bool interactive);
+public delegate string? SandboxProbe(string backend, string? cwd, string? launchMode);
 
 public static class SandboxCapability
 {
-    /// <summary>Verified on Linux only (ADR 0013 spike); macOS and Windows stay downgraded until the live run proves them.</summary>
-    public static string? Default(string backend, string? cwd, bool interactive) => backend switch
+    /// <summary>
+    /// Verified on Linux only (ADR 0013 spike); macOS and Windows stay downgraded until the live run proves them. An interactive launch
+    /// (Herdr, Windows Terminal, macOS terminal) is always downgraded: the pane outlives its turn and ATF cannot prove when it ends, so
+    /// daemon git could race a live writer, and a Herdr pane cannot be started through an environment allow-list (the shell's startup
+    /// files run first, and Herdr launches the canonical executable itself).
+    /// </summary>
+    public static string? Default(string backend, string? cwd, string? launchMode) => backend switch
     {
-        BackendCatalog.Claude => OperatingSystem.IsLinux() ? null : SafetyDowngrade.Unavailable,
-        // `codex exec` ignores the user config (--ignore-user-config). The interactive CLI has no such flag, so there the user config
-        // and its project trust would still apply: fail closed whenever the file has content (ADR 0013, "Settings sources").
-        BackendCatalog.Codex => OperatingSystem.IsLinux() && !(interactive && CodexConfigCheck.HasUserConfig()) ? null : SafetyDowngrade.Unavailable,
+        BackendCatalog.Claude or BackendCatalog.Codex => OperatingSystem.IsLinux() && launchMode is null or "headless" ? null : SafetyDowngrade.Unavailable,
         _ => SafetyDowngrade.UnsupportedBackend,
     };
 }
@@ -58,10 +60,10 @@ public sealed record JobSafety(string Requested, string Effective, string? Downg
     }
 
     /// <summary>Requested sandboxed: the enforceable effective mode, or full access with the reason. Requested full access stores nothing.</summary>
-    public static JobSafety Decide(string requested, string backend, string? cwd, bool interactive, SandboxProbe probe)
+    public static JobSafety Decide(string requested, string backend, string? cwd, string? launchMode, SandboxProbe probe)
     {
         if (requested != SafetyMode.Sandboxed) { return FullAccess; }
-        var reason = probe(backend, cwd, interactive);
+        var reason = probe(backend, cwd, launchMode);
         return reason is null ? new(SafetyMode.Sandboxed, SafetyMode.Sandboxed, null) : new(SafetyMode.Sandboxed, SafetyMode.FullAccess, reason);
     }
 

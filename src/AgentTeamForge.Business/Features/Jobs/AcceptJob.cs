@@ -14,7 +14,7 @@ namespace AgentTeamForge.Business.Features.Jobs;
 public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLimits limits, bool testProfile, AdmissionGate admission,
     IReadOnlyCollection<string>? backends = null, Func<string, IReadOnlyCollection<string>>? discoverModels = null, TierMap? tierMap = null,
     HerdrPlacement? herdrPlacement = null, Func<string, string?>? checkHerdrSession = null, string? launchMode = null,
-    string? defaultSafetyMode = null, SandboxProbe? sandboxProbe = null)
+    string? defaultSafetyMode = null, SandboxProbe? sandboxProbe = null, string? stateRoot = null)
 {
     public const string Operation = "job_submit";
 
@@ -81,7 +81,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         // A child started by a sandboxed agent inherits sandboxed and cannot lower it (ADR 0013, accepted containment limit).
         var requestedMode = request.InheritedSafetyMode == SafetyMode.Sandboxed ? SafetyMode.Sandboxed
             : request.SafetyMode ?? defaultSafetyMode ?? SafetyMode.FullAccess;
-        options += JobSafety.Decide(requestedMode, backend, cwd, launchMode is not null and not "headless", _sandboxProbe).ToOptions();
+        options += JobSafety.Decide(requestedMode, backend, cwd, launchMode, Probe(request)).ToOptions();
         if (request.ExpectedOutputs is { Length: > 0 } paths)
         {
             options += ";expected_outputs=" + string.Join(",", paths.Select(p => Convert.ToBase64String(Encoding.UTF8.GetBytes(p))));
@@ -116,6 +116,10 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
             timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds, leadSessionId: request.LeadSessionId,
             targetAgent: request.TargetAgent, defaultAgent: backend + "-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(request.IdempotencyKey)))[..8]);
     }
+
+    /// <summary>The capability probe plus the state-dir overlap rule: a writable root that contains or reaches into ATF's own state is not enforceable.</summary>
+    SandboxProbe Probe(SubmitJobRequest request) => (backend, cwd, mode) =>
+        _sandboxProbe(backend, cwd, mode) ?? (!request.Worktree && cwd is not null && SandboxLaunch.OverlapsState(stateRoot, cwd) ? SafetyDowngrade.Unavailable : null);
 
     /// <summary>Optional job timeout and queue TTL: whole seconds, at most one day. Named as the MCP tools name them.</summary>
     internal static string? LimitsError(int? timeoutSeconds, int? queueTtlSeconds) =>
