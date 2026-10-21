@@ -331,10 +331,14 @@ notes (A2)". For every other directory it sets only `GIT_TERMINAL_PROMPT=0`.
   driver on; this is simpler than building a global config without includes, and it
   keeps the operator's identity and credential settings untouched. An include file
   inside a writable root makes git refuse. The one exception to blanking is the LFS
-  filter, kept only when each command it defines is exactly git-lfs's grammar
-  (`<exe> clean -- %f`, `<exe> smudge -- %f`, `<exe> filter-process`) and `<exe>`, a
-  bare `git-lfs` resolved through an all-absolute `PATH` or an absolute path, resolves
-  through links to a path outside every writable root. User and global git config are
+  filter, kept only when every definition of each of its commands, in any
+  included file, is exactly git-lfs's grammar (`<exe> clean -- %f`,
+  `<exe> smudge -- %f`, `<exe> filter-process`) and `<exe>` resolves through links to a
+  path outside every writable root. A bare `git-lfs` is searched on an all-absolute
+  `PATH` with executable-access semantics (a non-executable file is skipped, as the
+  shell skips it; a `PATH` entry inside a writable root refuses the filter), and the
+  commands are then pinned to the resolved absolute path, so the shell never searches
+  `PATH` again. User and global git config are
   not blanked: the sandbox cannot write them, and ATF does not set `GIT_CONFIG_GLOBAL`
   (PO decision): the user's `~/.gitconfig` keeps applying, and the hardening stays in
   the `-c` flags and pinned environment above. A job whose worktree fails validation at
@@ -345,7 +349,13 @@ notes (A2)". For every other directory it sets only `GIT_TERMINAL_PROMPT=0`.
   database, the registry, the settings or the managed tokens. At acceptance such a job
   (for example `worktree=false` with `cwd` at `$HOME`) is downgraded with
   `sandbox_unavailable`; a stored sandboxed job that still overlaps at dispatch fails
-  with `sandbox_state_overlap` before launch.
+  with `sandbox_state_overlap` before launch. Containment is root-aware: a workspace
+  of `/` contains the state dir.
+- Launch mode changes: dispatch checks the stored decision against the backend that will
+  actually launch it. A job or follow-up that was accepted as sandboxed and now reaches
+  an interactive backend (the daemon was reconfigured, or a session is resumed under a
+  new mode) fails with `sandbox_unavailable` before any launch, so a job that reports
+  sandboxed never runs without the sandbox.
 - The working directory of a sandboxed job in its own worktree is resolved through
   symlinks and must stay inside the worktree root; otherwise the job fails with
   `sandbox_worktree_tampered` and nothing launches. The resolved path is what the agent
