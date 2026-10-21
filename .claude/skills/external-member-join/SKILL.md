@@ -21,7 +21,7 @@ You were started manually and given a join prompt by an ATF lead. Mirror of
 
 1. **Join** with the literal values from the prompt:
    `join_team(session_id="<session-id>", token="<ticket-token>")`.
-   The ticket is one-time and expires after ten minutes; retrying the same
+   The ticket is one-time and expires after two hours; retrying the same
    ticket within that window returns the same membership and token. Expired or
    bad tickets return `invalid_or_expired_token`: ask the lead for a new one.
 2. **Announce readiness:** `external_send(member_token=..., text="READY")`.

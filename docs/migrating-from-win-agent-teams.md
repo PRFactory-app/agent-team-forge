@@ -31,8 +31,8 @@ surface; tool names differ where ATF uses jobs instead of process records.
 | `session_info` | `session_info` | Reports current and recoverable lead sessions and effective tiers. |
 | — | `set_session_name` | Names the current lead session in the web console; empty clears it. |
 | `resume_session` | `resume_session` | Adopts a previous lead session and its jobs. |
-| `create_join_ticket` | `create_join_ticket` | Issues a one-time ticket for this lead session, valid for ten minutes. Give the returned `join_prompt` to the manually started member. |
-| `join_team` | `join_team` | Exchanges the ticket for a member bearer token. A retry with the same ticket within its ten-minute TTL recovers the same membership and token; after expiry or leave it cannot reopen membership. Bad or expired tickets return `invalid_or_expired_token`. |
+| `create_join_ticket` | `create_join_ticket` | Issues a one-time ticket for this lead session, valid for two hours. Give the returned `join_prompt` to the manually started member. |
+| `join_team` | `join_team` | Exchanges the ticket for a member bearer token. A retry with the same ticket within its two-hour TTL recovers the same membership and token; after expiry or leave it cannot reopen membership. Bad or expired tickets return `invalid_or_expired_token`. |
 | `external_send` | `external_send` | Persists a member message in the lead inbox. The lead uses `read_messages` to read it. |
 | `external_read` | `external_read` | Reads only that member's inbox with `member_token` (bare hex or `wam1:<session-id>:<hex>`). Supports `from_agent`, sender-scoped `since_seq`, `full`, `limit`, and `max_chars` like the reference. |
 | `external_set_wake` (opt-in) | `external_set_wake` | Registers Codex queue notices with `codex_thread_id`/`codex_home`, or the current Claude host channel with `kind="claude"`. Claude auto-registers on join when available. Empty `codex_thread_id` without `kind` clears either. Manual reading remains available. |

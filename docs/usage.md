@@ -209,7 +209,7 @@ an external member and exchange messages with it.
 2. In the lead, call `create_join_ticket(name="codex-desktop")` (or use the
    web console) and paste the returned `join_prompt` into the member's
    conversation. The member calls `join_team(session_id=..., token=...)` and
-   keeps the returned `member_token`. The ticket expires after ten minutes;
+   keeps the returned `member_token`. The ticket expires after two hours;
    a retry with the same ticket before expiry returns the same membership.
 3. For Codex queue notices, the member reads `CODEX_THREAD_ID` and absolute
    `CODEX_HOME` in its session and calls

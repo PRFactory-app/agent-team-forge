@@ -20,7 +20,8 @@ public sealed class ExternalTeam(ExternalMemberStore members, WakeStore wake, Fu
     static readonly Regex SafeName = new("^[A-Za-z0-9_-]{1,64}$", RegexOptions.CultureInvariant);
     static readonly Regex Token = new("^[a-f0-9]{64}$", RegexOptions.CultureInvariant);
     const int MaxText = 65536;
-    static readonly TimeSpan TicketTtl = TimeSpan.FromMinutes(10);
+    /// <summary>Join-ticket lifetime; the idempotent re-join window is the ticket expiry, so it follows this value.</summary>
+    public static readonly TimeSpan TicketTtl = TimeSpan.FromHours(2);
     string? MemberSecret(string? token)
     {
         if (token is null)

@@ -109,7 +109,7 @@ A recipe member mapped with `--external` is a person's own interactive session
   the tenant who can open the work item, so the stream only shows a "waiting
   to join" notice. `atf prfactory status` prints the join prompt; the
   participant pastes it into `join_team` in their session.
-- A ticket expires after ten minutes. If it expires unused, the daemon issues a
+- A ticket expires after two hours. If it expires unused, the daemon issues a
   new one on the next tick.
 - A `SendMessage` to a member who has not joined stays unacknowledged until
   they join; one to a member who has left is rejected with `member_left`.

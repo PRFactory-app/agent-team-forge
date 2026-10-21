@@ -166,7 +166,7 @@ settings. Never delete foreign data; it belongs to someone else's test.
 ## Phase 4 — Ready gate, then join ticket, prompt and GO
 
 The prompt is the **last** thing you produce. ATF join tickets are one-time
-and **expire after ten minutes**, and the PO pastes the prompt the moment they
+and **expire after two hours**, and the PO pastes the prompt the moment they
 see it. Mint the ticket only when **all** of these hold, checked just before:
 
 - the code under test is final (Phase 0.1) and every worktree `HEAD` equals
@@ -194,7 +194,7 @@ You are the end-to-end tester for <T> (<PR list>), testing in your real browser.
 ## 1. Join the team (do this first)
 Use only the `agentteamforge-external` MCP tools: join_team, external_read, external_send, external_set_wake, leave_team.
 1. Call `join_team(session_id='<session-id>', token='<join-token>')`.
-2. Keep the returned `member_token` in this conversation; every later call needs it, even after an MCP restart. If you lose it within ten minutes, repeat the same join_team call.
+2. Keep the returned `member_token` in this conversation; every later call needs it, even after an MCP restart. If you lose it within two hours, repeat the same join_team call.
 3. Register wake: Codex — read $CODEX_THREAD_ID and ${CODEX_HOME:-$HOME/.codex} in a shell, then `external_set_wake(member_token=..., codex_thread_id=..., codex_home=...)`. Claude — usually automatic; otherwise `external_set_wake(member_token=..., kind='claude')`.
 4. Send `external_send(member_token=..., text='JOINED <member-name>')`.
 

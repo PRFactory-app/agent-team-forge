@@ -220,7 +220,7 @@ public sealed class ExternalJoinTests
         await adapter.TickAsync(null, CancellationToken.None);
         Assert.Equal(first.TicketToken, store.External("https://example.test", server.Item.Id, "visitor")!.TicketToken);
 
-        now += TimeSpan.FromMinutes(11);
+        now += ExternalTeam.TicketTtl + TimeSpan.FromMinutes(1);
         await adapter.TickAsync(null, CancellationToken.None);
         var renewed = store.External("https://example.test", server.Item.Id, "visitor")!;
         Assert.NotEqual(first.TicketToken, renewed.TicketToken);
@@ -234,7 +234,7 @@ public sealed class ExternalJoinTests
 
         Assert.Equal("invalid_or_expired_token", actor.Join(first.TeamId, first.TicketToken).Error);
         Assert.Equal("visitor", actor.Join(renewed.TeamId, renewed.TicketToken).Member!.Name);
-        now += TimeSpan.FromMinutes(11);
+        now += ExternalTeam.TicketTtl + TimeSpan.FromMinutes(1);
         await adapter.TickAsync(null, CancellationToken.None);
         Assert.Equal(renewed.TicketToken, store.External("https://example.test", server.Item.Id, "visitor")!.TicketToken);
     }
