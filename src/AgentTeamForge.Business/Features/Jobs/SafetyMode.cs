@@ -23,7 +23,7 @@ public static class SafetyDowngrade
 
 /// <summary>
 /// Decides whether this machine can enforce a Sandboxed launch for one backend: null means it can, otherwise the downgrade reason.
-/// The startup self-test of work item A3 replaces <see cref="SandboxCapability.Default"/> without touching callers.
+/// The startup self-test of work item A3 replaces <see cref="SandboxCapability.Default(string, string, string)"/> without touching callers.
 /// </summary>
 public delegate string? SandboxProbe(string backend, string? cwd, string? launchMode);
 
