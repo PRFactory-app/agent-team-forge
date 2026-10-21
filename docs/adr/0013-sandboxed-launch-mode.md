@@ -351,6 +351,14 @@ notes (A2)". For every other directory it sets only `GIT_TERMINAL_PROMPT=0`.
   `sandbox_unavailable`; a stored sandboxed job that still overlaps at dispatch fails
   with `sandbox_state_overlap` before launch. Containment is root-aware: a workspace
   of `/` contains the state dir.
+- Trusted git layout: every sandboxed launch is bound to the layout recorded for the
+  directory it runs in (job worktrees from their origin at creation; any other
+  directory, linked worktree or plain checkout, at its first sandboxed launch, first
+  record wins). The launch's git allowances are built from that validated layout, never
+  rediscovered from disk. A nested `.git` (with its own `commondir`) that the agent
+  planted in a subdirectory no longer matches the recorded root, admin dir and common
+  dir, so the next launch fails with `sandbox_worktree_tampered` before any backend
+  starts.
 - Launch mode changes: dispatch checks the stored decision against the backend that will
   actually launch it. A job or follow-up that was accepted as sandboxed and now reaches
   an interactive backend (the daemon was reconfigured, or a session is resumed under a
