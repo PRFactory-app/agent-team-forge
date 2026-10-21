@@ -90,7 +90,7 @@ and refuses `--add-dir <gd>` because it treats every `.git` directory as
 read-only. The permission profile above (`default_permissions`) fixes all
 three; it cannot be combined with `-s`.
 
-### Guarantees that hold (Linux, both CLIs, all four launch paths)
+### Guarantees that hold (Linux, both CLIs, the invocations tested in the spike)
 
 1. **Shell writes are confined to an explicit boundary**: the workspace (cwd),
    the git allowances in guarantee 2, the cache directories in guarantee 6,
@@ -122,8 +122,11 @@ three; it cannot be combined with `-s`.
    Codex blocks `AF_UNIX` while network is off; **with Codex network on, host
    unix sockets are reachable from the shell** (spike: `pong`). Native wake is
    daemon → agent and is not affected.
-5. **No approval prompt** with the arguments above. Codex TUI ran unattended
-   with `-a never`. Claude `acceptEdits` is **not** enough in the TUI: a
+5. **No approval prompt in the tested invocations**: `codex exec`, the Codex
+   TUI with `-a never` **and** the trusted-project override, `claude -p`, and
+   the Claude TUI with `dontAsk` and `CLAUDE_CODE_SANDBOXED=1`. The Codex TUI
+   *without* the trust override, as the table requires, is not yet tested and
+   may show a trust prompt. Claude `acceptEdits` is **not** enough in the TUI: a
    request to an unlisted domain shows "Network request outside of sandbox —
    Do you want to allow this connection?" and blocks the job.
    `network.allowManagedDomainsOnly` would suppress it but is honoured only
@@ -155,10 +158,16 @@ three; it cannot be combined with `-s`.
 ### Guarantees that do not hold
 
 - **Reads are not confined.** Source, other repositories, `~/.aws`,
-  `~/.config/gh`, browser profiles etc. stay readable unless listed. The
-  PRFactory warning text must say "cannot write outside the workspace", not
-  "cannot see your machine". The deny-read list is a maintained list, not a
-  boundary.
+  `~/.config/gh`, browser profiles etc. stay readable unless listed. The deny-read list is a maintained list, not a boundary. The PRFactory
+  warning text must match what holds, for example:
+
+  > *Sandboxed:* when the worker can enforce it, the agent's shell can write
+  > only to this job's workspace, its git data and package caches and a
+  > private temp directory, and reaches the network only as configured. It can
+  > still read most files on the machine and send what it reads to the model
+  > provider. A worker or backend that cannot sandbox runs the job with full
+  > access and reports that, and child jobs the agent starts may run with full
+  > access in the same way.
 - **The sandbox limits shell writes and shell egress, nothing more.** Other
   channels stay open and are not claimed:
   - *Sockets:* with Codex network on, every host unix socket (Docker, SSH
@@ -171,8 +180,9 @@ three; it cannot be combined with `-s`.
     provider and print into job output and PRFactory.
   - *Unsandboxed MCP:* MCP servers run outside the sandbox with the user's
     full rights; only `atf mcp` is configured, and it can submit jobs.
-- **Network, when enabled for Codex, is unrestricted** (v1). A
-  data-exfiltration guarantee exists only with network off.
+- **Network, when enabled for Codex, is unrestricted** (v1). With network
+  off, shell network egress is blocked; that says nothing about model output,
+  MCP calls or child jobs, which remain channels out.
 - **Child jobs are an accepted containment limit.** A sandboxed agent can
   ask ATF through MCP for a child job on any backend. The child inherits the
   *requested* mode `sandboxed`, but under the downgrade rule a Pi, Cursor or
