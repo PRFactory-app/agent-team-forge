@@ -75,7 +75,7 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
             var pair = part.Split('=', 2);
             if (pair is ["model", { Length: > 0 } model])
             {
-                args.AddRange(["--model", model.Contains('/') ? model : "openai-codex/" + model]);
+                args.AddRange(["--model", ModelArgument(model)]);
             }
             else if (pair is ["thinking", { Length: > 0 } thinking] && PiThinking.Valid(thinking))
             {
@@ -89,6 +89,15 @@ public sealed class PiBackend(string executable = "pi") : IJobBackend
 
         return args;
     }
+
+    /// <summary>
+    /// Admission resolves a model to the catalog's provider/model; a bare name (unknown catalog) keeps the
+    /// subscription provider: Claude models on anthropic, everything else on openai-codex.
+    /// </summary>
+    internal static string ModelArgument(string model) =>
+        model.Contains('/') ? model
+        : model.StartsWith("claude-", StringComparison.Ordinal) ? "anthropic/" + model
+        : "openai-codex/" + model;
 
     sealed class PiRun(Process process, string correlation, byte[] instruction, Action<string, ReadOnlyMemory<byte>>? output, bool resuming) : IBackendRun
     {

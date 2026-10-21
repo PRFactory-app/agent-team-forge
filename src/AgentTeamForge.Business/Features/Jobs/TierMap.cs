@@ -78,7 +78,7 @@ public sealed class TierMap
                 var row = _overrides.Find(item => item.Backend == backend && item.Tier == tier);
                 var catalog = _catalog(backend);
                 var (activeModel, _) = ModelSelection.DefaultTier(backend, tier, catalog);
-                var model = row?.Model ?? activeModel;
+                var model = row is null ? activeModel : ModelSelection.Canonical(backend, row.Model, catalog);
                 return new TierSetting(backend, tier, model, row?.Effort ?? defaultEffort,
                     defaultModel, defaultEffort, row is not null, ModelSelection.Efforts(backend, model, catalog));
             }))];
@@ -117,7 +117,7 @@ public sealed class TierMap
             }
             var known = _catalog(backend!);
             if (known.Count > 0 && !(backend == "cursor" && model == "auto") && !(backend == "pi"
-                ? known.Any(candidate => candidate.Split('/', 2)[^1] == model.Split('/', 2)[^1])
+                ? ModelSelection.PiCatalogModel(model, known) is not null
                 : known.Contains(model)))
             {
                 var hint = backend == "codex" ? "npm install -g @openai/codex@latest"
@@ -125,6 +125,7 @@ public sealed class TierMap
                     : "npm install -g @earendil-works/pi-coding-agent@latest";
                 throw new TierSettingException("model", $"Model '{model}' is not available for {backend} on this machine. Upgrade {backend}: {hint}");
             }
+            model = ModelSelection.Canonical(backend!, model, known);
             if (effort is null)
             {
                 throw new TierSettingException("effort", $"Choose an effort. Supported: {string.Join(", ", ModelSelection.Efforts(backend!, model, known))}");

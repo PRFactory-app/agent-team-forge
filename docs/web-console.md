@@ -85,6 +85,8 @@ remove overrides.
 - When the daemon has a cached model catalog from the backend CLI, Settings
   offers a dropdown and rejects unavailable models with a CLI upgrade hint.
   Otherwise enter a model slug; admission checks it once a catalog is known.
+  The Pi dropdown lists every provider/model `pi --list-models` reports, so a
+  Pi tier can map to a Claude model such as `anthropic/claude-opus-5-5`.
 - The effort list is the one the daemon validates against. For Codex it is
   the reasoning levels the catalog reports for the row's model (so `ultra`
   is offered only where the model supports it); a rejected save marks the
