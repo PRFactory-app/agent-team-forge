@@ -322,6 +322,49 @@ public sealed class SandboxedWorktreeTests : IDisposable
         Assert.Equal("sandbox_state_overlap", f.Store.GetJob(stored.JobId)!.ReasonCode);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_nested_git_file_planted_in_the_first_turn_never_replaces_the_trusted_layout_on_the_follow_up(bool worktree)
+    {
+        using var f = new JobFixture();
+        var sub = Directory.CreateDirectory(Path.Combine(_repo, "sub")).FullName;
+        File.WriteAllText(Path.Combine(sub, "tracked.txt"), "x");
+        Git(_repo, "add", "-A");
+        Git(_repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "sub");
+        var unrelated = Directory.CreateDirectory(_dir.File("unrelated")).FullName;
+        Git(unrelated, "init");
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, [BackendCatalog.Fake], sandboxProbe: (_, _, _) => null);
+        var backend = new ScriptedBackend(r =>
+        {
+            if (r.ResumeSessionId is null)
+            {
+                // The first turn plants plain files inside its own cwd: a .git file and an admin dir whose commondir names another repository.
+                Directory.CreateDirectory(Path.Combine(r.WorkingDirectory!, "admin"));
+                File.WriteAllText(Path.Combine(r.WorkingDirectory!, ".git"), "gitdir: " + Path.Combine(r.WorkingDirectory!, "admin") + "\n");
+                File.WriteAllText(Path.Combine(r.WorkingDirectory!, "admin", "commondir"), Path.Combine(unrelated, ".git") + "\n");
+            }
+            return [new BackendEvidence.Session(r.Correlation, r.ResumeSessionId ?? "s-1"), new BackendEvidence.Result(r.Correlation, "ok")];
+        });
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        async Task RunNext()
+        {
+            using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+            await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+        }
+        var parent = accept.Execute(new SubmitJobRequest("k", "task", null, false) { Cwd = sub, Worktree = worktree, SafetyMode = SafetyMode.Sandboxed }).Job!;
+        await RunNext();
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(parent.JobId)!.Status);
+
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "again", "k2")).Job!;
+        await RunNext();
+
+        Assert.Single(backend.Started);
+        Assert.Equal(JobStatus.Failed, f.Store.GetJob(child.JobId)!.Status);
+        Assert.Equal(SandboxedWorktrees.TamperedReason, f.Store.GetJob(child.JobId)!.ReasonCode);
+        Assert.DoesNotContain(backend.Started, r => r.Sandbox?.GitCommonDir.StartsWith(unrelated, StringComparison.Ordinal) == true);
+    }
+
     string ArmFilter(string name, string marker)
     {
         var script = Path.Combine(_worktree, name);

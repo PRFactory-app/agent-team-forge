@@ -69,9 +69,22 @@ public static class SandboxedWorktrees
         return admin is not null && Add(worktreePath, layout.CommonDir, admin, replace);
     }
 
-    /// <summary>Registers the linked worktree a sandboxed launch gives a writable admin dir, whether or not ATF created it. The first record wins.</summary>
-    public static string? RegisterLaunch(GitLayout? layout) =>
-        layout is { Linked: true } && Add(layout.Root, layout.CommonDir, layout.GitDir, replace: false) ? Canonical(layout.Root) : null;
+    /// <summary>
+    /// Binds a sandboxed launch to its trusted git layout and returns why it cannot, or null. A directory already inside a recorded
+    /// worktree must discover exactly the recorded root, admin dir and common dir: a nested <c>.git</c> the agent planted (with its own
+    /// <c>commondir</c>) would otherwise point the sandbox's git allowances at another repository. Only a directory with no record yet is
+    /// recorded, from the layout found on disk before any agent of ATF's has run there; the first record wins.
+    /// </summary>
+    public static string? BindLaunch(string launchDirectory, GitLayout? layout)
+    {
+        if (Find(launchDirectory) is { } entry)
+        {
+            return layout is not null && Canonical(layout.Root) == entry.Root && Canonical(layout.GitDir) == entry.Admin && Canonical(layout.CommonDir) == entry.Common
+                ? null : "nested_git_metadata";
+        }
+        if (layout is not null) { Add(layout.Root, layout.CommonDir, layout.GitDir, replace: false); }
+        return null;
+    }
 
     static bool Add(string root, string common, string admin, bool replace)
     {
@@ -143,6 +156,8 @@ public static class SandboxedWorktrees
         {
             var marker = Path.Combine(entry.Root, ".git");
             if (IsLink(marker)) { return "git_is_link"; }
+            // A plain checkout (admin dir is the common dir) has a .git directory that must still be the recorded one.
+            if (entry.Admin == entry.Common) { return Directory.Exists(marker) && Canonical(marker) == entry.Common ? null : "git_changed"; }
             if (!File.Exists(marker)) { return Directory.Exists(marker) ? "git_not_a_file" : "git_missing"; }
             var line = File.ReadLines(marker).FirstOrDefault(l => l.StartsWith("gitdir:", StringComparison.Ordinal));
             if (line is null) { return "git_file_invalid"; }

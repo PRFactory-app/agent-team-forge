@@ -85,10 +85,11 @@ public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? C
     }
 
     /// <summary>Resolves the git layout of the working directory and writes the Claude settings file when the backend needs one.</summary>
-    public static SandboxLaunch Create(string workingDirectory, string backend, string settingsDirectory, string jobId, string? home = null)
+    public static SandboxLaunch Create(string workingDirectory, string backend, string settingsDirectory, string jobId, string? home = null, GitLayout? trustedLayout = null)
     {
         var denyRead = SandboxPolicy.DenyRead(home);
-        var layout = GitLayout.Find(workingDirectory);
+        // The caller passes the layout it validated; rediscovering would read metadata the agent can rewrite.
+        var layout = trustedLayout ?? GitLayout.Find(workingDirectory);
         string? settings = null;
         if (backend == BackendCatalog.Claude)
         {

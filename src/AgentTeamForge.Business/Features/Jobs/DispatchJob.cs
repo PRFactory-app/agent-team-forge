@@ -952,13 +952,13 @@ public sealed class DispatchJob : IDisposable
                             End(run, JobStatus.Failed, "sandbox_state_overlap", "a writable root contains or reaches into the ATF state directory");
                             return;
                         }
-                        SandboxedWorktrees.RegisterLaunch(layout);
-                        if (SandboxedWorktrees.Validate(launchDirectory) is { } invalid)
+                        var untrusted = SandboxedWorktrees.BindLaunch(launchDirectory, layout) ?? SandboxedWorktrees.Validate(launchDirectory);
+                        if (untrusted is not null)
                         {
-                            End(run, JobStatus.Failed, SandboxedWorktrees.TamperedReason, invalid);
+                            End(run, JobStatus.Failed, SandboxedWorktrees.TamperedReason, untrusted);
                             return;
                         }
-                        request = request with { Sandbox = SandboxLaunch.Create(launchDirectory, claim.Job.Backend, sandboxDirectory, claim.Job.JobId) };
+                        request = request with { Sandbox = SandboxLaunch.Create(launchDirectory, claim.Job.Backend, sandboxDirectory, claim.Job.JobId, trustedLayout: layout) };
                     }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                     {
