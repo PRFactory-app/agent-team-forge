@@ -13,7 +13,7 @@ lifecycle) that fit a process supervisor.
 ## Decision
 
 - Target .NET 11. The SDK is pinned in `global.json`
-  (`11.0.100-rc.1.26425.128`, no roll-forward) and kept project-local in
+  (`11.0.100-rc.2.26504.105`, no roll-forward) and kept project-local in
   `.tools/dotnet11/`.
 - Publish the Host as a Native AOT apphost (`atf`). Use explicit service
   registration and source-generated JSON so trimming stays safe.

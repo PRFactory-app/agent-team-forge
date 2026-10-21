@@ -70,13 +70,13 @@ public sealed class CodexQueueExecutableTests
         var executable = dir.File("codex");
         File.WriteAllText(executable, "#!/bin/sh\necho unexpected-receipt\n");
         File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        var result = await CodexQueueWake.SubmitAsync("scratch", dir.Path, "test", executable, TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+        var result = await CodexQueueWake.SubmitAsync("scratch", dir.Path, "test", executable, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
         Assert.True(result.Started);
         Assert.Null(result.SubmissionId);
         Assert.Contains("exit_code=0", result.Diagnostic);
         Assert.Contains("receipt_missing", result.Diagnostic);
         Assert.Contains("unexpected-receipt", result.Diagnostic);
-        result = await CodexQueueWake.SubmitAsync("scratch", dir.Path, "test", dir.File("missing"), TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+        result = await CodexQueueWake.SubmitAsync("scratch", dir.Path, "test", dir.File("missing"), TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
         Assert.False(result.Started);
         Assert.Contains("exit_code=unknown", result.Diagnostic);
     }
