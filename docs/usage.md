@@ -123,7 +123,7 @@ Other `submit_job` options:
   git data and a private temp directory, `~/.ssh` is unreadable, the agent gets an
   allow-listed environment (no cloud or token variables), and the network is off. Reads elsewhere are not
   confined. Where ATF cannot enforce it (Pi, Cursor and Droid, other platforms, a
-  interactive Codex with a `config.toml` that has content) the job runs with full access and
+  any interactive launch) the job runs with full access and
   `get_job` reports `requested_safety_mode`, `effective_safety_mode` and
   `safety_downgrade_reason` (`sandbox_unsupported_backend` or `sandbox_unavailable`).
   Follow-ups and revives keep the mode, and a job that a sandboxed agent starts over
