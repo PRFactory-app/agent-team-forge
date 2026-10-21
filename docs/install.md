@@ -28,7 +28,8 @@ installer adds `%USERPROFILE%\.local\share\agentteamforge\bin` to your user
 PATH. It keeps state in `%USERPROFILE%\.local\state\agentteamforge`. To pin a
 release, download its `install.ps1` asset and run
 `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.0.1`.
-Rerun the one-liner to upgrade after active jobs finish.
+Rerun the one-liner to upgrade. Interactive agents keep running across an
+upgrade; see [Upgrade and uninstall](#upgrade-and-uninstall) for headless jobs.
 If Defender ASR blocks `atf.exe`, the installer reports the exact blocked path.
 Allow the install folder `%USERPROFILE%\.local\share\agentteamforge\` in Windows
 Security and rerun; this covers staging, releases, and bin. Smart App Control
@@ -112,8 +113,18 @@ files and makes no changes. Without `--version`, the installer never switches to
 an older release: if the active version is a newer prerelease than the latest
 release, it reports that and changes nothing. With `--version` or `--archive` it
 switches to the named version, reactivating it in place when that version is
-still installed, and says so when that is a downgrade. An upgrade stops the running daemon, so wait for jobs
-to finish first. It preserves the profile, launch mode, state, and stable MCP
+still installed, and says so when that is a downgrade.
+
+An upgrade stops the running daemon; the next call from an agent client starts
+the new one. Interactive agents in Herdr, Windows Terminal or kitty tabs keep
+running: the new daemon checks each saved process and pane identity and resumes
+observing the turn as `running`. A job whose agent is gone fails without
+replaying its prompt, and one it cannot verify stays fenced until you read or
+stop it ([ADR 0009](adr/0009-restart-quarantines-live-tuis.md)). Queued jobs
+dispatch normally. A headless job that is running at the upgrade does not
+survive it, so wait for headless jobs to finish first.
+
+The upgrade preserves the profile, launch mode, state, and stable MCP
 executable path; reload agent clients after an upgrade. If setup used a custom
 `--state-dir`, pass the same directory to the installer. Back up the state
 directory before an upgrade that changes the database schema: switching back
