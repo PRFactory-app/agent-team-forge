@@ -611,9 +611,21 @@ public sealed class SandboxedWorktreeTests : IDisposable
         Assert.Equal("wt", AgentTeamForge.Business.Features.Agents.Terminals.HerdrTerminal.WorkspaceLabel(_worktree));
     }
 
+    static readonly string EmptyGlobalConfig = CreateEmptyConfig();
+
+    static string CreateEmptyConfig()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "empty-global.gitconfig");
+        File.WriteAllText(path, "");
+        return path;
+    }
+
     static string Git(string cwd, params string[] args)
     {
         var info = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true };
+        // Control steps must not depend on machine config (e.g. git-lfs filter.lfs.process beats clean).
+        info.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
+        info.Environment["GIT_CONFIG_GLOBAL"] = EmptyGlobalConfig;
         info.ArgumentList.Add("-C");
         info.ArgumentList.Add(cwd);
         foreach (var arg in args) { info.ArgumentList.Add(arg); }
