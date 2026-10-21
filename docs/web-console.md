@@ -64,7 +64,7 @@ it in that tab's session storage and removes it from the address bar.
   effort and lead session. The model and effort lists come from the daemon's
   catalog. The console and the daemon validate the directory and options
   before accepting the job; a rejection names the field at fault.
-- **Join ticket.** Expand a lead card to create a ten-minute join ticket for a
+- **Join ticket.** Expand a lead card to create a two-hour join ticket for a
   Claude Desktop or Codex Desktop external member and copy the `join_team`
   instructions into that session ([usage](usage.md#external-members)).
 - **History.** All jobs still retained (30-day prune window) with status

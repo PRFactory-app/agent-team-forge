@@ -182,9 +182,30 @@ public sealed class ExternalTeamTests
         Assert.Equal("invalid_or_expired_token", team.Join(lead.SessionId, "x" + ticket.Token[1..]).Error);
 
         var expiring = team.CreateTicket(lead.SessionId, lead.Workspace, "later", null).Ticket!;
-        time = time.AddMinutes(11);
+        time = time.AddHours(2).AddMinutes(1);
         Assert.Equal("invalid_or_expired_token", team.Join(lead.SessionId, expiring.Token).Error);
         Assert.Equal("invalid_or_expired_token", team.Join(lead.SessionId, ticket.Token).Error);
+    }
+
+    [Fact]
+    public void Ticket_is_valid_just_under_two_hours_and_expired_just_after()
+    {
+        using var f = new JobFixture();
+        var lead = new LeadSessionStore(f.Database).Start("/workspace/a", "lead-a");
+        var time = DateTimeOffset.UtcNow;
+        var team = Team(f, () => time);
+        Assert.Equal(TimeSpan.FromHours(2), ExternalTeam.TicketTtl);
+        var ticket = team.CreateTicket(lead.SessionId, lead.Workspace, "member", null).Ticket!;
+        var late = team.CreateTicket(lead.SessionId, lead.Workspace, "late", null).Ticket!;
+        Assert.Equal(time + ExternalTeam.TicketTtl, ticket.ExpiresAt);
+
+        time = time.AddHours(2).AddSeconds(-1);
+        var joined = team.Join(lead.SessionId, ticket.Token).Member!;
+        Assert.Equal(joined, team.Join(lead.SessionId, ticket.Token).Member);
+
+        time = time.AddSeconds(2);
+        Assert.Equal("invalid_or_expired_token", team.Join(lead.SessionId, ticket.Token).Error);
+        Assert.Equal("invalid_or_expired_token", team.Join(lead.SessionId, late.Token).Error);
     }
 
     [Fact]

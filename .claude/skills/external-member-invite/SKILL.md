@@ -14,7 +14,7 @@ Tools are on the `agentteamforge` MCP server. The member runs the
 create_join_ticket(name="<member-name>", note="<one-line role brief>")
 ```
 
-The ticket is **one-time and valid for ten minutes**. Hand it over promptly.
+The ticket is **one-time and valid for two hours**. Hand it over promptly.
 The result contains a paste-ready `join_prompt`.
 
 ## 2. Hand over the join prompt
