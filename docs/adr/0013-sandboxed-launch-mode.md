@@ -358,7 +358,9 @@ notes (A2)". For every other directory it sets only `GIT_TERMINAL_PROMPT=0`.
   rediscovered from disk. A nested `.git` (with its own `commondir`) that the agent
   planted in a subdirectory no longer matches the recorded root, admin dir and common
   dir, so the next launch fails with `sandbox_worktree_tampered` before any backend
-  starts.
+  starts. A directory with no git layout at its first sandboxed launch is recorded
+  as a validated "no git layout" baseline (an empty common dir in the registry); a
+  `.git` that appears there later is a mismatch and fails the same way.
 - Launch mode changes: dispatch checks the stored decision against the backend that will
   actually launch it. A job or follow-up that was accepted as sandboxed and now reaches
   an interactive backend (the daemon was reconfigured, or a session is resumed under a
