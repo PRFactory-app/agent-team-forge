@@ -122,8 +122,8 @@ public sealed class SandboxLaunchTests : IDisposable
         info.ArgumentList.Add("-c");
         info.ArgumentList.Add(SandboxEnvironment.ShellPrologue() + "env");
         using var process = System.Diagnostics.Process.Start(info)!;
-        var output = await process.StandardOutput.ReadToEndAsync();
-        await process.WaitForExitAsync();
+        var output = await process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+        await process.WaitForExitAsync(TestContext.Current.CancellationToken);
 
         Assert.Contains("HOME=/home/x", output);
         Assert.Contains("LC_ALL=C", output);

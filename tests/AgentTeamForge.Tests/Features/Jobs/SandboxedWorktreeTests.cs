@@ -153,8 +153,8 @@ public sealed class SandboxedWorktreeTests : IDisposable
         foreach (var argument in new[] { "-C", _worktree, "rev-parse", "--path-format=absolute", "--git-common-dir" }) { info.ArgumentList.Add(argument); }
 
         using var process = Process.Start(info)!;
-        var output = (await process.StandardOutput.ReadToEndAsync()).Trim();
-        await process.WaitForExitAsync();
+        var output = (await process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken)).Trim();
+        await process.WaitForExitAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(Path.Combine(_repo, ".git"), output);
     }

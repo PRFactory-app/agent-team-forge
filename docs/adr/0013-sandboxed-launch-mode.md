@@ -211,9 +211,9 @@ push, status). With today's allowances an agent can prepare:
   credential helpers or filter/diff helpers from a redirected or worktree
   config.
 
-ATF's daemon git today (`JobWorktree.RunAsync`, `JobWorktree.cs:207-219`) sets
-only `GIT_TERMINAL_PROMPT=0`; it has **no** hooks or helper override. The
-hardening is A2 work (see Consequences), not current protection.
+For a registered sandboxed worktree, daemon git (`JobWorktree.RunAsync` and the
+other git starts) validates, pins and hardens as described in "Implementation
+notes (A2)". For every other directory it sets only `GIT_TERMINAL_PROMPT=0`.
 
 ### Windows (documentation only)
 
@@ -293,34 +293,57 @@ hardening is A2 work (see Consequences), not current protection.
 - The effective mode is decided once, at acceptance, by `SandboxCapability.Default`:
   Claude and Codex on Linux enforce; Pi, Cursor and Droid give
   `sandbox_unsupported_backend`; Claude and Codex elsewhere give
-  `sandbox_unavailable` until the A6 run verifies macOS and Windows. Codex also gives
-  `sandbox_unavailable` while its user `config.toml` carries a key that widens the
-  sandbox or trusts the project (`CodexConfigCheck`), the "check the user config" option
-  of "Settings sources ATF controls"; ATF does not run Codex with its own `CODEX_HOME`,
-  because sessions and transcripts live there. A3 replaces the capability with the
-  startup self-test (bubblewrap, `socat`, outside write and `~/.ssh` read probes).
+  `sandbox_unavailable` until the A6 run verifies macOS and Windows. A3 replaces the
+  capability with the startup self-test (bubblewrap, `socat`, outside write and
+  `~/.ssh` read probes).
+- Codex settings sources: a sandboxed `codex exec` (and `exec resume`) runs with
+  `--ignore-user-config --ignore-rules`, so the user's `config.toml` (sandbox keys,
+  project trust, MCP servers) and execpolicy rules never apply. The interactive
+  Codex has no such flag in 0.163, so there the capability fails closed: a
+  `config.toml` with any content (not blank, not only comments; ATF does not parse
+  TOML) gives `sandbox_unavailable`. ATF does not run Codex with its own
+  `CODEX_HOME`, because sessions and transcripts live there.
 - A managed child's submit is resolved through the daemon's own
   `managed-child:<job>` lead binding, never from a caller-supplied job id; if that
   job requested `sandboxed`, the child does too, whatever `safety_mode` it passes.
-- Daemon git runs through `JobWorktree.RunAsync`. For a registered sandboxed worktree
-  (recorded when the job is prepared and restored from the store at daemon start)
-  every run first validates `.git`, the admin dir's `commondir`, `config.worktree` and
-  symlinks and refuses to run otherwise; a job whose worktree fails at completion fails
-  with `sandbox_worktree_tampered`. Runs add `core.hooksPath=/dev/null`,
-  `core.fsmonitor=`, `diff.external=` and `core.pager=cat`, and `credential.helper=`
-  except for network commands, which keep the operator's helper until A4's own
-  credential path. Repository filter drivers are not blanked: `<gd>/config` is
-  read-only to the agent and covered by the `commondir` check, and blanking would break
-  LFS. Jobs that run directly in a checkout (no worktree) have no writable admin dir and
-  are not registered.
+- Daemon git in a sandboxed worktree. ATF records the admin dir and common dir of
+  every linked worktree that a sandboxed launch gets a writable admin dir for (job
+  worktrees from their origin checkout when created; any other linked worktree at its
+  first sandboxed launch) in `<state>/sandbox/worktrees.json`, which survives a
+  restart. Every daemon git start there (`JobWorktree.RunAsync`, the attachment diff,
+  the Herdr workspace label) then: validates `.git`, the admin dir, `commondir`,
+  `config.worktree` and symlinks against the record, and refuses otherwise; refuses
+  while an agent of the worktree is alive (headless runs have their marked processes
+  reaped at run end; a retained interactive pane is not tracked, a known limit); is
+  pinned with `GIT_DIR`, `GIT_COMMON_DIR`, `GIT_WORK_TREE` and `GIT_CONFIG_NOSYSTEM`
+  so it never reads the mutable pointers; and runs with `core.hooksPath=/dev/null`,
+  `core.fsmonitor=`, `diff.external=`, `core.pager=cat`, `credential.helper=` (not for
+  network commands, which keep the operator's helper until A4's own credential path)
+  and every filter, diff and merge driver blanked except an LFS filter whose command is
+  `git-lfs` outside the workspace. User and global git config are not blanked: the
+  sandbox cannot write them, and they hold identity and credentials. A job whose
+  worktree fails validation at completion fails with `sandbox_worktree_tampered`. The
+  sandbox cannot swap `config.worktree` between validation and run if no agent is alive;
+  with `extensions.worktreeConfig` on and a live interactive pane that one file is the
+  remaining window.
+- The working directory of a sandboxed job in its own worktree is resolved through
+  symlinks and must stay inside the worktree root; otherwise the job fails with
+  `sandbox_worktree_tampered` and nothing launches. The resolved path is what the agent
+  gets.
 - The network rule, package caches and extra deny-read paths are `SandboxPolicy` and
   belong to A5: today a sandboxed launch has no network, no cache directories and
   denies only `~/.ssh`. Read-only mode is not part of the argument table and is not
   implemented.
-- Credential variables (`AWS_*`, `GITHUB_TOKEN`, `*_TOKEN`, `*_API_KEY`, `SSH_AUTH_SOCK`
-  and similar, except the agent's own `ANTHROPIC_*`, `CLAUDE_*`, `CODEX_*`, `OPENAI_*`)
-  are removed from the process environment of headless launches and from each Herdr
-  tab, macOS wrapper and Windows Terminal wrapper of a sandboxed launch.
+- Environment: a sandboxed launch hands the agent an allow-list (`PATH`, `HOME`,
+  locale, `XDG_*`, proxy and CA variables, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, and the
+  agent's own `ANTHROPIC_*`, `CLAUDE_CODE_*`, `OPENAI_*`, `CODEX_*`), not a deny-list.
+  Headless launches rebuild the child's environment from it; macOS and Windows
+  terminal wrappers unset or remove everything else before starting the agent. A Herdr
+  pane cannot be started through `env -i` (Herdr launches the canonical executable
+  itself), so ATF blanks every variable off the list that the daemon or the Herdr
+  server process has (`--env NAME=`); a variable that the user's shell startup files
+  export is outside ATF's reach. Cloud-credential setups (`AWS_*` for Bedrock) need
+  `fullAccess`.
 
 ## Evidence (Linux spike, `/tmp/atf-a1-spike`)
 
