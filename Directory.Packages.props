@@ -1,7 +1,7 @@
 <Project>
-  <!-- Versions resolved from nuget.org on 2026-09-26; RC1 packages match SDK 11.0.100-rc.1.26425.128. -->
+  <!-- Versions resolved from nuget.org on 2026-10-21; RC2 packages match SDK 11.0.100-rc.2.26504.105. -->
   <ItemGroup>
-    <PackageVersion Include="Microsoft.Data.Sqlite" Version="11.0.0-rc.1.26425.128" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="11.0.0-rc.2.26504.105" />
     <PackageVersion Include="ModelContextProtocol.Core" Version="2.2.0" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
     <PackageVersion Include="Jint" Version="4.4.0" />

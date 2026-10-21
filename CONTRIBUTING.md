@@ -8,7 +8,7 @@ review policy; read it before your first change.
 ## Toolchain
 
 AgentTeamForge targets **.NET 11**. The SDK is pinned in
-[global.json](global.json) (`11.0.100-rc.1.26425.128`, no roll-forward), so a
+[global.json](global.json) (`11.0.100-rc.2.26504.105`, no roll-forward), so a
 different SDK on PATH will not build it.
 
 The scripts look for a project-local SDK at `.tools/dotnet11/dotnet` in the main

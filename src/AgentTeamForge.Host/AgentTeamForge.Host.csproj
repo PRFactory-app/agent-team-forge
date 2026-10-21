@@ -5,6 +5,8 @@
     <RootNamespace>AgentTeamForge.Host</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PublishAot>true</PublishAot>
+    <!-- RC2 lists atf.xml for publish from a bin/ path the AOT publish never writes (MSB3030). -->
+    <PublishDocumentationFile>false</PublishDocumentationFile>
     <Version Condition="'$(Version)' == ''">0.0.1-dev</Version>
   </PropertyGroup>
   <ItemGroup>
