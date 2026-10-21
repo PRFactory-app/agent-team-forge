@@ -354,8 +354,10 @@ notes (A2)". For every other directory it sets only `GIT_TERMINAL_PROMPT=0`.
 - Trusted git layout: every sandboxed launch is bound to the layout recorded for the
   directory it runs in (job worktrees from their origin at creation; any other
   directory, linked worktree or plain checkout, at its first sandboxed launch, first
-  record wins). The launch's git allowances are built from that validated layout, never
-  rediscovered from disk. A nested `.git` (with its own `commondir`) that the agent
+  record wins). When a layout was recorded, the launch's git allowances are built from
+  it and not rediscovered from disk. For a validated "no git layout" baseline,
+  `SandboxLaunch.Create` still scans the directory, but dispatch has already refused a
+  layout that appeared after the baseline, so that scan finds none. A nested `.git` (with its own `commondir`) that the agent
   planted in a subdirectory no longer matches the recorded root, admin dir and common
   dir, so the next launch fails with `sandbox_worktree_tampered` before any backend
   starts. A directory with no git layout at its first sandboxed launch is recorded
