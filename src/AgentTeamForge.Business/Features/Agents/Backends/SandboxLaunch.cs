@@ -70,8 +70,13 @@ public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? C
         return false;
     }
 
-    static bool Contains(string parent, string child) =>
-        child.Equals(parent, StringComparison.Ordinal) || child.StartsWith(parent + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+    /// <summary>Whether <paramref name="child"/> is <paramref name="parent"/> or inside it. A root such as <c>/</c> already ends in a separator.</summary>
+    internal static bool Contains(string parent, string child)
+    {
+        var comparison = OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        var prefix = parent.EndsWith(Path.DirectorySeparatorChar) ? parent : parent + Path.DirectorySeparatorChar;
+        return child.Equals(parent, comparison) || child.StartsWith(prefix, comparison);
+    }
 
     static string Canonical(string path)
     {

@@ -1279,6 +1279,37 @@ public sealed class HerdrInteractiveBackendTests
         Assert.False(backend.HasLiveSession("native-1"));
     }
 
+    [Fact]
+    public async Task A_job_and_its_follow_up_accepted_as_sandboxed_under_headless_fail_when_the_daemon_now_launches_interactively()
+    {
+        using var f = new JobFixture();
+        using var state = new TempStateDir();
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, sandboxProbe: (_, _, _) => null);
+        var headless = new ScriptedBackend(r => [new BackendEvidence.Session(r.Correlation, "s-1"), new BackendEvidence.Result(r.Correlation, "ok")]);
+        var parent = accept.Execute(new SubmitJobRequest("k", "t", null, false) { SafetyMode = SafetyMode.Sandboxed }).Job!;
+        using (var first = new DispatchJob(f.Store, headless, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { }))
+        {
+            await first.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+        }
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(parent.JobId)!.Status);
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "again", "k2")).Job!;
+        var stale = accept.Execute(new SubmitJobRequest("k3", "t", null, false) { SafetyMode = SafetyMode.Sandboxed }).Job!;
+        var control = new FakeControl();
+        var herdr = new HerdrInteractiveBackend(control, new FixtureTranscriptReader(Path.Combine(state.Path, "native.jsonl")), InteractiveAgentKind.Claude, state.Path);
+
+        // The daemon was reconfigured to Herdr: the stored sandboxed decisions no longer hold.
+        using var second = new DispatchJob(f.Store, herdr, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        await second.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+        await second.RunAttemptAsync(f.Store.BeginNextAttempt()!, TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, control.Starts);
+        foreach (var id in new[] { child.JobId, stale.JobId })
+        {
+            Assert.Equal(JobStatus.Failed, f.Store.GetJob(id)!.Status);
+            Assert.Equal(SafetyDowngrade.Unavailable, f.Store.GetJob(id)!.ReasonCode);
+        }
+    }
+
     sealed class FakeControl : IHerdrAgentControl
     {
         public InteractiveLaunch? Launch { get; private set; }

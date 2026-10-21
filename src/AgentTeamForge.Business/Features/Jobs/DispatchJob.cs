@@ -909,6 +909,13 @@ public sealed class DispatchJob : IDisposable
                 }
                 var workingDirectory = JobWorktree.WorkingDirectory(claim.Job);
                 var sandboxed = JobSafety.Read(claim.Job.Options).EffectiveSandboxed;
+                if (sandboxed && Interactive(backend))
+                {
+                    // The decision was stored under another launch mode (the daemon was reconfigured, or a session is resumed under a new one).
+                    // An interactive launch is never sandboxed, and a job that reports sandboxed must not run without the sandbox.
+                    End(run, JobStatus.Failed, SafetyDowngrade.Unavailable, "the job was accepted as sandboxed but this daemon launches interactively");
+                    return;
+                }
                 if (sandboxed && claim.Job.WorktreePath is { } worktreeRoot)
                 {
                     // A subdirectory the agent replaced with a link would make the sandbox grant whatever it points at.

@@ -211,8 +211,13 @@ public sealed class SandboxedWorktreeTests : IDisposable
         var lfs = RealLfs();
         var bin = Path.GetDirectoryName(lfs)!;
 
-        Assert.Empty(SandboxedWorktrees.Overrides(LfsConfig(lfs), Roots, "/usr/bin"));
-        Assert.Empty(SandboxedWorktrees.Overrides(LfsConfig("git-lfs"), Roots, bin));
+        // Kept, and pinned to the resolved path so the shell never searches PATH again.
+        foreach (var overrides in new[] { SandboxedWorktrees.Overrides(LfsConfig(lfs), Roots, "/usr/bin"), SandboxedWorktrees.Overrides(LfsConfig("git-lfs"), Roots, bin) })
+        {
+            Assert.DoesNotContain("filter.lfs.clean=", overrides);
+            Assert.Contains($"filter.lfs.clean={Path.GetFullPath(lfs)} clean -- %f", overrides);
+            Assert.Contains($"filter.lfs.process={Path.GetFullPath(lfs)} filter-process", overrides);
+        }
         string[] expected = ["filter.x.clean=", "filter.x.smudge=", "filter.x.process=", "filter.x.required=false", "diff.y.textconv=", "diff.y.command=", "merge.m.driver="];
         var other = SandboxedWorktrees.Overrides("filter.x.smudge\n/usr/bin/cat\0diff.y.textconv\n/ws/t\0diff.y.command\nz\0merge.m.driver\nq\0core.editor\nvi\0", Roots, bin);
         Assert.Equal(expected.Order(), other.Where(a => a != "-c").Order());
@@ -237,6 +242,84 @@ public sealed class SandboxedWorktreeTests : IDisposable
         Assert.Contains("filter.lfs.clean=", SandboxedWorktrees.Overrides($"filter.lfs.clean\n{lfs} clean -- %f; touch /tmp/x\0", Roots, bin));
         Assert.Contains("filter.lfs.clean=", SandboxedWorktrees.Overrides($"filter.lfs.clean\n{lfs} clean %f\0", Roots, bin));
         Assert.Contains("filter.lfs.clean=", SandboxedWorktrees.Overrides($"filter.lfs.clean\n\"{lfs}\" clean -- %f\0", Roots, bin));
+    }
+
+    [Fact]
+    public void A_safe_lfs_definition_in_an_inactive_include_does_not_hide_an_unsafe_active_one_in_either_order()
+    {
+        var lfs = RealLfs();
+        var bin = Path.GetDirectoryName(lfs)!;
+        var unsafeDefinition = $"filter.lfs.clean\n{Path.Combine(_worktree, "evil.sh")}\0";
+        var safeDefinition = $"filter.lfs.clean\n{lfs} clean -- %f\0";
+
+        Assert.Contains("filter.lfs.clean=", SandboxedWorktrees.Overrides(unsafeDefinition + safeDefinition, Roots, bin));
+        Assert.Contains("filter.lfs.clean=", SandboxedWorktrees.Overrides(safeDefinition + unsafeDefinition, Roots, bin));
+    }
+
+    [Fact]
+    public void A_non_executable_git_lfs_earlier_on_path_does_not_hide_the_workspace_one_the_shell_would_run()
+    {
+        var lfs = RealLfs();
+        var decoy = Directory.CreateDirectory(_dir.File("decoy")).FullName;
+        File.WriteAllText(Path.Combine(decoy, "git-lfs"), "not executable");
+        File.SetUnixFileMode(Path.Combine(decoy, "git-lfs"), UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var workspaceBin = Directory.CreateDirectory(Path.Combine(_worktree, "bin")).FullName;
+        File.Copy(lfs, Path.Combine(workspaceBin, "git-lfs"));
+        File.SetUnixFileMode(Path.Combine(workspaceBin, "git-lfs"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        var path = string.Join(Path.PathSeparator, decoy, workspaceBin, Path.GetDirectoryName(lfs));
+
+        Assert.Contains("filter.lfs.clean=", SandboxedWorktrees.Overrides(LfsConfig("git-lfs"), Roots, path));
+        // Without the workspace entry the non-executable decoy is skipped and the real one is found.
+        Assert.DoesNotContain("filter.lfs.clean=", SandboxedWorktrees.Overrides(LfsConfig("git-lfs"), Roots, decoy + Path.PathSeparator + Path.GetDirectoryName(lfs)));
+    }
+
+    [Fact]
+    public async Task An_unsafe_active_lfs_driver_is_blank_even_with_a_safe_definition_in_an_inactive_include()
+    {
+        var marker = _dir.File("lfs-ran");
+        var script = ArmFilter("evil.sh", marker);
+        File.WriteAllText(Path.Combine(_worktree, ".gitattributes"), "data.txt filter=lfs\n");
+        var lfs = RealLfs();
+        var include = _dir.File("lfs.inc");
+        File.WriteAllText(include, $"[filter \"lfs\"]\n\tclean = {lfs} clean -- %f\n");
+        Git(_repo, "config", "filter.lfs.clean", script);
+        File.AppendAllText(Path.Combine(_repo, ".git", "config"), $"[includeIf \"onbranch:never-matches\"]\n\tpath = {include}\n");
+
+        Assert.NotNull(await JobWorktree.GitAsync(_worktree, TimeSpan.FromSeconds(10), CancellationToken.None, "add", "data.txt"));
+        Assert.False(File.Exists(marker), "the active workspace LFS command ran");
+
+        SandboxedWorktrees.Forget(_worktree);
+        Git(_worktree, "add", "--renormalize", "data.txt");
+        Assert.True(File.Exists(marker));
+    }
+
+    [Fact]
+    public async Task A_workspace_of_the_filesystem_root_overlaps_the_state_dir_at_submit_and_at_dispatch()
+    {
+        using var f = new JobFixture();
+        var state = Directory.CreateDirectory(_dir.File("state")).FullName;
+        Assert.True(SandboxLaunch.OverlapsState(state, "/"));
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, [BackendCatalog.Fake], sandboxProbe: (_, _, _) => null, stateRoot: state);
+
+        var submitted = accept.Execute(new SubmitJobRequest("root", "t", null, false) { Cwd = "/", SafetyMode = SafetyMode.Sandboxed }).Job!;
+        Assert.Equal((SafetyMode.FullAccess, SafetyDowngrade.Unavailable), (submitted.EffectiveSafetyMode, submitted.SafetyDowngradeReason));
+
+        var unguarded = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, [BackendCatalog.Fake], sandboxProbe: (_, _, _) => null);
+        var stored = unguarded.Execute(new SubmitJobRequest("root2", "t", null, false) { Cwd = "/", SafetyMode = SafetyMode.Sandboxed }).Job!;
+        Assert.Equal(SafetyMode.Sandboxed, stored.EffectiveSafetyMode);
+        var backend = new ScriptedBackend(r => [new BackendEvidence.Result(r.Correlation, "ok")]);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        using (var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { }, stateRoot: state))
+        {
+            // The downgraded submit runs first, as full access; the stored sandboxed one must not launch.
+            await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+            await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+        }
+
+        Assert.Single(backend.Started);
+        Assert.Null(backend.Started[0].Sandbox);
+        Assert.Equal("sandbox_state_overlap", f.Store.GetJob(stored.JobId)!.ReasonCode);
     }
 
     string ArmFilter(string name, string marker)

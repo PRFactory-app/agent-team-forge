@@ -171,8 +171,7 @@ public static class SandboxedWorktrees
         var resolved = PhysicalPath.Resolve(Path.GetFullPath(workingDirectory));
         if (resolved is null) { return null; }
         resolved = Path.TrimEndingDirectorySeparator(resolved);
-        var comparison = OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-        return resolved.Equals(root, comparison) || resolved.StartsWith(root + Path.DirectorySeparatorChar, comparison) ? resolved : null;
+        return SandboxLaunch.Contains(root, resolved) ? resolved : null;
     }
 
     static bool IsLink(string path) => (File.Exists(path) || Directory.Exists(path)) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
@@ -272,7 +271,9 @@ public static class SandboxedWorktrees
 
     internal static string[] Overrides(string configList, string[] writableRoots, string? path)
     {
-        var filters = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
+        // Every definition of every variable is kept: the listing is a discovery of all included files, not the effective config, so a
+        // safe-looking definition in an inactive include must never hide an unsafe active one.
+        var filters = new Dictionary<string, Dictionary<string, List<string>>>(StringComparer.Ordinal);
         var overrides = new List<string>();
         foreach (var item in configList.Split('\0', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -287,7 +288,8 @@ public static class SandboxedWorktrees
             {
                 case ("filter", "clean" or "smudge" or "process" or "required"):
                     if (!filters.TryGetValue(name, out var values)) { filters[name] = values = new(StringComparer.Ordinal); }
-                    values[variable] = value;
+                    if (!values.TryGetValue(variable, out var definitions)) { values[variable] = definitions = []; }
+                    definitions.Add(value);
                     break;
                 case ("diff", "textconv" or "command"):
                     overrides.AddRange(["-c", $"diff.{name}.{variable}="]);
@@ -299,7 +301,7 @@ public static class SandboxedWorktrees
         }
         foreach (var (name, values) in filters)
         {
-            if (name == "lfs" && IsRealLfs(values, writableRoots, path)) { continue; }
+            if (name == "lfs" && PinLfs(values, writableRoots, path) is { } pinned) { overrides.AddRange(pinned); continue; }
             foreach (var variable in new[] { "clean", "smudge", "process" }) { overrides.AddRange(["-c", $"filter.{name}.{variable}="]); }
             overrides.AddRange(["-c", $"filter.{name}.required=false"]);
         }
@@ -307,26 +309,37 @@ public static class SandboxedWorktrees
     }
 
     /// <summary>
-    /// The LFS filter is kept only when every command it defines is exactly git-lfs's own (<c>git-lfs clean -- %f</c> and the like)
-    /// and its executable resolves, through links, to an absolute path outside every writable root. Anything else, including a relative
-    /// path or a bare name that a workspace PATH entry could shadow, is blanked.
+    /// The LFS filter is kept only when every definition of every command it has, in any config file, is exactly git-lfs's own
+    /// (<c>git-lfs clean -- %f</c> and the like) and its executable resolves, through links, to an absolute path outside every writable
+    /// root. The commands are then pinned to that resolved path, so the shell never searches <c>PATH</c> again. Otherwise null: blank it.
     /// </summary>
-    static bool IsRealLfs(Dictionary<string, string> commands, string[] writableRoots, string? path)
+    static string[]? PinLfs(Dictionary<string, List<string>> commands, string[] writableRoots, string? path)
     {
-        var any = false;
+        var pinned = new List<string>();
         foreach (var (variable, grammar) in LfsGrammar)
         {
-            if (!commands.TryGetValue(variable, out var command)) { continue; }
-            var space = command.IndexOf(' ');
-            if (space < 0 || command[(space + 1)..] != grammar || !ExecutableOutside(command[..space], writableRoots, path)) { return false; }
-            any = true;
+            if (!commands.TryGetValue(variable, out var definitions)) { continue; }
+            string? real = null;
+            foreach (var command in definitions)
+            {
+                var space = command.IndexOf(' ');
+                if (space < 0 || command[(space + 1)..] != grammar || ResolveLfs(command[..space], writableRoots, path) is not { } resolved) { return null; }
+                real = resolved;
+            }
+            pinned.AddRange(["-c", $"filter.lfs.{variable}={real} {grammar}"]);
         }
-        return any;
+        return pinned.Count > 0 ? [.. pinned] : null;
     }
 
-    static bool ExecutableOutside(string token, string[] writableRoots, string? path)
+    static bool SafePath(string value) => value.All(c => char.IsAsciiLetterOrDigit(c) || c is '/' or '.' or '_' or '-' or '+');
+
+    /// <summary>
+    /// The real path of the executable the shell would run for <paramref name="token"/>, or null when it is not provably outside every
+    /// writable root. A bare <c>git-lfs</c> is searched on an all-absolute <c>PATH</c> with executable-access semantics: a non-executable
+    /// file is skipped as the shell skips it, and a <c>PATH</c> entry inside a writable root fails the whole resolution.
+    /// </summary>
+    static string? ResolveLfs(string token, string[] writableRoots, string? path)
     {
-        if (token.Any(char.IsWhiteSpace) || token.Contains('"') || token.Contains('\'')) { return false; }
         string? candidate = null;
         if (Path.IsPathRooted(token)) { candidate = token; }
         else if (token == "git-lfs")
@@ -334,22 +347,22 @@ public static class SandboxedWorktrees
             foreach (var directory in (path ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
             {
                 // A relative PATH entry means the current directory, which is the workspace.
-                if (!Path.IsPathRooted(directory)) { return false; }
+                if (!Path.IsPathRooted(directory) || writableRoots.Any(r => Within(r, PhysicalPath.Resolve(directory) ?? directory))) { return null; }
                 var probe = Path.Combine(directory, token);
-                if (File.Exists(probe)) { candidate = probe; break; }
+                if (!File.Exists(probe)) { continue; }
+                if (PhysicalPath.Resolve(probe) is not { } realProbe || writableRoots.Any(r => Within(r, realProbe))) { return null; }
+                if (IsExecutable(probe)) { candidate = probe; break; }
             }
         }
-        if (candidate is null || Path.GetFileName(candidate) != "git-lfs" || !File.Exists(candidate)) { return false; }
+        if (candidate is null || Path.GetFileName(candidate) != "git-lfs" || !File.Exists(candidate)) { return null; }
         var real = PhysicalPath.Resolve(candidate);
-        return real is not null && Path.IsPathRooted(real) && !writableRoots.Any(r => Within(r, real));
+        return real is not null && Path.IsPathRooted(real) && SafePath(real) && !writableRoots.Any(r => Within(r, real)) ? real : null;
     }
 
-    static bool Within(string root, string path)
-    {
-        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path, root));
-        var comparison = OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-        return full.Equals(root, comparison) || full.StartsWith(root + Path.DirectorySeparatorChar, comparison);
-    }
+    static bool IsExecutable(string file) =>
+        OperatingSystem.IsWindows() || (File.GetUnixFileMode(file) & (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0;
+
+    static bool Within(string root, string path) => SandboxLaunch.Contains(root, Path.TrimEndingDirectorySeparator(Path.GetFullPath(path, root)));
 }
 
 public sealed class TamperedWorktreeException(string root, string reason) : Exception($"sandboxed worktree {root} refused daemon git: {reason}");
