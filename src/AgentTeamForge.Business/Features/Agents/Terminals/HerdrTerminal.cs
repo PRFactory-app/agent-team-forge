@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using AgentTeamForge.Business.Features.Jobs;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
@@ -432,6 +433,8 @@ public sealed class HerdrTerminal
         try
         {
             var psi = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            // A sandboxed worktree is validated and pinned like every other daemon git run.
+            SandboxedWorktrees.ApplyGuard(psi, cwd, "rev-parse");
             foreach (var arg in new[] { "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir" }) { psi.ArgumentList.Add(arg); }
             using var git = Process.Start(psi) ?? throw new InvalidOperationException("git did not start");
             // Drain both pipes while waiting: a child blocked on a full pipe never exits.
@@ -446,7 +449,7 @@ public sealed class HerdrTerminal
                     : directory.EndsWith(".git", StringComparison.Ordinal) ? directory[..^4] : directory;
             }
         }
-        catch (Exception e) when (e is IOException or Win32Exception or InvalidOperationException or AggregateException) { }
+        catch (Exception e) when (e is IOException or Win32Exception or InvalidOperationException or AggregateException or TamperedWorktreeException) { }
         var clean = new string([.. name.Where(c => !char.IsControl(c))]).Trim().TrimStart('-').Trim();
         return clean.Length == 0 ? "agents" : clean[..Math.Min(clean.Length, 128)];
     }

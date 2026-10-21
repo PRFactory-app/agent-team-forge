@@ -154,7 +154,7 @@ left for manual cleanup.
 
 | Path | Contents |
 | --- | --- |
-| `profile.json` | Bound principal, limits and enabled backends |
+| `profile.json` | Bound principal, limits, enabled backends and the default `safety_mode` of local jobs |
 | `operator.key` | Daemon IPC credential (owner-only) |
 | `web-console.key` | Web console bearer token |
 | `launch-mode.json` | Selected launch mode, terminal host and web port |

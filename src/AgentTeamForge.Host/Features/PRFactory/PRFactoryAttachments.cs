@@ -120,6 +120,8 @@ internal static class PRFactoryAttachments
     static async Task<(byte[] Bytes, bool Truncated)> GitOutput(string cwd, int cap, CancellationToken ct, params string[] args)
     {
         var start = new ProcessStartInfo("git") { WorkingDirectory = cwd, RedirectStandardOutput = true, RedirectStandardError = true };
+        try { SandboxedWorktrees.ApplyGuard(start, cwd, args.FirstOrDefault()); }
+        catch (TamperedWorktreeException ex) { throw new InvalidDataException("Cannot generate attachment diff: " + ex.Message); }
         foreach (var arg in args) { start.ArgumentList.Add(arg); }
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromMinutes(2));

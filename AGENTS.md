@@ -10,7 +10,11 @@
   session tracking — instead of inventing new protocols.
 - **Bypass permissions, minimal operator intervention.** Agents run unattended.
   No human-approval ceremony unless an action is destructive (deleting data,
-  killing processes you don't own, publishing).
+  killing processes you don't own, publishing). Bypass is the default launch
+  mode (`fullAccess`); a job may request `sandboxed` instead
+  ([ADR 0013](docs/adr/0013-sandboxed-launch-mode.md)), which Codex and Claude
+  enforce on Linux and every other backend or platform runs as full access and
+  reports the downgrade. Neither mode relays approvals to a human.
 - **Linux first and complete.** Windows/macOS come last and are finished on
   those machines. Never block Linux work on other platforms; just don't claim
   platform support that hasn't been tested there.

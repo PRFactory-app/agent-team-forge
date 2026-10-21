@@ -27,6 +27,7 @@ public sealed record IpcRequest
     public string? Model { get; init; }
     public string? Effort { get; init; }
     public string? HerdrPlacement { get; init; }
+    public string? SafetyMode { get; init; }
     public string? Tier { get; init; }
     public int? MaxRetainedSessions { get; init; }
     public int? IdleCloseMinutes { get; init; }

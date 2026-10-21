@@ -28,6 +28,7 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
             RedirectStandardError = true,
         };
         var sessionId = request.ResumeSessionId ?? Guid.NewGuid().ToString();
+        if (request.Sandbox is not null) { SandboxEnvironment.Restrict(info.Environment); }
         foreach (var argument in Arguments(request, sessionId))
         {
             info.ArgumentList.Add(argument);
@@ -64,7 +65,8 @@ public sealed class ClaudeCodeBackend(string executable = "claude") : IJobBacken
 
     internal static List<string> Arguments(BackendRequest request, string sessionId)
     {
-        List<string> arguments = ["-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"];
+        List<string> arguments = ["-p", "--output-format", "stream-json", "--verbose"];
+        arguments.AddRange(request.Sandbox?.ClaudeArguments() ?? ["--dangerously-skip-permissions"]);
         arguments.AddRange(DisallowedToolArguments);
         arguments.AddRange(ManagedChildContext.Arguments("claude", request.ManagedMcpConfig));
         foreach (var part in request.Options.Split(';', StringSplitOptions.RemoveEmptyEntries))

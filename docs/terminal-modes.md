@@ -70,7 +70,9 @@ server and shell identity no longer match.
 Headless agents run as background processes with their JSON output modes
 (Claude `-p --output-format stream-json`, `codex exec --json`, Pi
 `--mode json`, Cursor `-p --output-format json`, Droid `exec --output-format json`)
-and permissions bypassed ([ADR 0006](adr/0006-bypass-permissions.md)).
+and permissions bypassed ([ADR 0006](adr/0006-bypass-permissions.md)), or, for a
+sandboxed job, with the Codex permission profile and Claude sandbox settings of
+[ADR 0013](adr/0013-sandboxed-launch-mode.md) instead of the bypass flags.
 Follow-ups resume the same native session. A headless run whose daemon dies is
 cleaned up only when ATF can prove it owns the process (marker plus pidfd on
 Linux).

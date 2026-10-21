@@ -250,6 +250,18 @@ public sealed class LeadSessionStore(JobDatabase database)
         return (long)command.ExecuteScalar()! == 1;
     }
 
+    /// <summary>The job whose agent owns this managed-child lead session (binding <c>managed-child:&lt;job&gt;</c>), or null for any other lead.</summary>
+    public string? ManagedChildJobId(string id, string workspace)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT binding_key FROM lead_sessions WHERE session_id=$id AND workspace=$workspace AND closed_at IS NULL";
+        command.Parameters.AddWithValue("$id", id);
+        command.Parameters.AddWithValue("$workspace", workspace);
+        const string prefix = "managed-child:";
+        return command.ExecuteScalar() is string binding && binding.StartsWith(prefix, StringComparison.Ordinal) ? binding[prefix.Length..] : null;
+    }
+
     /// <summary>Explicitly close a lead. Joined tokens are revoked in the same transaction.</summary>
     public bool Close(string id, string workspace)
     {

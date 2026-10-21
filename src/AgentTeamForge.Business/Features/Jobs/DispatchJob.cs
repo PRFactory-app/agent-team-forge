@@ -43,6 +43,8 @@ public sealed class DispatchJob : IDisposable
     readonly JobLogs? jobLogs;
     readonly ManagedChildContext? childContext;
     readonly string? piHome;
+    readonly string sandboxDirectory;
+    readonly string? stateRoot;
     readonly string codexHome = CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
     internal Func<string, string, string, CancellationToken, Task<CodexSubmission>> SubmitNativeCodex { get; init; } = CodexQueueWake.SubmitAsync;
     string? _haltReason;
@@ -53,7 +55,7 @@ public sealed class DispatchJob : IDisposable
     {
     }
 
-    public DispatchJob(JobStore store, BackendCatalog backends, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log, JobLogs? jobLogs = null, ManagedChildContext? childContext = null, string? piHome = null)
+    public DispatchJob(JobStore store, BackendCatalog backends, SpikeLimits limits, DurabilityCheckpoints checkpoints, AdmissionGate admission, Action<string> log, JobLogs? jobLogs = null, ManagedChildContext? childContext = null, string? piHome = null, string? stateRoot = null)
     {
         // Validated before the daemon reports readiness; CancelAfter would otherwise fault the loop.
         if (limits.MaxFakeRuntime <= TimeSpan.Zero || limits.MaxFakeRuntime > MaxAllowedRuntime)
@@ -72,6 +74,8 @@ public sealed class DispatchJob : IDisposable
         this.jobLogs = jobLogs;
         this.childContext = childContext;
         this.piHome = piHome;
+        this.stateRoot = stateRoot;
+        sandboxDirectory = Path.Combine(stateRoot ?? Path.Combine(Path.GetTempPath(), "atf-sandbox"), "sandbox");
     }
 
     /// <summary>
@@ -851,6 +855,7 @@ public sealed class DispatchJob : IDisposable
         _running[run.JobId] = active;
         IBackendRun? backendRun = null;
         HeadlessRun? headless = null;
+        string? liveRoot = null;
         var nativeCarrier = claim.Job.Backend == BackendCatalog.Codex && claim.Job.SessionId is not null
             && JobOptions.Read(claim.Job.Options, "native_codex") == "1";
         var enteredNative = false;
@@ -898,8 +903,28 @@ public sealed class DispatchJob : IDisposable
                 }
                 if (!JobWorktree.Prepare(claim.Job, deadline.Token))
                 {
-                    End(run, JobStatus.Failed, "worktree_unavailable");
+                    End(run, JobStatus.Failed, claim.Job.WorktreePath is not null && SandboxedWorktrees.Tampered(claim.Job.WorktreePath)
+                        ? SandboxedWorktrees.TamperedReason : "worktree_unavailable");
                     return;
+                }
+                var workingDirectory = JobWorktree.WorkingDirectory(claim.Job);
+                var sandboxed = JobSafety.Read(claim.Job.Options).EffectiveSandboxed;
+                if (sandboxed && Interactive(backend))
+                {
+                    // The decision was stored under another launch mode (the daemon was reconfigured, or a session is resumed under a new one).
+                    // An interactive launch is never sandboxed, and a job that reports sandboxed must not run without the sandbox.
+                    End(run, JobStatus.Failed, SafetyDowngrade.Unavailable, "the job was accepted as sandboxed but this daemon launches interactively");
+                    return;
+                }
+                if (sandboxed && claim.Job.WorktreePath is { } worktreeRoot)
+                {
+                    // A subdirectory the agent replaced with a link would make the sandbox grant whatever it points at.
+                    workingDirectory = SandboxedWorktrees.ContainedWorkingDirectory(worktreeRoot, workingDirectory);
+                    if (workingDirectory is null)
+                    {
+                        End(run, JobStatus.Failed, SandboxedWorktrees.TamperedReason, "the working directory resolves outside the job worktree");
+                        return;
+                    }
                 }
                 var request = new BackendRequest(claim.Job.JobId, claim.Correlation, claim.Job.Instruction, claim.Job.Options)
                 {
@@ -910,10 +935,37 @@ public sealed class DispatchJob : IDisposable
                         catch (StorageException) { }
                     },
                     ResumeSessionId = resumeSessionId,
-                    WorkingDirectory = JobWorktree.WorkingDirectory(claim.Job),
+                    WorkingDirectory = workingDirectory,
                     Output = jobLogs?.BeginRun(claim.Job.JobId, claim.RunId, claim.Job.Backend),
                 };
                 request = childContext?.Prepare(request) ?? request;
+                if (sandboxed)
+                {
+                    try
+                    {
+                        var launchDirectory = request.WorkingDirectory ?? Environment.CurrentDirectory;
+                        // Every launch that gets a writable worktree admin dir is recorded, so daemon git there is validated and pinned.
+                        var layout = GitLayout.Find(launchDirectory);
+                        // The agent must not be able to write ATF's database, registry, settings or tokens.
+                        if (SandboxLaunch.OverlapsState(stateRoot, launchDirectory, layout))
+                        {
+                            End(run, JobStatus.Failed, "sandbox_state_overlap", "a writable root contains or reaches into the ATF state directory");
+                            return;
+                        }
+                        var untrusted = SandboxedWorktrees.BindLaunch(launchDirectory, layout) ?? SandboxedWorktrees.Validate(launchDirectory);
+                        if (untrusted is not null)
+                        {
+                            End(run, JobStatus.Failed, SandboxedWorktrees.TamperedReason, untrusted);
+                            return;
+                        }
+                        request = request with { Sandbox = SandboxLaunch.Create(launchDirectory, claim.Job.Backend, sandboxDirectory, claim.Job.JobId, trustedLayout: layout) };
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        End(run, JobStatus.Failed, "sandbox_setup_failed", ex.Message);
+                        return;
+                    }
+                }
                 if (claim.Job.Backend == BackendCatalog.Pi && request.ManagedMcpConfig is not null && !PiMcpAdapter.IsInstalled(piHome))
                 {
                     End(run, JobStatus.Failed, "pi_mcp_adapter_missing", PiMcpAdapter.InstallHint);
@@ -922,7 +974,12 @@ public sealed class DispatchJob : IDisposable
                 // A stop or timeout during worktree preparation must not launch an agent.
                 deadline.Token.ThrowIfCancellationRequested();
                 var starting = Task.Run(() => backend.Start(request), CancellationToken.None);
-                try { backendRun = await BackendCall(() => starting.WaitAsync(deadline.Token), "launch_failed"); }
+                try
+                {
+                    backendRun = await BackendCall(() => starting.WaitAsync(deadline.Token), "launch_failed");
+                    // From here an agent runs in the worktree: daemon git there waits until it has ended.
+                    if (request.Sandbox is not null) { liveRoot = SandboxedWorktrees.MarkLive(request.WorkingDirectory ?? Environment.CurrentDirectory); }
+                }
                 catch (OperationCanceledException)
                 {
                     TerminateLateStart(starting, run, daemonLifetime.IsCancellationRequested
@@ -961,6 +1018,13 @@ public sealed class DispatchJob : IDisposable
                             TryRecordSession(run, session.SessionId);
                             break;
                         case BackendEvidence.Result result when result.Correlation == claim.Correlation:
+                            // A sandboxed agent can rewrite its worktree's git admin files; a job whose worktree no longer validates is not a result.
+                            if (claim.Job.WorktreePath is { } sandboxedPath && JobSafety.Read(claim.Job.Options).EffectiveSandboxed
+                                && SandboxedWorktrees.Tampered(sandboxedPath))
+                            {
+                                End(run, JobStatus.Failed, SandboxedWorktrees.TamperedReason);
+                                return;
+                            }
                             Complete(run, result.Output);
                             return;
                         case BackendEvidence.Ack or BackendEvidence.Result or BackendEvidence.Session:
@@ -1103,6 +1167,12 @@ public sealed class DispatchJob : IDisposable
             }
             else { await DisposeQuietly(backendRun); }
             if (headless is not null) { ReapHeadless(headless); }
+            if (liveRoot is not null)
+            {
+                // No process of a sandboxed headless run may outlive it: the daemon's git must not race a helper writing git metadata.
+                if (headless is not null) { OrphanedBackendProcess.TerminateMarked([run.Correlation]); }
+                SandboxedWorktrees.ClearLive(liveRoot);
+            }
             _running.TryRemove(run.JobId, out _);
             if (backendRun?.OwnedSessionStopped == true)
             {

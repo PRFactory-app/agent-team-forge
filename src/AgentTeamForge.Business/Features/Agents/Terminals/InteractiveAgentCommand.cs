@@ -36,7 +36,8 @@ internal static class InteractiveAgentCommand
         switch (launch.Kind)
         {
             case InteractiveAgentKind.Claude:
-                args.AddRange(["--permission-mode", "bypassPermissions", "--settings", "{\"skipDangerousModePermissionPrompt\":true}"]);
+                args.AddRange(launch.Sandbox?.ClaudeArguments()
+                    ?? ["--permission-mode", "bypassPermissions", "--settings", "{\"skipDangerousModePermissionPrompt\":true}"]);
                 args.AddRange(ClaudeCodeBackend.DisallowedToolArguments);
                 break;
             case InteractiveAgentKind.Codex:
@@ -45,9 +46,18 @@ internal static class InteractiveAgentCommand
                 // which Windows PowerShell 5.1 mangles when it starts a .cmd shim.
                 // Codex rebuilds its tool shells' environment from shell_environment_policy, which can drop the
                 // launch's run marker; the override restores it so cleanup finds what a tool left running.
+                var marker = new[] { "-c", OrphanedBackendProcess.CodexShellMarker(launch.AgentName) };
+                if (launch.Sandbox is { } sandbox)
+                {
+                    // No trusted-project override: a trusted project would load the repository's .codex/config.toml outside the sandbox.
+                    args.AddRange(["-a", "never", "-C", launch.WorkingDirectory]);
+                    args.AddRange(sandbox.CodexArguments(ManagedConfigPath(launch) is { } config && File.Exists(config)));
+                    args.AddRange(marker);
+                    break;
+                }
                 args.AddRange(["--dangerously-bypass-approvals-and-sandbox", "-C", launch.WorkingDirectory,
-                    "-c", "projects={" + TomlKey(CodexPaths.TrustKey(launch.WorkingDirectory)) + "={trust_level='trusted'}}",
-                    "-c", OrphanedBackendProcess.CodexShellMarker(launch.AgentName)]);
+                    "-c", "projects={" + TomlKey(CodexPaths.TrustKey(launch.WorkingDirectory)) + "={trust_level='trusted'}}"]);
+                args.AddRange(marker);
                 break;
             case InteractiveAgentKind.Pi:
                 args.AddRange([piShortApprove ? "-a" : "--approve", "--session-dir", launch.PiSessionDirectory!,

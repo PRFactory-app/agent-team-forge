@@ -73,6 +73,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             StartupProgress = request.StartupProgress,
             JobId = request.JobId,
             TabLabel = TabLabel(_kind, request.DisplayName, request.JobId),
+            Sandbox = request.Sandbox,
             HerdrPlacement = AgentTeamForge.Business.Features.Jobs.JobOptions.Read(request.Options, "herdr_placement")
         }.WithSelection(request.Options);
         try
@@ -763,6 +764,7 @@ internal sealed record InteractiveLaunch(InteractiveAgentKind Kind, string Agent
     public string? Effort { get; init; }
     public string? HerdrPlacement { get; init; }
     public string? TabLabel { get; init; }
+    public SandboxLaunch? Sandbox { get; init; }
 
     public InteractiveLaunch WithSelection(string options)
     {

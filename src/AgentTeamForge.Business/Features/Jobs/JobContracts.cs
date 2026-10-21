@@ -28,6 +28,12 @@ public sealed record SubmitJobRequest(string IdempotencyKey, string Instruction,
     public string? Effort { get; init; }
     public string? HerdrPlacement { get; init; }
 
+    /// <summary>Requested launch mode (<see cref="SafetyMode"/>); null uses the profile default.</summary>
+    public string? SafetyMode { get; init; }
+
+    /// <summary>Requested mode of the sandboxed agent that submits this job over MCP, set by the daemon; it cannot be lowered here.</summary>
+    public string? InheritedSafetyMode { get; init; }
+
     /// <summary>Absolute existing directory the agent runs in; null uses the daemon default.</summary>
     public string? Cwd { get; init; }
 
@@ -133,6 +139,14 @@ public sealed record JobView(string JobId, string Status, string? Result, string
     public string? HerdrSession { get; init; }
     public string? HerdrTab { get; init; }
     public string? HerdrTabLabel { get; init; }
+
+    /// <summary>What the submitter asked for (<see cref="Jobs.SafetyMode"/>); fullAccess for jobs without the option.</summary>
+    public string? RequestedSafetyMode { get; init; }
+
+    /// <summary>What the worker enforces; differs from the requested mode only with <see cref="SafetyDowngradeReason"/>.</summary>
+    public string? EffectiveSafetyMode { get; init; }
+
+    public string? SafetyDowngradeReason { get; init; }
 
     /// <summary>Raw instruction of this turn; only the single-job read fills it (web console), never lists or action responses.</summary>
     public string? Instruction { get; init; }

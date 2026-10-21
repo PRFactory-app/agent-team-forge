@@ -968,8 +968,15 @@
     return () => loadCardDetail(jobId, meta, output);
   }
 
+  // Requested and effective launch mode (ADR 0013): a sandboxed request that runs with full access says why.
+  function safetyLabel(job) {
+    if (job.requested_safety_mode !== 'sandboxed') return 'full access';
+    if (job.effective_safety_mode === 'sandboxed') return 'sandboxed';
+    return 'sandbox requested, running with full access (' + (job.safety_downgrade_reason || 'unavailable') + ')';
+  }
+
   function showDetail(job, meta, output) {
-    meta.textContent = [job.status, job.reason_code, job.status === 'needs_reconciliation' ? reconciliationExplanation(job) : null, job.backend, job.session_id,
+    meta.textContent = [job.status, job.reason_code, job.status === 'needs_reconciliation' ? reconciliationExplanation(job) : null, job.backend, safetyLabel(job), job.session_id,
       job.parent_job_id ? 'parent ' + job.parent_job_id : null,
       job.cwd, 'attempts ' + job.attempts].filter(Boolean).join(' · ');
     // Render once per result: polls with an unchanged result keep the DOM (and the Raw toggle).

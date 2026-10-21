@@ -107,8 +107,10 @@ public static partial class JobWorktree
             return true;
         }
 
+        var sandboxed = JobSafety.Read(job.Options).EffectiveSandboxed;
         if (Directory.Exists(job.WorktreePath))
         {
+            if (sandboxed) { SandboxedWorktrees.RegisterJob(job); }
             // A follow-up and a restarted daemon must preserve the existing checkout.
             // The agent may have switched branches there; only require it to still be a worktree root.
             return job.WorktreeBase is not null && IsCommitSha(job.WorktreeBase) &&
@@ -126,7 +128,9 @@ public static partial class JobWorktree
             var parent = Path.GetDirectoryName(job.WorktreePath)!;
             PrivateFiles.CreateDirectory(parent);
 
-            return Prepare(job.Cwd, job.WorktreePath, job.WorktreeBranch, job.WorktreeBase, cancellationToken);
+            var created = Prepare(job.Cwd, job.WorktreePath, job.WorktreeBranch, job.WorktreeBase, cancellationToken);
+            if (created && sandboxed) { SandboxedWorktrees.RegisterCreated(job.WorktreePath, job.Cwd); }
+            return created;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -211,6 +215,8 @@ public static partial class JobWorktree
                 UseShellExecute = false,
             };
             info.Environment["GIT_TERMINAL_PROMPT"] = "0";
+            // A worktree a sandboxed agent can write into is validated, pinned and hardened before git runs there (ADR 0013).
+            SandboxedWorktrees.ApplyGuard(info, cwd, args.Length > 0 ? args[0] : null);
             info.ArgumentList.Add("-C");
             info.ArgumentList.Add(cwd);
             foreach (var arg in args)
@@ -262,6 +268,11 @@ public static partial class JobWorktree
             await Task.WhenAll(output.ReleaseAsync(), error.ReleaseAsync());
             cancellationToken.ThrowIfCancellationRequested();
             return complete ? new(process.ExitCode, output.Text, error.Text) : null;
+        }
+        catch (TamperedWorktreeException ex)
+        {
+            Console.Error.WriteLine($"[atf-daemon] git {string.Join(' ', args)} not run: {ex.Message}");
+            return null;
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
         {

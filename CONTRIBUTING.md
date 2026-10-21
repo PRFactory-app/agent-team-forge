@@ -141,8 +141,9 @@ The short version of [AGENTS.md](AGENTS.md):
 - Keep it simple and ship working code; improve it afterwards.
 - Linux first and complete. Don't block Linux on other platforms, and don't
   claim platform support that hasn't been tested on that platform.
-- Agents run unattended with permissions bypassed; ask a human only for
-  destructive actions.
+- Agents run unattended with permissions bypassed by default; a job can ask for
+  the `sandboxed` mode ([ADR 0013](docs/adr/0013-sandboxed-launch-mode.md)).
+  Neither mode asks a human, except for destructive operator actions.
 - Runtime code and tests are C#/.NET; small shell glue is fine. Other languages
   need owner approval.
 - A few focused tests on critical behavior (job state, durability,

@@ -320,6 +320,10 @@ internal sealed class WtTabControl : IWtTabControl
                 .Replace("__START_ERROR__", Quote(Path.ChangeExtension(sidecar, ".start-error")), StringComparison.Ordinal),
             "exit 0"
         };
+        if (launch.Sandbox is not null)
+        {
+            lines.Insert(2, SandboxEnvironment.PowerShellPrologue());
+        }
         if (InteractiveAgentCommand.WorkspaceTrustEnvironment(launch.Kind) is { } trust)
         {
             lines.Insert(2, "$env:" + trust.Name + " = " + Quote(trust.Value));
