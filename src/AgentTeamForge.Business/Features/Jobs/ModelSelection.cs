@@ -40,21 +40,42 @@ public static class ModelSelection
     public static (string Model, string Effort) DefaultTier(string backend, string tier, IReadOnlyCollection<string> available)
     {
         var (model, effort) = DefaultTier(backend, tier);
-        if (!IsSolTier(backend, tier))
-        {
-            return (model, effort);
-        }
-
         if (available.Count == 0)
         {
             return (model, effort);
         }
 
-        var pick = SolCandidates.FirstOrDefault(candidate => backend == "pi"
-            ? available.Any(name => name.Split('/', 2)[^1] == candidate)
-            : available.Contains(candidate));
-        return (pick ?? model, effort);
+        if (IsSolTier(backend, tier))
+        {
+            model = SolCandidates.FirstOrDefault(candidate => backend == "pi"
+                ? PiCatalogModel(candidate, available) is not null
+                : available.Contains(candidate)) ?? model;
+        }
+        return (Canonical(backend, model, available), effort);
     }
+
+    /// <summary>
+    /// The pi catalog entry for <paramref name="model"/>, or null when the catalog lacks it. A bare name gains
+    /// the listing provider (subscription providers first), so a Claude model is not sent to openai-codex.
+    /// </summary>
+    public static string? PiCatalogModel(string model, IReadOnlyCollection<string> catalog)
+    {
+        if (catalog.Contains(model))
+        {
+            return model;
+        }
+
+        var name = model.Split('/', 2)[^1];
+        var bare = !model.Contains('/');
+        var match = catalog.Where(entry => entry.Split('/', 2)[^1] == name && (bare || !entry.Contains('/')))
+            .OrderBy(entry => entry.StartsWith("openai-codex/", StringComparison.Ordinal) || entry.StartsWith("anthropic/", StringComparison.Ordinal) ? 0 : 1)
+            .FirstOrDefault();
+        return match is null ? null : match.Contains('/') ? match : model;
+    }
+
+    /// <summary>The name a backend launches: pi takes its catalog's provider/model when the catalog knows it.</summary>
+    public static string Canonical(string backend, string model, IReadOnlyCollection<string> catalog) =>
+        backend == "pi" ? PiCatalogModel(model, catalog) ?? model : model;
 
     static readonly Dictionary<string, string> ClaudeModelMap = new(StringComparer.Ordinal)
     {
@@ -176,7 +197,7 @@ public static class ModelSelection
             : ((string Model, string Effort)?)null;
         var selected = tier?.Model ?? key;
         var found = available.Count == 0 || backend == "cursor" && selected == "auto" || (backend == "pi"
-            ? available.Any(candidate => candidate.Split('/', 2)[^1] == selected.Split('/', 2)[^1])
+            ? PiCatalogModel(selected, available) is not null
             : available.Contains(selected));
         if (!found)
         {
@@ -191,8 +212,8 @@ public static class ModelSelection
             throw new ArgumentException($"Model '{selected}' is not available for {backend} on this machine. Available: {string.Join(", ", available)}. Upgrade the CLI or check account access. Upgrade {backend}: {hint}");
         }
 
-        return tier is { } resolved ? (resolved.Model, backend == "cursor" ? null : resolved.Effort)
-            : (key, backend == "cursor" ? null : backend == "droid" ? effort : Checked(backend, key, effort, available));
+        return tier is { } resolved ? (Canonical(backend, resolved.Model, available), backend == "cursor" ? null : resolved.Effort)
+            : (Canonical(backend, key, available), backend == "cursor" ? null : backend == "droid" ? effort : Checked(backend, key, effort, available));
     }
 
 }

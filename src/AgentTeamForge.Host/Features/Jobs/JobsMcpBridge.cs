@@ -37,7 +37,7 @@ public static class JobsMcpBridge
 
     static readonly string SubmitProperties = $$"""
           "backend":{"type":"string","enum":["claude","codex","pi","cursor","droid","fake"],"description":"Agent CLI the daemon runs for this job. Cursor and Droid require headless launch mode."},
-          "model":{"type":"string","description":"Codex/pi/cursor/droid capability tier: {{TierList}}. Tier mappings are configurable; read the effective table in session_info or Settings. Claude: {{ClaudeModelList}} (opus when omitted). Raw model slugs pass through; a rejected name is answered with the accepted values."},
+          "model":{"type":"string","description":"Codex/pi/cursor/droid capability tier: {{TierList}}. Tier mappings are configurable; read the effective table in session_info or Settings. Claude: {{ClaudeModelList}} (opus when omitted). Raw model slugs pass through; pi takes any model in list_backends model_catalog.pi, e.g. claude-opus-5-5 or anthropic/claude-sonnet-5-5. A rejected name is answered with the accepted values."},
           "effort":{"type":"string","description":"Explicit effort for Claude or a raw/blank Codex/pi model. A capability tier owns its effort and ignores this override."},
           "herdr_placement":{"type":"string","description":"Optional: herdr-session:<name> (started if stopped). Omit to use the daemon's default."},
           "expected_outputs":{"type":"array","items":{"type":"string"},"maxItems":100,"description":"Expected output paths retained as metadata; does not verify files."},
@@ -85,7 +85,7 @@ public static class JobsMcpBridge
           "defer":{"type":"boolean","default":true,"description":"Queue durably behind a busy or queued parent. False refuses a busy parent."},
           "replace_if_idle":{"type":"boolean","default":true,"description":"False refuses an idle live interactive agent; dead sessions can still be resumed."},
           "interrupt":{"type":"boolean","description":"If the parent is running, cancel its turn (reason interrupted) and run this prompt in the same session."},
-          "model":{"type":"string","description":"Optional replacement model or capability tier. Codex/pi: {{TierList}}. Claude: {{ClaudeModelList}}. Mappings are configurable; read the effective table in session_info or the web console Settings view. Omit to inherit the resolved parent model."},
+          "model":{"type":"string","description":"Optional replacement model or capability tier. Codex/pi: {{TierList}}; pi also any model in list_backends model_catalog.pi. Claude: {{ClaudeModelList}}. Mappings are configurable; read the effective table in session_info or the web console Settings view. Omit to inherit the resolved parent model."},
           "effort":{"type":"string","description":"Optional effort override; ignored when model is a capability tier. Omit to inherit the parent's effort."},
         """ + LimitProperties + """
         },"required":["job_id","instruction","idempotency_key"]}

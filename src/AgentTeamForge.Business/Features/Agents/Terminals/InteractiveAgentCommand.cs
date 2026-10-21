@@ -61,7 +61,7 @@ internal static class InteractiveAgentCommand
             args.AddRange(launch.Kind switch
             {
                 InteractiveAgentKind.Codex => ["-m", model],
-                InteractiveAgentKind.Pi => ["--model", model.Contains('/') ? model : "openai-codex/" + model],
+                InteractiveAgentKind.Pi => ["--model", PiBackend.ModelArgument(model)],
                 _ => ["--model", model],
             });
         }

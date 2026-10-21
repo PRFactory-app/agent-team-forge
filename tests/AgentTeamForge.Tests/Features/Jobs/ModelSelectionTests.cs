@@ -66,6 +66,34 @@ public sealed class ModelSelectionTests
     }
 
     [Fact]
+    public void Pi_launches_claude_and_gpt_models_with_their_listed_provider()
+    {
+        static IReadOnlyCollection<string> Listed(string _) =>
+            ["anthropic/claude-opus-5-5", "anthropic/claude-haiku-5-5", "openai-codex/gpt-6-luna", "openai-codex/gpt-6.1-sol", "openai-codex/gpt-6-astra"];
+        static string ModelFlag(string? model) =>
+            PiBackend.BuildArguments(new BackendRequest("job", "corr", "task", $"model={model}")).SkipWhile(arg => arg != "--model").Skip(1).First();
+
+        Assert.Equal(("anthropic/claude-opus-5-5", "high"), ModelSelection.Resolve("pi", "claude-opus-5-5", "high", Listed));
+        Assert.Equal(("anthropic/claude-haiku-5-5", null), ModelSelection.Resolve("pi", "anthropic/claude-haiku-5-5", null, Listed));
+        Assert.Equal(("openai-codex/gpt-6.1-sol", "medium"), ModelSelection.Resolve("pi", "high", null, Listed));
+        Assert.Equal((null, null), ModelSelection.Resolve("pi", "openai-codex/claude-opus-5-5", null, Listed));
+
+        using var state = new TempStateDir();
+        var map = new TierMap(state.Path, Listed);
+        map.Change("pi", "max", "claude-opus-5-5", "xhigh");
+        var row = map.Settings().Single(item => item.Backend == "pi" && item.Tier == "max");
+        Assert.Equal(("anthropic/claude-opus-5-5", true), (row.Model, row.Custom));
+        var selected = ModelSelection.Resolve("pi", "max", null, Listed, map);
+        Assert.Equal(("anthropic/claude-opus-5-5", "xhigh"), selected);
+        Assert.Equal("anthropic/claude-opus-5-5", ModelFlag(selected.Model));
+        Assert.Throws<TierSettingException>(() => map.Change("pi", "low", "openai-codex/claude-haiku-5-5", "low"));
+
+        // An unknown catalog keeps a bare name: Claude models still launch on anthropic.
+        Assert.Equal("anthropic/claude-sonnet-5-5", ModelFlag("claude-sonnet-5-5"));
+        Assert.Equal("openai-codex/gpt-6-luna", ModelFlag("gpt-6-luna"));
+    }
+
+    [Fact]
     public void Retired_tier_and_unavailable_model_fail_with_guidance()
     {
         Assert.Contains("use 'high'", Assert.Throws<ArgumentException>(() => ModelSelection.Resolve("pi", "high-fast", null, AllModels)).Message);
@@ -129,7 +157,7 @@ public sealed class ModelSelectionTests
         var discovery = new BackendModelDiscovery(TimeSpan.FromSeconds(2), _ => script);
 
         Assert.Equal(["gpt-6-sol"], discovery.GetModels("codex"));
-        Assert.Equal(["gpt-6-luna"], discovery.GetModels("pi"));
+        Assert.Equal(["openai-codex/gpt-6-luna"], discovery.GetModels("pi"));
         Assert.Equal(["gpt-6-sol"], discovery.GetModels("codex"));
         Assert.Equal("xx", File.ReadAllText(calls));
 

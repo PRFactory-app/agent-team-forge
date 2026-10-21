@@ -103,7 +103,10 @@ Other `submit_job` options:
   `high`, `xhigh`, `max`; Pi also `medium-fast`), mapped in
   [model tiers](web-console.md#model-tiers); for Claude `haiku`, `sonnet`,
   `opus` (default) or `fable`, or the aliases `fast` (haiku), `balanced`
-  (sonnet) and `powerful` (opus). Raw model slugs pass through.
+  (sonnet) and `powerful` (opus). Raw model slugs pass through. Pi takes any
+  model `pi --list-models` lists, bare (`claude-opus-5-5`) or with its
+  provider (`anthropic/claude-sonnet-5-5`); the daemon launches the listed
+  provider/model.
 - `effort`: for Claude or a raw Codex/Pi model; a tier sets its own effort.
   Claude takes `low` to `max`, Pi `off` to `max`. Codex takes the levels its
   model catalog (`codex debug models`) reports for that model, or its full

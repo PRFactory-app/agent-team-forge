@@ -109,9 +109,10 @@ public sealed class BackendModelDiscovery
 
             if (backend == "pi")
             {
+                // provider/model, so the same model id from two providers stays distinct and launches as listed.
                 return [.. output.Split('\n').Select(line => line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
                     .Where(parts => parts.Length > 1 && parts[0] is not ("provider" or "No") && parts[1] != "model")
-                    .Select(parts => parts[1])];
+                    .Select(parts => parts[0] + "/" + parts[1])];
             }
             if (backend == "cursor")
             {
