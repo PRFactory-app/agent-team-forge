@@ -20,7 +20,11 @@ public static class SandboxedWorktrees
 {
     public const string TamperedReason = "sandbox_worktree_tampered";
 
-    sealed record Entry(string Root, string Common, string Admin);
+    /// <summary>A directory with an empty common dir is a validated "no git layout here" baseline: any <c>.git</c> that appears later is a mismatch.</summary>
+    sealed record Entry(string Root, string Common, string Admin)
+    {
+        public bool NoGit => Common.Length == 0;
+    }
 
     static readonly ConcurrentDictionary<string, Entry> Entries = new(StringComparer.Ordinal);
     static readonly ConcurrentDictionary<string, int> Live = new(StringComparer.Ordinal);
@@ -79,10 +83,13 @@ public static class SandboxedWorktrees
     {
         if (Find(launchDirectory) is { } entry)
         {
+            if (entry.NoGit) { return layout is null ? null : "git_layout_appeared"; }
             return layout is not null && Canonical(layout.Root) == entry.Root && Canonical(layout.GitDir) == entry.Admin && Canonical(layout.CommonDir) == entry.Common
                 ? null : "nested_git_metadata";
         }
+        // Without a layout the baseline "no git here" is recorded, so a layout the agent creates later is a mismatch, not a new trusted record.
         if (layout is not null) { Add(layout.Root, layout.CommonDir, layout.GitDir, replace: false); }
+        else { Entries.TryAdd(Canonical(launchDirectory), new Entry(Canonical(launchDirectory), "", "")); Persist(); }
         return null;
     }
 
@@ -137,9 +144,11 @@ public static class SandboxedWorktrees
 
     static Entry? Find(string directory)
     {
-        for (var current = Canonical(directory); current is not null; current = Path.GetDirectoryName(current))
+        var start = Canonical(directory);
+        for (var current = start; current is not null; current = Path.GetDirectoryName(current))
         {
-            if (Entries.TryGetValue(current, out var entry)) { return entry; }
+            // A no-git baseline describes exactly its own directory, not whatever lies beneath it.
+            if (Entries.TryGetValue(current, out var entry) && (!entry.NoGit || current == start)) { return entry; }
         }
         return null;
     }
@@ -155,6 +164,7 @@ public static class SandboxedWorktrees
         try
         {
             var marker = Path.Combine(entry.Root, ".git");
+            if (entry.NoGit) { return File.Exists(marker) || Directory.Exists(marker) || IsLink(marker) ? "git_layout_appeared" : null; }
             if (IsLink(marker)) { return "git_is_link"; }
             // A plain checkout (admin dir is the common dir) has a .git directory that must still be the recorded one.
             if (entry.Admin == entry.Common) { return Directory.Exists(marker) && Canonical(marker) == entry.Common ? null : "git_changed"; }
@@ -205,6 +215,7 @@ public static class SandboxedWorktrees
     {
         if (Find(cwd) is not { } entry) { return; }
         if (Validate(entry) is { } reason) { throw new TamperedWorktreeException(entry.Root, reason); }
+        if (entry.NoGit) { return; }
         if (Live.TryGetValue(entry.Root, out var live) && live > 0) { throw new TamperedWorktreeException(entry.Root, "agent_still_running"); }
         Pin(info, entry);
         foreach (var argument in HardeningArguments) { info.ArgumentList.Add(argument); }

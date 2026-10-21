@@ -365,6 +365,43 @@ public sealed class SandboxedWorktreeTests : IDisposable
         Assert.DoesNotContain(backend.Started, r => r.Sandbox?.GitCommonDir.StartsWith(unrelated, StringComparison.Ordinal) == true);
     }
 
+    [Fact]
+    public async Task A_git_layout_the_first_turn_creates_where_there_was_none_is_a_mismatch_on_the_follow_up()
+    {
+        using var f = new JobFixture();
+        var plain = Directory.CreateDirectory(_dir.File("not-a-repo")).FullName;
+        var unrelated = Directory.CreateDirectory(_dir.File("unrelated")).FullName;
+        Git(unrelated, "init");
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, [BackendCatalog.Fake], sandboxProbe: (_, _, _) => null);
+        var backend = new ScriptedBackend(r =>
+        {
+            if (r.ResumeSessionId is null)
+            {
+                Directory.CreateDirectory(Path.Combine(r.WorkingDirectory!, "admin"));
+                File.WriteAllText(Path.Combine(r.WorkingDirectory!, ".git"), "gitdir: " + Path.Combine(r.WorkingDirectory!, "admin") + "\n");
+                File.WriteAllText(Path.Combine(r.WorkingDirectory!, "admin", "commondir"), Path.Combine(unrelated, ".git") + "\n");
+            }
+            return [new BackendEvidence.Session(r.Correlation, r.ResumeSessionId ?? "s-1"), new BackendEvidence.Result(r.Correlation, "ok")];
+        });
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        async Task RunNext()
+        {
+            using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+            await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
+        }
+        var parent = accept.Execute(new SubmitJobRequest("k", "task", null, false) { Cwd = plain, Worktree = false, SafetyMode = SafetyMode.Sandboxed }).Job!;
+        await RunNext();
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(parent.JobId)!.Status);
+        Assert.Equal("", backend.Started[0].Sandbox!.GitCommonDir);
+
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "again", "k2")).Job!;
+        await RunNext();
+
+        Assert.Single(backend.Started);
+        Assert.Equal(JobStatus.Failed, f.Store.GetJob(child.JobId)!.Status);
+        Assert.Equal(SandboxedWorktrees.TamperedReason, f.Store.GetJob(child.JobId)!.ReasonCode);
+    }
+
     string ArmFilter(string name, string marker)
     {
         var script = Path.Combine(_worktree, name);
