@@ -298,7 +298,8 @@ notes (A2)". For every other directory it sets only `GIT_TERMINAL_PROMPT=0`.
   Terminal, macOS terminal)**: a pane outlives its turn and ATF has no reliable exit
   signal, so daemon git could race a live writer, and Herdr starts the canonical
   executable in a shell whose startup files run first, so no environment allow-list
-  can be enforced there. The interactive argument builders of the table are
+  can be enforced there. Where the worker cannot prove environment containment, it
+  downgrades and reports (PO decision: fail closed means downgrade plus report). The interactive argument builders of the table are
   implemented and tested, and stay unreachable until pane lifetime and a launch
   wrapper are provable. A3 replaces the capability with the startup self-test
   (bubblewrap, `socat`, outside write and `~/.ssh` read probes).
@@ -334,7 +335,9 @@ notes (A2)". For every other directory it sets only `GIT_TERMINAL_PROMPT=0`.
   (`<exe> clean -- %f`, `<exe> smudge -- %f`, `<exe> filter-process`) and `<exe>`, a
   bare `git-lfs` resolved through an all-absolute `PATH` or an absolute path, resolves
   through links to a path outside every writable root. User and global git config are
-  not blanked: the sandbox cannot write them. A job whose worktree fails validation at
+  not blanked: the sandbox cannot write them, and ATF does not set `GIT_CONFIG_GLOBAL`
+  (PO decision): the user's `~/.gitconfig` keeps applying, and the hardening stays in
+  the `-c` flags and pinned environment above. A job whose worktree fails validation at
   completion fails with `sandbox_worktree_tampered`.
 - State-dir overlap: a sandboxed launch whose writable roots (the workspace, the
   worktree's git allowances, cache directories) contain the ATF state dir or reach into
@@ -348,14 +351,19 @@ notes (A2)". For every other directory it sets only `GIT_TERMINAL_PROMPT=0`.
   `sandbox_worktree_tampered` and nothing launches. The resolved path is what the agent
   gets.
 - The network rule, package caches and extra deny-read paths are `SandboxPolicy` and
-  belong to A5: today a sandboxed launch has no network, no cache directories and
-  denies only `~/.ssh`. Read-only mode is not part of the argument table and is not
-  implemented.
+  belong to A5: today a sandboxed launch has no network and no cache directories.
+  Only two modes exist, Sandboxed and Full access (PO decision); a read-only mode is a
+  later change to this ADR.
+- Deny-read (PO decision): the shell cannot read `~/.ssh`, `~/.aws`, `~/.config/gh` and
+  `~/.netrc`. A path that does not exist on the machine is left out of the Codex
+  profile and the Claude settings, so Codex does not fail on a nonexistent path.
 - Environment: a sandboxed headless launch hands the agent an allow-list (`PATH`,
   `HOME`, locale, `XDG_*`, proxy and CA variables, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`,
   and the agent's own `ANTHROPIC_*`, `CLAUDE_CODE_*`, `OPENAI_*`, `CODEX_*`), not a
-  deny-list: the child's environment is rebuilt from it. Cloud-credential setups
-  (`AWS_*` for Bedrock) need `fullAccess`. The macOS and Windows terminal wrappers
+  deny-list: the child's environment is rebuilt from it. `AWS_*` and `GOOGLE_*` stay
+  off the list (PO decision), so a Claude that signs in through Bedrock or Vertex
+  (`CLAUDE_CODE_USE_BEDROCK` or `CLAUDE_CODE_USE_VERTEX` set) cannot run sandboxed: the
+  job downgrades to full access and reports `sandbox_unavailable`. The macOS and Windows terminal wrappers
   also unset or remove everything off the list before starting the agent, for when
   those launch paths become reachable.
 

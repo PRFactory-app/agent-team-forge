@@ -10,8 +10,18 @@ namespace AgentTeamForge.Business.Features.Agents.Backends;
 /// </summary>
 public static class SandboxPolicy
 {
-    /// <summary>Paths a shell cannot read. Maintained list, not a boundary (ADR 0013, guarantee 3).</summary>
-    public static readonly IReadOnlyList<string> DenyRead = ["~/.ssh"];
+    static readonly string[] SecretPaths = ["~/.ssh", "~/.aws", "~/.config/gh", "~/.netrc"];
+
+    /// <summary>
+    /// Paths a shell cannot read: the secret locations that exist on this machine (PO decision; a nonexistent path is skipped so Codex does not
+    /// fail on it). A maintained list, not a boundary (ADR 0013, guarantee 3).
+    /// </summary>
+    public static IReadOnlyList<string> DenyRead(string? home = null)
+    {
+        home ??= Environment.GetEnvironmentVariable("HOME") is { Length: > 0 } configured && Path.IsPathFullyQualified(configured)
+            ? configured : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return [.. SecretPaths.Where(p => Path.Exists(Path.Combine(home, p[2..])))];
+    }
 
     public static bool NetworkEnabled => false;
     public static IReadOnlyList<string> AllowedDomains => [];
@@ -24,6 +34,9 @@ public static class SandboxPolicy
 /// </summary>
 public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? ClaudeSettingsPath)
 {
+    /// <summary>The secret paths denied to the shell, fixed when the launch is built.</summary>
+    public IReadOnlyList<string> DenyRead { get; init; } = SandboxPolicy.DenyRead();
+
     public const string CodexProfile = "atf";
 
     static readonly string[] GitWritableNames = ["objects", "refs", "logs"];
@@ -67,8 +80,9 @@ public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? C
     }
 
     /// <summary>Resolves the git layout of the working directory and writes the Claude settings file when the backend needs one.</summary>
-    public static SandboxLaunch Create(string workingDirectory, string backend, string settingsDirectory, string jobId)
+    public static SandboxLaunch Create(string workingDirectory, string backend, string settingsDirectory, string jobId, string? home = null)
     {
+        var denyRead = SandboxPolicy.DenyRead(home);
         var layout = GitLayout.Find(workingDirectory);
         string? settings = null;
         if (backend == BackendCatalog.Claude)
@@ -77,14 +91,14 @@ public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? C
             settings = Path.Combine(settingsDirectory, jobId + ".claude-settings.json");
             var temporary = settings + ".tmp";
             using (var stream = new FileStream(temporary, PrivateFiles.Options(FileMode.Create, FileAccess.Write)))
-            using (var writer = new StreamWriter(stream)) { writer.Write(ClaudeSettings().ToJsonString()); }
+            using (var writer = new StreamWriter(stream)) { writer.Write(ClaudeSettings(denyRead).ToJsonString()); }
             File.Move(temporary, settings, overwrite: true);
         }
-        return new(layout?.CommonDir ?? "", layout?.GitDir ?? "", settings);
+        return new(layout?.CommonDir ?? "", layout?.GitDir ?? "", settings) { DenyRead = denyRead };
     }
 
     /// <summary>Claude's sandbox settings (ADR 0013). No unix-socket allowance: `atf mcp` is a stdio server the CLI starts outside the sandbox.</summary>
-    internal static JsonObject ClaudeSettings()
+    internal static JsonObject ClaudeSettings(IReadOnlyList<string> denyRead)
     {
         var sandbox = new JsonObject
         {
@@ -94,7 +108,7 @@ public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? C
             ["failIfUnavailable"] = true,
             ["filesystem"] = new JsonObject
             {
-                ["denyRead"] = new JsonArray([.. SandboxPolicy.DenyRead.Select(p => (JsonNode)p)]),
+                ["denyRead"] = new JsonArray([.. denyRead.Select(p => (JsonNode)p)]),
                 ["allowWrite"] = new JsonArray([.. SandboxPolicy.CacheDirectories.Select(p => (JsonNode)p)]),
             },
         };
@@ -111,7 +125,7 @@ public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? C
     public IReadOnlyList<string> CodexArguments(bool managedMcp)
     {
         List<(string Path, string Access)> entries = [("/", "read"), (":workspace_roots", "write")];
-        entries.AddRange(SandboxPolicy.DenyRead.Select(p => (p, "none")));
+        entries.AddRange(DenyRead.Select(p => (p, "none")));
         // Hooks and config stay read-only; only the worktree admin dir, objects, refs and logs can be written (ADR 0013, guarantee 2).
         if (GitDir.Length > 0 && GitCommonDir.Length > 0)
         {

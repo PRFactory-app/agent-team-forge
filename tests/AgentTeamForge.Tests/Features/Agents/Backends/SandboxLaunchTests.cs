@@ -12,7 +12,18 @@ public sealed class SandboxLaunchTests : IDisposable
 
     public void Dispose() => _dir.Dispose();
 
-    SandboxLaunch ClaudeSandbox() => SandboxLaunch.Create(_dir.Path, BackendCatalog.Claude, _dir.File("sandbox"), "job-1");
+    SandboxLaunch ClaudeSandbox() => SandboxLaunch.Create(_dir.Path, BackendCatalog.Claude, _dir.File("sandbox"), "job-1", Home("ssh"));
+
+    string Home(params string[] present)
+    {
+        var home = Directory.CreateDirectory(_dir.File("home-" + string.Join("-", present))).FullName;
+        foreach (var name in present)
+        {
+            var path = Path.Combine(home, name switch { "ssh" => ".ssh", "aws" => ".aws", "gh" => ".config/gh", _ => ".netrc" });
+            if (name == "netrc") { File.WriteAllText(path, "machine x"); } else { Directory.CreateDirectory(path); }
+        }
+        return home;
+    }
 
     [Fact]
     public void Claude_settings_file_is_written_by_atf_with_the_adr_policy()
@@ -25,7 +36,7 @@ public sealed class SandboxLaunchTests : IDisposable
         Assert.True((bool)settings["sandbox"]!["autoAllowBashIfSandboxed"]!);
         Assert.False((bool)settings["sandbox"]!["allowUnsandboxedCommands"]!);
         Assert.True((bool)settings["sandbox"]!["failIfUnavailable"]!);
-        Assert.Equal("~/.ssh", (string)settings["sandbox"]!["filesystem"]!["denyRead"]![0]!);
+        Assert.Equal(["~/.ssh"], settings["sandbox"]!["filesystem"]!["denyRead"]!.AsArray().Select(n => (string)n!));
         Assert.True((bool)settings["disableAllHooks"]!);
         Assert.Contains("mcp__agentteamforge", settings["permissions"]!["allow"]!.AsArray().Select(n => (string)n!));
         Assert.Null(settings["sandbox"]!["network"]?["allowUnixSockets"]);
@@ -177,5 +188,41 @@ public sealed class SandboxLaunchTests : IDisposable
         Assert.Equal(SafetyDowngrade.Unavailable, SandboxCapability.Default(BackendCatalog.Claude, null, launchMode));
         Assert.Equal(SafetyDowngrade.Unavailable, SandboxCapability.Default(BackendCatalog.Codex, null, launchMode));
         Assert.Equal(OperatingSystem.IsLinux() ? null : SafetyDowngrade.Unavailable, SandboxCapability.Default(BackendCatalog.Codex, null, "headless"));
+    }
+
+    [Fact]
+    public void Deny_read_covers_every_existing_secret_location_and_skips_the_ones_that_do_not_exist()
+    {
+        Assert.Equal(["~/.ssh", "~/.aws", "~/.config/gh", "~/.netrc"], SandboxPolicy.DenyRead(Home("ssh", "aws", "gh", "netrc")));
+        Assert.Equal(["~/.aws", "~/.netrc"], SandboxPolicy.DenyRead(Home("aws", "netrc")));
+        Assert.Empty(SandboxPolicy.DenyRead(Home()));
+    }
+
+    [Fact]
+    public void Both_backends_deny_only_the_secret_paths_that_exist()
+    {
+        var home = Home("aws", "gh");
+        var claude = SandboxLaunch.Create(_dir.Path, BackendCatalog.Claude, _dir.File("sandbox"), "job-2", home);
+        var settings = JsonNode.Parse(File.ReadAllText(claude.ClaudeSettingsPath!))!;
+        var codex = SandboxLaunch.Create(_dir.Path, BackendCatalog.Codex, _dir.File("sandbox"), "job-3", home).CodexArguments(false)[1];
+
+        Assert.Equal(["~/.aws", "~/.config/gh"], settings["sandbox"]!["filesystem"]!["denyRead"]!.AsArray().Select(n => (string)n!));
+        Assert.Contains("'~/.aws'='none'", codex);
+        Assert.Contains("'~/.config/gh'='none'", codex);
+        Assert.DoesNotContain("~/.ssh", codex);
+        Assert.DoesNotContain("~/.netrc", codex);
+    }
+
+    [Theory]
+    [InlineData("CLAUDE_CODE_USE_BEDROCK", "1", true)]
+    [InlineData("CLAUDE_CODE_USE_VERTEX", "true", true)]
+    [InlineData("CLAUDE_CODE_USE_BEDROCK", "0", false)]
+    [InlineData("OTHER", "1", false)]
+    public void A_claude_that_needs_cloud_credentials_downgrades_to_full_access(string variable, string value, bool downgraded)
+    {
+        var reason = SandboxCapability.Default(BackendCatalog.Claude, null, null, name => name == variable ? value : null);
+
+        if (downgraded) { Assert.Equal(SafetyDowngrade.Unavailable, reason); }
+        else { Assert.Equal(OperatingSystem.IsLinux() ? null : SafetyDowngrade.Unavailable, reason); }
     }
 }

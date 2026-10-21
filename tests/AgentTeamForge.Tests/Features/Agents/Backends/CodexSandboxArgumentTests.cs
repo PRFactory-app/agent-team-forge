@@ -10,7 +10,7 @@ public sealed class CodexSandboxArgumentTests : IDisposable
 
     public void Dispose() => _dir.Dispose();
 
-    static SandboxLaunch Sandbox => new("/repo/.git", "/repo/.git/worktrees/job-1", null);
+    static SandboxLaunch Sandbox => new("/repo/.git", "/repo/.git/worktrees/job-1", null) { DenyRead = ["~/.ssh"] };
 
     string ManagedConfig()
     {

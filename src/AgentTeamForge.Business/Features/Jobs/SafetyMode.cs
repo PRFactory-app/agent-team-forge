@@ -35,8 +35,16 @@ public static class SandboxCapability
     /// daemon git could race a live writer, and a Herdr pane cannot be started through an environment allow-list (the shell's startup
     /// files run first, and Herdr launches the canonical executable itself).
     /// </summary>
-    public static string? Default(string backend, string? cwd, string? launchMode) => backend switch
+    public static string? Default(string backend, string? cwd, string? launchMode) => Default(backend, cwd, launchMode, Environment.GetEnvironmentVariable);
+
+    /// <summary>
+    /// A Claude that signs in through Bedrock or Vertex needs cloud credentials (<c>AWS_*</c>, <c>GOOGLE_*</c>) that the sandboxed environment
+    /// allow-list withholds, so such a job downgrades to full access and says so (PO decision).
+    /// </summary>
+    internal static string? Default(string backend, string? cwd, string? launchMode, Func<string, string?> environment) => backend switch
     {
+        BackendCatalog.Claude when environment("CLAUDE_CODE_USE_BEDROCK") is { Length: > 0 } and not "0" and not "false"
+            || environment("CLAUDE_CODE_USE_VERTEX") is { Length: > 0 } and not "0" and not "false" => SafetyDowngrade.Unavailable,
         BackendCatalog.Claude or BackendCatalog.Codex => OperatingSystem.IsLinux() && launchMode is null or "headless" ? null : SafetyDowngrade.Unavailable,
         _ => SafetyDowngrade.UnsupportedBackend,
     };
