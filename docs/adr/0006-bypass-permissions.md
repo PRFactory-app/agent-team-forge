@@ -1,6 +1,6 @@
 # 0006. Agents run with permissions bypassed
 
-Status: accepted
+Status: accepted; amended by [ADR 0013](0013-sandboxed-launch-mode.md) for sandboxed jobs (proposed)
 
 ## Context
 

@@ -18,3 +18,4 @@ decision by adding a new record that supersedes the old one.
 | [0010](0010-minimal-loopback-web-console.md) | Minimal text web console on authenticated loopback |
 | [0011](0011-prfactory-outbound-polling.md) | PRFactory connector: opt-in, outbound HTTPS polling |
 | [0012](0012-dropped-scope.md) | Scope dropped from the original full-product plan |
+| [0013](0013-sandboxed-launch-mode.md) | Sandboxed launch mode for Codex and Claude (proposed; amends 0006) |
