@@ -116,6 +116,18 @@ Other `submit_job` options:
   starts. `queue_ttl_s`: cancel with reason `queue_ttl` if not started in time.
 - `name`: agent name for the web console card.
 - `expected_outputs`: output-path metadata retained in `get_job` (not file verification).
+- `safety_mode`: `sandboxed` or `fullAccess`. Omit it for the profile default
+  (`safety_mode` in `profile.json`, `fullAccess` when absent). `sandboxed` replaces
+  the bypass flags with the sandbox of [ADR 0013](adr/0013-sandboxed-launch-mode.md)
+  for Codex and Claude on Linux: shell writes are confined to the job worktree, its
+  git data and a private temp directory, `~/.ssh` is unreadable, credential
+  environment variables are removed, and the network is off. Reads elsewhere are not
+  confined. Where ATF cannot enforce it (Pi, Cursor and Droid, other platforms, a
+  Codex `config.toml` that widens the sandbox) the job runs with full access and
+  `get_job` reports `requested_safety_mode`, `effective_safety_mode` and
+  `safety_downgrade_reason` (`sandbox_unsupported_backend` or `sandbox_unavailable`).
+  Follow-ups and revives keep the mode, and a job that a sandboxed agent starts over
+  MCP is always requested as `sandboxed`. The web console shows the effective mode.
 - `herdr_placement`: `herdr-session:<name>` (Herdr mode; a stopped session is started). Omit it for the
   daemon's default. `own-session` was removed for new jobs; existing ones keep working.
 

@@ -1,6 +1,6 @@
 # 0013. Sandboxed launch mode
 
-Status: proposed (draft for the product owner). Amends [ADR 0006](0006-bypass-permissions.md).
+Status: proposed (draft for the product owner); launch mode, argument builders and daemon git hardening implemented (work item A2). Amends [ADR 0006](0006-bypass-permissions.md).
 
 ## Context
 
@@ -283,6 +283,44 @@ hardening is A2 work (see Consequences), not current protection.
 - The network rule (A5, Q4) chooses Codex network on/off and the Claude
   domain list; the cache directories are part of it. Codex's domain proxy is a
   later option.
+
+## Implementation notes (A2)
+
+- The requested mode is stored per job as `;sandbox=1` and the effective mode as
+  `;sandbox_effective=1|0[;sandbox_downgrade=<reason>]` in the job options. A
+  full-access job stores nothing (absent keys mean `fullAccess`, so fingerprints of
+  earlier jobs are unchanged). Follow-ups and revives copy all three keys.
+- The effective mode is decided once, at acceptance, by `SandboxCapability.Default`:
+  Claude and Codex on Linux enforce; Pi, Cursor and Droid give
+  `sandbox_unsupported_backend`; Claude and Codex elsewhere give
+  `sandbox_unavailable` until the A6 run verifies macOS and Windows. Codex also gives
+  `sandbox_unavailable` while its user `config.toml` carries a key that widens the
+  sandbox or trusts the project (`CodexConfigCheck`), the "check the user config" option
+  of "Settings sources ATF controls"; ATF does not run Codex with its own `CODEX_HOME`,
+  because sessions and transcripts live there. A3 replaces the capability with the
+  startup self-test (bubblewrap, `socat`, outside write and `~/.ssh` read probes).
+- A managed child's submit is resolved through the daemon's own
+  `managed-child:<job>` lead binding, never from a caller-supplied job id; if that
+  job requested `sandboxed`, the child does too, whatever `safety_mode` it passes.
+- Daemon git runs through `JobWorktree.RunAsync`. For a registered sandboxed worktree
+  (recorded when the job is prepared and restored from the store at daemon start)
+  every run first validates `.git`, the admin dir's `commondir`, `config.worktree` and
+  symlinks and refuses to run otherwise; a job whose worktree fails at completion fails
+  with `sandbox_worktree_tampered`. Runs add `core.hooksPath=/dev/null`,
+  `core.fsmonitor=`, `diff.external=` and `core.pager=cat`, and `credential.helper=`
+  except for network commands, which keep the operator's helper until A4's own
+  credential path. Repository filter drivers are not blanked: `<gd>/config` is
+  read-only to the agent and covered by the `commondir` check, and blanking would break
+  LFS. Jobs that run directly in a checkout (no worktree) have no writable admin dir and
+  are not registered.
+- The network rule, package caches and extra deny-read paths are `SandboxPolicy` and
+  belong to A5: today a sandboxed launch has no network, no cache directories and
+  denies only `~/.ssh`. Read-only mode is not part of the argument table and is not
+  implemented.
+- Credential variables (`AWS_*`, `GITHUB_TOKEN`, `*_TOKEN`, `*_API_KEY`, `SSH_AUTH_SOCK`
+  and similar, except the agent's own `ANTHROPIC_*`, `CLAUDE_*`, `CODEX_*`, `OPENAI_*`)
+  are removed from the process environment of headless launches and from each Herdr
+  tab, macOS wrapper and Windows Terminal wrapper of a sandboxed launch.
 
 ## Evidence (Linux spike, `/tmp/atf-a1-spike`)
 

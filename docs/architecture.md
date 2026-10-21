@@ -155,6 +155,10 @@ Rules that hold everywhere ([ADR 0008](adr/0008-never-replay-uncertain-prompts.m
 
 Each backend implements `IJobBackend` (`Business/Features/Agents/Backends`) and
 runs with permissions bypassed ([ADR 0006](adr/0006-bypass-permissions.md)).
+A job that requests `sandboxed` launches Codex and Claude with the arguments of
+[ADR 0013](adr/0013-sandboxed-launch-mode.md) where this machine can enforce
+them; Pi, Cursor and Droid always run with the bypass flags and report the
+downgrade.
 
 | Backend | Headless | Interactive | Resume |
 | --- | --- | --- | --- |
