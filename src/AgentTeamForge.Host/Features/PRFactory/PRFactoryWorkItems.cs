@@ -309,10 +309,10 @@ public sealed partial class PRFactoryWorkItems(
             return false;
         }
         // The report is fixed once: saved with the claim before it is sent, so a retry or a restarted daemon reports the same mode.
-        var report = sandboxV1 ? item.AtfReportedSafetyMode is { } saved ? new PRFactorySafetyReport(saved, null) : SafetyReport(item) : null;
+        var report = sandboxV1 ? item.AtfReportedSafetyMode is { } saved ? new PRFactorySafetyReport(saved, item.AtfReportedDowngradeReason) : SafetyReport(item) : null;
         if (report is not null && item.AtfReportedSafetyMode is null)
         {
-            item.AtfReportedSafetyMode = report.EffectiveSafetyMode;
+            (item.AtfReportedSafetyMode, item.AtfReportedDowngradeReason) = (report.EffectiveSafetyMode, report.DowngradeReason);
             teams.SetClaimedJson(server, team.WorkItemId, JsonSerializer.Serialize(item, PRFactoryWorkItemJson.Default.PRFactoryWorkItem));
         }
         if (report is { DowngradeReason: { } downgrade })
@@ -835,7 +835,8 @@ public sealed partial class PRFactoryWorkItems(
                 // A prepared team workspace is already isolated; never re-pin a second worktree from incidental HEAD.
                 Worktree = !isolated && !item.ReadOnly,
                 // Every member of the team runs in the mode the claim froze; the daemon decides what it can enforce.
-                SafetyMode = RequestedSafetyMode(item),
+                // A team reported as full access runs full access even when a restarted daemon could now sandbox it.
+                SafetyMode = item.AtfReportedSafetyMode == SafetyMode.FullAccess ? SafetyMode.FullAccess : RequestedSafetyMode(item),
                 Model = model,
                 Effort = effort?.ToString().ToLowerInvariant(),
                 TargetAgent = JobName(item, member),

@@ -55,4 +55,21 @@ public sealed class SandboxSelfTestTests
         Assert.Null(noCodex.Reason(BackendCatalog.Codex));
         Assert.DoesNotContain(noCodex.Report(), line => line.StartsWith("codex", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public async Task A_descendant_that_keeps_the_pipe_open_times_out_and_is_ended_with_the_group()
+    {
+        if (!OperatingSystem.IsLinux()) { return; }
+        using var dir = new TempStateDir();
+        var pidFile = Path.Combine(dir.Path, "child.pid");
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+
+        var result = SandboxSelfTest.RunProcess("sh", ["-c", $"sleep 60 & echo $! > '{pidFile}'; exit 0"], dir.Path, TimeSpan.FromSeconds(2));
+
+        Assert.Null(result);
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(15));
+        var child = File.ReadAllText(pidFile).Trim();
+        await Bounded.Until(() => !Directory.Exists("/proc/" + child) || File.ReadAllText($"/proc/{child}/stat").Contains(") Z ", StringComparison.Ordinal),
+            "descendant ended");
+    }
 }

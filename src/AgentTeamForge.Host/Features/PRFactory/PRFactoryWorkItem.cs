@@ -60,6 +60,7 @@ public sealed class PRFactoryWorkItem
     public bool AtfClaimedWithSandboxV1 { get; set; }
     // Worker-local: the effective mode reported on acceptance, saved before the report is sent so a restart keeps it.
     public string? AtfReportedSafetyMode { get; set; }
+    public string? AtfReportedDowngradeReason { get; set; }
 }
 
 public sealed record PRFactoryWorkspaceRevision(string Branch, string CommitSha);

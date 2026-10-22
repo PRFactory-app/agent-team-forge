@@ -100,6 +100,23 @@ public sealed class SafetyModeConnectorTests
     }
 
     [Fact]
+    public async Task A_team_reported_full_access_runs_full_access_after_the_sandbox_returns()
+    {
+        using var h = new ChainHarness(Item("sandboxed"));
+        h.Server.SandboxSupported = true;
+        var calls = 0;
+        await Tick(h, _ => calls++ == 0 ? SafetyDowngrade.Unavailable : null);
+
+        var accept = Assert.Single(h.Server.AcceptBodies);
+        Assert.Equal("fullAccess", accept.GetProperty("effectiveSafetyMode").GetString());
+        Assert.Equal(SafetyDowngrade.Unavailable, accept.GetProperty("safetyDowngradeReason").GetString());
+        Assert.Equal(JobSafety.FullAccess, JobMode(h));
+        var saved = System.Text.Json.JsonSerializer.Deserialize(h.Teams.Get(ChainServer.Url, h.Server.Item.Id)!.ClaimedJson,
+            PRFactoryWorkItemJson.Default.PRFactoryWorkItem)!;
+        Assert.Equal(SafetyDowngrade.Unavailable, saved.AtfReportedDowngradeReason);
+    }
+
+    [Fact]
     public async Task Sandbox_refusal_skips_only_that_item()
     {
         using var h = new ChainHarness(Item("sandboxed"));

@@ -122,6 +122,7 @@ public sealed class SandboxSelfTest
             if (!process.WaitForExit(timeout) || !Task.WhenAll(stdout, stderr).Wait(timeout - deadline.Elapsed is var left && left > TimeSpan.Zero ? left : TimeSpan.Zero))
             {
                 OwnedProcessTermination.Kill(process);
+                KillGroup(process.Id);
                 return null;
             }
             return (process.ExitCode, stdout.Result + stderr.Result);
@@ -130,6 +131,21 @@ public sealed class SandboxSelfTest
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// The probe leads its own process group (NonInteractiveProcess runs it behind setsid), so a descendant that outlived it and holds a
+    /// pipe is ended with the group.
+    /// </summary>
+    static void KillGroup(int pid)
+    {
+        if (!OperatingSystem.IsLinux()) { return; }
+        try
+        {
+            using var kill = Process.Start(new ProcessStartInfo("kill") { ArgumentList = { "-KILL", "--", "-" + pid }, UseShellExecute = false });
+            kill?.WaitForExit(TimeSpan.FromSeconds(5));
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { }
     }
 
     /// <summary>A CLI on PATH (through the mise-aware lookup), or null when it is absent.</summary>
