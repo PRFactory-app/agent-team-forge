@@ -321,7 +321,7 @@ public static class DaemonCommand
         var connectorWorkspaceStore = new PRFactoryWorkspaceStore(database);
         using var teamWorkspaces = new TeamWorkspace(connectorWorkspaceStore);
         var connectorWorkspaces = new PRFactoryWorkspace(teamWorkspaces);
-        var workspaceRoot = Path.Combine(state.Path, "prfactory-workspaces");
+        var workspaceRoot = Path.Combine(state.Path, SandboxLaunch.PRFactoryWorkspaces);
         var connectorPublications = new PRFactoryPublicationStore(database);
         var connectorHandovers = new PRFactoryHandoverStore(database);
         var connectorRepositorySets = new PRFactoryRepositorySet(new PRFactoryRepositorySetStore(database),

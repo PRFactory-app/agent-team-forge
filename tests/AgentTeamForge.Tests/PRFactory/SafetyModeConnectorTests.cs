@@ -8,8 +8,13 @@ public sealed class SafetyModeConnectorTests
 {
     static PRFactoryWorkItem Item(string? mode) => new()
     {
-        Id = Guid.NewGuid(), Type = "Implementation", RepositoryId = Guid.NewGuid(), LeaseToken = Guid.NewGuid(),
-        AgentType = PRFactoryAgentType.Codex, Prompt = "Do it", SafetyMode = mode,
+        Id = Guid.NewGuid(),
+        Type = "Implementation",
+        RepositoryId = Guid.NewGuid(),
+        LeaseToken = Guid.NewGuid(),
+        AgentType = PRFactoryAgentType.Codex,
+        Prompt = "Do it",
+        SafetyMode = mode,
     };
 
     /// <summary>Ticks once with a client that has read the server's capabilities, as the daemon's registration does.</summary>
@@ -77,6 +82,21 @@ public sealed class SafetyModeConnectorTests
         Assert.Equal("fullAccess", accept.GetProperty("effectiveSafetyMode").GetString());
         Assert.Equal(SafetyDowngrade.Unavailable, accept.GetProperty("safetyDowngradeReason").GetString());
         Assert.Contains(h.Logs, line => line.Contains("runs with full access here", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_team_reported_sandboxed_never_gets_a_full_access_member()
+    {
+        using var h = new ChainHarness(Item("sandboxed"));
+        h.Server.SandboxSupported = true;
+        var calls = 0;
+        // The report sees an enforceable sandbox; by the time the lead is submitted (a restarted daemon) it is gone.
+        await Tick(h, _ => calls++ == 0 ? null : SafetyDowngrade.Unavailable);
+
+        Assert.Equal("sandboxed", Assert.Single(h.Server.AcceptBodies).GetProperty("effectiveSafetyMode").GetString());
+        Assert.Equal(SafetyMode.Sandboxed, System.Text.Json.JsonSerializer.Deserialize(h.Teams.Get(ChainServer.Url, h.Server.Item.Id)!.ClaimedJson,
+            PRFactoryWorkItemJson.Default.PRFactoryWorkItem)!.AtfReportedSafetyMode);
+        Assert.Empty(h.Store.ListJobs("prfactory", "connector", 10));
     }
 
     [Fact]

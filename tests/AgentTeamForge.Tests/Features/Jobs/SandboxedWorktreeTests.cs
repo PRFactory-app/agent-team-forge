@@ -485,6 +485,10 @@ public sealed class SandboxedWorktreeTests : IDisposable
         Assert.True(SandboxLaunch.OverlapsState(state, Path.Combine(state, "sandbox")));
         Assert.True(SandboxLaunch.OverlapsState(state, Path.Combine(state, "worktrees")));
         Assert.False(SandboxLaunch.OverlapsState(state, Path.Combine(state, "worktrees", "job-1")));
+        // The PRFactory connector's team workspaces live under the state dir too; the directory itself still overlaps.
+        Directory.CreateDirectory(Path.Combine(state, SandboxLaunch.PRFactoryWorkspaces, "team-1"));
+        Assert.False(SandboxLaunch.OverlapsState(state, Path.Combine(state, SandboxLaunch.PRFactoryWorkspaces, "team-1")));
+        Assert.True(SandboxLaunch.OverlapsState(state, Path.Combine(state, SandboxLaunch.PRFactoryWorkspaces)));
         Assert.False(SandboxLaunch.OverlapsState(state, elsewhere));
         Assert.False(SandboxLaunch.OverlapsState(null, _dir.Path));
     }

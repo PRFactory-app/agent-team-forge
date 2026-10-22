@@ -133,6 +133,19 @@ public sealed partial class PRFactoryTeamStore(JobDatabase database)
         command.ExecuteNonQuery();
     }
 
+    /// <summary>Rewrites the saved claim, for worker-local facts that must survive a restart (the reported safety mode).</summary>
+    public void SetClaimedJson(string server, Guid id, string claimedJson)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE prfactory_teams SET claimed_json=$json, updated_at=$now WHERE server=$server AND work_item_id=$id";
+        command.Parameters.AddWithValue("$server", server);
+        command.Parameters.AddWithValue("$id", id.ToString("D"));
+        command.Parameters.AddWithValue("$json", claimedJson);
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.ExecuteNonQuery();
+    }
+
     public string? MemberJob(string server, Guid id, string member, int turn)
     {
         using var connection = database.OpenConnection();

@@ -105,7 +105,10 @@ public sealed class SandboxSelfTest
     {
         var info = new ProcessStartInfo(file)
         {
-            UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = workingDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = workingDirectory,
         };
         foreach (var argument in arguments) { info.ArgumentList.Add(argument); }
         try
@@ -114,12 +117,14 @@ public sealed class SandboxSelfTest
             if (process is null) { return null; }
             var stdout = process.StandardOutput.ReadToEndAsync();
             var stderr = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(timeout))
+            // One deadline for the exit and both pipes: a descendant that keeps a pipe open must not hold the daemon start.
+            var deadline = Stopwatch.StartNew();
+            if (!process.WaitForExit(timeout) || !Task.WhenAll(stdout, stderr).Wait(timeout - deadline.Elapsed is var left && left > TimeSpan.Zero ? left : TimeSpan.Zero))
             {
                 OwnedProcessTermination.Kill(process);
                 return null;
             }
-            return (process.ExitCode, stdout.GetAwaiter().GetResult() + stderr.GetAwaiter().GetResult());
+            return (process.ExitCode, stdout.Result + stderr.Result);
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
         {

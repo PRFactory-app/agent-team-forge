@@ -58,6 +58,8 @@ public sealed class PRFactoryWorkItem
     public string? SafetyMode { get; set; }
     // Worker-local, never sent by the server: whether the claim request carried sandbox-v1 (kept in the saved claim JSON).
     public bool AtfClaimedWithSandboxV1 { get; set; }
+    // Worker-local: the effective mode reported on acceptance, saved before the report is sent so a restart keeps it.
+    public string? AtfReportedSafetyMode { get; set; }
 }
 
 public sealed record PRFactoryWorkspaceRevision(string Branch, string CommitSha);

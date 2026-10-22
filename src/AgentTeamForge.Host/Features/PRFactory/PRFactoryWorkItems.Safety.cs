@@ -45,9 +45,16 @@ public sealed partial class PRFactoryWorkItems
     internal PRFactorySafetyReport SafetyReport(PRFactoryWorkItem item)
     {
         if (RequestedSafetyMode(item) != SafetyMode.Sandboxed) { return new(SafetyMode.FullAccess, null); }
+        // An external member is a session ATF does not launch, so ATF cannot enforce its mode.
+        var external = repositories.SingleOrDefault(r => r.Id == item.RepositoryId)?.ExternalMembers ?? [];
+        if (item.TeamPlan?.Members.Any(m => external.Contains(m.Name, StringComparer.Ordinal)) == true)
+        {
+            return new(SafetyMode.FullAccess, SafetyDowngrade.Unavailable);
+        }
         IEnumerable<PRFactoryAgentType> agents = [item.AgentType, .. item.TeamPlan?.Members.Select(m => m.Backend ?? item.AgentType) ?? []];
-        var reason = agents.Select(MapBackend).OfType<string>().Distinct(StringComparer.Ordinal)
-            .Select(backend => (sandboxDowngrade ?? (b => SandboxCapability.Default(b, null, null)))(backend)).FirstOrDefault(r => r is not null);
+        var reason = agents.Select(MapBackend).OfType<string>().Distinct(StringComparer.Ordinal).Select(SandboxReason).FirstOrDefault(r => r is not null);
         return reason is null ? new(SafetyMode.Sandboxed, null) : new(SafetyMode.FullAccess, reason);
     }
+
+    string? SandboxReason(string backend) => (sandboxDowngrade ?? (b => SandboxCapability.Default(b, null, null)))(backend);
 }

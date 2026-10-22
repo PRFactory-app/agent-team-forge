@@ -39,6 +39,9 @@ public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? C
 
     public const string CodexProfile = "atf";
 
+    /// <summary>The state subdirectory that holds the PRFactory connector's team workspaces.</summary>
+    public const string PRFactoryWorkspaces = "prfactory-workspaces";
+
     static readonly string[] GitWritableNames = ["objects", "refs", "logs"];
 
     /// <summary>The directories a sandboxed shell can write: the workspace, the worktree's git allowances and the cache directories.</summary>
@@ -55,16 +58,17 @@ public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? C
 
     /// <summary>
     /// Whether a writable root contains ATF's state dir (the database, the registry, the settings files and the managed MCP tokens live
-    /// there) or reaches into it anywhere but the job worktrees. A job worktree under the state dir is the normal case and is fine.
+    /// there) or reaches into it anywhere but the job worktrees and the PRFactory team workspaces. A workspace under the state dir is the
+    /// normal case and is fine.
     /// </summary>
     public static bool OverlapsState(string? stateRoot, string workingDirectory, GitLayout? layout = null)
     {
         if (stateRoot is null) { return false; }
         var state = Canonical(stateRoot);
-        var worktrees = Path.Combine(state, "worktrees");
+        string[] workspaces = [Path.Combine(state, "worktrees"), Path.Combine(state, PRFactoryWorkspaces)];
         foreach (var root in WritableRoots(workingDirectory, layout ?? GitLayout.Find(workingDirectory)).Select(Canonical))
         {
-            var jobWorktree = root != worktrees && Contains(worktrees, root);
+            var jobWorktree = workspaces.Any(parent => root != parent && Contains(parent, root));
             if (Contains(root, state) || Contains(state, root) && !jobWorktree) { return true; }
         }
         return false;

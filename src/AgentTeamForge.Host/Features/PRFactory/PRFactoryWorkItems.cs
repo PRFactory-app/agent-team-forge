@@ -308,7 +308,13 @@ public sealed partial class PRFactoryWorkItems(
             await FenceAsync(team.WorkItemId, "lease_missing", ct);
             return false;
         }
-        var report = sandboxV1 ? SafetyReport(item) : null;
+        // The report is fixed once: saved with the claim before it is sent, so a retry or a restarted daemon reports the same mode.
+        var report = sandboxV1 ? item.AtfReportedSafetyMode is { } saved ? new PRFactorySafetyReport(saved, null) : SafetyReport(item) : null;
+        if (report is not null && item.AtfReportedSafetyMode is null)
+        {
+            item.AtfReportedSafetyMode = report.EffectiveSafetyMode;
+            teams.SetClaimedJson(server, team.WorkItemId, JsonSerializer.Serialize(item, PRFactoryWorkItemJson.Default.PRFactoryWorkItem));
+        }
         if (report is { DowngradeReason: { } downgrade })
         {
             log?.Invoke($"PRFactory work item {team.WorkItemId:D} is Sandboxed but runs with full access here: {downgrade}");
@@ -810,6 +816,11 @@ public sealed partial class PRFactoryWorkItems(
         }
 
         var backend = MapBackend(agent) ?? throw new InvalidDataException($"Unsupported PRFactory backend: {agent}");
+        // A team reported as sandboxed never gets a member that would run with full access (a restarted daemon may enforce less).
+        if (item.AtfReportedSafetyMode == SafetyMode.Sandboxed && SandboxReason(backend) is { } lost)
+        {
+            throw new PRFactoryJobSubmissionException($"PRFactory job submit: the team was reported sandboxed but {backend} now runs with full access ({lost})");
+        }
         // The same key and exact request resolve a lost local acceptance response to one job.
         var prefix = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(server)))[..12];
         var memberKey = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(member)))[..12];
