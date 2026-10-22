@@ -215,6 +215,41 @@ Registration advertises `authority-disposition-v1`, `remote-publication-v1`,
 Not advertised yet: `human-wait-v1` (needs the server's `questionId` wire), readiness probes,
 external-member human waits and `hostingDecisionWrite`.
 
+## Safety mode (Epic 52, `sandbox-v1`)
+
+`sandbox-v1` means that ATF reads each repository's `safetyMode` and reports
+the mode it enforced. It does not mean that every job can run sandboxed. ATF
+sends `sandbox-v1` only when `GET /api/worker/capabilities` lists it: in the
+machine registration, on every poll and claim, and on every ATF acceptance
+request (POST body and GET query) of an item claimed with it.
+
+- **Requested mode.** The job runs Sandboxed when the primary repository or any
+  `repositories.secondary[]` entry is `"sandboxed"`. An unknown value counts
+  as Sandboxed. A missing value counts as Sandboxed only for a claim made with
+  `sandbox-v1`; a server without the contract keeps full access. Every member
+  of the team gets the same requested mode.
+- **Enforced mode.** The daemon decides per job what it can enforce
+  ([ADR 0013](adr/0013-sandboxed-launch-mode.md)). A worker that cannot
+  sandbox (interactive launch modes, Pi, Cursor, Droid, macOS and Windows until
+  verified, or a failed startup self-test) runs the job with full access.
+- **Report.** On acceptance ATF sends `effectiveSafetyMode` (`sandboxed` or
+  `fullAccess`) and, for a downgrade, `safetyDowngradeReason`
+  (`sandbox_unavailable` or `sandbox_unsupported_backend`). The report is
+  decided before any job exists, for the lead and every planned member; one
+  member that cannot be sandboxed makes the report `fullAccess`.
+- **Refusal.** A claim refused with 409 `sandbox_v1_required` skips only that
+  item; other offered items are still claimed in the same tick.
+- **Self-test.** At start, a headless daemon on Linux probes the sandbox of the
+  installed Codex (`codex sandbox` with ATF's permission profile) and Claude
+  (bubblewrap and socat). The probe must block a write in `$HOME` and, for
+  Codex, reads of the secret paths. `atf doctor` prints the same result. A
+  failed probe downgrades that CLI with `sandbox_unavailable`.
+
+Not covered yet: the sandbox adds only the git directories of the working
+directory's own repository as writable roots. The git directories of the other
+repositories in a multi-repository workspace are not added, so git commits there
+can fail in a Sandboxed job. The network rule (A5) is not set yet.
+
 ## Base freshness and WIP handover
 
 ATF discovers `base-wip-v1` through `GET /api/worker/capabilities`. When it is

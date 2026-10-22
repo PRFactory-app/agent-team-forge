@@ -54,6 +54,10 @@ public sealed class PRFactoryWorkItem
     public bool ReadOnly { get; set; }
     public Guid? LeaseToken { get; set; }
     public PRFactoryTeamPlan? TeamPlan { get; set; }
+    // Epic 52: the primary repository's mode ("sandboxed" | "fullAccess"); secondaries carry theirs in ContextJson.
+    public string? SafetyMode { get; set; }
+    // Worker-local, never sent by the server: whether the claim request carried sandbox-v1 (kept in the saved claim JSON).
+    public bool AtfClaimedWithSandboxV1 { get; set; }
 }
 
 public sealed record PRFactoryWorkspaceRevision(string Branch, string CommitSha);
@@ -87,8 +91,14 @@ public sealed record PRFactoryServerLimit(int Max, int Active, DateTimeOffset At
     public bool AtCap => Active >= Max;
 }
 public sealed record PRFactoryClaimResponse(PRFactoryWorkItem? WorkItem);
-public sealed record PRFactoryClaimRequest(string MachineName, string WorkerVersion, Guid? MachineId);
-public sealed record PRFactoryAtfAcceptRequest(Guid MachineId, Guid LeaseToken, string JobId);
+public sealed record PRFactoryClaimRequest(string MachineName, string WorkerVersion, Guid? MachineId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? Capabilities = null);
+public sealed record PRFactoryAtfAcceptRequest(Guid MachineId, Guid LeaseToken, string JobId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? Capabilities = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? EffectiveSafetyMode = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SafetyDowngradeReason = null);
+/// <summary>The mode a claimed item runs with, as reported on acceptance (Epic 52).</summary>
+public sealed record PRFactorySafetyReport(string EffectiveSafetyMode, string? DowngradeReason);
 public sealed record PRFactoryAtfAcceptanceResponse(string? AtfJobId, System.Text.Json.JsonElement Status,
     string? Disposition = null, string? DispositionReason = null, string? HandoverReleaseId = null,
     Guid? HandoverRepositoryId = null, string? HandoverBaseCommitSha = null,

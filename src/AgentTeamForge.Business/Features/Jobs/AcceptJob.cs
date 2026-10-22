@@ -117,6 +117,12 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
             targetAgent: request.TargetAgent, defaultAgent: backend + "-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(request.IdempotencyKey)))[..8]);
     }
 
+    /// <summary>
+    /// Why a Sandboxed job on this backend would run with full access here, or null when the sandbox is enforced. The PRFactory connector
+    /// reports it on acceptance, before any job exists; the job itself is decided by the same probe.
+    /// </summary>
+    public string? SandboxDowngrade(string backend, string? cwd) => _sandboxProbe(backend, cwd, launchMode);
+
     /// <summary>The capability probe plus the state-dir overlap rule: a writable root that contains or reaches into ATF's own state is not enforceable.</summary>
     SandboxProbe Probe(SubmitJobRequest request) => (backend, cwd, mode) =>
         _sandboxProbe(backend, cwd, mode) ?? (!request.Worktree && cwd is not null && SandboxLaunch.OverlapsState(stateRoot, cwd) ? SafetyDowngrade.Unavailable : null);

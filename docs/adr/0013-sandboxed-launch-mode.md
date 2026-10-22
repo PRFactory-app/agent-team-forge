@@ -389,6 +389,21 @@ notes (A2)". For every other directory it sets only `GIT_TERMINAL_PROMPT=0`.
   also unset or remove everything off the list before starting the agent, for when
   those launch paths become reachable.
 
+## Implementation notes (A3, A4)
+
+- **A3 self-test.** A headless daemon on Linux runs `SandboxSelfTest` once at
+  start; `atf doctor` runs the same probe. Codex is probed with
+  `codex sandbox` and ATF's permission profile, Claude with bubblewrap (and the
+  presence of socat). The shell probe must write in its workspace, must fail
+  to write in `$HOME`, and, for Codex, must fail to list each existing secret
+  path. No model is called. A failed probe adds `sandbox_unavailable` for that
+  CLI on top of `SandboxCapability.Default`. Claude's read-deny rules come from
+  ATF's settings file and are not probed; a full Claude probe needs a model
+  turn and is left to the A6 live run.
+- **A4 contract.** See [docs/prfactory-connector.md](../prfactory-connector.md)
+  ("Safety mode"). The acceptance report is decided before any job exists,
+  from the same probe the jobs use (`AcceptJob.SandboxDowngrade`).
+
 ## Evidence (Linux spike, `/tmp/atf-a1-spike`)
 
 A probe script run by the agent's shell tool; outputs abridged.

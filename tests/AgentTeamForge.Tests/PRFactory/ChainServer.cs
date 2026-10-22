@@ -29,6 +29,13 @@ sealed class ChainServer(PRFactoryWorkItem item)
     public List<string> UploadOrder { get; } = [];
     public bool MultiRepoSupported { get; set; }
     public bool BaseWipSupported { get; set; }
+    /// <summary>The server speaks the Epic 52 safety-mode contract (lists sandbox-v1).</summary>
+    public bool SandboxSupported { get; set; }
+    /// <summary>The next claim is refused with 409 sandbox_v1_required.</summary>
+    public bool RefuseClaimForSandbox { get; set; }
+    public List<JsonElement> ClaimBodies { get; } = [];
+    public List<JsonElement> AcceptBodies { get; } = [];
+    public List<string> AcceptanceQueries { get; } = [];
     public string? AcceptanceReleaseIdOverride { get; set; }
     public bool HandoverRequested { get; set; }
     /// <summary>Returned with an accepted completion, like the server once the ticket reached Completed.</summary>
@@ -96,8 +103,9 @@ sealed class ChainServer(PRFactoryWorkItem item)
             var path = request.RequestUri!.AbsolutePath;
             if (path == "/api/worker/capabilities")
             {
-                return Json(MultiRepoSupported ? "{\"capabilities\":[\"multi-repo-v1\"]}"
-                    : BaseWipSupported ? "{\"capabilities\":[\"base-wip-v1\"]}" : "{\"capabilities\":[]}");
+                List<string> listed = [.. MultiRepoSupported ? ["multi-repo-v1"] : BaseWipSupported ? ["base-wip-v1"] : Array.Empty<string>(),
+                    .. SandboxSupported ? ["sandbox-v1"] : Array.Empty<string>()];
+                return Json("{\"capabilities\":[" + string.Join(",", listed.Select(c => "\"" + c + "\"")) + "]}");
             }
             if (path == "/api/work-item-blobs/capabilities")
             {
@@ -207,6 +215,15 @@ sealed class ChainServer(PRFactoryWorkItem item)
             }
             if (path.Contains("/claim/", StringComparison.Ordinal))
             {
+                ClaimBodies.Add(JsonElement.Parse(body!));
+                if (RefuseClaimForSandbox)
+                {
+                    RefuseClaimForSandbox = false;
+                    return new HttpResponseMessage(HttpStatusCode.Conflict)
+                    {
+                        Content = new StringContent("{\"code\":\"sandbox_v1_required\",\"error\":\"needs sandbox-v1\"}", Encoding.UTF8, "application/json")
+                    };
+                }
                 Offered = false;
                 var claimed = JsonElement.Parse(body!).GetProperty("machineId").GetGuid();
                 ClaimMachines.Add(claimed);
@@ -216,9 +233,11 @@ sealed class ChainServer(PRFactoryWorkItem item)
             }
             if (path.EndsWith("/atf-acceptance", StringComparison.Ordinal))
             {
+                if (request.Method == HttpMethod.Get) { AcceptanceQueries.Add(request.RequestUri.Query); }
                 if (request.Method == HttpMethod.Post)
                 {
                     var accept = JsonElement.Parse(body!);
+                    AcceptBodies.Add(accept);
                     if (ReleaseRequeues && (accept.GetProperty("leaseToken").GetGuid() != Item.LeaseToken
                         || accept.GetProperty("machineId").GetGuid() != Owner))
                     {

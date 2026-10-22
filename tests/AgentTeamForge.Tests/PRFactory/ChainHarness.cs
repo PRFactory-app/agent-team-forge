@@ -113,17 +113,19 @@ sealed class ChainHarness : IDisposable
         Server.MultiRepoSupported = true;
     }
 
-    public PRFactoryWorkItems Adapter(bool baseWip = false, Func<SubmitJobRequest, JobResult>? submit = null) => new(ChainServer.Url,
+    public PRFactoryWorkItems Adapter(bool baseWip = false, Func<SubmitJobRequest, JobResult>? submit = null,
+        Func<string, string?>? sandboxDowngrade = null, PRFactoryClient? client = null) => new(ChainServer.Url,
         Server.Item.RepositoryId is { } repositoryId
             ? SecondaryId is { } secondary ? [new RepositoryMapping(repositoryId, Repo, ExternalMembers), new RepositoryMapping(secondary, SecondaryRepo!)]
-                : [new RepositoryMapping(repositoryId, Repo, ExternalMembers)] : [], Teams, Server.Client(),
+                : [new RepositoryMapping(repositoryId, Repo, ExternalMembers)] : [], Teams, client ?? Server.Client(),
         submit ?? Accept.Execute, Store.GetJob, () => { }, log: Logs.Add, externalTeam: External, stopJob: Stop.Execute, followUp: FollowUp.Execute,
         authority: Authority, workspaces: new PRFactoryWorkspace(Workspaces), workspaceRoot: WorkspaceRoot, accounts: Accounts,
         publications: new PRFactoryPublicationStore(Database),
         interaction: new PRFactoryInteraction(HumanWaits, Teams, Store, FollowUp.Execute), humanWaits: HumanWaits, allowRepoLess: AllowRepoLess,
         handovers: baseWip ? new PRFactoryHandoverStore(Database) : null,
         repositorySets: SecondaryId is null ? null : new PRFactoryRepositorySet(new PRFactoryRepositorySetStore(Database),
-            new PRFactoryWorkspace(Workspaces), new PRFactoryWorkspaceStore(Database), new PRFactoryHandoverStore(Database)));
+            new PRFactoryWorkspace(Workspaces), new PRFactoryWorkspaceStore(Database), new PRFactoryHandoverStore(Database)),
+        sandboxDowngrade: sandboxDowngrade);
 
     public Task TickAsync() => Adapter().TickAsync(Machine, CancellationToken.None);
 

@@ -158,6 +158,11 @@ public static class SetupCommand
                 Console.Out.WriteLine($"Backend {backend}: {(installed[backend] ? "installed" : "not installed")}, " +
                     $"{(available[backend] ? "available" : "unavailable")}, sign-in {signIn[backend]}");
             }
+            // The same probe the daemon runs at start for headless launches (A3); interactive launches never run sandboxed.
+            foreach (var line in SandboxSelfTest.Run(SandboxSelfTest.Find, SandboxSelfTest.RunProcess).Report())
+            {
+                Console.Out.WriteLine("Sandbox " + line);
+            }
             if (pathProblem is not null)
             {
                 Console.Error.WriteLine($"error: {StateDirectory.PathTooLong}: {pathProblem}");

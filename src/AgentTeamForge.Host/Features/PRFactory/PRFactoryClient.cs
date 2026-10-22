@@ -47,7 +47,9 @@ public sealed partial class PRFactoryClient(HttpClient httpClient, TimeProvider?
     // Only semantics that are wired and tested end to end: explicit server dispositions stop and fence
     // owned work; completion carries a pushed, ls-remote-verified branch for remote-only PR creation.
     // Not yet: human-wait-v1, readiness-parking-v1 (no auth/model probes),
-    public static readonly string[] Capabilities = ["authority-disposition-v1", "remote-publication-v1", "workspace-continuity-v1", "blob-attachments-v1", "base-wip-v1", "multi-repo-v1", "pull-request-v1"];
+    // sandbox-v1: reads safetyMode and reports the mode it enforced (Epic 52); whether a job can be sandboxed is decided per job.
+    public static readonly string[] Capabilities = ["authority-disposition-v1", "remote-publication-v1", "workspace-continuity-v1", "blob-attachments-v1", "base-wip-v1", "multi-repo-v1", "pull-request-v1", SandboxV1];
+    public const string SandboxV1 = "sandbox-v1";
     bool legacyLogged;
     public enum AcceptanceResult { Confirmed, NotFound, Conflict }
     /// <summary>Server disposition: accepted, completed, cancelled, revoked or reconciliation-needed.</summary>
@@ -76,7 +78,7 @@ public sealed partial class PRFactoryClient(HttpClient httpClient, TimeProvider?
     public async Task<RegisterMachineResponse> RegisterMachineAsync(CancellationToken ct)
     {
         var supported = await ServerCapabilitiesAsync(ct, legacyOnServerError: true);
-        var advertised = Capabilities.Where(capability => capability is not ("base-wip-v1" or "multi-repo-v1" or "pull-request-v1")
+        var advertised = Capabilities.Where(capability => capability is not ("base-wip-v1" or "multi-repo-v1" or "pull-request-v1" or SandboxV1)
             || supported.Contains(capability, StringComparer.Ordinal)).ToArray();
         var request = new RegisterMachineRequest(Environment.MachineName,
             $"{Environment.MachineName}:{Environment.UserName}",
@@ -117,7 +119,8 @@ public sealed partial class PRFactoryClient(HttpClient httpClient, TimeProvider?
         var supported = serverCapabilities ?? [];
         var query = $"maxItems={maxItems}" + string.Concat(repositories.Select(id => $"&repositoryIds={id:D}"))
             + $"&workerVersion={workerVersion}" + (machineId is Guid mid ? $"&machineId={mid:D}" : "")
-            + (supported.Contains("pull-request-v1", StringComparer.Ordinal) ? "&capabilities=pull-request-v1" : "");
+            + (supported.Contains("pull-request-v1", StringComparer.Ordinal) ? "&capabilities=pull-request-v1" : "")
+            + (SandboxContract ? "&capabilities=" + SandboxV1 : "");
         using var response = await httpClient.GetAsync("api/worker/poll?" + query, ct);
         RejectToken(response.StatusCode);
         if (response.StatusCode == HttpStatusCode.NoContent)
@@ -133,31 +136,61 @@ public sealed partial class PRFactoryClient(HttpClient httpClient, TimeProvider?
         return poll?.WorkItems ?? [];
     }
 
-    public async Task<(PRFactoryWorkItem? Item, bool Conflict)> ClaimAsync(Guid id, Guid? machineId, CancellationToken ct)
+    /// <summary>
+    /// Whether the server speaks the safety-mode contract (it lists <c>sandbox-v1</c>), as last seen. Only then does the worker send
+    /// <c>sandbox-v1</c>, and only then does a missing <c>safetyMode</c> mean Sandboxed (PO answer Q1).
+    /// </summary>
+    public bool SandboxContract => serverCapabilities?.Contains(SandboxV1, StringComparer.Ordinal) == true;
+
+    /// <summary>A claim; Conflict is a 409, and SandboxRefused a 409 that refuses only this item (<c>sandbox_v1_required</c>).</summary>
+    public async Task<(PRFactoryWorkItem? Item, bool Conflict, bool SandboxRefused)> ClaimAsync(Guid id, Guid? machineId, CancellationToken ct)
     {
+        var sandbox = SandboxContract;
         using var response = await httpClient.PostAsJsonAsync($"api/worker/claim/{id:D}",
-            new PRFactoryClaimRequest(Environment.MachineName, workerVersion, machineId), PRFactoryWorkItemJson.Default.PRFactoryClaimRequest, ct);
+            new PRFactoryClaimRequest(Environment.MachineName, workerVersion, machineId, sandbox ? [SandboxV1] : null),
+            PRFactoryWorkItemJson.Default.PRFactoryClaimRequest, ct);
         RejectToken(response.StatusCode);
         if (response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.NotFound)
         {
-            return (null, response.StatusCode == HttpStatusCode.Conflict);
+            var refused = response.StatusCode == HttpStatusCode.Conflict && await ErrorCodeAsync(response, ct) == "sandbox_v1_required";
+            return (null, response.StatusCode == HttpStatusCode.Conflict, refused);
         }
 
         response.EnsureSuccessStatusCode();
-        return ((await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryClaimResponse, ct))?.WorkItem, false);
+        var item = (await response.Content.ReadFromJsonAsync(PRFactoryWorkItemJson.Default.PRFactoryClaimResponse, ct))?.WorkItem;
+        // The acceptance report is required exactly when this claim carried sandbox-v1, so the claim record keeps that fact.
+        if (item is not null) { item.AtfClaimedWithSandboxV1 = sandbox; }
+        return (item, false, false);
     }
 
-    public async Task<Acceptance> GetAtfAcceptanceAsync(Guid id, Guid machineId, string jobId, CancellationToken ct)
+    static async Task<string?> ErrorCodeAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        try
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            using var json = JsonDocument.Parse(body);
+            return json.RootElement.ValueKind == JsonValueKind.Object && json.RootElement.TryGetProperty("code", out var code)
+                && code.ValueKind == JsonValueKind.String ? code.GetString() : null;
+        }
+        catch (JsonException) { return null; }
+    }
+
+    /// <summary>A claim made with <c>sandbox-v1</c> proves the capability on every acceptance read too.</summary>
+    public async Task<Acceptance> GetAtfAcceptanceAsync(Guid id, Guid machineId, string jobId, CancellationToken ct, bool sandboxV1 = false)
     {
         using var response = await httpClient.GetAsync(
-            $"api/worker/work-items/{id:D}/atf-acceptance?machineId={machineId:D}&jobId={Uri.EscapeDataString(jobId)}", ct);
+            $"api/worker/work-items/{id:D}/atf-acceptance?machineId={machineId:D}&jobId={Uri.EscapeDataString(jobId)}"
+            + (sandboxV1 ? "&capabilities=" + SandboxV1 : ""), ct);
         return await ReadAcceptanceAsync(response, jobId, ct);
     }
 
-    public async Task<Acceptance> AcceptAtfAsync(Guid id, Guid machineId, Guid leaseToken, string jobId, CancellationToken ct)
+    /// <summary><paramref name="safety"/> is the enforced-mode report, sent with <c>sandbox-v1</c> exactly when the claim carried it.</summary>
+    public async Task<Acceptance> AcceptAtfAsync(Guid id, Guid machineId, Guid leaseToken, string jobId, CancellationToken ct,
+        PRFactorySafetyReport? safety = null)
     {
         using var response = await httpClient.PostAsJsonAsync($"api/worker/work-items/{id:D}/atf-acceptance",
-            new PRFactoryAtfAcceptRequest(machineId, leaseToken, jobId), PRFactoryWorkItemJson.Default.PRFactoryAtfAcceptRequest, ct);
+            new PRFactoryAtfAcceptRequest(machineId, leaseToken, jobId, safety is null ? null : [SandboxV1],
+                safety?.EffectiveSafetyMode, safety?.DowngradeReason), PRFactoryWorkItemJson.Default.PRFactoryAtfAcceptRequest, ct);
         return await ReadAcceptanceAsync(response, jobId, ct);
     }
 

@@ -225,11 +225,17 @@ public static class DaemonCommand
         var tierMap = new TierMap(state.Path, modelDiscovery.CachedModels, Log);
         var herdrPlacement = herdrTerminal is null ? null : new HerdrPlacement(state.Path, Log);
         Func<string, string?>? checkHerdrSession = herdrTerminal is null ? null : herdrTerminal.CheckSharedSession;
+        // A3: only a headless launch can be sandboxed (ADR 0013), so only then is the sandbox of each installed CLI probed.
+        var selfTest = profile.RealAgents && launchMode is null or "headless"
+            ? SandboxSelfTest.Run(SandboxSelfTest.Find, SandboxSelfTest.RunProcess) : SandboxSelfTest.None;
+        foreach (var line in selfTest.Report()) { Log("sandbox self-test: " + line); }
+        var sandboxProbe = selfTest.Probe();
         var accept = new AcceptJob(store, profile.Bound, limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap,
-            herdrPlacement, checkHerdrSession, launchMode, profile.SafetyMode, stateRoot: state.Path);
+            herdrPlacement, checkHerdrSession, launchMode, profile.SafetyMode, sandboxProbe, stateRoot: state.Path);
         // Remote claims have their own lead identity and cannot borrow the local MCP lead.
         var connectorAccept = new AcceptJob(store, new BoundPrincipal("prfactory", "connector", "connector-lead"),
-            limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap, herdrPlacement, checkHerdrSession, launchMode, stateRoot: state.Path);
+            limits, profile.TestProfile, admission, backends.Names, modelDiscovery.GetModels, tierMap, herdrPlacement, checkHerdrSession, launchMode,
+            sandboxProbe: sandboxProbe, stateRoot: state.Path);
         var connectorTeams = new PRFactoryTeamStore(database);
         var connectorSessions = new AgentTeamForge.DAL.Features.Sessions.LeadSessionStore(database);
         var connectorPrincipal = new BoundPrincipal("prfactory", "connector", "connector-lead");
@@ -373,6 +379,7 @@ public static class DaemonCommand
                         reconcileIdleInteractive: dispatcher.ReconcileIdleInteractive,
                         onLimit: limit => PRFactoryConnection.PublishLimit(state, limit),
                         sessionUsage: job => job.SessionId is null ? null : AgentTeamForge.Business.Features.Usage.SessionTokenUsage.ReadFinal(job.Backend, job.SessionId, null, job.Cwd),
+                        sandboxDowngrade: backend => connectorAccept.SandboxDowngrade(backend, null),
                         pullRequests: new PRFactoryPullRequests(settings.Url, settings.Repositories, settings.GitHubUser, client,
                             connectorPublications, Log)).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);
