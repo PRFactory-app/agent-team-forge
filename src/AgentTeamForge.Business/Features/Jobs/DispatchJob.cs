@@ -1578,10 +1578,12 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
-    internal static readonly TimeSpan[] BusyBackoff = [TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2)];
+    /// <summary>The pauses between tries of a store step that reports busy; tests shorten them.</summary>
+    internal TimeSpan[] BusyBackoff { get; set; } = [TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2)];
 
-    // With the 20 s busy timeout per try, a terminal write gives up only after about three minutes of lock contention.
-    static readonly TimeSpan[] TerminalBusyBackoff = [.. BusyBackoff, TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(8), TimeSpan.FromSeconds(15)];
+    /// <summary>With the 20 s busy timeout per try, a terminal write gives up only after about three minutes of lock contention.</summary>
+    internal TimeSpan[] TerminalBusyBackoff { get; set; } = [TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(8), TimeSpan.FromSeconds(15)];
 
     /// <summary>
     /// Runs one store step again after a short backoff while SQLite reports busy. A busy step rolled its

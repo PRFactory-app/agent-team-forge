@@ -36,7 +36,12 @@ public sealed class AdmissionFenceTests
         // holds the write lock, the dispatcher's terminal write fails and it halts.
         var dispatchStore = new JobStore(JobDatabase.Open(f.DatabasePath, TimeSpan.FromMilliseconds(200)), DurabilityCheckpoints.None);
         var backend = new ScriptedBackend(_ => []) { OnStart = _ => throw new InvalidOperationException("pipe exploded") };
-        using var dispatcher = new DispatchJob(dispatchStore, backend, f.Limits, dispatchCheckpoints, f.Admission, _ => { });
+        // The lock is held until the halt, so the terminal write retries briefly and then halts.
+        using var dispatcher = new DispatchJob(dispatchStore, backend, f.Limits, dispatchCheckpoints, f.Admission, _ => { })
+        {
+            BusyBackoff = [TimeSpan.FromMilliseconds(10)],
+            TerminalBusyBackoff = [TimeSpan.FromMilliseconds(10)],
+        };
 
         // In-flight submit: admitted, inside its transaction, paused before commit.
         using var submitBeforeCommit = new ManualResetEventSlim();
