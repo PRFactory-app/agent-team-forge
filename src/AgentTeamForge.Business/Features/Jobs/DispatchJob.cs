@@ -862,7 +862,7 @@ public sealed class DispatchJob : IDisposable
         try
         {
             // Routed by correlation: a reverted native attempt resumes through a new run.
-            if (store.NativeAttempt(run.JobId) is { } native && native.Correlation == run.Correlation)
+            if (RetryBusy(() => store.NativeAttempt(run.JobId)) is { } native && native.Correlation == run.Correlation)
             {
                 enteredNative = true;
                 await RunNativeCodexAsync(run, native, daemonLifetime, stopRequested.Token);
@@ -885,9 +885,9 @@ public sealed class DispatchJob : IDisposable
             using var onTimeout = jobTimeout?.Token.Register(() => CancelOwned(run.JobId, "timeout"));
 
             // A stop may have committed after claim but before this task was scheduled.
-            if (store.GetJob(run.JobId)?.Status == JobStatus.Cancelled)
+            if (RetryBusy(() => store.GetJob(run.JobId))?.Status == JobStatus.Cancelled)
             {
-                store.ReconcileStoppedJob(run.JobId); // No backend effect occurred.
+                RetryBusy(() => store.ReconcileStoppedJob(run.JobId)); // No backend effect occurred.
                 return;
             }
 
@@ -1038,7 +1038,7 @@ public sealed class DispatchJob : IDisposable
                             ObserveAgentError(claim.Job.JobId, error.Code, error.Details);
                             return;
                         case BackendEvidence.AccountLimit limit:
-                            if (store.RecordAccountLimit(run, limit.Details))
+                            if (TryWrite(run, "account limit", () => store.RecordAccountLimit(run, limit.Details)))
                             {
                                 ObserveAgentError(claim.Job.JobId, "agent_rate_limited", limit.Details);
                                 // The live TUI can resume after the reset, so the turn deadline restarts
@@ -1057,7 +1057,8 @@ public sealed class DispatchJob : IDisposable
                             TryRecordWaiting(run, "interactive_agent_blocked", blocked.Blocked);
                             break;
                         case BackendEvidence.TurnObservation observation:
-                            if (store.ObserveTurn(run.JobId, run.Correlation, observation.LastActivityAt, observation.Waiting) && observation.Waiting is not null)
+                            if (TryWrite(run, "turn observation", () => store.ObserveTurn(run.JobId, run.Correlation, observation.LastActivityAt, observation.Waiting))
+                                && observation.Waiting is not null)
                             {
                                 var diagnostic = $"{observation.Waiting}: native completion not observed; last_activity_at={observation.LastActivityAt:O}";
                                 log($"{run.JobId}: {diagnostic}");
@@ -1128,15 +1129,21 @@ public sealed class DispatchJob : IDisposable
             active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
             End(run, noEffects ? JobStatus.Failed : JobStatus.NeedsReconciliation, reason,
                 message);
-            if (noEffects && store.GetJob(run.JobId)?.Status == JobStatus.Cancelled)
-            {
-                store.ReconcileStoppedJob(run.JobId);
-            }
+            if (noEffects) { ReconcileIfStopped(run.JobId); }
         }
         catch (Exception) when (stopRequested.IsCancellationRequested)
         {
             // Killing the owned child can surface as a stream or process error.
             active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
+        }
+        catch (StorageException ex) when (ex.Failure == StorageFailure.Busy)
+        {
+            // Lock contention outlasted the retries. Nothing was committed by the failed step, so the job
+            // fails retryably (a follow-up or resubmit runs it again) and dispatch goes on. A native codex
+            // turn may already sit in the agent's queue, so that one stays quarantined (still without a halt).
+            log($"storage busy for {run.RunId}: job {run.JobId}: retries exhausted");
+            active.TerminateOnce(backend => TryTerminate(backend, run.JobId));
+            End(run, enteredNative ? JobStatus.NeedsReconciliation : JobStatus.Failed, JobErrors.StorageBusy, JobErrors.StorageDetail(ex));
         }
         catch (Exception ex)
         {
@@ -1159,7 +1166,7 @@ public sealed class DispatchJob : IDisposable
             }
 
             if (OperatingSystem.IsWindows() && backendRun is { OwnedChildAlive: true }
-                && store.GetJob(run.JobId)?.Status == JobStatus.NeedsReconciliation)
+                && RetryBusy(() => store.GetJob(run.JobId))?.Status == JobStatus.NeedsReconciliation)
             {
                 // Windows cannot re-prove a terminal job's PID after its Process
                 // handle is disposed. Retain that handle for an explicit stop.
@@ -1176,7 +1183,12 @@ public sealed class DispatchJob : IDisposable
             _running.TryRemove(run.JobId, out _);
             if (backendRun?.OwnedSessionStopped == true)
             {
-                try { store.ReconcileStoppedJob(run.JobId); }
+                try { RetryBusy(() => store.ReconcileStoppedJob(run.JobId)); }
+                catch (StorageException ex) when (ex.Failure == StorageFailure.Busy)
+                {
+                    // The stop itself is committed; a restart reconciles the session if this never succeeds.
+                    log($"session reconciliation skipped for {run.JobId}: {ex.Failure}: {ex.Message}");
+                }
                 catch (StorageException ex)
                 {
                     log($"session reconciliation failed for {run.JobId}: {ex.Failure}: {ex.Message}");
@@ -1272,9 +1284,9 @@ public sealed class DispatchJob : IDisposable
             JobRecord job;
             lock (_nativeSubmitGate)
             {
-                job = store.GetJob(run.JobId)!;
+                job = RetryBusy(() => store.GetJob(run.JobId))!;
                 if (job.Status != JobStatus.Running || stopRequested.IsCancellationRequested
-                    || store.NativeAttempt(run.JobId) is not { State: "sent" }) { return; }
+                    || RetryBusy(() => store.NativeAttempt(run.JobId)) is not { State: "sent" }) { return; }
             }
             var prompt = job.Instruction + "\n\n[AgentTeamForge correlation id: atf-corr:"
                 + run.Correlation + " — internal marker, ignore this line]";
@@ -1288,8 +1300,8 @@ public sealed class DispatchJob : IDisposable
                 jobLogs?.BeginRun(run.JobId, run.RunId, BackendCatalog.Codex)("status", System.Text.Encoding.UTF8.GetBytes(diagnostic + "\n"));
                 if (!submission.Started)
                 {
-                    if (store.RevertNativeAttempt(run)) { log($"codex queue did not start for {run.JobId}; resuming instead"); }
-                    else { store.ReleaseNativeAttempt(job.JobId, job.Principal, job.Team); }
+                    if (RetryBusy(() => store.RevertNativeAttempt(run))) { log($"codex queue did not start for {run.JobId}; resuming instead"); }
+                    else { RetryBusy(() => store.ReleaseNativeAttempt(job.JobId, job.Principal, job.Team)); }
                     Signal();
                     return;
                 }
@@ -1299,10 +1311,13 @@ public sealed class DispatchJob : IDisposable
                     End(run, JobStatus.NeedsReconciliation, "native_submission_unresolved");
                     return;
                 }
-                store.RecordNativeSubmission(run.JobId, run.Correlation, id);
-                store.RecordStartup(run, "submitted");
-                ReconcileNativeCodex();
+                // The turn sits in the agent's queue from here: a later failure keeps the reservation until it settles.
                 awaitingSettlement = true;
+                RetryBusy(() => store.RecordNativeSubmission(run.JobId, run.Correlation, id));
+                RetryBusy(() => store.RecordStartup(run, "submitted"));
+                // The queue sweep reconciles again every second, so a busy database only delays this one.
+                try { ReconcileNativeCodex(); }
+                catch (StorageException ex) when (ex.Failure == StorageFailure.Busy) { log($"native reconcile deferred for {run.JobId}: database busy"); }
                 return;
             }
             catch (OperationCanceledException) when (daemonLifetime.IsCancellationRequested || stopRequested.IsCancellationRequested) { return; }
@@ -1530,10 +1545,16 @@ public sealed class DispatchJob : IDisposable
     {
         try
         {
-            if (!store.Complete(run, output))
+            if (!RetryBusy(() => store.Complete(run, output)))
             {
                 log($"completion fenced out for {run.RunId}");
             }
+        }
+        catch (StorageException ex) when (ex.Failure == StorageFailure.Busy)
+        {
+            // Nothing was committed: the result is lost, but the job fails retryably instead of being quarantined.
+            log($"completion write busy for {run.RunId}: retries exhausted; failing retryably");
+            End(run, JobStatus.Failed, JobErrors.StorageBusy, JobErrors.StorageDetail(ex));
         }
         catch (Exception ex) when (ex is StorageException or InjectedFailureException)
         {
@@ -1547,12 +1568,64 @@ public sealed class DispatchJob : IDisposable
     {
         try
         {
-            store.EndUnsuccessfully(run, status, reason, message, turnEnded);
+            // A lost terminal write strands the job as running, so it waits longer than other steps before the halt.
+            RetryBusy(() => store.EndUnsuccessfully(run, status, reason, message, turnEnded), TerminalBusyBackoff);
         }
         catch (Exception ex)
         {
             log($"terminal write failed for {run.RunId}: {StorageException.Describe(ex)}; halting dispatch");
             Halt("terminal_write_failed");
+        }
+    }
+
+    /// <summary>The pauses between tries of a store step that reports busy; tests shorten them.</summary>
+    internal TimeSpan[] BusyBackoff { get; set; } = [TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2)];
+
+    /// <summary>With the 20 s busy timeout per try, a terminal write gives up only after about three minutes of lock contention.</summary>
+    internal TimeSpan[] TerminalBusyBackoff { get; set; } = [TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(4), TimeSpan.FromSeconds(8), TimeSpan.FromSeconds(15)];
+
+    /// <summary>
+    /// Runs one store step again after a short backoff while SQLite reports busy. A busy step rolled its
+    /// transaction back, so running it again is safe; the last busy failure is rethrown.
+    /// </summary>
+    T RetryBusy<T>(Func<T> step, TimeSpan[]? backoff = null)
+    {
+        backoff ??= BusyBackoff;
+        for (var retry = 0; ; retry++)
+        {
+            try { return step(); }
+            catch (StorageException ex) when (ex.Failure == StorageFailure.Busy && retry < backoff.Length)
+            {
+                log($"database busy; retry {retry + 1}/{backoff.Length}");
+                Thread.Sleep(backoff[retry]);
+            }
+        }
+    }
+
+    void RetryBusy(Action step) => RetryBusy(() => { step(); return true; });
+
+    /// <summary>A stop that committed while a start failed without effect leaves nothing running; reconcile its run.</summary>
+    void ReconcileIfStopped(string jobId)
+    {
+        try
+        {
+            if (RetryBusy(() => store.GetJob(jobId))?.Status == JobStatus.Cancelled) { RetryBusy(() => store.ReconcileStoppedJob(jobId)); }
+        }
+        catch (StorageException ex) when (ex.Failure == StorageFailure.Busy)
+        {
+            log($"stopped job reconciliation skipped for {jobId}: {ex.Failure}: {ex.Message}");
+        }
+    }
+
+    /// <summary>An informational write during a live turn: a busy database skips it instead of ending the turn.</summary>
+    bool TryWrite(RunRef run, string what, Func<bool> write)
+    {
+        try { return RetryBusy(write); }
+        catch (StorageException ex) when (ex.Failure == StorageFailure.Busy)
+        {
+            log($"{what} record skipped for {run.RunId}: {ex.Failure}: {ex.Message}");
+            return false;
         }
     }
 
