@@ -174,11 +174,11 @@ public static class PRFactoryConnection
             gitHubUser = login;
         }
         string? token;
-        // A token typed or piped in wins; only without one is the linked credential reused.
-        var usedLink = reuse && (ReferenceEquals(tokenInput, Console.In) && !Console.IsInputRedirected || tokenInput.Peek() < 0);
+        // The linked credential is reused without reading stdin; --replace-token asks for a new one instead.
+        var usedLink = reuse && !options.ContainsKey("replace-token");
         if (usedLink)
         {
-            token = ReadToken(state);
+            token = ReadToken(state, url);
             Console.Error.WriteLine("Using the credential from atf login.");
         }
         else if (ReferenceEquals(tokenInput, Console.In) && !Console.IsInputRedirected)
@@ -221,7 +221,8 @@ public static class PRFactoryConnection
             }
             mappings.Add(new RepositoryMapping(id, path));
         }
-        var tenantWide = options.GetValueOrDefault("token-scope") == "tenant-wide";
+        // A linked credential covers every repository of the workspace (all repositories, including later ones).
+        var tenantWide = options.GetValueOrDefault("token-scope") == "tenant-wide" || usedLink && !options.ContainsKey("token-scope");
         var repoLess = options.GetValueOrDefault("repo-less") != "false";
         if (options.TryGetValue("token-scope", out var scope) && scope is not ("tenant-wide" or "repository")
             || options.TryGetValue("repo-less", out var enabled) && enabled is not ("true" or "false"))
@@ -261,12 +262,10 @@ public static class PRFactoryConnection
             mappings[index] = mappings[index] with { ExternalMembers = [.. mappings[index].ExternalMembers ?? [], spec[(split + 1)..]] };
         }
 
-        // A linked credential covers every repository of the workspace (all repositories, including later ones).
-        tenantWide |= usedLink && !options.ContainsKey("token-scope");
         var settings = new PRFactorySettings(url, [.. mappings], tenantWide, repoLess, caFile, gitHubUser);
         // Publish the token first; a daemon racing this write sees either the old
         // configuration or the new token, and never a partial private file.
-        WritePrivate(Path.Combine(state.Path, TokenName), Encoding.UTF8.GetBytes(token));
+        WritePrivate(Path.Combine(state.Path, TokenName), BoundToken(url, token));
         WritePrivate(Path.Combine(state.Path, SettingsName), JsonSerializer.SerializeToUtf8Bytes(settings, PRFactorySettingsJson.Default.PRFactorySettings));
         File.Delete(Path.Combine(state.Path, RejectedName));
         File.Delete(Path.Combine(state.Path, JoinsName));
@@ -366,7 +365,7 @@ public static class PRFactoryConnection
         if (existing is not null && existing.Url != url) { return existing.Url; }
         var settings = existing is null ? new PRFactorySettings(url, [], TenantWideToken: true, RepoLess: true, caFile)
             : existing with { TenantWideToken = true, CaFile = caFile ?? existing.CaFile };
-        WritePrivate(Path.Combine(state.Path, TokenName), Encoding.UTF8.GetBytes(token));
+        WritePrivate(Path.Combine(state.Path, TokenName), BoundToken(url, token));
         WritePrivate(Path.Combine(state.Path, SettingsName), JsonSerializer.SerializeToUtf8Bytes(settings, PRFactorySettingsJson.Default.PRFactorySettings));
         WritePrivate(Path.Combine(state.Path, LinkName), JsonSerializer.SerializeToUtf8Bytes(link, PRFactorySettingsJson.Default.PRFactoryLink));
         File.Delete(Path.Combine(state.Path, RejectedName));
@@ -398,7 +397,24 @@ public static class PRFactoryConnection
         return settings;
     }
 
-    public static string ReadToken(StateDirectory state) => Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(Path.Combine(state.Path, TokenName)));
+    /// <summary>The stored token, whatever server it is bound to (for tests and the same-server reuse check).</summary>
+    public static string ReadToken(StateDirectory state) => SplitToken(state).Token;
+
+    /// <summary>
+    /// The token only when it is bound to <paramref name="url"/>: the file holds the issuing server's URL on its first line, so a reader that
+    /// loaded one server's settings never sends another server's token, whatever the write order. A one-line file (before the binding) is
+    /// accepted for any URL.
+    /// </summary>
+    public static string? ReadToken(StateDirectory state, string url) => SplitToken(state) is var (bound, token) && (bound is null || bound == url) ? token : null;
+
+    static (string? Url, string Token) SplitToken(StateDirectory state)
+    {
+        var text = Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(Path.Combine(state.Path, TokenName)));
+        var split = text.IndexOf('\n');
+        return split < 0 ? (null, text) : (text[..split], text[(split + 1)..]);
+    }
+
+    static byte[] BoundToken(string url, string token) => Encoding.UTF8.GetBytes(url + "\n" + token);
 
     public static void MarkRejected(StateDirectory state) => WritePrivate(Path.Combine(state.Path, RejectedName), "rejected"u8.ToArray());
 

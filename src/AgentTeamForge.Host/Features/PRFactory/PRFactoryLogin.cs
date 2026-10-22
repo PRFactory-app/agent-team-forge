@@ -57,6 +57,7 @@ public static class PRFactoryLogin
         {
             var code = await RequestCodeAsync(http, delay, error, ct);
             if (code is null) { return 1; }
+            var expires = clock.GetUtcNow() + code.Value.ExpiresIn; // Before any output or browser work.
             output.WriteLine($"To link this machine, open {code.Value.CompleteUri}");
             output.WriteLine($"Your code is {code.Value.UserCode}. Compare it with the code on the page before you select Link.");
             output.WriteLine($"If the browser does not open, go to {code.Value.Uri} and type the code.");
@@ -66,7 +67,7 @@ public static class PRFactoryLogin
                 (openBrowser ?? OpenBrowser)(page.AbsoluteUri);
             }
             output.WriteLine("Waiting for the link in the browser...");
-            return await PollAsync(state, http, url, caFile, code.Value, delay, clock, output, error, ct);
+            return await PollAsync(state, http, url, caFile, code.Value, expires, delay, clock, output, error, ct);
         }
         catch (HttpRequestException ex)
         {
@@ -108,16 +109,17 @@ public static class PRFactoryLogin
         }
     }
 
-    static async Task<int> PollAsync(StateDirectory state, HttpClient http, string url, string? caFile, DeviceCode code,
+    static async Task<int> PollAsync(StateDirectory state, HttpClient http, string url, string? caFile, DeviceCode code, DateTimeOffset deadline,
         Func<TimeSpan, CancellationToken, Task> delay, TimeProvider clock, TextWriter output, TextWriter error, CancellationToken ct)
     {
-        var deadline = clock.GetUtcNow() + code.ExpiresIn;
         var interval = code.Interval;
         var wait = interval;
         var transientReported = false;
         while (true)
         {
-            await delay(wait, ct);
+            // No wait outlasts the code: a long Retry-After or interval ends at the expiry.
+            var left = deadline - clock.GetUtcNow();
+            await delay(wait < left ? wait : left > TimeSpan.Zero ? left : TimeSpan.Zero, ct);
             wait = interval;
             if (clock.GetUtcNow() >= deadline)
             {

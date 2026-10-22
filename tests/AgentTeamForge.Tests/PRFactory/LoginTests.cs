@@ -187,4 +187,56 @@ public sealed class LoginTests
         };
         Assert.Empty((await Login(StateDirectory.Open(other.Path), plain)).Opened);
     }
+
+    sealed class Clock : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = DateTimeOffset.UtcNow;
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    [Fact]
+    public async Task No_wait_outlasts_the_code()
+    {
+        using var dir = new TempStateDir();
+        var clock = new Clock();
+        var limited = () =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromHours(1));
+            return response;
+        };
+        var waits = new List<TimeSpan>();
+        var error = new StringWriter();
+
+        var exit = await PRFactoryLogin.RunAsync(StateDirectory.Open(dir.Path), new Dictionary<string, string> { ["url"] = Url, ["no-browser"] = "true" },
+            new StringWriter(), error, new Server(limited), _ => { }, (wait, _) => { waits.Add(wait); clock.Now += wait; return Task.CompletedTask; }, clock, TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, exit);
+        Assert.Contains("expired", error.ToString(), StringComparison.Ordinal);
+        Assert.True(waits.Aggregate(TimeSpan.Zero, (a, b) => a + b) <= TimeSpan.FromSeconds(600));
+    }
+
+    [Fact]
+    public async Task A_token_bound_to_another_server_is_not_read_for_this_one()
+    {
+        using var dir = new TempStateDir();
+        var state = StateDirectory.Open(dir.Path);
+        Assert.Equal(0, (await Login(state, new Server(Linked))).Exit);
+
+        Assert.Equal(Token, PRFactoryConnection.ReadToken(state, Url));
+        Assert.Null(PRFactoryConnection.ReadToken(state, "https://other.example.test"));
+    }
+
+    [Fact]
+    public async Task Connect_without_a_repository_reuses_the_tenant_wide_link()
+    {
+        using var dir = new TempStateDir();
+        var state = StateDirectory.Open(dir.Path);
+        Assert.Equal(0, (await Login(state, new Server(Linked))).Exit);
+
+        Assert.Equal(0, PRFactoryConnection.Run(state, "connect", new Dictionary<string, string> { ["github-user"] = "alice" }, ["prfactory", "connect"],
+            new StringReader("")));
+        Assert.Equal("alice", PRFactoryConnection.LoadSettings(state)!.GitHubUser);
+        Assert.Equal(Token, PRFactoryConnection.ReadToken(state, Url));
+    }
 }
