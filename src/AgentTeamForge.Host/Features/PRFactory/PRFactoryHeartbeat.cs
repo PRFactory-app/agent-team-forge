@@ -44,7 +44,12 @@ public static class PRFactoryHeartbeat
                         await delay(TimeSpan.FromSeconds(5), ct);
                         continue;
                     }
-                    var token = PRFactoryConnection.ReadToken(state);
+                    // A token bound to another server (a relink in progress) is never sent; the next pass reads a coherent pair.
+                    if (PRFactoryConnection.ReadToken(state, settings.Url) is not { } token)
+                    {
+                        await delay(TimeSpan.FromSeconds(5), ct);
+                        continue;
+                    }
                     var key = settings.Url + "\n" + token + "\n" + settings.CaFile;
                     if (key != connection)
                     {
@@ -127,7 +132,7 @@ public static class PRFactoryHeartbeat
                     {
                         PRFactoryConnection.MarkRejected(state);
                     }
-                    log("PRFactory worker token rejected; remote connector stopped");
+                    log("PRFactory worker token rejected; remote connector stopped (run atf login again, or reconnect with a valid token)");
                     try
                     {
                         // Quiesce owned work without erasing acceptance identity.
@@ -160,7 +165,7 @@ public static class PRFactoryHeartbeat
         try
         {
             var settings = PRFactoryConnection.LoadSettings(state);
-            return settings is not null && settings.Url + "\n" + PRFactoryConnection.ReadToken(state) + "\n" + settings.CaFile == connection;
+            return settings is not null && settings.Url + "\n" + PRFactoryConnection.ReadToken(state, settings.Url) + "\n" + settings.CaFile == connection;
         }
         catch (Exception ex) when (ex is IOException or StateDirectoryException) { return false; }
     }

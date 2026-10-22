@@ -55,6 +55,8 @@ try
             return await WorktreesCommand.RunAsync(StateDirectory.Open(SetupCommand.ResolveStateDir(options)), options);
         case "prune":
             return await PruneCommand.RunAsync(StateDirectory.Open(SetupCommand.ResolveStateDir(options)), options);
+        case "login":
+            return await PRFactoryLogin.RunAsync(StateDirectory.Open(SetupCommand.ResolveStateDir(options)), options, Console.Out, Console.Error);
         case "prfactory" when args.Length > 1:
             return PRFactoryConnection.Run(StateDirectory.Open(SetupCommand.ResolveStateDir(options)), args[1], options, args, Console.In);
         case "daemon" when options.TryGetValue("state-dir", out var daemonDir):

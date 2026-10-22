@@ -9,6 +9,28 @@ fully without it. Decision record: [ADR 0011](adr/0011-prfactory-outbound-pollin
 The PRFactory server-side durable ATF acceptance is merged
 (PRFactory #254).
 
+## Link with `atf login`
+
+`atf login` links this machine to one PRFactory workspace without a copied
+token (PRFactory's device link):
+
+1. Run `atf login` (`--url https://your-server` for a self-hosted server, plus
+   `--ca-file PEM_FILE` for a private CA; the default is
+   `https://app.prfactory.dev`).
+2. ATF prints a code and opens the link page. Compare the code on the page with
+   the code in the terminal, pick the workspace and select **Link**. With
+   `--no-browser`, open the printed address yourself.
+3. ATF prints `Linked to <workspace> as <person>.` If you did not approve that
+   link, revoke the machine in PRFactory under **Connections → Workers**.
+
+The worker token is written only to the owner-private token file, never to the
+command line or a log. It covers every repository of the workspace, so the
+daemon serves repo-less work at once. To map local checkouts, run
+`atf prfactory connect --repo ID=DIR`: it reuses the linked credential for the
+same server and does not ask for a token. A machine that is connected to
+another server is not relinked; run `atf prfactory disconnect` first. When the
+server rejects the token (revoked), run `atf login` again.
+
 ## Connect
 
 1. In PRFactory settings, create a repository-scoped **worker** token (not an

@@ -19,6 +19,7 @@ public sealed record PRFactorySettings(string Url, RepositoryMapping[] Repositor
 [JsonSerializable(typeof(PRFactorySettings))]
 [JsonSerializable(typeof(string[]))]
 [JsonSerializable(typeof(PRFactoryServerLimit))]
+[JsonSerializable(typeof(PRFactoryLink))]
 internal sealed partial class PRFactorySettingsJson : JsonSerializerContext;
 
 /// <summary>Owner-private, opt-in connector settings. The token is kept apart from printable settings.</summary>
@@ -29,6 +30,8 @@ public static class PRFactoryConnection
     const string RejectedName = "prfactory.rejected";
     const string JoinsName = "prfactory-joins.json";
     const string LimitName = "prfactory-limit.json";
+    // Who approved the `atf login` device link; not secret. Its presence marks the token file as a linked credential.
+    const string LinkName = "prfactory-link.json";
 
     public static int Run(StateDirectory state, string action, IReadOnlyDictionary<string, string> options, IReadOnlyList<string> args, TextReader tokenInput)
     {
@@ -42,6 +45,7 @@ public static class PRFactoryConnection
                 File.Delete(Path.Combine(state.Path, RejectedName));
                 File.Delete(Path.Combine(state.Path, JoinsName));
                 File.Delete(Path.Combine(state.Path, LimitName));
+                File.Delete(Path.Combine(state.Path, LinkName));
                 Console.WriteLine("PRFactory disconnected.");
                 return 0;
             case "release":
@@ -54,6 +58,10 @@ public static class PRFactoryConnection
                     return 0;
                 }
                 Console.WriteLine($"PRFactory enabled: {settings.Url}");
+                if (LoadLink(state) is { } link)
+                {
+                    Console.WriteLine($"Linked with atf login: {link.TenantName} as {link.ApprovedBy}");
+                }
                 Console.WriteLine($"Repo-less intake: {(settings.TenantWideToken && settings.RepoLess ? "enabled (declared tenant-wide token)" : "disabled")}");
                 if (settings.CaFile is not null)
                 {
@@ -89,7 +97,7 @@ public static class PRFactoryConnection
                 }
                 if (File.Exists(Path.Combine(state.Path, RejectedName)))
                 {
-                    Console.WriteLine("Worker token rejected; reconnect with a valid token.");
+                    Console.WriteLine("Worker token rejected; run atf login again, or reconnect with a valid token.");
                 }
                 return 0;
             default:
@@ -135,9 +143,9 @@ public static class PRFactoryConnection
             Console.Error.WriteLine("error: --token is not accepted; pipe the worker token on stdin");
             return 64;
         }
-        if (!options.TryGetValue("url", out var url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri)
-            || uri.Scheme != Uri.UriSchemeHttps || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0
-            || uri.AbsolutePath != "/")
+        // A credential from `atf login` belongs to the server it was linked with; that server is the default --url.
+        var linked = LoadLink(state) is not null ? LoadSettings(state) : null;
+        if ((options.TryGetValue("url", out var requested) ? requested : linked?.Url) is not { } given || ServerUrl(given) is not { } url)
         {
             Console.Error.WriteLine("error: require an HTTPS --url");
             return 64;
@@ -145,17 +153,16 @@ public static class PRFactoryConnection
         string? caFile = null;
         if (options.TryGetValue("ca-file", out var caPath))
         {
-            try
-            {
-                caFile = Path.GetFullPath(caPath);
-                _ = PRFactoryTrust.LoadCa(caFile);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException or FormatException or ArgumentException)
+            caFile = CaFile(caPath);
+            if (caFile is null)
             {
                 Console.Error.WriteLine("error: --ca-file must be a readable PEM file with at least one certificate");
                 return 64;
             }
         }
+        // The linked credential is never sent to another server; it is reused only for the server that issued it.
+        var reuse = linked is not null && linked.Url == url;
+        caFile ??= reuse ? linked!.CaFile : null;
         string? gitHubUser = null;
         if (options.TryGetValue("github-user", out var login))
         {
@@ -167,7 +174,14 @@ public static class PRFactoryConnection
             gitHubUser = login;
         }
         string? token;
-        if (ReferenceEquals(tokenInput, Console.In) && !Console.IsInputRedirected)
+        // The linked credential is reused without reading stdin; --replace-token asks for a new one instead.
+        var usedLink = reuse && !options.ContainsKey("replace-token");
+        if (usedLink)
+        {
+            token = ReadToken(state, url);
+            Console.Error.WriteLine("Using the credential from atf login.");
+        }
+        else if (ReferenceEquals(tokenInput, Console.In) && !Console.IsInputRedirected)
         {
             Console.Error.Write("PRFactory worker token: ");
             token = ReadSecret(() => Console.ReadKey(intercept: true));
@@ -207,7 +221,8 @@ public static class PRFactoryConnection
             }
             mappings.Add(new RepositoryMapping(id, path));
         }
-        var tenantWide = options.GetValueOrDefault("token-scope") == "tenant-wide";
+        // A linked credential covers every repository of the workspace (all repositories, including later ones).
+        var tenantWide = options.GetValueOrDefault("token-scope") == "tenant-wide" || usedLink && !options.ContainsKey("token-scope");
         var repoLess = options.GetValueOrDefault("repo-less") != "false";
         if (options.TryGetValue("token-scope", out var scope) && scope is not ("tenant-wide" or "repository")
             || options.TryGetValue("repo-less", out var enabled) && enabled is not ("true" or "false"))
@@ -247,13 +262,14 @@ public static class PRFactoryConnection
             mappings[index] = mappings[index] with { ExternalMembers = [.. mappings[index].ExternalMembers ?? [], spec[(split + 1)..]] };
         }
 
-        var settings = new PRFactorySettings(uri.GetLeftPart(UriPartial.Path).TrimEnd('/'), [.. mappings], tenantWide, repoLess, caFile, gitHubUser);
+        var settings = new PRFactorySettings(url, [.. mappings], tenantWide, repoLess, caFile, gitHubUser);
         // Publish the token first; a daemon racing this write sees either the old
         // configuration or the new token, and never a partial private file.
-        WritePrivate(Path.Combine(state.Path, TokenName), Encoding.UTF8.GetBytes(token));
+        WritePrivate(Path.Combine(state.Path, TokenName), BoundToken(url, token));
         WritePrivate(Path.Combine(state.Path, SettingsName), JsonSerializer.SerializeToUtf8Bytes(settings, PRFactorySettingsJson.Default.PRFactorySettings));
         File.Delete(Path.Combine(state.Path, RejectedName));
         File.Delete(Path.Combine(state.Path, JoinsName));
+        if (!usedLink) { File.Delete(Path.Combine(state.Path, LinkName)); } // A pasted token is not the linked credential.
         Console.WriteLine("PRFactory enabled. The daemon will register this machine and poll for work items.");
         return 0;
     }
@@ -308,6 +324,54 @@ public static class PRFactoryConnection
         }
     }
 
+    /// <summary>The server root as stored (no trailing slash), or null unless it is an HTTPS root without user info, query or fragment.</summary>
+    internal static string? ServerUrl(string value) =>
+        Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps && uri.UserInfo.Length == 0
+            && uri.Query.Length == 0 && uri.Fragment.Length == 0 && uri.AbsolutePath == "/"
+            ? uri.GetLeftPart(UriPartial.Path).TrimEnd('/') : null;
+
+    /// <summary>The full path of a readable PEM file with at least one certificate, or null.</summary>
+    internal static string? CaFile(string path)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+            _ = PRFactoryTrust.LoadCa(full);
+            return full;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException or FormatException or ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    public static PRFactoryLink? LoadLink(StateDirectory state)
+    {
+        var path = Path.Combine(state.Path, LinkName);
+        return File.Exists(path) ? JsonSerializer.Deserialize(StateDirectory.ReadPrivateFile(path), PRFactorySettingsJson.Default.PRFactoryLink) : null;
+    }
+
+    /// <summary>The server this machine is connected to when it is not <paramref name="url"/>; a link never replaces another server's connection.</summary>
+    internal static string? LinkConflict(StateDirectory state, string url) => LoadSettings(state) is { } existing && existing.Url != url ? existing.Url : null;
+
+    /// <summary>
+    /// Stores a device-link credential: the token first (owner-only), then the settings, so a daemon racing this write never pairs the
+    /// new token with another server. A first link serves the workspace's repo-less work; an existing connection keeps its repositories.
+    /// Returns the other server's URL instead when this machine is connected elsewhere.
+    /// </summary>
+    internal static string? SaveLinked(StateDirectory state, string url, string? caFile, string token, PRFactoryLink link)
+    {
+        var existing = LoadSettings(state);
+        if (existing is not null && existing.Url != url) { return existing.Url; }
+        var settings = existing is null ? new PRFactorySettings(url, [], TenantWideToken: true, RepoLess: true, caFile)
+            : existing with { TenantWideToken = true, CaFile = caFile ?? existing.CaFile };
+        WritePrivate(Path.Combine(state.Path, TokenName), BoundToken(url, token));
+        WritePrivate(Path.Combine(state.Path, SettingsName), JsonSerializer.SerializeToUtf8Bytes(settings, PRFactorySettingsJson.Default.PRFactorySettings));
+        WritePrivate(Path.Combine(state.Path, LinkName), JsonSerializer.SerializeToUtf8Bytes(link, PRFactorySettingsJson.Default.PRFactoryLink));
+        File.Delete(Path.Combine(state.Path, RejectedName));
+        return null;
+    }
+
     static int InvalidMapping()
     {
         Console.Error.WriteLine("error: require unique --repo <repository-guid>=<existing-local-directory> and optional --external <repository-guid>:<recipe-member>");
@@ -333,7 +397,24 @@ public static class PRFactoryConnection
         return settings;
     }
 
-    public static string ReadToken(StateDirectory state) => Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(Path.Combine(state.Path, TokenName)));
+    /// <summary>The stored token, whatever server it is bound to (for tests and the same-server reuse check).</summary>
+    public static string ReadToken(StateDirectory state) => SplitToken(state).Token;
+
+    /// <summary>
+    /// The token only when it is bound to <paramref name="url"/>: the file holds the issuing server's URL on its first line, so a reader that
+    /// loaded one server's settings never sends another server's token, whatever the write order. A one-line file (before the binding) is
+    /// accepted for any URL.
+    /// </summary>
+    public static string? ReadToken(StateDirectory state, string url) => SplitToken(state) is var (bound, token) && (bound is null || bound == url) ? token : null;
+
+    static (string? Url, string Token) SplitToken(StateDirectory state)
+    {
+        var text = Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(Path.Combine(state.Path, TokenName)));
+        var split = text.IndexOf('\n');
+        return split < 0 ? (null, text) : (text[..split], text[(split + 1)..]);
+    }
+
+    static byte[] BoundToken(string url, string token) => Encoding.UTF8.GetBytes(url + "\n" + token);
 
     public static void MarkRejected(StateDirectory state) => WritePrivate(Path.Combine(state.Path, RejectedName), "rejected"u8.ToArray());
 
