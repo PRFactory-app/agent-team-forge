@@ -35,20 +35,30 @@ public sealed class DispatchBusyTests
         var job = f.Submit("k1");
         using var holder = new SqliteConnection($"Data Source={f.DatabasePath};Pooling=False");
         holder.Open();
-        SqliteTransaction? lockTx = null;
+        var retried = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = Task.CompletedTask;
         var backend = new ScriptedBackend(r => [new BackendEvidence.Result(r.Correlation, "done")])
         {
-            // Another writer holds the write lock across the completion write, then lets go.
+            // Another writer holds the write lock across the completion write and lets go once a retry is seen.
             OnStart = request =>
             {
-                lockTx = holder.BeginTransaction(deferred: false);
-                _ = Task.Delay(TimeSpan.FromMilliseconds(2500)).ContinueWith(_ => lockTx!.Rollback(), TaskScheduler.Default);
+                var lockTx = holder.BeginTransaction(deferred: false);
+                release = Task.Run(async () =>
+                {
+                    try { await retried.Task.WaitAsync(Bounded.ScenarioDeadline / 2); }
+                    finally { lockTx.Rollback(); }
+                });
             }
         };
         var logs = new System.Collections.Concurrent.ConcurrentQueue<string>();
         var dispatcher = await Dispatch(f, f.Store, backend,
             () => Bounded.Until(() => f.Store.GetJob(job.JobId)!.Status == JobStatus.Completed, "completed after the lock"),
-            log: logs.Enqueue);
+            log: line =>
+            {
+                logs.Enqueue(line);
+                if (line.Contains("database busy; retry")) { retried.TrySetResult(); }
+            });
+        await release;
 
         Assert.Equal("done", f.Store.GetJob(job.JobId)!.ResultText);
         Assert.Contains(logs, line => line.Contains("database busy; retry"));
