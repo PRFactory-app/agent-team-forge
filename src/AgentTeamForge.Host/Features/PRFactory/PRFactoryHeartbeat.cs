@@ -127,7 +127,7 @@ public static class PRFactoryHeartbeat
                     {
                         PRFactoryConnection.MarkRejected(state);
                     }
-                    log("PRFactory worker token rejected; remote connector stopped");
+                    log("PRFactory worker token rejected; remote connector stopped (run atf login again, or reconnect with a valid token)");
                     try
                     {
                         // Quiesce owned work without erasing acceptance identity.
