@@ -20,7 +20,7 @@ public sealed partial class PRFactoryWorkItems(
     bool allowRepoLess = false, PRFactoryHandoverStore? handovers = null,
     PRFactoryRepositorySet? repositorySets = null, Action<PRFactoryServerLimit?>? onLimit = null,
     PRFactoryPullRequests? pullRequests = null, Func<JobRecord, bool>? reconcileIdleInteractive = null,
-    Func<JobRecord, TokenUsage?>? sessionUsage = null)
+    Func<JobRecord, TokenUsage?>? sessionUsage = null, Func<string, string?>? sandboxDowngrade = null)
 {
     // Parked turns share one account binding per backend until configured accounts exist.
     public const string DefaultAccount = "default";
@@ -103,7 +103,12 @@ public sealed partial class PRFactoryWorkItems(
             {
                 // Worker-native: no team, account or admission slot. A lost completion is retried after lease expiry and is idempotent.
                 if (item.Id == Guid.Empty || pullRequests is null) { continue; }
-                var (claimedPr, prConflict) = await client.ClaimAsync(item.Id, machineId, ct);
+                var (claimedPr, prConflict, prRefused) = await client.ClaimAsync(item.Id, machineId, ct);
+                if (prRefused)
+                {
+                    log?.Invoke($"PRFactory claim of {item.Id:D} refused: sandbox_v1_required; skipping this item");
+                    continue;
+                }
                 if (prConflict)
                 {
                     log?.Invoke($"PRFactory claim of {item.Id:D} refused (409); stopping claims this tick");
@@ -135,7 +140,13 @@ public sealed partial class PRFactoryWorkItems(
             }
             try
             {
-                var (claimed, conflict) = await client.ClaimAsync(item.Id, machineId, ct);
+                var (claimed, conflict, refused) = await client.ClaimAsync(item.Id, machineId, ct);
+                if (refused)
+                {
+                    // Only this item needs a capability the server does not see on this worker; other items stay claimable.
+                    log?.Invoke($"PRFactory claim of {item.Id:D} refused: sandbox_v1_required; skipping this item");
+                    continue;
+                }
                 if (conflict)
                 {
                     // Most likely the server's worker cap; further claims this tick would hit the same refusal.
@@ -281,24 +292,37 @@ public sealed partial class PRFactoryWorkItems(
             throw new InvalidDataException("PRFactory acceptance identity is missing");
         }
 
+        var item = JsonSerializer.Deserialize(team.ClaimedJson, PRFactoryWorkItemJson.Default.PRFactoryWorkItem)
+            ?? throw new InvalidDataException("Invalid persisted PRFactory claim");
+        // A claim made with sandbox-v1 proves the capability on every acceptance request and reports the enforced mode.
+        var sandboxV1 = item.AtfClaimedWithSandboxV1;
         if (team.AcceptanceState is "accepted" or "reconciliation_needed")
         {
             // A fenced team keeps polling only to observe a definitive server disposition.
-            var observed = await client.GetAtfAcceptanceAsync(team.WorkItemId, machine, jobId, ct);
+            var observed = await client.GetAtfAcceptanceAsync(team.WorkItemId, machine, jobId, ct, sandboxV1);
             return await ApplyAcceptanceAsync(team, observed, ct);
         }
 
-        var item = JsonSerializer.Deserialize(team.ClaimedJson, PRFactoryWorkItemJson.Default.PRFactoryWorkItem)
-            ?? throw new InvalidDataException("Invalid persisted PRFactory claim");
         if (item.LeaseToken is not Guid lease || lease == Guid.Empty)
         {
             await FenceAsync(team.WorkItemId, "lease_missing", ct);
             return false;
         }
-        var accepted = await client.AcceptAtfAsync(team.WorkItemId, machine, lease, jobId, ct);
+        // The report is fixed once: saved with the claim before it is sent, so a retry or a restarted daemon reports the same mode.
+        var report = sandboxV1 ? item.AtfReportedSafetyMode is { } saved ? new PRFactorySafetyReport(saved, item.AtfReportedDowngradeReason) : SafetyReport(item) : null;
+        if (report is not null && item.AtfReportedSafetyMode is null)
+        {
+            (item.AtfReportedSafetyMode, item.AtfReportedDowngradeReason) = (report.EffectiveSafetyMode, report.DowngradeReason);
+            teams.SetClaimedJson(server, team.WorkItemId, JsonSerializer.Serialize(item, PRFactoryWorkItemJson.Default.PRFactoryWorkItem));
+        }
+        if (report is { DowngradeReason: { } downgrade })
+        {
+            log?.Invoke($"PRFactory work item {team.WorkItemId:D} is Sandboxed but runs with full access here: {downgrade}");
+        }
+        var accepted = await client.AcceptAtfAsync(team.WorkItemId, machine, lease, jobId, ct, report);
         if (accepted.Result == PRFactoryClient.AcceptanceResult.NotFound)
         {
-            var observed = await client.GetAtfAcceptanceAsync(team.WorkItemId, machine, jobId, ct);
+            var observed = await client.GetAtfAcceptanceAsync(team.WorkItemId, machine, jobId, ct, sandboxV1);
             if (observed.Result != PRFactoryClient.AcceptanceResult.NotFound)
             {
                 return await ApplyAcceptanceAsync(team, observed, ct);
@@ -792,6 +816,11 @@ public sealed partial class PRFactoryWorkItems(
         }
 
         var backend = MapBackend(agent) ?? throw new InvalidDataException($"Unsupported PRFactory backend: {agent}");
+        // A team reported as sandboxed never gets a member that would run with full access (a restarted daemon may enforce less).
+        if (item.AtfReportedSafetyMode == SafetyMode.Sandboxed && SandboxReason(backend) is { } lost)
+        {
+            throw new PRFactoryJobSubmissionException($"PRFactory job submit: the team was reported sandboxed but {backend} now runs with full access ({lost})");
+        }
         // The same key and exact request resolve a lost local acceptance response to one job.
         var prefix = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(server)))[..12];
         var memberKey = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(member)))[..12];
@@ -805,6 +834,9 @@ public sealed partial class PRFactoryWorkItems(
                 Cwd = cwd,
                 // A prepared team workspace is already isolated; never re-pin a second worktree from incidental HEAD.
                 Worktree = !isolated && !item.ReadOnly,
+                // Every member of the team runs in the mode the claim froze; the daemon decides what it can enforce.
+                // A team reported as full access runs full access even when a restarted daemon could now sandbox it.
+                SafetyMode = item.AtfReportedSafetyMode == SafetyMode.FullAccess ? SafetyMode.FullAccess : RequestedSafetyMode(item),
                 Model = model,
                 Effort = effort?.ToString().ToLowerInvariant(),
                 TargetAgent = JobName(item, member),
