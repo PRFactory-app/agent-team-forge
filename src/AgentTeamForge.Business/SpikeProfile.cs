@@ -19,6 +19,7 @@ public sealed record SpikeLimits
     public int QueueLimit { get; init; } = 64;
     public int MaxConcurrentJobs { get; init; } = 16;
     public TimeSpan MaxFakeRuntime { get; init; } = TimeSpan.FromSeconds(60);
-    public TimeSpan BusyTimeout { get; init; } = TimeSpan.FromSeconds(2);
+    // A loaded desktop can hold a write transaction for seconds; a short timeout turns that into storage faults.
+    public TimeSpan BusyTimeout { get; init; } = TimeSpan.FromSeconds(20);
     public TimeSpan FrameReadTimeout { get; init; } = TimeSpan.FromSeconds(5);
 }
