@@ -69,7 +69,9 @@ status, so only the transcript counts). If the agent stays idle for longer than
 the limit, the job fails with `background_wait_expired`. The turn counts as
 ended, so a queued follow-up for that session runs next, in the same pane. The
 background task continues in that pane, and idle close does not close the pane;
-**Stop agent** still does. Windows Terminal and macOS tabs do not limit this
+**Stop agent** still does. After a daemon restart, ATF adopts that pane again
+only when its transcript shows that the task finished; until then the session
+stays fenced. Windows Terminal and macOS tabs do not limit this
 wait: their follow-up replaces the tab, which would stop the background task.
 
 Herdr 0.8.2 exposes `resume_agents_on_restore` only for an entire session.

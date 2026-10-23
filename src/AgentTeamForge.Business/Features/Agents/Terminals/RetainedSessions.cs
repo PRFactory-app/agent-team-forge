@@ -184,8 +184,14 @@ internal sealed class RetainedSessions : IDisposable
     internal void ReleaseNativeTurn(string sessionId)
     {
         InteractiveLaunch? launch;
-        lock (_gate) { if (!_reserved.Remove(sessionId, out launch)) { return; } }
-        if (launch is not null) { Remember(sessionId, launch); }
+        bool pinned;
+        lock (_gate)
+        {
+            if (!_reserved.Remove(sessionId, out launch)) { return; }
+            pinned = _pinned.Contains(sessionId);
+        }
+        // A rolled-back delivery never ran, so a pinned background task may still run: keep the pin.
+        if (launch is not null) { Remember(sessionId, launch, pinned); }
     }
 
     internal void Track(string sessionId, InteractiveLaunch launch)
