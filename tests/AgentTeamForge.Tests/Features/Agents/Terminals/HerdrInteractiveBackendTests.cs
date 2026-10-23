@@ -473,6 +473,78 @@ public sealed class HerdrInteractiveBackendTests
     }
 
     [Fact]
+    public async Task Background_wait_past_its_limit_fails_the_turn_and_releases_a_queued_follow_up()
+    {
+        using var f = new JobFixture();
+        var parent = f.Submit("herdr-background-expired");
+        var next = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
+            .Execute(new FollowUpRequest(parent.JobId, "next", "after-expiry") { Defer = true }).Job!;
+        var claim = f.Store.BeginNextAttempt()!;
+        var reader = new MutableReader(new InteractiveTranscript("claude-native", "waiting", ["waiting"], PendingBackgroundTasks: true)
+        { WaitingOnBackground = true });
+        var control = new FakeControl { Status = InteractiveAgentStatus.Idle };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(),
+            settleTimeout: TimeSpan.FromMilliseconds(20), backgroundWaitLimit: TimeSpan.FromMilliseconds(200));
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        Assert.Null(f.Store.BeginNextAttempt()); // The follow-up waits while the turn waits on its task.
+        await dispatcher.RunAttemptAsync(claim, TestContext.Current.CancellationToken).WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+        var record = f.Store.GetJob(parent.JobId)!;
+        Assert.Equal(JobStatus.Failed, record.Status);
+        Assert.Equal("background_wait_expired", record.ReasonCode);
+        Assert.Equal(next.JobId, f.Store.BeginNextAttempt()!.Job.JobId);
+    }
+
+    [Fact]
+    public async Task Background_wait_past_its_limit_does_not_expire_while_the_pane_works()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("herdr-background-working");
+        var claim = f.Store.BeginNextAttempt()!;
+        var reader = new MutableReader(new InteractiveTranscript("claude-native", "waiting", ["waiting"], PendingBackgroundTasks: true)
+        { WaitingOnBackground = true });
+        var control = new FakeControl { Status = InteractiveAgentStatus.Working };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(),
+            settleTimeout: TimeSpan.FromMilliseconds(20), backgroundWaitLimit: TimeSpan.FromMilliseconds(100));
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        using var deadline = new CancellationTokenSource(Bounded.ScenarioDeadline);
+        var attempt = dispatcher.RunAttemptAsync(claim, deadline.Token);
+        while (f.Store.GetJob(job.JobId)?.ReasonCode != JobWaiting.BackgroundTaskReason)
+        {
+            await Task.Delay(10, deadline.Token);
+        }
+        await Task.Delay(400, deadline.Token); // Four times the limit, with a working pane.
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(job.JobId)!.Status);
+
+        reader.Output = new InteractiveTranscript("claude-native", "DONE", ["waiting", "DONE"], Completed: true);
+        control.Status = InteractiveAgentStatus.Idle;
+        await attempt.WaitAsync(deadline.Token);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(job.JobId)!.Status);
+    }
+
+    [Fact]
+    public async Task Expired_background_wait_keeps_the_pane_out_of_idle_close()
+    {
+        // The task may still run after the wait expired: an idle sweep must not close its pane.
+        var reader = new MutableReader(new InteractiveTranscript("claude-native", "waiting", ["waiting"], PendingBackgroundTasks: true)
+        { WaitingOnBackground = true });
+        var control = new FakeControl { Status = InteractiveAgentStatus.Idle };
+        using var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(),
+            settleTimeout: TimeSpan.FromSeconds(10), idleTimeout: TimeSpan.Zero, backgroundWaitLimit: TimeSpan.FromMilliseconds(100));
+        var run = backend.Start(new BackendRequest("job", "corr", "work", "") { WorkingDirectory = Path.GetTempPath() });
+        await run.DeliverAsync(CancellationToken.None);
+
+        var evidence = await Collect(run, Bounded.ScenarioDeadline);
+        Assert.Equal("background_wait_expired", Assert.IsType<BackendEvidence.AgentError>(evidence[^1]).Code);
+        await run.DisposeAsync();
+        await backend.SweepRetainedAsync();
+
+        Assert.False(control.Stopped);
+        Assert.NotNull(backend.LaunchIdentity("claude-native")); // Still retained for a follow-up in the same pane.
+    }
+
+    [Fact]
     public async Task Blocked_turn_that_completes_while_still_blocked_completes()
     {
         using var f = new JobFixture();
@@ -1075,13 +1147,15 @@ public sealed class HerdrInteractiveBackendTests
     [Fact]
     public async Task UnverifiedProbesThenTranscriptCompletionStillYieldsTheResult()
     {
+        // Six real 250 ms poll delays come before the result: a loaded full-suite run needs more than a few seconds of slack.
         var control = new FakeControl { Statuses = new Queue<InteractiveAgentStatus>(Enumerable.Repeat(InteractiveAgentStatus.Unverified, 6)) };
         var reader = new DelayedReader(6, new InteractiveTranscript("native-1", "finished", ["finished"], Completed: true));
-        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(), TimeSpan.FromSeconds(10));
+        using var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(),
+            settleTimeout: TimeSpan.FromSeconds(10));
         var run = backend.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() });
         await run.DeliverAsync(CancellationToken.None);
 
-        var evidence = await Collect(run, TimeSpan.FromSeconds(5));
+        var evidence = await Collect(run, Bounded.ScenarioDeadline);
         await run.DisposeAsync();
 
         Assert.Contains(new BackendEvidence.Result("corr", "finished"), evidence);
@@ -1104,7 +1178,7 @@ public sealed class HerdrInteractiveBackendTests
         await using var run = backend.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() });
         await run.DeliverAsync(CancellationToken.None);
 
-        var evidence = await Collect(run, TimeSpan.FromSeconds(5));
+        var evidence = await Collect(run, Bounded.ScenarioDeadline);
 
         Assert.Equal(1, control.Prompts);
         Assert.Contains(new BackendEvidence.Result("corr", "finished"), evidence);
@@ -1141,7 +1215,7 @@ public sealed class HerdrInteractiveBackendTests
         var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(), TimeSpan.FromMilliseconds(100));
         await using var run = backend.Start(new BackendRequest("job", "corr", "sleep", "") { WorkingDirectory = Path.GetTempPath() });
         await run.DeliverAsync(CancellationToken.None);
-        var evidence = await Collect(run, TimeSpan.FromSeconds(5));
+        var evidence = await Collect(run, Bounded.ScenarioDeadline);
         Assert.Contains(new BackendEvidence.Result("corr", "DONE"), evidence);
         Assert.DoesNotContain(evidence, e => e is BackendEvidence.ProtocolError);
     }
@@ -1158,7 +1232,7 @@ public sealed class HerdrInteractiveBackendTests
         await using var run = backend.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() });
         await run.DeliverAsync(CancellationToken.None);
 
-        var evidence = await Collect(run, TimeSpan.FromSeconds(5));
+        var evidence = await Collect(run, Bounded.ScenarioDeadline);
 
         Assert.DoesNotContain(new BackendEvidence.Result("corr", "interim"), evidence);
         Assert.Contains(new BackendEvidence.Result("corr", "final"), evidence);

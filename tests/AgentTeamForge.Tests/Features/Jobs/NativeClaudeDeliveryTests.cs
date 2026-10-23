@@ -74,6 +74,48 @@ public sealed class NativeClaudeDeliveryTests
     }
 
     [Fact]
+    public async Task Native_turn_idle_on_a_background_task_past_its_limit_fails_and_releases_the_next_follow_up()
+    {
+        using var fixture = new JobFixture();
+        using var state = new TempStateDir();
+        var claudeHome = Path.Combine(state.Path, "claude");
+        var catalog = Catalog(new ScriptedBackend(request =>
+        [
+            new BackendEvidence.Session(request.Correlation, "claude-bg"),
+            new BackendEvidence.Result(request.Correlation, "ready")
+        ]));
+        var parent = Accept(fixture, catalog).Execute(new SubmitJobRequest("parent", "work", null, false)
+        { Backend = BackendCatalog.Claude, TargetAgent = "bgagent" }).Job!;
+        using var dispatcher = new DispatchJob(fixture.Store, catalog, fixture.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { })
+        { NativeBackgroundWaitLimit = TimeSpan.FromMilliseconds(200) };
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
+        var follow = new FollowUpJob(fixture.Store, JobFixture.Operator, Accept(fixture, catalog));
+        var child = follow.Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+        var claim = fixture.Store.BeginNativeClaudeAttempt(parent.JobId, claudeHome, _ => true)!;
+        fixture.Store.RecordNativeClaudePost(child.JobId, claim.Correlation);
+        // The turn ends on a background build whose task notification never arrives.
+        var dir = Directory.CreateDirectory(Path.Combine(claudeHome, "projects", "scratch"));
+        File.WriteAllLines(Path.Combine(dir.FullName, "claude-bg.jsonl"),
+        [
+            $$$"""{"type":"user","isSidechain":false,"sessionId":"claude-bg","message":{"role":"user","content":"next atf-corr:{{{claim.Correlation}}}"}}""",
+            """{"type":"assistant","isSidechain":false,"sessionId":"claude-bg","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"run_in_background":true}}]}}""",
+            """{"type":"user","isSidechain":false,"sessionId":"claude-bg","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"Running in background"}]},"toolUseResult":{"backgroundTaskId":"task-1"}}""",
+            """{"type":"assistant","isSidechain":false,"sessionId":"claude-bg","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"waiting"}]}}""",
+        ]);
+
+        dispatcher.ReconcileNativeClaude();
+        Assert.Equal(JobStatus.Running, fixture.Store.GetJob(child.JobId)!.Status); // The wait starts.
+        await Task.Delay(300, TestContext.Current.CancellationToken);
+        dispatcher.ReconcileNativeClaude();
+
+        var record = fixture.Store.GetJob(child.JobId)!;
+        Assert.Equal(JobStatus.Failed, record.Status);
+        Assert.Equal("background_wait_expired", record.ReasonCode);
+        var next = follow.Execute(new FollowUpRequest(parent.JobId, "after", "after")).Job!;
+        Assert.Equal(next.JobId, fixture.Store.BeginNativeClaudeAttempt(parent.JobId, claudeHome, _ => true)!.Job.JobId);
+    }
+
+    [Fact]
     public void Busy_child_waits_until_parent_turn_ends()
     {
         using var fixture = new JobFixture();

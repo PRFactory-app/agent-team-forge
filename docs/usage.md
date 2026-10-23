@@ -331,6 +331,12 @@ Herdr pane, or (in macOS terminal mode) from Pi's `--list-models` check run
 beside the tab; there a Pi that has some credential but none for the selected
 model still waits out the startup limit.
 
+An interactive turn that waits on the agent's own background task shows
+`waiting: background_task`. In Herdr, if the agent stays idle on that wait for
+longer than `ATF_BACKGROUND_WAIT_MINUTES` (default 45), the job fails with
+`background_wait_expired` and the next queued turn runs
+([terminal modes](terminal-modes.md#what-interactive-means)).
+
 `needs_reconciliation` is never replayed automatically. A follow-up waits
 until the session is verified idle or stopped. For a live idle Herdr agent (before automatic idle close),
 ATF settles an acknowledged but unobserved (interrupted) turn as `failed` and resumes the next

@@ -25,6 +25,24 @@ public sealed class RetainedSessionsTests
     }
 
     [Fact]
+    public async Task Rolled_back_native_turn_keeps_the_background_pin_until_a_real_settlement()
+    {
+        var stopped = new List<string>();
+        using var sessions = new RetainedSessions(l => stopped.Add(l.AgentName), idleTimeout: TimeSpan.Zero, isIdle: _ => Task.FromResult(true));
+        sessions.Remember("s", Launch(1), pinned: true); // Expired background wait: the task may still run.
+        Assert.True(sessions.TakeForNativeTurn("s"));
+        sessions.ReleaseNativeTurn("s"); // Pre-write delivery failure: the follow-up never ran.
+        await sessions.SweepAsync();
+        Assert.Empty(stopped);
+        Assert.Equal(1, sessions.Count);
+
+        Assert.True(sessions.TakeForNativeTurn("s"));
+        sessions.RememberNativeTurn("s"); // A real settlement ends the pin.
+        await sessions.SweepAsync();
+        Assert.Equal(["atf1"], stopped);
+    }
+
+    [Fact]
     public void Remember_replacing_a_session_closes_the_previous_tab()
     {
         var stopped = new List<string>();
