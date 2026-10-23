@@ -117,9 +117,9 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
                 states[stateKey] = state;
             }
             var current = now();
-            // Codex queues notices until its turn ends. While the member has read nothing since the last post, that
-            // queued notice already covers newer revisions; only the doubling reminder posts again.
-            var held = target.Kind == "codex" && snapshot.External && snapshot.ParkJobId is null && snapshot.LastSuccess is not null && !snapshot.ReadSincePost;
+            // Codex and Claude Code queue notices until the turn ends. While the member has read nothing since the last
+            // post, that queued notice already covers newer revisions; only the doubling reminder posts again.
+            var held = target.Kind is "codex" or "claude" && snapshot.External && snapshot.ParkJobId is null && snapshot.LastSuccess is not null && !snapshot.ReadSincePost;
             if (snapshot.LatestSeq > state.LatestSeq && !held || state.Held && !held)
             {
                 // A newly finished job must not wait behind retry/reminder backoff earned by older ones.
@@ -156,6 +156,9 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
 
             using var routing = await WakeRoutingGate.EnterAsync(cancellationToken);
             if (!store.IsCurrent(target)) { continue; }
+            // A read between the scan and this check consumed the notice; do not announce an empty inbox. Reads do not
+            // take the gate, so a read after this check or a notice already queued in the host can still arrive late.
+            if (snapshot.External && snapshot.ParkJobId is null && !store.HasUnreadExternal(target.Key)) { continue; }
             // Notice-only: job IDs and result content stay in get_job. The external notice carries the inbox
             // revision because Claude Code silently drops a channel message repeating the previous body within 30s.
             var notice = snapshot.ParkJobId is not null

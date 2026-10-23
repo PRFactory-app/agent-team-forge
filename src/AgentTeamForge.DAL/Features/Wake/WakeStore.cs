@@ -304,6 +304,15 @@ public sealed class WakeStore(JobDatabase database)
         return command.ExecuteNonQuery() == 1;
     }
 
+    public bool HasUnreadExternal(string targetKey)
+    {
+        using var connection = database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT EXISTS (SELECT 1 FROM external_messages WHERE wake_key=$key AND read_at IS NULL)";
+        command.Parameters.AddWithValue("$key", targetKey);
+        return (long)command.ExecuteScalar()! == 1;
+    }
+
     public bool IsCurrent(WakeRegistration target)
     {
         using var connection = database.OpenConnection();
