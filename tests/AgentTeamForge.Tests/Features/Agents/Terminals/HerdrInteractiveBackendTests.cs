@@ -1126,13 +1126,15 @@ public sealed class HerdrInteractiveBackendTests
     [Fact]
     public async Task UnverifiedProbesThenTranscriptCompletionStillYieldsTheResult()
     {
+        // Six real 250 ms poll delays come before the result: a loaded full-suite run needs more than a few seconds of slack.
         var control = new FakeControl { Statuses = new Queue<InteractiveAgentStatus>(Enumerable.Repeat(InteractiveAgentStatus.Unverified, 6)) };
         var reader = new DelayedReader(6, new InteractiveTranscript("native-1", "finished", ["finished"], Completed: true));
-        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(), TimeSpan.FromSeconds(10));
+        using var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(),
+            settleTimeout: TimeSpan.FromSeconds(10));
         var run = backend.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() });
         await run.DeliverAsync(CancellationToken.None);
 
-        var evidence = await Collect(run, TimeSpan.FromSeconds(5));
+        var evidence = await Collect(run, Bounded.ScenarioDeadline);
         await run.DisposeAsync();
 
         Assert.Contains(new BackendEvidence.Result("corr", "finished"), evidence);
@@ -1155,7 +1157,7 @@ public sealed class HerdrInteractiveBackendTests
         await using var run = backend.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() });
         await run.DeliverAsync(CancellationToken.None);
 
-        var evidence = await Collect(run, TimeSpan.FromSeconds(5));
+        var evidence = await Collect(run, Bounded.ScenarioDeadline);
 
         Assert.Equal(1, control.Prompts);
         Assert.Contains(new BackendEvidence.Result("corr", "finished"), evidence);
@@ -1192,7 +1194,7 @@ public sealed class HerdrInteractiveBackendTests
         var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(), TimeSpan.FromMilliseconds(100));
         await using var run = backend.Start(new BackendRequest("job", "corr", "sleep", "") { WorkingDirectory = Path.GetTempPath() });
         await run.DeliverAsync(CancellationToken.None);
-        var evidence = await Collect(run, TimeSpan.FromSeconds(5));
+        var evidence = await Collect(run, Bounded.ScenarioDeadline);
         Assert.Contains(new BackendEvidence.Result("corr", "DONE"), evidence);
         Assert.DoesNotContain(evidence, e => e is BackendEvidence.ProtocolError);
     }
@@ -1209,7 +1211,7 @@ public sealed class HerdrInteractiveBackendTests
         await using var run = backend.Start(new BackendRequest("job", "corr", "text", "") { WorkingDirectory = Path.GetTempPath() });
         await run.DeliverAsync(CancellationToken.None);
 
-        var evidence = await Collect(run, TimeSpan.FromSeconds(5));
+        var evidence = await Collect(run, Bounded.ScenarioDeadline);
 
         Assert.DoesNotContain(new BackendEvidence.Result("corr", "interim"), evidence);
         Assert.Contains(new BackendEvidence.Result("corr", "final"), evidence);
