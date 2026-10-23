@@ -142,6 +142,9 @@ public static class SandboxedWorktrees
 
     public static void ClearLive(string root) => Live.AddOrUpdate(root, 0, (_, count) => Math.Max(0, count - 1));
 
+    /// <summary>Whether an agent of the registered worktree containing <paramref name="directory"/> runs now (daemon git refuses there).</summary>
+    public static bool IsLive(string directory) => Find(directory) is { NoGit: false } entry && Live.TryGetValue(entry.Root, out var live) && live > 0;
+
     static Entry? Find(string directory)
     {
         var start = Canonical(directory);
@@ -176,7 +179,12 @@ public static class SandboxedWorktrees
             if (Canonical(admin) != entry.Admin) { return "admin_dir_moved"; }
             var pointer = Path.Combine(admin, "commondir");
             if (!File.Exists(pointer) || IsLink(pointer) || Canonical(GitLayout.ResolveCommon(admin)) != entry.Common) { return "common_dir_changed"; }
-            if (File.Exists(Path.Combine(admin, "config.worktree"))) { return "config_worktree_present"; }
+            // Git reads config.worktree when the repository enables extensions.worktreeConfig. Claude's sandbox creates an empty one at start
+            // (A6 finding F1); only an empty regular file is harmless. Its type and size come from stat and it is never opened.
+            if (Path.Exists(Path.Combine(admin, "config.worktree")) && !IsEmptyRegularFile(Path.Combine(admin, "config.worktree")))
+            {
+                return "config_worktree_present";
+            }
             return Directory.EnumerateFileSystemEntries(admin).Any(IsLink) ? "symlink_in_git_dir" : null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -197,6 +205,27 @@ public static class SandboxedWorktrees
         if (resolved is null) { return null; }
         resolved = Path.TrimEndingDirectorySeparator(resolved);
         return SandboxLaunch.Contains(root, resolved) ? resolved : null;
+    }
+
+    /// <summary>Unix <c>stat</c> without following a link: true only for a regular file of size zero (not a FIFO, socket, device or link).</summary>
+    static bool IsEmptyRegularFile(string file)
+    {
+        if (OperatingSystem.IsWindows()) { return !IsLink(file) && File.Exists(file) && new FileInfo(file).Length == 0; }
+        var info = new ProcessStartInfo("stat") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        info.ArgumentList.Add(OperatingSystem.IsMacOS() ? "-f" : "-c");
+        info.ArgumentList.Add(OperatingSystem.IsMacOS() ? "%HT:%z" : "%F:%s");
+        info.ArgumentList.Add(file);
+        info.Environment["LC_ALL"] = "C"; // The type names are matched as English text.
+        try
+        {
+            using var process = Process.Start(info);
+            if (process is null) { return false; }
+            var output = process.StandardOutput.ReadToEndAsync();
+            _ = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(ConfigTimeout)) { process.Kill(); return false; }
+            return process.ExitCode == 0 && output.Result.Trim() is "regular empty file:0" or "Regular File:0";
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { return false; }
     }
 
     static bool IsLink(string path) => (File.Exists(path) || Directory.Exists(path)) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
