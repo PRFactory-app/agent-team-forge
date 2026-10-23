@@ -337,6 +337,31 @@
     $('settings-idle-minutes').value = settings.idle_close_minutes === -1 ? 5 : settings.idle_close_minutes;
   }
 
+  let sandboxDefaults = null;
+
+  function showSandboxSettings(settings) {
+    $('sandbox-network').checked = settings.network;
+    $('sandbox-domains').value = (settings.allowed_domains || []).join('\n');
+    $('sandbox-caches').value = (settings.cache_paths || []).join('\n');
+    const skipped = settings.skipped_cache_paths || [];
+    $('sandbox-skipped').hidden = !skipped.length;
+    $('sandbox-skipped').textContent = skipped.length ? 'Not on this machine, skipped at launch: ' + skipped.join(', ') : '';
+  }
+
+  async function loadSandboxSettings() {
+    const r = await api('GET', '/api/settings/sandbox');
+    if (!r?.ok) { $('sandbox-status').textContent = r?.error_detail || r?.error || 'Could not load sandbox settings.'; return; }
+    sandboxDefaults = { network: true, allowed_domains: r.sandbox.default_allowed_domains, cache_paths: r.sandbox.default_cache_paths };
+    showSandboxSettings(r.sandbox);
+    $('sandbox-status').textContent = r.sandbox.profile_error
+      ? 'profile.json cannot be read; the last good settings stay in force: ' + r.sandbox.profile_error : '';
+    $('sandbox-status').className = r.sandbox.profile_error ? 'error' : '';
+  }
+
+  function sandboxLines(id) {
+    return $(id).value.split('\n').map(line => line.trim()).filter(line => line.length);
+  }
+
   async function loadTierSettings() {
     const r = await api('GET', '/api/settings/tiers');
     if (!r?.ok) { $('settings-status').textContent = r?.error || 'Could not load settings.'; return; }
@@ -2311,6 +2336,7 @@
       showView('settings');
       await loadTierSettings();
       await loadRetentionSettings();
+      await loadSandboxSettings();
       if (herdrMode) {
         const placement = await api('GET', '/api/settings/herdr-placement');
         if (placement?.ok) setPlacementControls('settings', placement.herdr_placement);
@@ -2330,6 +2356,25 @@
       markInvalid({ max_retained_sessions: $('settings-max-retained'), idle_close_minutes: $('settings-idle-minutes') }, r?.ok ? null : r?.field);
       showOutcome($('retention-status'), r, 'Saved. Applies on the next idle sweep.', 'Could not save idle settings.');
       button.disabled = false;
+    });
+    $('sandbox-settings').addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = event.currentTarget.querySelector('button[type=submit]');
+      button.disabled = true;
+      const r = await api('PUT', '/api/settings/sandbox', {
+        network: $('sandbox-network').checked,
+        allowed_domains: sandboxLines('sandbox-domains'),
+        cache_paths: sandboxLines('sandbox-caches'),
+      });
+      if (r?.ok) showSandboxSettings(r.sandbox);
+      showOutcome($('sandbox-status'), r, 'Saved. Applies at the next sandboxed job launch.', 'Could not save sandbox settings.');
+      button.disabled = false;
+    });
+    $('sandbox-defaults').addEventListener('click', () => {
+      if (!sandboxDefaults) return;
+      showSandboxSettings(sandboxDefaults);
+      $('sandbox-status').textContent = 'Defaults filled in. Save to apply them.';
+      $('sandbox-status').className = '';
     });
     $('settings-back').addEventListener('click', () => showView(prevView));
     for (const button of document.querySelectorAll('[data-view]')) button.addEventListener('click', () => showView(button.dataset.view));

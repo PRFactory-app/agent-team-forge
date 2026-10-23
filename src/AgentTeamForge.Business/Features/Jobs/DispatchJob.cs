@@ -47,6 +47,8 @@ public sealed class DispatchJob : IDisposable
     readonly string? stateRoot;
     readonly string codexHome = CodexPaths.Home(Environment.GetEnvironmentVariable, Environment.CurrentDirectory);
     internal Func<string, string, string, CancellationToken, Task<CodexSubmission>> SubmitNativeCodex { get; init; } = CodexQueueWake.SubmitAsync;
+    /// <summary>This machine's sandbox settings, read at each sandboxed launch so a change applies to the next launch.</summary>
+    public Func<SandboxSettings> SandboxSettings { get; init; } = () => Agents.Backends.SandboxSettings.Default;
     string? _haltReason;
 
     /// <summary>Single-backend convenience: serves jobs whose backend is "fake".</summary>
@@ -958,7 +960,11 @@ public sealed class DispatchJob : IDisposable
                             End(run, JobStatus.Failed, SandboxedWorktrees.TamperedReason, untrusted);
                             return;
                         }
-                        request = request with { Sandbox = SandboxLaunch.Create(launchDirectory, claim.Job.Backend, sandboxDirectory, claim.Job.JobId, trustedLayout: layout) };
+                        request = request with
+                        {
+                            Sandbox = SandboxLaunch.Create(launchDirectory, claim.Job.Backend, sandboxDirectory, claim.Job.JobId, trustedLayout: layout,
+                                settings: SandboxSettings(), stateRoot: stateRoot)
+                        };
                     }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                     {

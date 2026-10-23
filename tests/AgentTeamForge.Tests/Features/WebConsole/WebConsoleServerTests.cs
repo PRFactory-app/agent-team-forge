@@ -110,6 +110,91 @@ public sealed class WebConsoleServerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Sandbox_settings_round_trip_through_the_console_into_profile_json()
+    {
+        using var temp = new TempStateDir();
+        Assert.Equal(0, InitCommand.Run(temp.File("state"), testProfile: true, queueLimit: null, maxRuntimeSeconds: null));
+        var state = AgentTeamForge.Host.Hosting.StateDirectory.Open(temp.File("state"));
+        var settings = new SandboxConfiguration(state, ProfileFile.Load(state).Sandbox);
+        Daemon = r => Task.FromResult(settings.Handle(r));
+        const string path = "/api/settings/sandbox";
+
+        var (_, initial) = await Send(Api(HttpMethod.Get, path));
+        Assert.True(initial.Sandbox!.Network);
+        Assert.Equal(AgentTeamForge.Business.Features.Agents.Backends.SandboxPolicy.DefaultAllowedDomains, initial.Sandbox.AllowedDomains);
+        Assert.Equal(initial.Sandbox.DefaultCachePaths, initial.Sandbox.CachePaths);
+
+        var (status, saved) = await Send(Api(HttpMethod.Put, path, origin: Origin,
+            json: """{"network":false,"allowed_domains":["example.com","*.example.org"],"cache_paths":["~/atf-test-cache-missing"]}"""));
+        Assert.Equal((HttpStatusCode.OK, true), (status, saved.Ok));
+        Assert.Equal(["~/atf-test-cache-missing"], saved.Sandbox!.SkippedCachePaths); // Kept, but skipped at launch until it exists.
+        var current = settings.Current; // What the next launch reads.
+        Assert.False(current.Network);
+        Assert.Equal(["example.com", "*.example.org"], current.AllowedDomains);
+        var profile = ProfileFile.Load(state);
+        Assert.Equal(["~/atf-test-cache-missing"], profile.SandboxCachePaths);
+        Assert.False(string.IsNullOrEmpty(profile.Principal)); // The other keys are kept.
+
+        foreach (var invalid in new[]
+        {
+            """{"network":true,"allowed_domains":["*"],"cache_paths":[]}""",
+            """{"network":true,"allowed_domains":["*.com"],"cache_paths":[]}""",
+            """{"network":true,"allowed_domains":[],"cache_paths":["~/.ssh"]}""",
+            """{"network":true,"allowed_domains":[],"cache_paths":["~/.config"]}""",
+            """{"allowed_domains":[],"cache_paths":[]}""",
+            """{"network":true,"allowed_domains":[null],"cache_paths":[]}""",
+            """{"network":true,"allowed_domains":[],"cache_paths":[null]}""",
+            """{"network":true,"allowed_domains":[],"cache_paths":["/bad\u0000path"]}""",
+        })
+        {
+            var (_, refused) = await Send(Api(HttpMethod.Put, path, origin: Origin, json: invalid));
+            Assert.False(refused.Ok, invalid);
+        }
+        Assert.Equal(["example.com", "*.example.org"], settings.Current.AllowedDomains); // A refused change leaves the saved one.
+        Assert.Equal(["~/atf-test-cache-missing"], ProfileFile.Load(state).SandboxCachePaths);
+        // The shared handler applies the list limits too, not only the web adapter.
+        Assert.False(settings.Handle(new IpcRequest
+        {
+            Op = IpcProtocol.SandboxSettingsPut,
+            SandboxNetwork = true,
+            SandboxAllowedDomains = [.. Enumerable.Repeat("example.com", 201)],
+            SandboxCachePaths = [],
+        }).Ok);
+    }
+
+    [Fact]
+    public void Sandbox_settings_fall_back_to_the_validated_startup_profile_never_to_the_defaults()
+    {
+        using var temp = new TempStateDir();
+        Assert.Equal(0, InitCommand.Run(temp.File("state"), testProfile: true, queueLimit: null, maxRuntimeSeconds: null));
+        var state = AgentTeamForge.Host.Hosting.StateDirectory.Open(temp.File("state"));
+        var valid = File.ReadAllText(state.ProfileFile);
+        var restrictive = System.Text.Json.Nodes.JsonNode.Parse(valid)!.AsObject();
+        restrictive["sandbox_network"] = false;
+        restrictive["sandbox_allowed_domains"] = new System.Text.Json.Nodes.JsonArray("example.com");
+        restrictive["sandbox_cache_paths"] = new System.Text.Json.Nodes.JsonArray();
+        File.WriteAllText(state.ProfileFile, restrictive.ToJsonString());
+        var settings = new SandboxConfiguration(state, ProfileFile.Load(state).Sandbox); // As the daemon does at start.
+
+        File.WriteAllText(state.ProfileFile, "{ not json"); // Corrupted before the first launch reads it.
+        var fallback = settings.Current;
+        Assert.False(fallback.Network);
+        Assert.Equal(["example.com"], fallback.AllowedDomains);
+        Assert.Empty(fallback.CachePaths);
+        Assert.NotNull(settings.Handle(new IpcRequest { Op = IpcProtocol.SandboxSettingsGet }).Sandbox!.ProfileError); // The page shows it.
+
+        restrictive["sandbox_cache_paths"] = new System.Text.Json.Nodes.JsonArray("/bad\u0000path"); // A hand edit the validator refuses.
+        File.WriteAllText(state.ProfileFile, restrictive.ToJsonString());
+        Assert.False(settings.Current.Network); // No exception; the last good settings stay.
+
+        restrictive["sandbox_network"] = true;
+        restrictive["sandbox_cache_paths"] = new System.Text.Json.Nodes.JsonArray();
+        File.WriteAllText(state.ProfileFile, restrictive.ToJsonString());
+        Assert.True(settings.Current.Network); // A valid rewrite applies again.
+        Assert.Null(settings.Handle(new IpcRequest { Op = IpcProtocol.SandboxSettingsGet }).Sandbox!.ProfileError);
+    }
+
+    [Fact]
     public async Task Retention_settings_validate_persist_and_apply_to_live_sessions()
     {
         using var temp = new TempStateDir();

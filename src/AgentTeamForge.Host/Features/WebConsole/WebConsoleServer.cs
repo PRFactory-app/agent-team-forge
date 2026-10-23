@@ -26,6 +26,7 @@ public sealed record WebLeadMessageBody(string? Text, string? Workspace, string?
 public sealed record WebRetentionBody(int? MaxRetainedSessions, JsonElement IdleCloseMinutes);
 public sealed record WebTierBody(string? Backend, string? Tier, string? Model, string? Effort, bool ResetAll = false);
 public sealed record WebHerdrPlacementBody(string? HerdrPlacement);
+public sealed record WebSandboxBody(bool? Network, string[]? AllowedDomains, string[]? CachePaths);
 public sealed record WebBulkBody(bool DryRun);
 public sealed record WebDirectoryEntry(string Name, string Path);
 public sealed record WebDirectoryList(string Path, string? Parent, IReadOnlyList<WebDirectoryEntry> Directories);
@@ -38,6 +39,7 @@ public sealed record WebDirectoryList(string Path, string? Parent, IReadOnlyList
 [JsonSerializable(typeof(WebTierBody))]
 [JsonSerializable(typeof(WebRetentionBody))]
 [JsonSerializable(typeof(WebHerdrPlacementBody))]
+[JsonSerializable(typeof(WebSandboxBody))]
 [JsonSerializable(typeof(WebDirectoryList))]
 [JsonSerializable(typeof(WebBulkBody))]
 public sealed partial class WebConsoleJson : JsonSerializerContext;
@@ -205,6 +207,8 @@ public sealed class WebConsoleServer : IAsyncDisposable
             ("PUT", ["settings", "tiers"]) => await ReadTierAsync(ctx),
             ("GET", ["settings", "herdr-placement"]) => new IpcRequest { Op = IpcProtocol.HerdrPlacementGet },
             ("PUT", ["settings", "herdr-placement"]) => await ReadHerdrPlacementAsync(ctx),
+            ("GET", ["settings", "sandbox"]) => new IpcRequest { Op = IpcProtocol.SandboxSettingsGet },
+            ("PUT", ["settings", "sandbox"]) => await ReadSandboxAsync(ctx),
             ("POST", ["jobs"]) => await ReadSubmitAsync(ctx),
             ("GET", ["jobs", "stop-idle-agents"]) => new IpcRequest { Op = IpcProtocol.JobStopIdleStatus },
             ("GET", ["jobs", var id]) when ValidId(id) => new IpcRequest { Op = IpcProtocol.JobGet, JobId = id, IncludeConnector = true, IncludeInstruction = true },
@@ -408,6 +412,22 @@ public sealed class WebConsoleServer : IAsyncDisposable
         if (body is null) { return null; }
         return body.HerdrPlacement is null ? await Invalid(ctx, "herdr_placement", "Choose a Herdr session.")
             : new IpcRequest { Op = IpcProtocol.HerdrPlacementPut, HerdrPlacement = body.HerdrPlacement };
+    }
+
+    static async Task<IpcRequest?> ReadSandboxAsync(HttpContext ctx)
+    {
+        var body = await ReadBodyAsync(ctx, WebConsoleJson.Default.WebSandboxBody);
+        if (body is null) { return null; }
+        if (body.Network is null) { return await Invalid(ctx, "network", "Choose whether sandboxed jobs have network access."); }
+        if (body.AllowedDomains is null || body.AllowedDomains.Length > Setup.SandboxConfiguration.MaxDomains) { return await Invalid(ctx, "allowed_domains", "List at most 200 domains."); }
+        if (body.CachePaths is null || body.CachePaths.Length > Setup.SandboxConfiguration.MaxCachePaths) { return await Invalid(ctx, "cache_paths", "List at most 100 cache paths."); }
+        return new IpcRequest
+        {
+            Op = IpcProtocol.SandboxSettingsPut,
+            SandboxNetwork = body.Network,
+            SandboxAllowedDomains = body.AllowedDomains,
+            SandboxCachePaths = body.CachePaths,
+        };
     }
 
     static async Task<IpcRequest?> ReadSubmitAsync(HttpContext ctx)

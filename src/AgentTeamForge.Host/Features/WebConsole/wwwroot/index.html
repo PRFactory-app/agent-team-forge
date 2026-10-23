@@ -131,6 +131,22 @@
       <span id="retention-status" role="status"></span>
       <p class="note">0 for either limit retains no idle agents.</p>
     </form>
+    <h3>Sandbox</h3>
+    <p class="note">Applies to sandboxed Codex and Claude jobs on this machine. A change takes effect at the next job launch; running agents keep the settings they started with. No daemon restart is needed.</p>
+    <form id="sandbox-settings">
+      <label><input id="sandbox-network" type="checkbox"> Network on in sandboxed jobs</label>
+      <p class="note">On: Codex has unrestricted network, and Claude reaches only the domains below. Off: no network for either.</p>
+      <label for="sandbox-domains">Claude allowed domains (one per line)</label>
+      <textarea id="sandbox-domains" rows="8" spellcheck="false" autocomplete="off"></textarea>
+      <p class="note">A host (github.com) or a subdomain pattern (*.github.com). Claude refuses "*" and patterns such as "*.com".</p>
+      <label for="sandbox-caches">Writable cache paths (one per line)</label>
+      <textarea id="sandbox-caches" rows="8" spellcheck="false" autocomplete="off"></textarea>
+      <p class="note">Absolute, or starting with ~/. Both CLIs may write these package caches. ~/.ssh, ~/.aws, ~/.config/gh and ~/.netrc always stay denied, and a path that contains one is refused. A path that does not exist on this machine is skipped at launch.</p>
+      <p id="sandbox-skipped" class="note" hidden></p>
+      <button type="submit">Save sandbox settings</button>
+      <button id="sandbox-defaults" type="button">Restore defaults</button>
+      <span id="sandbox-status" role="status"></span>
+    </form>
     <h3>Capability tiers</h3>
     <div id="tier-settings"></div>
     <div class="settings-actions"><button id="tiers-reset-all" type="button">Reset all to default</button><span id="settings-status" role="status"></span></div>

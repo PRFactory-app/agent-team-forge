@@ -187,8 +187,10 @@ public sealed class SafetyModeTests
         Assert.Equal(reason, thirdResult.Job.SafetyDowngradeReason);
     }
 
-    [Fact]
-    public async Task Fake_backend_scenario_launches_sandboxed_in_a_worktree_with_the_stored_options()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Fake_backend_scenario_launches_sandboxed_in_a_worktree_with_the_stored_options(bool networkOptOut)
     {
         using var f = new JobFixture();
         using var source = new TempStateDir();
@@ -198,7 +200,9 @@ public sealed class SafetyModeTests
         var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
         var job = Accept(f).Execute(new SubmitJobRequest("k", "task", null, false) { Cwd = source.Path, Worktree = true, SafetyMode = SafetyMode.Sandboxed }).Job!;
 
-        using (var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { }, stateRoot: Path.GetDirectoryName(f.DatabasePath)))
+        using (var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { },
+            stateRoot: Path.GetDirectoryName(f.DatabasePath))
+        { SandboxSettings = () => SandboxSettings.Default with { Network = !networkOptOut } })
         {
             await dispatcher.RunAttemptAsync(f.Store.BeginNextAttempt()!, CancellationToken.None);
         }
@@ -210,6 +214,7 @@ public sealed class SafetyModeTests
         Assert.Equal(Path.Combine(source.Path, ".git"), started.Sandbox.GitCommonDir);
         Assert.Contains(Path.Combine(source.Path, ".git", "worktrees"), started.Sandbox.GitDir);
         Assert.Null(SandboxedWorktrees.Validate(job.WorktreePath!));
+        Assert.Equal(!networkOptOut, started.Sandbox.Network); // Network on unless the machine's profile opts out.
     }
 
     [Fact]

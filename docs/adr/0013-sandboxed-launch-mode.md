@@ -132,7 +132,8 @@ three; it cannot be combined with `-s`.
    `network.allowManagedDomainsOnly` would suppress it but is honoured only
    from managed (system) settings. `dontAsk` auto-denies instead (curl gets
    `403` from the sandbox proxy).
-6. **Network is off by default** in both. When on: Claude per domain
+6. **Network is off by default** in both CLIs (the tested CLI behaviour; ATF
+   turns it on, see the A5 implementation notes). When on: Claude per domain
    (`allowedDomains`, through its proxy); Codex v1 deliberately uses
    **unrestricted direct network** (`permissions.<p>.network.enabled=true`).
    Codex's domain-limited proxy (`permissions.<p>.network.domains` with
@@ -373,7 +374,33 @@ notes (A2)". For every other directory it sets only `GIT_TERMINAL_PROMPT=0`.
   `sandbox_worktree_tampered` and nothing launches. The resolved path is what the agent
   gets.
 - The network rule, package caches and extra deny-read paths are `SandboxPolicy` and
-  belong to A5: today a sandboxed launch has no network and no cache directories.
+  belong to A5. Network rule (PRFactory contract): network stays on in a sandboxed
+  launch. Codex gets `network.enabled=true` (unrestricted); Claude gets
+  `sandbox.network.allowedDomains`, because Claude refuses `*` there. The per-machine
+  opt-in `"sandbox_network": false` in `profile.json` turns the network off for both.
+- Per-machine lists (PO decision): `profile.json` keeps `sandbox_allowed_domains`
+  (Claude's domain list) and `sandbox_cache_paths` (writable package caches); absent
+  keys mean the defaults in `SandboxPolicy`. The web console Settings edits them over
+  IPC (`sandbox_settings_get`/`_put`), which validates and rewrites only these keys.
+  The dispatcher reads the profile at each sandboxed launch, so a change applies to
+  the next launch without a restart; an unreadable or invalid profile keeps the last
+  good settings, seeded with the profile the daemon validated at start (never the
+  defaults), and the Settings view reports the read error. Domain entries are a host or `*.` plus a registered domain; `*`, `*.*`,
+  `*.<tld>`, schemes, paths and ports are refused. A cache path becomes a Codex
+  `"<path>"="write"` filesystem entry and a Claude `sandbox.filesystem.allowWrite`
+  entry. Hard rule: a cache path that equals, contains or lies inside `~/.ssh`,
+  `~/.aws`, `~/.config/gh` or `~/.netrc`, the root,
+  the home directory or one of its parents, or that overlaps the ATF state dir is
+  refused at save and dropped again at launch. Both sides (cache, secrets, home, state
+  dir) are compared as written and as resolved through every symlink; an unresolvable
+  path is refused. The launch emits the validated physical path, never the configured
+  spelling, so retargeting a cache link after `SandboxLaunch.Create` cannot move the
+  grant. Each entry is resolved once, and that one snapshot is both checked and
+  granted, so a retarget between check and grant cannot slip in; a cache inside another writable root (the workspace, git allowances, another
+  cache) is dropped, since its parents are agent-writable. `~/.dotnet` is deliberately not a default (its `tools` directory is
+  on `PATH`). Null or NUL list entries are validation errors. A cache path that does not exist is
+  skipped, not created (Codex refuses a nonexistent path). Codex stays unrestricted
+  when the network is on.
   Only two modes exist, Sandboxed and Full access (PO decision); a read-only mode is a
   later change to this ADR.
 - Deny-read (PO decision): the shell cannot read `~/.ssh`, `~/.aws`, `~/.config/gh` and

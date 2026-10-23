@@ -5,12 +5,17 @@ using AgentTeamForge.DAL.Files;
 namespace AgentTeamForge.Business.Features.Agents.Backends;
 
 /// <summary>
-/// The sandbox policy that A5 (network rule) owns: ADR 0013 fixes the shape, the network and cache values are filled by that item.
-/// Until then a sandboxed launch has no network and no package caches.
+/// The sandbox policy that A5 (network rule) owns: ADR 0013 fixes the shape. Network stays on by default (PRFactory contract). Each machine
+/// can turn it off and edit the Claude domain list and the writable cache paths (<see cref="SandboxSettings"/>, kept in profile.json).
 /// </summary>
-public static class SandboxPolicy
+public static partial class SandboxPolicy
 {
     static readonly string[] SecretPaths = ["~/.ssh", "~/.aws", "~/.config/gh", "~/.netrc"];
+
+    /// <summary>The home directory the sandbox paths are relative to: an absolute <c>HOME</c>, else the user profile.</summary>
+    public static string Home() =>
+        Environment.GetEnvironmentVariable("HOME") is { Length: > 0 } configured && Path.IsPathFullyQualified(configured)
+            ? configured : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
     /// <summary>
     /// Paths a shell cannot read: the secret locations that exist on this machine (PO decision; a nonexistent path is skipped so Codex does not
@@ -18,14 +23,178 @@ public static class SandboxPolicy
     /// </summary>
     public static IReadOnlyList<string> DenyRead(string? home = null)
     {
-        home ??= Environment.GetEnvironmentVariable("HOME") is { Length: > 0 } configured && Path.IsPathFullyQualified(configured)
-            ? configured : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        home ??= Home();
         return [.. SecretPaths.Where(p => Path.Exists(Path.Combine(home, p[2..])))];
     }
 
-    public static bool NetworkEnabled => false;
-    public static IReadOnlyList<string> AllowedDomains => [];
-    public static IReadOnlyList<string> CacheDirectories => [];
+    /// <summary>
+    /// The default Claude domain list. Claude's sandbox proxy reaches only listed domains and refuses a bare <c>*</c>, so "network on" for
+    /// Claude is this list of git hosts and package registries. Codex network on is unrestricted (ADR 0013, v1).
+    /// </summary>
+    public static IReadOnlyList<string> DefaultAllowedDomains { get; } =
+    [
+        "github.com", "*.github.com", "*.githubusercontent.com", "gitlab.com", "*.gitlab.com", "bitbucket.org", "*.bitbucket.org",
+        "dev.azure.com", "*.visualstudio.com", "api.nuget.org", "*.nuget.org", "dot.net", "*.dot.net", "registry.npmjs.org",
+        "*.npmjs.org", "registry.yarnpkg.com", "pypi.org", "files.pythonhosted.org", "proxy.golang.org", "sum.golang.org",
+        "crates.io", "*.crates.io", "repo.maven.apache.org", "repo1.maven.org",
+    ];
+
+    /// <summary>
+    /// The default writable package caches, as the tools place them on this OS: NuGet (packages, its HTTP and plugin cache and, on Linux, the
+    /// <c>/tmp/.dotnet</c> named-mutex directory restores need), npm, yarn, pip, Cargo and the Go module cache.
+    /// </summary>
+    public static IReadOnlyList<string> DefaultCachePaths() =>
+        OperatingSystem.IsWindows()
+            ? ["~/.nuget/packages", "~/AppData/Local/NuGet", "~/AppData/Local/npm-cache", "~/AppData/Local/Yarn/Cache", "~/AppData/Local/pip/Cache",
+                "~/.cargo/registry", "~/.cargo/git", "~/go/pkg/mod"]
+            : OperatingSystem.IsMacOS()
+                ? ["~/.nuget/packages", "~/.local/share/NuGet", "~/.npm", "~/Library/Caches/Yarn", "~/Library/Caches/pip",
+                    "~/.cargo/registry", "~/.cargo/git", "~/go/pkg/mod"]
+                : ["~/.nuget/packages", "~/.local/share/NuGet", "/tmp/.dotnet", "~/.npm", "~/.cache/yarn", "~/.cache/pip",
+                    "~/.cargo/registry", "~/.cargo/git", "~/go/pkg/mod"];
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"^(\*\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?\z")]
+    private static partial System.Text.RegularExpressions.Regex DomainPattern();
+
+    /// <summary>
+    /// Why Claude would reject this domain entry, or null when it is valid: a host (<c>github.com</c>) or a subdomain pattern
+    /// (<c>*.github.com</c>) in lower case. A bare <c>*</c>, a scheme, a path, a port and a wildcard over a top-level domain (<c>*.com</c>)
+    /// are refused.
+    /// </summary>
+    public static string? DomainError(string? domain)
+    {
+        if (string.IsNullOrWhiteSpace(domain)) { return "a domain cannot be empty"; }
+        if (domain.Trim('*', '.').Length == 0) { return $"\"{Printable(domain)}\" allows every domain; Claude refuses an allow-all entry"; }
+        if (domain.Length > 253 || !DomainPattern().IsMatch(domain))
+        {
+            return $"\"{Printable(domain)}\" is not a host name or a \"*.\" subdomain pattern (lower case, no scheme, path or port)";
+        }
+        if (domain.StartsWith("*.", StringComparison.Ordinal) && !domain[2..].Contains('.'))
+        {
+            return $"\"{domain}\" is too broad: a wildcard needs a registered domain, for example \"*.example.com\"";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// The absolute path of a cache entry: <c>~/</c> is the home directory. Null when the entry is neither absolute nor home-relative, or is
+    /// not a valid path (a NUL or other invalid character).
+    /// </summary>
+    public static string? ExpandPath(string? entry, string home)
+    {
+        if (string.IsNullOrWhiteSpace(entry) || entry.Contains('\0')) { return null; }
+        var path = entry == "~" ? home
+            : entry.StartsWith("~/", StringComparison.Ordinal) || entry.StartsWith("~\\", StringComparison.Ordinal) ? Path.Combine(home, entry[2..])
+            : entry;
+        try { return Path.IsPathFullyQualified(path) ? Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)) : null; }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return null; }
+    }
+
+    /// <summary>
+    /// Why this cache entry cannot be writable, or null when it can. Refused: an empty, relative or invalid path, the file-system root, the
+    /// home directory or one of its parents, and any path that is, contains or lies inside a secret path (<c>~/.ssh</c>, <c>~/.aws</c>,
+    /// <c>~/.config/gh</c>, <c>~/.netrc</c>; hard rule) or ATF's state directory. Both sides are compared as written and as resolved
+    /// through symlinks, so neither a cache link into <c>~/.ssh</c> nor a cache under the target of a symlinked <c>~/.ssh</c> passes. A path
+    /// that cannot be resolved is refused.
+    /// </summary>
+    public static string? CachePathError(string? entry, string? home = null, string? stateRoot = null) => CheckCachePath(entry, home ?? Home(), stateRoot).Error;
+
+    /// <summary>Test seam: resolves the cache side, as a link that another process retargets between two resolutions can.</summary>
+    internal static readonly AsyncLocal<Func<string, string?>?> CacheResolver = new();
+
+    /// <summary>
+    /// Resolves the cache entry once and checks that snapshot (the written path and its physical path). The physical path returned is the one
+    /// that was checked, so a caller that grants it cannot grant a target that a later resolution would find.
+    /// </summary>
+    static (string? Error, string? Physical) CheckCachePath(string? entry, string home, string? stateRoot)
+    {
+        if (string.IsNullOrWhiteSpace(entry)) { return ("a cache path cannot be empty", null); }
+        if (ExpandPath(entry, home) is not { } path) { return ($"\"{Printable(entry)}\" must be a valid absolute path or start with ~/", null); }
+        if ((CacheResolver.Value ?? Terminals.PhysicalPath.Resolve)(path) is not { } resolved)
+        {
+            return ($"\"{entry}\" cannot be resolved through its symlinks", null);
+        }
+        var physical = Path.TrimEndingDirectorySeparator(resolved);
+        IReadOnlyList<string> caches = physical == path ? [path] : [path, physical];
+        return (CacheOverlapError(entry, path, caches, home, stateRoot), physical);
+    }
+
+    static string? CacheOverlapError(string entry, string path, IReadOnlyList<string> caches, string home, string? stateRoot)
+    {
+        var fullHome = Path.TrimEndingDirectorySeparator(Path.GetFullPath(home));
+        if (Aliases(fullHome) is not { } homes) { return "the home directory cannot be resolved through its symlinks"; }
+        if (Path.GetPathRoot(path) == path || caches.Any(c => homes.Any(h => SandboxLaunch.Contains(c, h))))
+        {
+            return $"\"{entry}\" is too broad: it contains the home directory";
+        }
+        foreach (var secret in SecretPaths)
+        {
+            if (Aliases(Path.Combine(fullHome, secret[2..])) is not { } secrets) { return $"{secret} cannot be resolved, so no cache path is allowed"; }
+            if (Overlap(caches, secrets)) { return $"\"{entry}\" overlaps {secret}, which always stays denied"; }
+        }
+        if (stateRoot is not null)
+        {
+            if (Aliases(Path.TrimEndingDirectorySeparator(Path.GetFullPath(stateRoot))) is not { } states) { return "ATF's state directory cannot be resolved"; }
+            if (Overlap(caches, states)) { return $"\"{entry}\" overlaps ATF's state directory"; }
+        }
+        return null;
+    }
+
+    static string Printable(string entry) => entry.Replace("\0", "\\0", StringComparison.Ordinal);
+
+    static bool Overlap(IReadOnlyList<string> left, IReadOnlyList<string> right) =>
+        left.Any(l => right.Any(r => SandboxLaunch.Contains(l, r) || SandboxLaunch.Contains(r, l)));
+
+    /// <summary>
+    /// The path as written and as resolved through every symlink in it (also a missing tail under a linked parent). Null when resolution
+    /// fails (a link loop or an unreadable link): the caller refuses what it cannot compare.
+    /// </summary>
+    static IReadOnlyList<string>? Aliases(string path)
+    {
+        if (Terminals.PhysicalPath.Resolve(path) is not { } physical) { return null; }
+        var resolved = Path.TrimEndingDirectorySeparator(physical);
+        return resolved == path ? [path] : [path, resolved];
+    }
+
+    /// <summary>
+    /// The cache paths a launch makes writable: each configured entry that passes <see cref="CachePathError"/> and exists, as the physical
+    /// path the check validated (every symlink resolved), never the configured spelling: a link retargeted after the policy is written
+    /// cannot move the grant. An entry that fails the check is dropped here too (a hand-edited profile cannot bypass it), and a missing
+    /// directory is skipped rather than created: Codex refuses a nonexistent path, and ATF does not create tool directories the machine does
+    /// not use. A path inside <paramref name="writableRoots"/> or inside another cache is dropped as well: the agent can write its parent and
+    /// could swap a component for a link, and the outer grant already covers it.
+    /// </summary>
+    public static IReadOnlyList<string> ResolveCachePaths(IEnumerable<string?> configured, string? home = null, string? stateRoot = null,
+        IEnumerable<string>? writableRoots = null)
+    {
+        home ??= Home();
+        // One resolution per entry: the snapshot that passed the check is the path granted.
+        List<string> physical = [.. configured.Select(entry => CheckCachePath(entry, home, stateRoot))
+            .Where(c => c.Error is null).Select(c => c.Physical!).Where(Directory.Exists).Distinct(StringComparer.Ordinal)];
+        List<string> roots = [.. (writableRoots ?? []).Select(r => Terminals.PhysicalPath.Resolve(Path.GetFullPath(r)) ?? Path.GetFullPath(r))
+            .Select(Path.TrimEndingDirectorySeparator)];
+        return [.. physical.Where(path => !roots.Any(root => SandboxLaunch.Contains(root, path))
+            && !physical.Any(other => other != path && SandboxLaunch.Contains(other, path)))];
+    }
+}
+
+/// <summary>
+/// This machine's sandbox settings (profile.json): shell network on or off, Claude's domain list, and the cache paths both CLIs may write.
+/// Null lists in the profile mean the defaults.
+/// </summary>
+public sealed record SandboxSettings(bool Network, IReadOnlyList<string> AllowedDomains, IReadOnlyList<string> CachePaths)
+{
+    public static SandboxSettings Default { get; } = new(true, SandboxPolicy.DefaultAllowedDomains, SandboxPolicy.DefaultCachePaths());
+
+    public static SandboxSettings From(bool? network, IReadOnlyList<string>? allowedDomains, IReadOnlyList<string>? cachePaths) =>
+        new(network != false, allowedDomains ?? Default.AllowedDomains, cachePaths ?? Default.CachePaths);
+
+    /// <summary>Every validation error of the lists, empty when they are valid.</summary>
+    public IReadOnlyList<string> Errors(string? home = null, string? stateRoot = null) =>
+    [
+        .. AllowedDomains.Select(SandboxPolicy.DomainError).OfType<string>(),
+        .. CachePaths.Select(p => SandboxPolicy.CachePathError(p, home, stateRoot)).OfType<string>(),
+    ];
 }
 
 /// <summary>
@@ -37,6 +206,15 @@ public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? C
     /// <summary>The secret paths denied to the shell, fixed when the launch is built.</summary>
     public IReadOnlyList<string> DenyRead { get; init; } = SandboxPolicy.DenyRead();
 
+    /// <summary>Shell network access: on unless this machine's profile opted out (<c>sandbox_network: false</c>).</summary>
+    public bool Network { get; init; } = true;
+
+    /// <summary>The domains Claude's proxy reaches when the network is on.</summary>
+    public IReadOnlyList<string> AllowedDomains { get; init; } = SandboxPolicy.DefaultAllowedDomains;
+
+    /// <summary>The resolved, existing cache directories both CLIs may write.</summary>
+    public IReadOnlyList<string> CachePaths { get; init; } = [];
+
     public const string CodexProfile = "atf";
 
     /// <summary>The state subdirectory that holds the PRFactory connector's team workspaces.</summary>
@@ -44,10 +222,13 @@ public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? C
 
     static readonly string[] GitWritableNames = ["objects", "refs", "logs"];
 
-    /// <summary>The directories a sandboxed shell can write: the workspace, the worktree's git allowances and the cache directories.</summary>
+    /// <summary>
+    /// The directories a sandboxed shell can write besides the cache paths: the workspace and the worktree's git allowances. Cache paths
+    /// that overlap the state dir are dropped when they are resolved (<see cref="SandboxPolicy.ResolveCachePaths"/>).
+    /// </summary>
     public static IReadOnlyList<string> WritableRoots(string workingDirectory, GitLayout? layout)
     {
-        List<string> roots = [workingDirectory, .. SandboxPolicy.CacheDirectories];
+        List<string> roots = [workingDirectory];
         if (layout is not null)
         {
             if (layout.Linked) { roots.Add(layout.GitDir); }
@@ -89,26 +270,42 @@ public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? C
     }
 
     /// <summary>Resolves the git layout of the working directory and writes the Claude settings file when the backend needs one.</summary>
-    public static SandboxLaunch Create(string workingDirectory, string backend, string settingsDirectory, string jobId, string? home = null, GitLayout? trustedLayout = null)
+    public static SandboxLaunch Create(string workingDirectory, string backend, string settingsDirectory, string jobId, string? home = null, GitLayout? trustedLayout = null,
+        SandboxSettings? settings = null, string? stateRoot = null)
     {
+        home ??= SandboxPolicy.Home();
+        settings ??= SandboxSettings.Default;
         var denyRead = SandboxPolicy.DenyRead(home);
+
+        // An invalid domain makes Claude refuse the settings file, so a hand-edited entry is dropped instead.
+        IReadOnlyList<string> domains = [.. settings.AllowedDomains.Where(d => SandboxPolicy.DomainError(d) is null)];
         // The caller passes the layout it validated; rediscovering would read metadata the agent can rewrite.
         var layout = trustedLayout ?? GitLayout.Find(workingDirectory);
-        string? settings = null;
+        var caches = SandboxPolicy.ResolveCachePaths(settings.CachePaths, home, stateRoot, WritableRoots(workingDirectory, layout));
+        string? settingsFile = null;
         if (backend == BackendCatalog.Claude)
         {
             PrivateFiles.CreateDirectory(settingsDirectory);
-            settings = Path.Combine(settingsDirectory, jobId + ".claude-settings.json");
-            var temporary = settings + ".tmp";
+            settingsFile = Path.Combine(settingsDirectory, jobId + ".claude-settings.json");
+            var temporary = settingsFile + ".tmp";
             using (var stream = new FileStream(temporary, PrivateFiles.Options(FileMode.Create, FileAccess.Write)))
-            using (var writer = new StreamWriter(stream)) { writer.Write(ClaudeSettings(denyRead).ToJsonString()); }
-            File.Move(temporary, settings, overwrite: true);
+            using (var writer = new StreamWriter(stream)) { writer.Write(ClaudeSettings(denyRead, settings.Network ? domains : null, caches).ToJsonString()); }
+            File.Move(temporary, settingsFile, overwrite: true);
         }
-        return new(layout?.CommonDir ?? "", layout?.GitDir ?? "", settings) { DenyRead = denyRead };
+        return new(layout?.CommonDir ?? "", layout?.GitDir ?? "", settingsFile)
+        {
+            DenyRead = denyRead,
+            Network = settings.Network,
+            AllowedDomains = domains,
+            CachePaths = caches,
+        };
     }
 
-    /// <summary>Claude's sandbox settings (ADR 0013). No unix-socket allowance: `atf mcp` is a stdio server the CLI starts outside the sandbox.</summary>
-    internal static JsonObject ClaudeSettings(IReadOnlyList<string> denyRead)
+    /// <summary>
+    /// Claude's sandbox settings (ADR 0013). No unix-socket allowance: `atf mcp` is a stdio server the CLI starts outside the sandbox.
+    /// Null <paramref name="allowedDomains"/> is network off: without a network entry the proxy denies every domain under dontAsk.
+    /// </summary>
+    internal static JsonObject ClaudeSettings(IReadOnlyList<string> denyRead, IReadOnlyList<string>? allowedDomains, IReadOnlyList<string> cachePaths)
     {
         var sandbox = new JsonObject
         {
@@ -119,10 +316,10 @@ public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? C
             ["filesystem"] = new JsonObject
             {
                 ["denyRead"] = new JsonArray([.. denyRead.Select(p => (JsonNode)p)]),
-                ["allowWrite"] = new JsonArray([.. SandboxPolicy.CacheDirectories.Select(p => (JsonNode)p)]),
+                ["allowWrite"] = new JsonArray([.. cachePaths.Select(p => (JsonNode)p)]),
             },
         };
-        if (SandboxPolicy.NetworkEnabled) { sandbox["network"] = new JsonObject { ["allowedDomains"] = new JsonArray([.. SandboxPolicy.AllowedDomains.Select(p => (JsonNode)p)]) }; }
+        if (allowedDomains is not null) { sandbox["network"] = new JsonObject { ["allowedDomains"] = new JsonArray([.. allowedDomains.Select(p => (JsonNode)p)]) }; }
         return new JsonObject
         {
             ["permissions"] = new JsonObject { ["allow"] = new JsonArray("Edit(./**)", "Read(./**)", "mcp__agentteamforge") },
@@ -142,11 +339,11 @@ public sealed record SandboxLaunch(string GitCommonDir, string GitDir, string? C
             if (!string.Equals(GitDir, GitCommonDir, StringComparison.Ordinal)) { entries.Add((GitDir, "write")); }
             entries.AddRange(GitWritableNames.Select(name => (Path.Combine(GitCommonDir, name), "write")));
         }
-        entries.AddRange(SandboxPolicy.CacheDirectories.Select(p => (p, "write")));
+        entries.AddRange(CachePaths.Select(p => (p, "write")));
         var args = new List<string>
         {
             "-c", "permissions." + CodexProfile + ".filesystem={" + string.Join(",", entries.Select(e => TomlString(e.Path) + "=" + TomlString(e.Access))) + "}",
-            "-c", "permissions." + CodexProfile + ".network.enabled=" + (SandboxPolicy.NetworkEnabled ? "true" : "false"),
+            "-c", "permissions." + CodexProfile + ".network.enabled=" + (Network ? "true" : "false"),
             "-c", "default_permissions=" + TomlString(CodexProfile),
         };
         if (managedMcp) { args.AddRange(["-c", "mcp_servers.agentteamforge.default_tools_approval_mode=" + TomlString("approve")]); }
