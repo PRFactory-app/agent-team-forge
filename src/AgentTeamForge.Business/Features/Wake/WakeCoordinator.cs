@@ -156,7 +156,8 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
 
             using var routing = await WakeRoutingGate.EnterAsync(cancellationToken);
             if (!store.IsCurrent(target)) { continue; }
-            // A read between the scan and this post consumed the notice; do not announce an empty inbox.
+            // A read between the scan and this check consumed the notice; do not announce an empty inbox. Reads do not
+            // take the gate, so a read after this check or a notice already queued in the host can still arrive late.
             if (snapshot.External && snapshot.ParkJobId is null && !store.HasUnreadExternal(target.Key)) { continue; }
             // Notice-only: job IDs and result content stay in get_job. The external notice carries the inbox
             // revision because Claude Code silently drops a channel message repeating the previous body within 30s.

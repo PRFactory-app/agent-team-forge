@@ -220,7 +220,9 @@ control/result path. The user-facing rules are in
 - External-message notices to Claude and Codex targets are held after a
   successful post until the lead reads a message, because both hosts queue
   notices during a busy turn. The doubling reminder still posts. Under the
-  routing gate, the coordinator checks for unread rows again before it posts.
+  routing gate, the coordinator checks for unread rows again and skips a post
+  for an inbox that is empty at that check. Reads do not take the gate, so a
+  late notice after a read is still possible.
 
 ## External members
 

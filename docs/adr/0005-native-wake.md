@@ -25,8 +25,11 @@ extension.
   successful external-message notice, the daemon holds newer notices for that
   target until the lead reads at least one message; only the doubling
   reminder posts while the hold is active. Just before a post, the daemon
-  checks again that unread messages exist, so a read during the scan does not
-  give a notice for an empty inbox.
+  checks again that unread messages exist and skips the post if the inbox is
+  empty at that check. Reads do not take the routing gate, so this narrows the
+  race; it does not close it. A read after the check, during relay delivery,
+  or before the host shows a queued notice can still give a notice after the
+  inbox is empty.
 - Wake registrations carry a generation; a newer registration fences older
   ones. Child processes do not inherit wake credentials.
 - Manual `get_job`/`read_messages` is the explicit fallback where native wake
