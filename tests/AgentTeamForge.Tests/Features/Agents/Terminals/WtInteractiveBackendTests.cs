@@ -76,29 +76,6 @@ public sealed class WtInteractiveBackendTests
     }
 
     [Fact]
-    public async Task Background_wait_without_transcript_activity_expires_as_an_ended_turn()
-    {
-        var reader = new MutableReader(new InteractiveTranscript("claude-native", "waiting", ["waiting"], PendingBackgroundTasks: true)
-        { WaitingOnBackground = true });
-        var tabs = new FakeTabs();
-        var backend = new WtInteractiveBackend(tabs, reader, InteractiveAgentKind.Claude, Path.GetTempPath(), "wt",
-            backgroundWaitLimit: TimeSpan.FromMilliseconds(200));
-        await using var run = backend.Start(new BackendRequest("job", "corr", "work", "") { WorkingDirectory = Path.GetTempPath() });
-        await run.DeliverAsync(CancellationToken.None);
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        var evidence = new List<BackendEvidence>();
-        await foreach (var item in run.ReadEvidenceAsync(deadline.Token))
-        {
-            evidence.Add(item);
-        }
-        Assert.Contains(new BackendEvidence.BackgroundWait(true), evidence);
-        var error = Assert.IsType<BackendEvidence.AgentError>(evidence[^1]);
-        Assert.Equal("background_wait_expired", error.Code);
-        Assert.True(error.TurnEnded);
-        Assert.False(tabs.Stopped);
-    }
-
-    [Fact]
     public async Task Config_preflight_fails_before_any_tab_and_does_not_fence_the_job()
     {
         using var state = new TempStateDir();

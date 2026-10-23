@@ -508,7 +508,7 @@ public sealed class HerdrInteractiveBackendTests
             settleTimeout: TimeSpan.FromMilliseconds(20), backgroundWaitLimit: TimeSpan.FromMilliseconds(100));
         using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
 
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var deadline = new CancellationTokenSource(Bounded.ScenarioDeadline);
         var attempt = dispatcher.RunAttemptAsync(claim, deadline.Token);
         while (f.Store.GetJob(job.JobId)?.ReasonCode != JobWaiting.BackgroundTaskReason)
         {
@@ -521,6 +521,27 @@ public sealed class HerdrInteractiveBackendTests
         control.Status = InteractiveAgentStatus.Idle;
         await attempt.WaitAsync(deadline.Token);
         Assert.Equal(JobStatus.Completed, f.Store.GetJob(job.JobId)!.Status);
+    }
+
+    [Fact]
+    public async Task Expired_background_wait_keeps_the_pane_out_of_idle_close()
+    {
+        // The task may still run after the wait expired: an idle sweep must not close its pane.
+        var reader = new MutableReader(new InteractiveTranscript("claude-native", "waiting", ["waiting"], PendingBackgroundTasks: true)
+        { WaitingOnBackground = true });
+        var control = new FakeControl { Status = InteractiveAgentStatus.Idle };
+        using var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(),
+            settleTimeout: TimeSpan.FromSeconds(10), idleTimeout: TimeSpan.Zero, backgroundWaitLimit: TimeSpan.FromMilliseconds(100));
+        var run = backend.Start(new BackendRequest("job", "corr", "work", "") { WorkingDirectory = Path.GetTempPath() });
+        await run.DeliverAsync(CancellationToken.None);
+
+        var evidence = await Collect(run, Bounded.ScenarioDeadline);
+        Assert.Equal("background_wait_expired", Assert.IsType<BackendEvidence.AgentError>(evidence[^1]).Code);
+        await run.DisposeAsync();
+        await backend.SweepRetainedAsync();
+
+        Assert.False(control.Stopped);
+        Assert.NotNull(backend.LaunchIdentity("claude-native")); // Still retained for a follow-up in the same pane.
     }
 
     [Fact]

@@ -17,7 +17,6 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
     readonly RetainedSessions _liveSessions;
     readonly ConcurrentDictionary<string, InteractiveLaunch> _jobs = [];
     readonly TimeSpan _startupTimeout;
-    readonly TimeSpan _backgroundWaitLimit;
     readonly Action<InteractiveAgentKind, string>? _configPreflight;
 
     public WtInteractiveBackend(InteractiveAgentKind kind, string stateRoot, TimeSpan? idleTimeout = null, Func<InteractiveRetentionSettings>? retentionSettings = null)
@@ -34,8 +33,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
         : this(tabs, transcripts, kind, stateRoot, "wt", idleTimeout: idleTimeout, retentionSettings: retentionSettings) { }
 
     internal WtInteractiveBackend(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot, string tabDirectory, TimeSpan? startupTimeout = null,
-        Action<InteractiveAgentKind, string>? configPreflight = null, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null, Func<InteractiveRetentionSettings>? retentionSettings = null,
-        TimeSpan? backgroundWaitLimit = null)
+        Action<InteractiveAgentKind, string>? configPreflight = null, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null, Func<InteractiveRetentionSettings>? retentionSettings = null)
     {
         _tabs = tabs;
         _transcripts = transcripts;
@@ -44,7 +42,6 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
         _tabDirectory = tabDirectory;
         _liveSessions = new RetainedSessions(tabs.StopOwned, idleTimeout, timeProvider, retentionSettings, tabs.Retained, tabs.Busy);
         _startupTimeout = startupTimeout ?? InteractiveStartup.Timeout;
-        _backgroundWaitLimit = backgroundWaitLimit ?? InteractiveBackgroundWait.DefaultLimit;
         _configPreflight = configPreflight;
     }
 
@@ -79,7 +76,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
             _ = WtTabControl.AgentArguments(launch, "");
         }
         _jobs[request.JobId] = launch;
-        return new Run(_tabs, _transcripts, request, launch, DateTimeOffset.UtcNow, _startupTimeout, _backgroundWaitLimit, _liveSessions.Remember, BindNativeSession, StopLaunch);
+        return new Run(_tabs, _transcripts, request, launch, DateTimeOffset.UtcNow, _startupTimeout, _liveSessions.Remember, BindNativeSession, StopLaunch);
     }
 
     /// <summary>
@@ -196,7 +193,7 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
     }
 
     sealed class Run(IWtTabControl tabs, IInteractiveTranscriptReader transcripts, BackendRequest request,
-        InteractiveLaunch launch, DateTimeOffset started, TimeSpan startupTimeout, TimeSpan backgroundWaitLimit, Action<string, InteractiveLaunch> rememberSession,
+        InteractiveLaunch launch, DateTimeOffset started, TimeSpan startupTimeout, Action<string, InteractiveLaunch> rememberSession,
         Action<string, InteractiveLaunch> bindNativeSession, Action<InteractiveLaunch> stopLaunch) : IBackendRun
     {
         bool _stopped;
@@ -207,7 +204,6 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
         string? _notStartedError;
         int _loggedMessages;
         bool _backgroundWait;
-        readonly InteractiveBackgroundWait _backgroundExpiry = new(backgroundWaitLimit);
         DateTimeOffset? _apiErrorSince;
         InteractiveApiError? _observedApiError;
         string? _reportedLimitDetails;
@@ -334,13 +330,6 @@ public sealed class WtInteractiveBackend : IJobBackend, IInteractiveSessionStop,
                 {
                     _backgroundWait = output.WaitingOnBackground;
                     yield return new BackendEvidence.BackgroundWait(output.WaitingOnBackground);
-                }
-                // A tab has no idle status, so only new transcript activity restarts the clock.
-                if (acknowledged && _backgroundExpiry.Expired(_backgroundWait, idle: true, output?.LastActivityAt, DateTimeOffset.UtcNow))
-                {
-                    _settled = true; // The turn ended: the idle tab may be retained for a follow-up.
-                    yield return _backgroundExpiry.Error();
-                    yield break;
                 }
                 if (!acknowledged)
                 {

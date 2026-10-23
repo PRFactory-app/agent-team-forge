@@ -282,11 +282,11 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
 
     internal bool TakeIdleForNativeTurn(string sessionId, bool running = false) => _liveSessions.TakeForNativeTurn(sessionId, running);
 
-    internal void RememberNativeTurn(string sessionId) => _liveSessions.RememberNativeTurn(sessionId);
+    internal void RememberNativeTurn(string sessionId, bool pinned = false) => _liveSessions.RememberNativeTurn(sessionId, pinned);
     public void ReleaseNativeTurn(string sessionId) => _liveSessions.ReleaseNativeTurn(sessionId);
     void StopLaunch(InteractiveLaunch launch) { _control.StopOwned(launch); _liveSessions.Closed(launch); }
 
-    void RememberSession(string sessionId, InteractiveLaunch launch) => _liveSessions.Remember(sessionId, launch);
+    void RememberSession(string sessionId, InteractiveLaunch launch, bool pinned) => _liveSessions.Remember(sessionId, launch, pinned);
 
     internal static string TabLabel(InteractiveAgentKind kind, string? name, string jobId) =>
         $"{kind.ToString().ToLowerInvariant()}: {(string.IsNullOrWhiteSpace(name) ? jobId[..Math.Min(jobId.Length, 8)] : name)}";
@@ -385,6 +385,8 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
 
     public object? LaunchIdentity(string sessionId) => _liveSessions.Identity(sessionId);
 
+    internal Task SweepRetainedAsync() => _liveSessions.SweepAsync();
+
     public Task<SessionIdleState> ProbeIdleAsync(string sessionId) => _liveSessions.ProbeAsync(sessionId, PaneIdleStateAsync);
 
     public bool HasIdleJob(JobRecord job)
@@ -452,10 +454,12 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     }
 
     sealed class Run(IHerdrAgentControl control, IInteractiveTranscriptReader transcripts, BackendRequest request,
-        InteractiveLaunch launch, DateTimeOffset started, TimeSpan settleTimeout, TimeSpan startupTimeout, TimeSpan backgroundWaitLimit, Action<string, InteractiveLaunch> rememberSession,
+        InteractiveLaunch launch, DateTimeOffset started, TimeSpan settleTimeout, TimeSpan startupTimeout, TimeSpan backgroundWaitLimit, Action<string, InteractiveLaunch, bool> rememberSession,
         Action<string, InteractiveLaunch> bindNativeSession, Action<InteractiveLaunch> stopLaunch, bool recovered = false) : IBackendRun
     {
         bool _agentExited;
+        // The turn expired on a background task that may still run: keep the pane out of idle close.
+        bool _backgroundExpired;
         bool _promptReturned = recovered;
         readonly Lock _lifetime = new();
         // Cancelled before Escape is sent: a deferred prompt of an interrupted job must never be submitted.
@@ -663,6 +667,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 if (backgroundExpiry.Expired(backgroundWait, status is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done,
                     output?.LastActivityAt, DateTimeOffset.UtcNow))
                 {
+                    _backgroundExpired = true;
                     yield return backgroundExpiry.Error();
                     yield break;
                 }
@@ -730,7 +735,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 control.InterruptAsync(launch, CancellationToken.None).GetAwaiter().GetResult();
                 if (_sessionId is { } sessionId)
                 {
-                    rememberSession(sessionId, launch);
+                    rememberSession(sessionId, launch, _backgroundExpired);
                 }
             }
         }
@@ -753,7 +758,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 }
                 else if (_sessionId is { } sessionId)
                 {
-                    rememberSession(sessionId, launch);
+                    rememberSession(sessionId, launch, _backgroundExpired);
                 }
                 // Unknown native identity still has durable ownership for explicit stop.
             }

@@ -26,6 +26,10 @@ public sealed class DispatchJob : IDisposable
     readonly CancellationTokenSource _halted = new();
     readonly ConcurrentDictionary<string, ActiveRun> _running = new();
     readonly ConcurrentDictionary<string, IBackendRun> _reconciledWindows = new();
+    readonly ConcurrentDictionary<string, InteractiveBackgroundWait> _nativeBackgroundWaits = new();
+
+    /// <summary>How long a native Claude turn may wait idle on its own background task (ATF_BACKGROUND_WAIT_MINUTES).</summary>
+    internal TimeSpan NativeBackgroundWaitLimit { get; init; } = InteractiveBackgroundWait.DefaultLimit;
     IReadOnlyList<string> _restartJobs = [];
     readonly TaskCompletionSource _restartResolved = new(TaskCreationOptions.RunContinuationsAsynchronously);
     readonly Lock _reapGate = new();
@@ -1209,11 +1213,11 @@ public sealed class DispatchJob : IDisposable
         if (backends.Resolve(backend) is IInteractiveSessionStop interactive) { interactive.ReleaseNativeTurn(sessionId); }
     }
 
-    void RememberNativeTurn(string backend, string sessionId)
+    void RememberNativeTurn(string backend, string sessionId, bool pinned = false)
     {
         switch (backends.Resolve(backend))
         {
-            case HerdrInteractiveBackend herdr: herdr.RememberNativeTurn(sessionId); break;
+            case HerdrInteractiveBackend herdr: herdr.RememberNativeTurn(sessionId, pinned); break;
             case var other when TabBackend(other) is { } wt: wt.RememberNativeTurn(sessionId); break;
         }
     }
@@ -1238,7 +1242,7 @@ public sealed class DispatchJob : IDisposable
         return settled;
     }
 
-    void ReconcileNativeClaude()
+    internal void ReconcileNativeClaude()
     {
         foreach (var attempt in store.UnresolvedNativeClaudeAttempts()) { TrySettleNativeClaude(attempt); }
     }
@@ -1249,14 +1253,44 @@ public sealed class DispatchJob : IDisposable
         if (receipt is not null) { store.RecordNativeClaudeReceipt(attempt.JobId, attempt.Correlation); }
         if (receipt is null || !(receipt.Completed || receipt.Interrupted || receipt.Superseded || receipt.ApiError?.TurnEnded == true))
         {
+            if (NativeBackgroundWaitExpired(attempt.Correlation, receipt) is { } expired)
+            {
+                // The turn ended on a task that never reported back. The agent stays in its pane, which is
+                // kept out of idle close in case the task still runs; the next follow-up reaches it there.
+                if (!store.SettleNativeClaudeAttempt(attempt.JobId, attempt.Correlation, expired.Details, JobStatus.Failed, expired.Code)) { return false; }
+                _nativeBackgroundWaits.TryRemove(attempt.Correlation, out _);
+                RememberNativeTurn(BackendCatalog.Claude, attempt.SessionId, pinned: true);
+                Signal();
+                return true;
+            }
             ObserveNativeTurn(attempt.JobId, attempt.Correlation, attempt.SessionId, receipt);
             return false;
         }
+        _nativeBackgroundWaits.TryRemove(attempt.Correlation, out _);
         var (status, reason, result) = NativeTurnOutcome(receipt);
         if (!store.SettleNativeClaudeAttempt(attempt.JobId, attempt.Correlation, result, status, reason)) { return false; }
         RememberNativeTurn(BackendCatalog.Claude, attempt.SessionId);
         Signal();
         return true;
+    }
+
+    /// <summary>
+    /// The bounded background wait of a native Claude turn, which has no run loop of its own. A native turn holds
+    /// its pane reservation, so only transcript activity restarts the clock. Terminal tabs never expire: their
+    /// ordinary follow-up replaces the tab, which would end a background task that still runs.
+    /// </summary>
+    BackendEvidence.AgentError? NativeBackgroundWaitExpired(string correlation, InteractiveTranscript? receipt)
+    {
+        if (receipt is not { WaitingOnBackground: true } || TabBackend(backends.Resolve(BackendCatalog.Claude)) is not null)
+        {
+            _nativeBackgroundWaits.TryRemove(correlation, out _);
+            return null;
+        }
+        var wait = _nativeBackgroundWaits.GetOrAdd(correlation, _ => new InteractiveBackgroundWait(NativeBackgroundWaitLimit));
+        lock (wait)
+        {
+            return wait.Expired(waiting: true, idle: true, receipt.LastActivityAt, DateTimeOffset.UtcNow) ? wait.Error() : null;
+        }
     }
 
     static (string Status, string? Reason, string Result) NativeTurnOutcome(InteractiveTranscript receipt) =>

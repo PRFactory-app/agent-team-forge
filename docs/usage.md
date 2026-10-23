@@ -332,8 +332,8 @@ beside the tab; there a Pi that has some credential but none for the selected
 model still waits out the startup limit.
 
 An interactive turn that waits on the agent's own background task shows
-`waiting: background_task`. If the agent stays idle on that wait for longer
-than `ATF_BACKGROUND_WAIT_MINUTES` (default 45), the job fails with
+`waiting: background_task`. In Herdr, if the agent stays idle on that wait for
+longer than `ATF_BACKGROUND_WAIT_MINUTES` (default 45), the job fails with
 `background_wait_expired` and the next queued turn runs
 ([terminal modes](terminal-modes.md#what-interactive-means)).
 

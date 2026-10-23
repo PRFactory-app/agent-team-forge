@@ -13,6 +13,9 @@ internal sealed class RetainedSessions : IDisposable
     readonly Dictionary<string, (InteractiveLaunch Launch, long Order, long IdleSince, long Born)> _sessions = [];
     readonly Dictionary<string, InteractiveLaunch?> _reserved = [];
     readonly Dictionary<string, (InteractiveLaunch Launch, bool Live)> _known = [];
+    // Sessions whose agent may still run a background task after its turn expired: kept for a follow-up
+    // in the same pane, but never closed as idle or over the cap (only the absolute lifetime applies).
+    readonly HashSet<string> _pinned = [];
     long _next;
     readonly Action<InteractiveLaunch> _stop;
     readonly TimeProvider _clock;
@@ -56,12 +59,13 @@ internal sealed class RetainedSessions : IDisposable
             {
                 if (_reserved.ContainsKey(pair.Key)) { continue; }
                 var absolute = _clock.GetElapsedTime(pair.Value.Born) >= AbsoluteLifetime;
+                if (_pinned.Contains(pair.Key) && !absolute) { continue; }
                 if (absolute || timeout >= TimeSpan.Zero && _clock.GetElapsedTime(pair.Value.IdleSince) >= timeout)
                 {
                     candidates.Add((pair.Key, pair.Value.Launch, absolute));
                 }
             }
-            var rest = _sessions.Where(pair => !_reserved.ContainsKey(pair.Key) && candidates.All(c => c.Id != pair.Key))
+            var rest = _sessions.Where(pair => !_reserved.ContainsKey(pair.Key) && !_pinned.Contains(pair.Key) && candidates.All(c => c.Id != pair.Key))
                 .OrderBy(pair => pair.Value.Order).ToArray();
             candidates.AddRange(rest.Take(Math.Max(0, rest.Length - maxRetained)).Select(pair => (pair.Key, pair.Value.Launch, false)));
         }
@@ -164,7 +168,7 @@ internal sealed class RetainedSessions : IDisposable
         }
     }
 
-    internal void RememberNativeTurn(string sessionId)
+    internal void RememberNativeTurn(string sessionId, bool pinned = false)
     {
         InteractiveLaunch? launch;
         lock (_gate)
@@ -174,7 +178,7 @@ internal sealed class RetainedSessions : IDisposable
             // can use the bound launch, but a revert must never do that.
             launch ??= _known.TryGetValue(sessionId, out var known) && known.Live ? known.Launch : null;
         }
-        if (launch is not null) { Remember(sessionId, launch); }
+        if (launch is not null) { Remember(sessionId, launch, pinned); }
     }
 
     internal void ReleaseNativeTurn(string sessionId)
@@ -209,12 +213,15 @@ internal sealed class RetainedSessions : IDisposable
         }
     }
 
-    public void Remember(string sessionId, InteractiveLaunch launch)
+    public void Remember(string sessionId, InteractiveLaunch launch) => Remember(sessionId, launch, pinned: false);
+
+    public void Remember(string sessionId, InteractiveLaunch launch, bool pinned)
     {
         var evicted = new List<(string Id, InteractiveLaunch Launch)>();
         lock (_gate)
         {
             Track(sessionId, launch);
+            if (pinned) { _pinned.Add(sessionId); } else { _pinned.Remove(sessionId); }
             if (_reserved.TryGetValue(sessionId, out var reserved))
             {
                 // A running parent's own settlement may race native submission.
