@@ -86,49 +86,29 @@ public sealed class SandboxedWorktreeTests : IDisposable
     }
 
     [Fact]
-    public void A_config_worktree_that_existed_before_the_record_is_trusted_until_it_changes()
+    public void A_non_empty_config_worktree_fails_even_when_it_was_there_before_the_record()
     {
         var existing = _dir.File("wt-config");
         Git(_repo, "worktree", "add", "-b", "with-config", existing);
         var admin = Path.Combine(_repo, ".git", "worktrees", "wt-config");
-        File.WriteAllText(Path.Combine(admin, "config.worktree"), "[core]\n\tsparseCheckout = false\n");
+        File.WriteAllText(Path.Combine(admin, "config.worktree"), "[credential]\n\thelper = /tmp/evil\n");
         Assert.True(SandboxedWorktrees.RegisterCreated(existing, _repo));
-        Assert.Null(SandboxedWorktrees.Validate(existing));
 
-        // The recorded content survives a restart of the daemon.
-        var file = _dir.File("registry-config/worktrees.json");
-        SandboxedWorktrees.SaveTo(file);
-        SandboxedWorktrees.Forget(existing);
-        SandboxedWorktrees.LoadFrom(file);
-        Assert.Null(SandboxedWorktrees.Validate(existing));
-
-        File.AppendAllText(Path.Combine(admin, "config.worktree"), "\tfsmonitor = /tmp/evil\n");
         Assert.Equal("config_worktree_present", SandboxedWorktrees.Validate(existing));
     }
 
     [Fact]
-    public void A_record_made_after_an_agent_ran_trusts_no_config_worktree_content()
+    public async Task A_fifo_or_link_named_config_worktree_fails_validation_without_blocking()
     {
-        // Recovery of an older daemon's job registers the worktree only now; content an agent left there must not become the baseline.
-        var recovered = _dir.File("wt-recovered");
-        Git(_repo, "worktree", "add", "-b", "recovered", recovered);
-        var admin = Path.Combine(_repo, ".git", "worktrees", "wt-recovered");
-        File.WriteAllText(Path.Combine(admin, "config.worktree"), "[credential]\n\thelper = /tmp/evil\n");
-        Assert.True(SandboxedWorktrees.RegisterFromOrigin(recovered, _repo));
-
-        Assert.Equal("config_worktree_present", SandboxedWorktrees.Validate(recovered));
-    }
-
-    [Fact]
-    public async Task A_fifo_or_oversized_config_worktree_fails_validation_without_blocking()
-    {
-        var fifo = Path.Combine(_admin, "config.worktree");
-        using (var mkfifo = Process.Start(new ProcessStartInfo("mkfifo", [fifo]))!) { await mkfifo.WaitForExitAsync(TestContext.Current.CancellationToken); }
+        var config = Path.Combine(_admin, "config.worktree");
+        using (var mkfifo = Process.Start(new ProcessStartInfo("mkfifo", [config]))!) { await mkfifo.WaitForExitAsync(TestContext.Current.CancellationToken); }
         var validation = Task.Run(() => SandboxedWorktrees.Validate(_worktree), TestContext.Current.CancellationToken);
         Assert.Equal("config_worktree_present", await validation.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-        File.Delete(fifo);
+        File.Delete(config);
 
-        File.WriteAllText(fifo, new string('#', 70 * 1024));
+        var empty = _dir.File("empty-target");
+        File.WriteAllText(empty, "");
+        File.CreateSymbolicLink(config, empty);
         Assert.Equal("config_worktree_present", SandboxedWorktrees.Validate(_worktree));
     }
 

@@ -20,11 +20,8 @@ public static class SandboxedWorktrees
 {
     public const string TamperedReason = "sandbox_worktree_tampered";
 
-    /// <summary>
-    /// A directory with an empty common dir is a validated "no git layout here" baseline: any <c>.git</c> that appears later is a mismatch.
-    /// <paramref name="ConfigWorktree"/> is the SHA-256 of the admin dir's <c>config.worktree</c> when the record was made, null when absent.
-    /// </summary>
-    sealed record Entry(string Root, string Common, string Admin, string? ConfigWorktree = null)
+    /// <summary>A directory with an empty common dir is a validated "no git layout here" baseline: any <c>.git</c> that appears later is a mismatch.</summary>
+    sealed record Entry(string Root, string Common, string Admin)
     {
         public bool NoGit => Common.Length == 0;
     }
@@ -56,7 +53,7 @@ public static class SandboxedWorktrees
         {
             if ((string?)item["root"] is { } root && (string?)item["common"] is { } common && (string?)item["admin"] is { } admin)
             {
-                Entries.TryAdd(root, new(root, common, admin, (string?)item["configWorktree"]));
+                Entries.TryAdd(root, new(root, common, admin));
             }
         }
     }
@@ -64,20 +61,16 @@ public static class SandboxedWorktrees
     internal static void Forget(string worktreePath) => Entries.TryRemove(Canonical(worktreePath), out _);
 
     /// <summary>Registers a worktree ATF just created, replacing any earlier record of the path.</summary>
-    public static bool RegisterCreated(string? worktreePath, string? origin) => RegisterFromOrigin(worktreePath, origin, replace: true, beforeAgent: true);
+    public static bool RegisterCreated(string? worktreePath, string? origin) => RegisterFromOrigin(worktreePath, origin, replace: true);
 
     /// <summary>Registers a job's worktree against the common dir of its origin checkout, which the sandbox cannot reach.</summary>
     public static bool RegisterJob(JobRecord job) => RegisterFromOrigin(job.WorktreePath, job.Cwd, replace: false);
 
-    /// <summary>
-    /// <paramref name="beforeAgent"/>: no agent of ATF's has run in the worktree yet, so its <c>config.worktree</c> is trusted as it is.
-    /// A record made later (a follow-up, or recovery of an older daemon's jobs) trusts no <c>config.worktree</c> content.
-    /// </summary>
-    public static bool RegisterFromOrigin(string? worktreePath, string? origin, bool replace = false, bool beforeAgent = false)
+    public static bool RegisterFromOrigin(string? worktreePath, string? origin, bool replace = false)
     {
         if (worktreePath is null || origin is null || GitLayout.Find(origin) is not { } layout || !File.Exists(Path.Combine(worktreePath, ".git"))) { return false; }
         var admin = GitLayout.Find(worktreePath)?.GitDir;
-        return admin is not null && Add(worktreePath, layout.CommonDir, admin, replace, beforeAgent);
+        return admin is not null && Add(worktreePath, layout.CommonDir, admin, replace);
     }
 
     /// <summary>
@@ -95,15 +88,14 @@ public static class SandboxedWorktrees
                 ? null : "nested_git_metadata";
         }
         // Without a layout the baseline "no git here" is recorded, so a layout the agent creates later is a mismatch, not a new trusted record.
-        if (layout is not null) { Add(layout.Root, layout.CommonDir, layout.GitDir, replace: false, beforeAgent: true); }
+        if (layout is not null) { Add(layout.Root, layout.CommonDir, layout.GitDir, replace: false); }
         else { Entries.TryAdd(Canonical(launchDirectory), new Entry(Canonical(launchDirectory), "", "")); Persist(); }
         return null;
     }
 
-    static bool Add(string root, string common, string admin, bool replace, bool beforeAgent)
+    static bool Add(string root, string common, string admin, bool replace)
     {
         var entry = new Entry(Canonical(root), Canonical(common), Canonical(admin));
-        if (beforeAgent) { entry = entry with { ConfigWorktree = ConfigWorktreeHash(entry.Admin) }; }
         if (replace) { Entries[entry.Root] = entry; }
         else if (!Entries.TryAdd(entry.Root, entry)) { return true; }
         Persist();
@@ -120,10 +112,7 @@ public static class SandboxedWorktrees
 
     internal static void SaveTo(string file)
     {
-        var all = new JsonArray([.. Entries.Values.Select(e => (JsonNode)new JsonObject
-        {
-            ["root"] = e.Root, ["common"] = e.Common, ["admin"] = e.Admin, ["configWorktree"] = e.ConfigWorktree,
-        })]);
+        var all = new JsonArray([.. Entries.Values.Select(e => (JsonNode)new JsonObject { ["root"] = e.Root, ["common"] = e.Common, ["admin"] = e.Admin })]);
         PrivateFiles.CreateDirectory(Path.GetDirectoryName(file)!);
         var temporary = file + ".tmp";
         using (var stream = new FileStream(temporary, PrivateFiles.Options(FileMode.Create, FileAccess.Write)))
@@ -190,9 +179,12 @@ public static class SandboxedWorktrees
             if (Canonical(admin) != entry.Admin) { return "admin_dir_moved"; }
             var pointer = Path.Combine(admin, "commondir");
             if (!File.Exists(pointer) || IsLink(pointer) || Canonical(GitLayout.ResolveCommon(admin)) != entry.Common) { return "common_dir_changed"; }
-            // Git reads config.worktree when the repository enables extensions.worktreeConfig. Claude's sandbox creates an empty one at start,
-            // and a worktree can have one before ATF records it; only content the agent added or changed is tampering.
-            if (ConfigWorktreeHash(admin) is { } config && config != entry.ConfigWorktree && config != EmptyHash) { return "config_worktree_present"; }
+            // Git reads config.worktree when the repository enables extensions.worktreeConfig. Claude's sandbox creates an empty one at start
+            // (A6 finding F1); only an empty regular file is harmless. Its type and size come from stat and it is never opened.
+            if (Path.Exists(Path.Combine(admin, "config.worktree")) && !IsEmptyRegularFile(Path.Combine(admin, "config.worktree")))
+            {
+                return "config_worktree_present";
+            }
             return Directory.EnumerateFileSystemEntries(admin).Any(IsLink) ? "symlink_in_git_dir" : null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -215,42 +207,25 @@ public static class SandboxedWorktrees
         return SandboxLaunch.Contains(root, resolved) ? resolved : null;
     }
 
-    static readonly string EmptyHash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData([]));
-
-    const int MaxConfigWorktreeBytes = 64 * 1024;
-
-    /// <summary>
-    /// SHA-256 of the admin dir's <c>config.worktree</c>, null when there is none. A link, a file that is not a regular file and an oversized
-    /// file get a marker that never matches a record, and are never opened: a FIFO there would block the read.
-    /// </summary>
-    static string? ConfigWorktreeHash(string admin)
+    /// <summary>Unix <c>stat</c> without following a link: true only for a regular file of size zero (not a FIFO, socket, device or link).</summary>
+    static bool IsEmptyRegularFile(string file)
     {
-        var file = Path.Combine(admin, "config.worktree");
-        if (!Path.Exists(file)) { return null; }
-        if (IsLink(file) || Directory.Exists(file) || !IsRegularFile(file)) { return "not_a_file"; }
-        var length = new FileInfo(file).Length;
-        if (length == 0) { return EmptyHash; }
-        if (length > MaxConfigWorktreeBytes) { return "too_large"; }
-        using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, FileOptions.None);
-        var bytes = new byte[MaxConfigWorktreeBytes + 1];
-        var read = stream.ReadAtLeast(bytes, bytes.Length, throwOnEndOfStream: false);
-        return read > MaxConfigWorktreeBytes ? "too_large" : Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes.AsSpan(0, read)));
-    }
-
-    /// <summary>Unix: only a regular file (not a FIFO, socket or device). The file type comes from <c>stat</c> without opening the file.</summary>
-    static bool IsRegularFile(string file)
-    {
-        if (OperatingSystem.IsWindows()) { return File.Exists(file); }
+        if (OperatingSystem.IsWindows()) { return !IsLink(file) && File.Exists(file) && new FileInfo(file).Length == 0; }
         var info = new ProcessStartInfo("stat") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         info.ArgumentList.Add(OperatingSystem.IsMacOS() ? "-f" : "-c");
-        info.ArgumentList.Add(OperatingSystem.IsMacOS() ? "%HT" : "%F");
+        info.ArgumentList.Add(OperatingSystem.IsMacOS() ? "%HT:%z" : "%F:%s");
         info.ArgumentList.Add(file);
         info.Environment["LC_ALL"] = "C"; // The type names are matched as English text.
-        using var process = Process.Start(info);
-        if (process is null) { return false; }
-        var output = process.StandardOutput.ReadToEnd();
-        process.WaitForExit();
-        return process.ExitCode == 0 && output.Trim() is "regular file" or "regular empty file" or "Regular File";
+        try
+        {
+            using var process = Process.Start(info);
+            if (process is null) { return false; }
+            var output = process.StandardOutput.ReadToEndAsync();
+            _ = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(ConfigTimeout)) { process.Kill(); return false; }
+            return process.ExitCode == 0 && output.Result.Trim() is "regular empty file:0" or "Regular File:0";
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { return false; }
     }
 
     static bool IsLink(string path) => (File.Exists(path) || Directory.Exists(path)) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
