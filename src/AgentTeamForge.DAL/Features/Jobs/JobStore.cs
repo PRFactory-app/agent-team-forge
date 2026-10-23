@@ -25,7 +25,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         j.status, j.reason_code, j.result_text,
         (SELECT count(*) FROM runs r WHERE r.job_id = j.job_id),
         j.backend, j.cwd, j.parent_job_id, j.session_id, j.worktree_path, j.worktree_branch, j.worktree_base, j.timeout_s,
-        (SELECT coalesce(max(e.seq),0) FROM events e WHERE e.job_id=j.job_id)
+        (SELECT coalesce(max(e.seq),0) FROM events e WHERE e.job_id=j.job_id), j.worktree_common_dir
         """;
 
     const string SessionPeers = """
@@ -276,8 +276,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         var queueDeadline = job.QueueTtlSeconds is int ttl ? acceptedAt.AddSeconds(ttl).ToString("O") : null;
         Execute(connection, tx, """
             INSERT INTO jobs(job_id, principal, team, target_agent, operation, idempotency_key, fingerprint,
-                             instruction, options, backend, cwd, parent_job_id, requested_parent_job_id, worktree_path, worktree_branch, worktree_base, timeout_s, queue_deadline, lead_session_id, status, accepted_at, updated_at)
-            VALUES ($id, $p, $t, $a, $o, $k, $f, $i, $opt, $b, $cwd, $parent, $requestedParent, $wtpath, $wtbranch, $wtbase, $timeout, $deadline, $lead, 'queued', $now, $now);
+                             instruction, options, backend, cwd, parent_job_id, requested_parent_job_id, worktree_path, worktree_branch, worktree_base, worktree_common_dir, timeout_s, queue_deadline, lead_session_id, status, accepted_at, updated_at)
+            VALUES ($id, $p, $t, $a, $o, $k, $f, $i, $opt, $b, $cwd, $parent, $requestedParent, $wtpath, $wtbranch, $wtbase, $wtcommon, $timeout, $deadline, $lead, 'queued', $now, $now);
             INSERT INTO dispatch_intents(job_id, state, created_at) VALUES ($id, 'unattempted', $now);
             INSERT INTO events(job_id, kind, created_at) VALUES ($id, 'accepted', $now);
             """,
@@ -285,7 +285,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             ("$o", job.Operation), ("$k", job.IdempotencyKey), ("$f", job.Fingerprint),
             ("$i", job.Instruction), ("$opt", job.Options), ("$b", job.Backend), ("$cwd", job.Cwd),
             ("$parent", job.ParentJobId), ("$requestedParent", requestedParent), ("$wtpath", worktreePath), ("$wtbranch", worktreeBranch),
-            ("$wtbase", job.WorktreeBase), ("$timeout", job.TimeoutSeconds),
+            ("$wtbase", job.WorktreeBase), ("$wtcommon", job.WorktreeCommonDir), ("$timeout", job.TimeoutSeconds),
             ("$deadline", queueDeadline), ("$lead", job.LeadSessionId), ("$now", now));
         if (job.WakeTargetKey is not null && job.WakeGeneration is not null)
         {
@@ -315,6 +315,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             WorktreePath = worktreePath,
             WorktreeBranch = worktreeBranch,
             WorktreeBase = job.WorktreeBase,
+            WorktreeCommonDir = job.WorktreeCommonDir,
             TimeoutSeconds = job.TimeoutSeconds,
         }, interrupted);
     });
@@ -596,6 +597,33 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         Execute(connection, tx, "UPDATE jobs SET status='queued',session_id=NULL,options=replace(options,';native_claude=1',''),updated_at=$now WHERE job_id=$id AND status='running'",
             ("$id", run.JobId), ("$now", now));
         Execute(connection, tx, "UPDATE dispatch_intents SET state='unattempted' WHERE job_id=$id", ("$id", run.JobId));
+        tx.Commit();
+        return true;
+    });
+
+    /// <summary>
+    /// An ordinary attempt that ended before any backend effect (a workspace check did not finish) queues the job again, at most
+    /// <paramref name="maxTries"/> times for the same reason. False when the limit is reached or the job is no longer running.
+    /// </summary>
+    public bool RequeueUnstarted(RunRef run, string reason, int maxTries) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        if (Scalar(connection, tx, "SELECT count(*) FROM runs WHERE job_id=$id AND reason_code=$reason", ("$id", run.JobId), ("$reason", reason)) + 1 >= maxTries)
+        {
+            return false;
+        }
+        var now = Now();
+        if (Execute(connection, tx, "UPDATE runs SET state='failed',reason_code=$reason,finished_at=$now WHERE run_id=$run AND state='started'",
+                ("$run", run.RunId), ("$reason", reason), ("$now", now)) != 1
+            || Execute(connection, tx, "UPDATE jobs SET status='queued',updated_at=$now WHERE job_id=$id AND status='running'",
+                ("$id", run.JobId), ("$now", now)) != 1)
+        {
+            return false;
+        }
+        Execute(connection, tx, """
+            UPDATE dispatch_intents SET state='unattempted' WHERE job_id=$id;
+            INSERT INTO events(job_id, run_id, kind, created_at) VALUES ($id, $run, 'attempt_requeued', $now);
+            """, ("$id", run.JobId), ("$run", run.RunId), ("$now", now));
         tx.Commit();
         return true;
     });
@@ -1410,7 +1438,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
             return null;
         }
 
-        return (ReadJob(reader), reader.GetString(20));
+        return (ReadJob(reader), reader.GetString(21));
     }
 
     static JobRecord ReadJob(SqliteDataReader reader) => new(
@@ -1424,6 +1452,7 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         WorktreeBase = NullableString(reader, 17),
         TimeoutSeconds = reader.IsDBNull(18) ? null : reader.GetInt32(18),
         Revision = reader.GetInt64(19),
+        WorktreeCommonDir = NullableString(reader, 20),
     };
 
     static string? NullableString(SqliteDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);

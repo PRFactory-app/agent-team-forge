@@ -25,6 +25,8 @@ public sealed class SchemaTests
             using var command = connection.CreateCommand();
             command.CommandText = """
                 DROP INDEX events_job_seq;
+                ALTER TABLE jobs DROP COLUMN worktree_common_dir;
+                DELETE FROM schema_migrations WHERE version=36;
                 ALTER TABLE jobs DROP COLUMN requested_parent_job_id;
                 DELETE FROM schema_migrations WHERE version=35;
                 ALTER TABLE lead_sessions DROP COLUMN bridge_pid_namespace;
@@ -92,7 +94,7 @@ public sealed class SchemaTests
         using (var connection = database.OpenConnection())
         {
             using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE jobs DROP COLUMN requested_parent_job_id; DELETE FROM schema_migrations WHERE version=35; ALTER TABLE lead_sessions DROP COLUMN bridge_pid_namespace; DELETE FROM schema_migrations WHERE version=34; ALTER TABLE lead_sessions DROP COLUMN bridge_pid; ALTER TABLE lead_sessions DROP COLUMN bridge_start_token; DELETE FROM schema_migrations WHERE version=33; ALTER TABLE jobs DROP COLUMN archived_at; DELETE FROM schema_migrations WHERE version=32;";
+            command.CommandText = "ALTER TABLE jobs DROP COLUMN worktree_common_dir; DELETE FROM schema_migrations WHERE version=36; ALTER TABLE jobs DROP COLUMN requested_parent_job_id; DELETE FROM schema_migrations WHERE version=35; ALTER TABLE lead_sessions DROP COLUMN bridge_pid_namespace; DELETE FROM schema_migrations WHERE version=34; ALTER TABLE lead_sessions DROP COLUMN bridge_pid; ALTER TABLE lead_sessions DROP COLUMN bridge_start_token; DELETE FROM schema_migrations WHERE version=33; ALTER TABLE jobs DROP COLUMN archived_at; DELETE FROM schema_migrations WHERE version=32;";
             command.ExecuteNonQuery();
         }
         var upgraded = JobDatabase.Open(path, TimeSpan.FromSeconds(1));
@@ -123,6 +125,8 @@ public sealed class SchemaTests
         using (var downgrade = source.CreateCommand())
         {
             downgrade.CommandText = """
+                ALTER TABLE jobs DROP COLUMN worktree_common_dir;
+                DELETE FROM schema_migrations WHERE version=36;
                 ALTER TABLE jobs DROP COLUMN requested_parent_job_id;
                 DELETE FROM schema_migrations WHERE version=35;
                 ALTER TABLE lead_sessions DROP COLUMN bridge_pid_namespace;
@@ -282,6 +286,8 @@ public sealed class SchemaTests
             using var command = connection.CreateCommand();
             command.CommandText = """
                 DROP INDEX events_job_seq;
+                ALTER TABLE jobs DROP COLUMN worktree_common_dir;
+                DELETE FROM schema_migrations WHERE version=36;
                 ALTER TABLE jobs DROP COLUMN requested_parent_job_id;
                 DELETE FROM schema_migrations WHERE version=35;
                 ALTER TABLE lead_sessions DROP COLUMN bridge_pid_namespace;
@@ -399,6 +405,8 @@ public sealed class SchemaTests
             using var command = connection.CreateCommand();
             command.CommandText = """
                 DROP INDEX events_job_seq;
+                ALTER TABLE jobs DROP COLUMN worktree_common_dir;
+                DELETE FROM schema_migrations WHERE version=36;
                 ALTER TABLE jobs DROP COLUMN requested_parent_job_id;
                 DELETE FROM schema_migrations WHERE version=35;
                 ALTER TABLE lead_sessions DROP COLUMN bridge_pid_namespace;

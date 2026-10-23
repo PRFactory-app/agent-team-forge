@@ -727,6 +727,14 @@ public sealed class DispatchJob : IDisposable
                 if (taken) { reserved = session; }
                 return taken;
             });
+            if (claim is not null && !NativeWorkspaceReady(claim.Job))
+            {
+                // A refused workspace never gets the offer. A failed revert means a stop released the attempt and its reservation first.
+                var refused = new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+                if (!RetryBusy(() => store.RevertNativeClaudeAttempt(refused))) { reserved = null; }
+                claim = null;
+                Signal();
+            }
             return claim;
         }
         finally
@@ -907,10 +915,26 @@ public sealed class DispatchJob : IDisposable
                     End(run, JobStatus.Failed, notStarted);
                     return;
                 }
-                if (!JobWorktree.Prepare(claim.Job, deadline.Token))
+                WorktreeRefusal? refusal;
+                try { refusal = JobWorktree.Prepare(claim.Job, deadline.Token); }
+                catch (WorkspaceCheckIncompleteException ex)
                 {
-                    End(run, JobStatus.Failed, claim.Job.WorktreePath is not null && SandboxedWorktrees.Tampered(claim.Job.WorktreePath)
-                        ? SandboxedWorktrees.TamperedReason : "worktree_unavailable");
+                    // A slow git on a loaded machine proves nothing about the worktree: no backend effect occurred, so try again.
+                    if (RetryBusy(() => store.RequeueUnstarted(run, WorkspaceCheckIncomplete, WorkspaceCheckTries)))
+                    {
+                        log($"{run.JobId}: workspace check incomplete, requeued: {ex.Message}");
+                        return;
+                    }
+                    refusal = new(JobWorktree.Unavailable, $"git did not answer in time ({WorkspaceCheckTries} tries): {ex.Message}");
+                }
+                if (refusal is not null)
+                {
+                    var reason = claim.Job.WorktreePath is not null && SandboxedWorktrees.Tampered(claim.Job.WorktreePath)
+                        ? SandboxedWorktrees.TamperedReason : refusal.Reason;
+                    log($"{run.JobId}: {reason}: {refusal.Detail}");
+                    End(run, JobStatus.Failed, reason, WorktreeRecovery(claim.Job, refusal));
+                    // A stop or timeout during the check already ended the job; no backend ran, so its session fence is released.
+                    ReconcileIfStopped(run.JobId);
                     return;
                 }
                 var workingDirectory = JobWorktree.WorkingDirectory(claim.Job);
@@ -1328,6 +1352,12 @@ public sealed class DispatchJob : IDisposable
                 if (job.Status != JobStatus.Running || stopRequested.IsCancellationRequested
                     || RetryBusy(() => store.NativeAttempt(run.JobId)) is not { State: "sent" }) { return; }
             }
+            if (!NativeWorkspaceReady(job))
+            {
+                if (!RetryBusy(() => store.RevertNativeAttempt(run))) { RetryBusy(() => store.ReleaseNativeAttempt(job.JobId, job.Principal, job.Team)); }
+                Signal();
+                return;
+            }
             var prompt = job.Instruction + "\n\n[AgentTeamForge correlation id: atf-corr:"
                 + run.Correlation + " — internal marker, ignore this line]";
             try
@@ -1602,6 +1632,35 @@ public sealed class DispatchJob : IDisposable
             End(run, JobStatus.NeedsReconciliation, "completion_write_failed");
             Halt("terminal_write_failed");
         }
+    }
+
+    /// <summary>Test seam: runs as a native turn's workspace check starts, as a concurrent stop can.</summary>
+    internal Action<JobRecord>? NativeWorkspaceChecking { get; init; }
+
+    const string WorkspaceCheckIncomplete = "workspace_check_incomplete";
+    const int WorkspaceCheckTries = 3;
+
+    /// <summary>The failed check and what the lead can do next: this chain cannot continue in its worktree.</summary>
+    static string WorktreeRecovery(JobRecord job, WorktreeRefusal refusal) =>
+        $"{refusal.Detail}. Nothing ran. This agent chain cannot continue in that worktree. To continue the work, submit a new job " +
+        $"(worktree=true creates a fresh worktree) and name the branch to continue from" +
+        (job.WorktreeBranch is { } branch ? $", for example {branch} or the branch the agent switched to." : ".") +
+        (refusal.Reason == JobWorktree.Missing ? "" : $" Inspect {job.WorktreePath} before you remove it.");
+
+    /// <summary>
+    /// A native turn runs in the live session's checkout without a launch. It passes the same workspace check as a launch: a refused or
+    /// unfinished check hands the turn to the ordinary carrier, which fails it with the reason or tries again.
+    /// </summary>
+    bool NativeWorkspaceReady(JobRecord job)
+    {
+        try
+        {
+            NativeWorkspaceChecking?.Invoke(job);
+            if (JobWorktree.Prepare(job) is not { } refusal) { return true; }
+            log($"{job.JobId}: native turn not delivered, {refusal.Reason}: {refusal.Detail}");
+        }
+        catch (WorkspaceCheckIncompleteException ex) { log($"{job.JobId}: native turn not delivered: {ex.Message}"); }
+        return false;
     }
 
     void End(RunRef run, string status, string reason, string? message = null, bool turnEnded = false)

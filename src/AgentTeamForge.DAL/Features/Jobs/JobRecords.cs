@@ -31,6 +31,9 @@ public sealed record NewJob(
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }
     public string? WorktreeBase { get; init; }
+
+    /// <summary>The absolute git common dir of the job's repository; null on rows accepted before v36.</summary>
+    public string? WorktreeCommonDir { get; init; }
     public bool CreateWorktree { get; init; }
 
     /// <summary>Running time allowed once an attempt starts; null means no job timeout.</summary>
@@ -66,6 +69,7 @@ public sealed record JobRecord(
     public string? WorktreePath { get; init; }
     public string? WorktreeBranch { get; init; }
     public string? WorktreeBase { get; init; }
+    public string? WorktreeCommonDir { get; init; }
     public int? TimeoutSeconds { get; init; }
 
     /// <summary>Latest event sequence when read; a wake acknowledgement must match it to prove the observed state is current.</summary>

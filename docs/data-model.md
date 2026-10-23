@@ -47,7 +47,7 @@ One row per accepted submit or follow-up.
 | `backend` | `claude`, `codex`, `pi` or `fake` |
 | `cwd` | Working directory |
 | `parent_job_id`, `session_id` | Follow-up parent and the backend's native session ID |
-| `worktree_path`, `worktree_branch`, `worktree_base` | Per-job git worktree, if requested |
+| `worktree_path`, `worktree_branch`, `worktree_base`, `worktree_common_dir` | Per-job git worktree, if requested; the common dir (v36) is the repository it belongs to |
 | `timeout_s`, `queue_deadline` | Run timeout and queued expiry |
 | `lead_session_id` | Owning lead session |
 | `status` | `queued`, `running`, `completed`, `failed`, `cancelled`, `needs_reconciliation` |

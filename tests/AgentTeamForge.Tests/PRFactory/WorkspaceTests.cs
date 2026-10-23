@@ -458,7 +458,7 @@ public sealed class WorkspaceTests
         Commit(f.Repo, "later.txt", "later");
         var job = new JobRecord("job", "p", "t", "a", "key", "i", "{}", "queued", null, null, 0, "fake", f.Repo, null, null)
         { WorktreePath = path, WorktreeBranch = "job", WorktreeBase = f.BaseSha };
-        Assert.True(JobWorktree.Prepare(job, TestContext.Current.CancellationToken));
+        Assert.Null(JobWorktree.Prepare(job, TestContext.Current.CancellationToken));
         Assert.Equal(f.BaseSha, JobWorktree.Head(path));
     }
 

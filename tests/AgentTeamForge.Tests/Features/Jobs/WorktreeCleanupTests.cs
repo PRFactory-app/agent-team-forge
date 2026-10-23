@@ -113,7 +113,7 @@ public sealed class WorktreeCleanupTests
         Assert.Equal((null, JobErrors.NotFound), await remove.ExecuteAsync("job_missing", false, true, ct));
 
         var job = e.Fixture.Accept().Execute(new SubmitJobRequest("tree", "work", null, false) { Cwd = e.Clone, Worktree = true }).Job!;
-        Assert.True(JobWorktree.Prepare(e.Fixture.Store.GetJob(job.JobId)!, TestContext.Current.CancellationToken));
+        Assert.Null(JobWorktree.Prepare(e.Fixture.Store.GetJob(job.JobId)!, TestContext.Current.CancellationToken));
         var (found, error) = await e.Cleanup.RemoveJobAsync(job.JobId, false, true, ct);
         Assert.Null(error);
         Assert.Equal(("kept", "job_active"), (found!.Outcome, found.Reason));
@@ -218,7 +218,7 @@ public sealed class WorktreeCleanupTests
         var accept = new AcceptJob(e.Fixture.Store, JobFixture.Operator, e.Fixture.Limits, true, e.Fixture.Admission, catalog.Names);
         var parent = accept.Execute(new SubmitJobRequest("k1", "first", null, false) { Cwd = e.Clone, Worktree = true }).Job!;
 
-        Assert.True(JobWorktree.Prepare(e.Fixture.Store.GetJob(parent.JobId)!, TestContext.Current.CancellationToken));
+        Assert.Null(JobWorktree.Prepare(e.Fixture.Store.GetJob(parent.JobId)!, TestContext.Current.CancellationToken));
         var queued = await e.Cleanup.RemoveAsync(parent.WorktreePath!, false, false, false, TestContext.Current.CancellationToken);
         Assert.Equal("job_active", queued.Reason);
 
@@ -291,7 +291,7 @@ public sealed class WorktreeCleanupTests
             new BackendCatalog().Register(BackendCatalog.Fake, () => backend));
         var job = e.Fixture.Accept().Execute(new SubmitJobRequest("live", "work", null, false)
         { Cwd = e.Clone, Worktree = true }).Job!;
-        Assert.True(JobWorktree.Prepare(e.Fixture.Store.GetJob(job.JobId)!, TestContext.Current.CancellationToken));
+        Assert.Null(JobWorktree.Prepare(e.Fixture.Store.GetJob(job.JobId)!, TestContext.Current.CancellationToken));
         var claim = e.Fixture.Store.BeginNextAttempt()!;
         var run = new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation);
         e.Fixture.Store.RecordSession(run, "native-1");
@@ -312,7 +312,7 @@ public sealed class WorktreeCleanupTests
         using var e = new Env();
         var job = e.Fixture.Accept().Execute(new SubmitJobRequest("recon", "work", null, false)
         { Cwd = e.Clone, Worktree = true }).Job!;
-        Assert.True(JobWorktree.Prepare(e.Fixture.Store.GetJob(job.JobId)!, TestContext.Current.CancellationToken));
+        Assert.Null(JobWorktree.Prepare(e.Fixture.Store.GetJob(job.JobId)!, TestContext.Current.CancellationToken));
         var claim = e.Fixture.Store.BeginNextAttempt()!;
         Assert.True(e.Fixture.Store.EndUnsuccessfully(new RunRef(job.JobId, claim.RunId, claim.Generation, claim.Correlation),
             JobStatus.NeedsReconciliation, "interactive_agent_exited"));

@@ -752,6 +752,82 @@ public sealed class WtInteractiveBackendTests
     }
 
     [Fact]
+    public async Task Native_claude_follow_up_passes_the_same_workspace_check_as_a_launch()
+    {
+        using var fixture = new JobFixture();
+        using var source = new TempStateDir();
+        RunGit(source.Path, "init");
+        RunGit(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+        var tabs = new TrackingTabs();
+        const string session = "native-worktree-session";
+        using var backend = new WtInteractiveBackend(tabs,
+            new FakeReader(new InteractiveTranscript(session, "done", Completed: true)), InteractiveAgentKind.Claude, Path.GetTempPath());
+        var catalog = new BackendCatalog().Register(BackendCatalog.Claude, () => backend);
+        var accept = new AcceptJob(fixture.Store, JobFixture.Operator, fixture.Limits, fixture.TestProfile, fixture.Admission, catalog.Names);
+        var parent = accept.Execute(new SubmitJobRequest("parent", "work", null, false)
+        { Backend = BackendCatalog.Claude, Cwd = source.Path, Worktree = true }).Job!;
+        using var dispatcher = new DispatchJob(fixture.Store, catalog, fixture.Limits, DurabilityCheckpoints.None, fixture.Admission, _ => { });
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
+        tabs.Last!.NativeTranscript = new(session, "/fake/native.jsonl");
+        Assert.True(backend.HasIdleClaudeSession(session));
+        var child = new FollowUpJob(fixture.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+        Assert.Contains(";native_claude=1", fixture.Store.GetJob(child.JobId)!.Options);
+
+        // The live session's worktree is gone: an ordinary launch refuses it, so the native turn must not be delivered either.
+        RunGit(source.Path, "worktree", "remove", "--force", parent.WorktreePath!);
+        Assert.Null(dispatcher.TakeNativeClaude(parent.JobId, "/fake/home"));
+        Assert.True(backend.HasIdleClaudeSession(session));
+        Assert.DoesNotContain("native_claude", fixture.Store.GetJob(child.JobId)!.Options);
+        var ordinary = fixture.Store.BeginNextAttempt()!;
+        Assert.Equal(child.JobId, ordinary.Job.JobId);
+        await dispatcher.RunAttemptAsync(ordinary, CancellationToken.None);
+        Assert.Equal(JobWorktree.Missing, fixture.Store.GetJob(child.JobId)!.ReasonCode);
+    }
+
+    [Fact]
+    public async Task A_stop_during_a_refused_native_claude_check_returns_no_offer()
+    {
+        using var fixture = new JobFixture();
+        using var source = new TempStateDir();
+        RunGit(source.Path, "init");
+        RunGit(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+        var tabs = new TrackingTabs();
+        const string session = "native-stop-session";
+        using var backend = new WtInteractiveBackend(tabs,
+            new FakeReader(new InteractiveTranscript(session, "done", Completed: true)), InteractiveAgentKind.Claude, Path.GetTempPath());
+        var catalog = new BackendCatalog().Register(BackendCatalog.Claude, () => backend);
+        var accept = new AcceptJob(fixture.Store, JobFixture.Operator, fixture.Limits, fixture.TestProfile, fixture.Admission, catalog.Names);
+        var parent = accept.Execute(new SubmitJobRequest("parent", "work", null, false)
+        { Backend = BackendCatalog.Claude, Cwd = source.Path, Worktree = true }).Job!;
+        DispatchJob? owner = null;
+        using var dispatcher = owner = new DispatchJob(fixture.Store, catalog, fixture.Limits, DurabilityCheckpoints.None, fixture.Admission, _ => { })
+        {
+            // stop_job wins the race: it releases the posting attempt and its reservation while the check runs.
+            NativeWorkspaceChecking = job => Assert.True(owner!.ReleaseNative(fixture.Store.GetJob(job.JobId)!)),
+        };
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
+        tabs.Last!.NativeTranscript = new(session, "/fake/native.jsonl");
+        var child = new FollowUpJob(fixture.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+
+        RunGit(source.Path, "worktree", "remove", "--force", parent.WorktreePath!);
+        Assert.Null(dispatcher.TakeNativeClaude(parent.JobId, "/fake/home"));
+        Assert.Equal(JobStatus.Cancelled, fixture.Store.GetJob(child.JobId)!.Status);
+        Assert.Equal("released", fixture.Store.NativeClaudeAttempt(child.JobId)!.State);
+        Assert.True(backend.HasIdleClaudeSession(session));
+    }
+
+    static void RunGit(string cwd, params string[] args)
+    {
+        var info = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true };
+        info.ArgumentList.Add("-C");
+        info.ArgumentList.Add(cwd);
+        foreach (var arg in args) { info.ArgumentList.Add(arg); }
+        using var process = Process.Start(info)!;
+        Assert.True(process.WaitForExit(10_000));
+        Assert.True(process.ExitCode == 0, process.StandardError.ReadToEnd());
+    }
+
+    [Fact]
     public void RealControlRejectsNonWindowsBeforeAnyTabStarts()
     {
         if (OperatingSystem.IsWindows())
