@@ -366,6 +366,97 @@ public sealed class NativeCodexDeliveryTests
     }
 
     [Fact]
+    public async Task Native_codex_turn_with_a_removed_worktree_is_not_submitted_and_fails_as_missing()
+    {
+        var (fixture, source, catalog, parent, backend) = await CompletedWorktreeParent("thread-gone");
+        using var _fixture = fixture;
+        using var _source = source;
+        var child = new FollowUpJob(fixture.Store, JobFixture.Operator, Accept(fixture, catalog))
+            .Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+        Assert.Contains(";native_codex=1", fixture.Store.GetJob(child.JobId)!.Options);
+        var submits = 0;
+        using var dispatcher = new DispatchJob(fixture.Store, catalog, fixture.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { })
+        {
+            SubmitNativeCodex = (_, _, _, _) => { submits++; return Task.FromResult(new CodexSubmission(true, "submission", null)); }
+        };
+        GitIn(source.Path, "worktree", "remove", "--force", parent.WorktreePath!);
+
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home")!, CancellationToken.None);
+        var reverted = fixture.Store.GetJob(child.JobId)!;
+        Assert.Equal(JobStatus.Queued, reverted.Status);
+        Assert.DoesNotContain("native_codex", reverted.Options);
+        Assert.Equal("released", fixture.Store.NativeAttempt(child.JobId)!.State);
+        Assert.Null(fixture.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home"));
+
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
+        Assert.Equal(JobWorktree.Missing, fixture.Store.GetJob(child.JobId)!.ReasonCode);
+        Assert.Equal(0, submits);
+        Assert.Single(backend.Started);
+    }
+
+    [Fact]
+    public async Task Native_codex_turn_whose_workspace_check_times_out_resumes_once_after_recovery()
+    {
+        var (fixture, source, catalog, parent, backend) = await CompletedWorktreeParent("thread-slow");
+        using var _fixture = fixture;
+        using var _source = source;
+        var child = new FollowUpJob(fixture.Store, JobFixture.Operator, Accept(fixture, catalog))
+            .Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+        var submits = 0;
+        using var dispatcher = new DispatchJob(fixture.Store, catalog, fixture.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { })
+        {
+            SubmitNativeCodex = (_, _, _, _) => { submits++; return Task.FromResult(new CodexSubmission(true, "submission", null)); }
+        };
+        JobWorktree.CheckTimeout.Value = TimeSpan.FromSeconds(1);
+        JobWorktree.ReaderDelay.Value = TimeSpan.FromSeconds(2);
+        try { await dispatcher.RunAttemptAsync(fixture.Store.BeginNativeCodexAttempt(_ => true, "/tmp/codex-home")!, CancellationToken.None); }
+        finally
+        {
+            JobWorktree.CheckTimeout.Value = null;
+            JobWorktree.ReaderDelay.Value = TimeSpan.Zero;
+        }
+        Assert.Equal(JobStatus.Queued, fixture.Store.GetJob(child.JobId)!.Status);
+        Assert.Empty(fixture.Store.UnresolvedNativeAttempts());
+
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
+        Assert.Equal(JobStatus.Completed, fixture.Store.GetJob(child.JobId)!.Status);
+        Assert.Equal(0, submits);
+        Assert.Equal(2, backend.Started.Count);
+        Assert.Equal("thread-slow", backend.Started[1].ResumeSessionId);
+        Assert.Null(fixture.Store.BeginNextAttempt());
+    }
+
+    static async Task<(JobFixture Fixture, TempStateDir Source, BackendCatalog Catalog, JobView Parent, ScriptedBackend Backend)> CompletedWorktreeParent(string thread)
+    {
+        var fixture = new JobFixture();
+        var source = new TempStateDir();
+        GitIn(source.Path, "init");
+        GitIn(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+        var backend = new ScriptedBackend(request =>
+        [
+            new BackendEvidence.Session(request.Correlation, thread),
+            new BackendEvidence.Result(request.Correlation, "done")
+        ]);
+        var catalog = Catalog(backend);
+        var parent = Accept(fixture, catalog).Execute(new SubmitJobRequest("parent", "work", null, false)
+        { Backend = BackendCatalog.Codex, TargetAgent = "sameagent", Cwd = source.Path, Worktree = true }).Job!;
+        using var dispatcher = new DispatchJob(fixture.Store, catalog, fixture.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
+        return (fixture, source, catalog, parent, backend);
+    }
+
+    static void GitIn(string cwd, params string[] args)
+    {
+        var info = new System.Diagnostics.ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true };
+        info.ArgumentList.Add("-C");
+        info.ArgumentList.Add(cwd);
+        foreach (var arg in args) { info.ArgumentList.Add(arg); }
+        using var process = System.Diagnostics.Process.Start(info)!;
+        Assert.True(process.WaitForExit(10_000));
+        Assert.True(process.ExitCode == 0, process.StandardError.ReadToEnd());
+    }
+
+    [Fact]
     public async Task Codex_queue_that_never_started_reverts_to_resume()
     {
         var (fixture, catalog, parent, backend) = await CompletedParent("thread-nocodex");

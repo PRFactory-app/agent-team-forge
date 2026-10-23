@@ -194,6 +194,158 @@ public sealed class JobWorktreeTests
         Assert.Equal(JobStatus.Completed, f.Store.GetJob(child.JobId)!.Status);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_separate_clone_that_holds_the_base_on_a_divergent_branch_is_refused(bool submittedCwdDeleted)
+    {
+        using var f = new JobFixture();
+        using var source = new TempStateDir();
+        Git(source.Path, "init");
+        Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+        var (catalog, accept) = Fake(f);
+        var parent = accept.Execute(new SubmitJobRequest("one", "first", null, false) { Cwd = source.Path, Worktree = true }).Job!;
+        await Dispatch(f, catalog);
+
+        // A clone holds the base commit but has its own repository; its HEAD does not contain the base.
+        Git(source.Path, "worktree", "remove", "--force", parent.WorktreePath!);
+        Git(source.Path, "clone", "--quiet", source.Path, parent.WorktreePath!);
+        Git(parent.WorktreePath!, "checkout", "--orphan", "elsewhere");
+        Git(parent.WorktreePath!, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "unrelated");
+        if (submittedCwdDeleted) { Directory.Delete(source.Path, recursive: true); }
+        Assert.Equal(JobWorktree.Unavailable, JobWorktree.Prepare(f.Store.GetJob(parent.JobId)!, TestContext.Current.CancellationToken)?.Reason);
+    }
+
+    [Fact]
+    public async Task A_linked_worktree_of_another_clone_at_the_job_path_is_refused()
+    {
+        using var f = new JobFixture();
+        using var source = new TempStateDir();
+        using var other = new TempStateDir();
+        Git(source.Path, "init");
+        Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+        var (catalog, accept) = Fake(f);
+        var parent = accept.Execute(new SubmitJobRequest("one", "first", null, false) { Cwd = source.Path, Worktree = true }).Job!;
+        await Dispatch(f, catalog);
+
+        // The other clone holds the base and links its own worktree at the job path.
+        Git(source.Path, "worktree", "remove", "--force", parent.WorktreePath!);
+        var clone = Path.Combine(other.Path, "clone");
+        Git(other.Path, "clone", "--quiet", source.Path, clone);
+        Git(clone, "worktree", "add", "--quiet", "-b", "foreign", parent.WorktreePath!);
+        var refusal = JobWorktree.Prepare(f.Store.GetJob(parent.JobId)!, TestContext.Current.CancellationToken);
+        Assert.Equal(JobWorktree.Unavailable, refusal?.Reason);
+        Assert.Contains("not of the job's repository", refusal!.Detail);
+    }
+
+    [Fact]
+    public async Task A_plain_folder_at_the_job_path_is_refused()
+    {
+        using var f = new JobFixture();
+        using var source = new TempStateDir();
+        Git(source.Path, "init");
+        Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+        var (catalog, accept) = Fake(f);
+        var parent = accept.Execute(new SubmitJobRequest("one", "first", null, false) { Cwd = source.Path, Worktree = true }).Job!;
+        await Dispatch(f, catalog);
+
+        Git(source.Path, "worktree", "remove", "--force", parent.WorktreePath!);
+        Directory.CreateDirectory(parent.WorktreePath!);
+        Assert.Equal(JobWorktree.Unavailable, JobWorktree.Prepare(f.Store.GetJob(parent.JobId)!, TestContext.Current.CancellationToken)?.Reason);
+    }
+
+    [Fact]
+    public async Task Workspace_checks_that_keep_timing_out_fail_after_three_durable_tries()
+    {
+        using var f = new JobFixture();
+        using var source = new TempStateDir();
+        Git(source.Path, "init");
+        Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+        var backend = new ScriptedBackend(r =>
+        [
+            new BackendEvidence.Session(r.Correlation, r.ResumeSessionId ?? "session-1"),
+            new BackendEvidence.Result(r.Correlation, "done"),
+        ]);
+        var catalog = new BackendCatalog().Register(BackendCatalog.Fake, () => backend);
+        var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, true, f.Admission, catalog.Names);
+        var parent = accept.Execute(new SubmitJobRequest("one", "first", null, false) { Cwd = source.Path, Worktree = true }).Job!;
+        await Dispatch(f, catalog);
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "second", "two")).Job!;
+
+        JobWorktree.CheckTimeout.Value = TimeSpan.FromSeconds(1);
+        JobWorktree.ReaderDelay.Value = TimeSpan.FromSeconds(2);
+        try
+        {
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                // A restarted daemon reads the tries from the database, not from memory.
+                var store = f.NewStore();
+                using var dispatcher = new DispatchJob(store, catalog, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+                var claim = store.BeginNextAttempt();
+                Assert.Equal(child.JobId, claim?.Job.JobId);
+                await dispatcher.RunAttemptAsync(claim!, CancellationToken.None);
+            }
+        }
+        finally
+        {
+            JobWorktree.CheckTimeout.Value = null;
+            JobWorktree.ReaderDelay.Value = TimeSpan.Zero;
+        }
+        var failed = f.Store.GetJob(child.JobId)!;
+        Assert.Equal(JobStatus.Failed, failed.Status);
+        Assert.Equal(JobWorktree.Unavailable, failed.ReasonCode);
+        Assert.Equal(3, f.Store.GetRuns(child.JobId).Count);
+        Assert.Null(f.Store.BeginNextAttempt());
+        Assert.Single(backend.Started);
+    }
+
+    [Theory]
+    [InlineData("stopped")]
+    [InlineData("timeout")]
+    public async Task A_stop_or_timeout_during_an_unfinished_workspace_check_releases_the_session_fence(string reason)
+    {
+        using var f = new JobFixture();
+        using var source = new TempStateDir();
+        Git(source.Path, "init");
+        Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+        var (catalog, accept) = Fake(f);
+        var parent = accept.Execute(new SubmitJobRequest("one", "first", null, false) { Cwd = source.Path, Worktree = true }).Job!;
+        await Dispatch(f, catalog);
+        var follow = new FollowUpJob(f.Store, JobFixture.Operator, accept);
+        var child = follow.Execute(new FollowUpRequest(parent.JobId, "second", "two") { TimeoutSeconds = reason == "timeout" ? 1 : null }).Job!;
+
+        using var dispatcher = new DispatchJob(f.Store, catalog, f.Limits, DurabilityCheckpoints.None, new AdmissionGate(), _ => { });
+        var readers = new List<Task>();
+        JobWorktree.CheckTimeout.Value = TimeSpan.FromSeconds(3);
+        JobWorktree.ReaderDelay.Value = TimeSpan.FromSeconds(5);
+        JobWorktree.ReaderCompletions.Value = readers;
+        var claim = f.Store.BeginNextAttempt()!;
+        Task attempt;
+        // The check runs synchronously; its own thread keeps the seams it started with.
+        try { attempt = Task.Run(() => dispatcher.RunAttemptAsync(claim, CancellationToken.None), TestContext.Current.CancellationToken); }
+        finally
+        {
+            JobWorktree.CheckTimeout.Value = null;
+            JobWorktree.ReaderDelay.Value = TimeSpan.Zero;
+            JobWorktree.ReaderCompletions.Value = null;
+        }
+        if (reason == "stopped")
+        {
+            await Bounded.Until(() => readers.Count > 0, "the workspace check to start");
+            f.Store.CancelOwned(child.JobId, "stopped");
+            dispatcher.CancelRunning(child.JobId);
+        }
+        await attempt.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+
+        var cancelled = f.Store.GetJob(child.JobId)!;
+        Assert.Equal(JobStatus.Cancelled, cancelled.Status);
+        Assert.Equal(reason, cancelled.ReasonCode);
+        Assert.False(f.Store.IsSessionFenced(child.JobId));
+        var next = follow.Execute(new FollowUpRequest(parent.JobId, "third", "three")).Job!;
+        await Dispatch(f, catalog);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(next.JobId)!.Status);
+    }
+
     [Fact]
     public async Task Job_views_survive_a_deleted_submitted_cwd()
     {

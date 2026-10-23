@@ -784,6 +784,38 @@ public sealed class WtInteractiveBackendTests
         Assert.Equal(JobWorktree.Missing, fixture.Store.GetJob(child.JobId)!.ReasonCode);
     }
 
+    [Fact]
+    public async Task A_stop_during_a_refused_native_claude_check_returns_no_offer()
+    {
+        using var fixture = new JobFixture();
+        using var source = new TempStateDir();
+        RunGit(source.Path, "init");
+        RunGit(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+        var tabs = new TrackingTabs();
+        const string session = "native-stop-session";
+        using var backend = new WtInteractiveBackend(tabs,
+            new FakeReader(new InteractiveTranscript(session, "done", Completed: true)), InteractiveAgentKind.Claude, Path.GetTempPath());
+        var catalog = new BackendCatalog().Register(BackendCatalog.Claude, () => backend);
+        var accept = new AcceptJob(fixture.Store, JobFixture.Operator, fixture.Limits, fixture.TestProfile, fixture.Admission, catalog.Names);
+        var parent = accept.Execute(new SubmitJobRequest("parent", "work", null, false)
+        { Backend = BackendCatalog.Claude, Cwd = source.Path, Worktree = true }).Job!;
+        DispatchJob? owner = null;
+        using var dispatcher = owner = new DispatchJob(fixture.Store, catalog, fixture.Limits, DurabilityCheckpoints.None, fixture.Admission, _ => { })
+        {
+            // stop_job wins the race: it releases the posting attempt and its reservation while the check runs.
+            NativeWorkspaceChecking = job => Assert.True(owner!.ReleaseNative(fixture.Store.GetJob(job.JobId)!)),
+        };
+        await dispatcher.RunAttemptAsync(fixture.Store.BeginNextAttempt()!, CancellationToken.None);
+        tabs.Last!.NativeTranscript = new(session, "/fake/native.jsonl");
+        var child = new FollowUpJob(fixture.Store, JobFixture.Operator, accept).Execute(new FollowUpRequest(parent.JobId, "next", "next")).Job!;
+
+        RunGit(source.Path, "worktree", "remove", "--force", parent.WorktreePath!);
+        Assert.Null(dispatcher.TakeNativeClaude(parent.JobId, "/fake/home"));
+        Assert.Equal(JobStatus.Cancelled, fixture.Store.GetJob(child.JobId)!.Status);
+        Assert.Equal("released", fixture.Store.NativeClaudeAttempt(child.JobId)!.State);
+        Assert.True(backend.HasIdleClaudeSession(session));
+    }
+
     static void RunGit(string cwd, params string[] args)
     {
         var info = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true };

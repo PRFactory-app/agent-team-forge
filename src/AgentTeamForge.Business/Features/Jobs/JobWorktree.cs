@@ -157,6 +157,18 @@ public static partial class JobWorktree
             {
                 return new(Unavailable, $"{path} is not the root of a git worktree");
             }
+            // The daemon made a linked worktree there: a separate clone has its own git dir as common dir, even when it holds the base.
+            var commonDir = Check(path, "rev-parse", "--path-format=absolute", "--git-common-dir");
+            if (commonDir is null || Check(path, "rev-parse", "--path-format=absolute", "--git-dir") == commonDir)
+            {
+                return new(Unavailable, $"{path} is not a linked worktree of the job's repository: it has its own repository");
+            }
+            // The submitted cwd may be gone; while it is a repository, the worktree must belong to it.
+            if (job.Cwd is { } cwd && Directory.Exists(cwd)
+                && Git(cwd, QueryTimeout, "rev-parse", "--path-format=absolute", "--git-common-dir") is { } submitted && submitted != commonDir)
+            {
+                return new(Unavailable, $"{path} is a worktree of {commonDir}, not of the job's repository {submitted}");
+            }
             return Check(path, "cat-file", "-e", baseSha + "^{commit}") is null
                 ? new(Unavailable, $"{path} is not a worktree of the job's repository: it does not hold the base commit {baseSha}")
                 : null;

@@ -727,9 +727,11 @@ public sealed class DispatchJob : IDisposable
                 if (taken) { reserved = session; }
                 return taken;
             });
-            if (claim is not null && !NativeWorkspaceReady(claim.Job)
-                && RetryBusy(() => store.RevertNativeClaudeAttempt(new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation))))
+            if (claim is not null && !NativeWorkspaceReady(claim.Job))
             {
+                // A refused workspace never gets the offer. A failed revert means a stop released the attempt and its reservation first.
+                var refused = new RunRef(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation);
+                if (!RetryBusy(() => store.RevertNativeClaudeAttempt(refused))) { reserved = null; }
                 claim = null;
                 Signal();
             }
@@ -931,6 +933,8 @@ public sealed class DispatchJob : IDisposable
                         ? SandboxedWorktrees.TamperedReason : refusal.Reason;
                     log($"{run.JobId}: {reason}: {refusal.Detail}");
                     End(run, JobStatus.Failed, reason, WorktreeRecovery(claim.Job, refusal));
+                    // A stop or timeout during the check already ended the job; no backend ran, so its session fence is released.
+                    ReconcileIfStopped(run.JobId);
                     return;
                 }
                 var workingDirectory = JobWorktree.WorkingDirectory(claim.Job);
@@ -1630,6 +1634,9 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
+    /// <summary>Test seam: runs as a native turn's workspace check starts, as a concurrent stop can.</summary>
+    internal Action<JobRecord>? NativeWorkspaceChecking { get; init; }
+
     const string WorkspaceCheckIncomplete = "workspace_check_incomplete";
     const int WorkspaceCheckTries = 3;
 
@@ -1648,6 +1655,7 @@ public sealed class DispatchJob : IDisposable
     {
         try
         {
+            NativeWorkspaceChecking?.Invoke(job);
             if (JobWorktree.Prepare(job) is not { } refusal) { return true; }
             log($"{job.JobId}: native turn not delivered, {refusal.Reason}: {refusal.Detail}");
         }
