@@ -207,6 +207,38 @@ public sealed class InteractiveTranscriptReaderTests
     }
 
     [Fact]
+    public void Claude_api_request_blob_replay_does_not_reopen_a_finished_background_tool()
+    {
+        // Claude Code 2.1.301 logs each API request as an api-request-blob record that repeats earlier
+        // assistant content, including a run_in_background tool_use whose tool_result already arrived.
+        const string blob = """{"type":"api-request-blob","sessionId":"claude-native","hash":"0b9f","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"run_in_background":true}}]}}""";
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Claude);
+        File.WriteAllLines(file, [ClaudeUser(Marker),
+            """{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"run_in_background":true}}]}}""",
+            ClaudeBackground, blob, ClaudeNotification(), blob, ClaudeAssistant("DONE", "end_turn")]);
+        var transcript = reader.Read(launch, Marker, DateTimeOffset.UtcNow)!;
+        Assert.True(transcript.Completed);
+        Assert.False(transcript.WaitingOnBackground);
+        Assert.False(transcript.PendingBackgroundTasks);
+    }
+
+    [Fact]
+    public void Claude_api_request_blob_replay_keeps_a_running_background_task_pending()
+    {
+        const string blob = """{"type":"api-request-blob","sessionId":"claude-native","hash":"0b9f","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"run_in_background":true}}]}}""";
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Claude);
+        File.WriteAllLines(file, [ClaudeUser(Marker),
+            """{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"run_in_background":true}}]}}""",
+            ClaudeBackground, blob, ClaudeAssistant("waiting", "end_turn")]);
+        var transcript = reader.Read(launch, Marker, DateTimeOffset.UtcNow)!;
+        Assert.False(transcript.Completed);
+        Assert.True(transcript.WaitingOnBackground);
+        Assert.True(transcript.PendingBackgroundTasks);
+    }
+
+    [Fact]
     public void Claude_api_error_is_only_terminal_if_retry_does_not_continue_the_turn()
     {
         using var state = new TempStateDir();

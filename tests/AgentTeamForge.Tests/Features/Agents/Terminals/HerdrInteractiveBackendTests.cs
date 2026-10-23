@@ -473,6 +473,57 @@ public sealed class HerdrInteractiveBackendTests
     }
 
     [Fact]
+    public async Task Background_wait_past_its_limit_fails_the_turn_and_releases_a_queued_follow_up()
+    {
+        using var f = new JobFixture();
+        var parent = f.Submit("herdr-background-expired");
+        var next = new FollowUpJob(f.Store, JobFixture.Operator, f.Accept())
+            .Execute(new FollowUpRequest(parent.JobId, "next", "after-expiry") { Defer = true }).Job!;
+        var claim = f.Store.BeginNextAttempt()!;
+        var reader = new MutableReader(new InteractiveTranscript("claude-native", "waiting", ["waiting"], PendingBackgroundTasks: true)
+        { WaitingOnBackground = true });
+        var control = new FakeControl { Status = InteractiveAgentStatus.Idle };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(),
+            settleTimeout: TimeSpan.FromMilliseconds(20), backgroundWaitLimit: TimeSpan.FromMilliseconds(200));
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        Assert.Null(f.Store.BeginNextAttempt()); // The follow-up waits while the turn waits on its task.
+        await dispatcher.RunAttemptAsync(claim, TestContext.Current.CancellationToken).WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+        var record = f.Store.GetJob(parent.JobId)!;
+        Assert.Equal(JobStatus.Failed, record.Status);
+        Assert.Equal("background_wait_expired", record.ReasonCode);
+        Assert.Equal(next.JobId, f.Store.BeginNextAttempt()!.Job.JobId);
+    }
+
+    [Fact]
+    public async Task Background_wait_past_its_limit_does_not_expire_while_the_pane_works()
+    {
+        using var f = new JobFixture();
+        var job = f.Submit("herdr-background-working");
+        var claim = f.Store.BeginNextAttempt()!;
+        var reader = new MutableReader(new InteractiveTranscript("claude-native", "waiting", ["waiting"], PendingBackgroundTasks: true)
+        { WaitingOnBackground = true });
+        var control = new FakeControl { Status = InteractiveAgentStatus.Working };
+        var backend = new HerdrInteractiveBackend(control, reader, InteractiveAgentKind.Claude, Path.GetTempPath(),
+            settleTimeout: TimeSpan.FromMilliseconds(20), backgroundWaitLimit: TimeSpan.FromMilliseconds(100));
+        using var dispatcher = new DispatchJob(f.Store, backend, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var attempt = dispatcher.RunAttemptAsync(claim, deadline.Token);
+        while (f.Store.GetJob(job.JobId)?.ReasonCode != JobWaiting.BackgroundTaskReason)
+        {
+            await Task.Delay(10, deadline.Token);
+        }
+        await Task.Delay(400, deadline.Token); // Four times the limit, with a working pane.
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(job.JobId)!.Status);
+
+        reader.Output = new InteractiveTranscript("claude-native", "DONE", ["waiting", "DONE"], Completed: true);
+        control.Status = InteractiveAgentStatus.Idle;
+        await attempt.WaitAsync(deadline.Token);
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(job.JobId)!.Status);
+    }
+
+    [Fact]
     public async Task Blocked_turn_that_completes_while_still_blocked_completes()
     {
         using var f = new JobFixture();

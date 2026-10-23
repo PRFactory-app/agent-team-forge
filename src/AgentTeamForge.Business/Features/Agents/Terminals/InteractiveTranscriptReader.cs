@@ -531,6 +531,9 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
 
     static void TrackBackgroundTasks(JsonElement root, HashSet<string> tools, HashSet<string> tasks, HashSet<string> knownTasks)
     {
+        // Only conversation records count: an api-request-blob record (Claude Code 2.1.301+) replays earlier
+        // tool_use blocks after their tool_result, which would reopen a finished background tool forever.
+        if (Str(root, "type") is not ("assistant" or "user")) { return; }
         if (root.TryGetProperty("message", out var message) && message.TryGetProperty("content", out var content)
             && content.ValueKind == JsonValueKind.Array)
         {

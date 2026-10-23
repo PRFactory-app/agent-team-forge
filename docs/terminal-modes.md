@@ -59,6 +59,15 @@ confirm the prompt. A prompt that times out is never resent; the job stays
 under observation and then becomes `needs_reconciliation`
 ([ADR 0008](adr/0008-never-replay-uncertain-prompts.md)).
 
+An interactive agent that ends its turn on its own background task (for
+example a long build) keeps the job `running` with `waiting: background_task`
+until the task reports back. `ATF_BACKGROUND_WAIT_MINUTES` (default 45) in the
+daemon environment limits this wait. The clock starts again on each new
+transcript record and, in Herdr, while the pane is busy. If the agent stays
+idle for longer than the limit, the job fails with `background_wait_expired`.
+The turn counts as ended, so a queued follow-up for that session runs next.
+The background task itself continues in the tab.
+
 Herdr 0.8.2 exposes `resume_agents_on_restore` only for an entire session.
 ATF cannot turn it off for its tabs in a shared user session. Herdr's restore
 may launch a bare native resume command without ATF's bypass and MCP options;

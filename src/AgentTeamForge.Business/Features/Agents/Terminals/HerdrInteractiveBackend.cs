@@ -24,13 +24,15 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     internal Lock SessionStopGate { get; } = new();
     readonly TimeSpan _settleTimeout;
     readonly TimeSpan _startupTimeout;
+    readonly TimeSpan _backgroundWaitLimit;
 
     public HerdrInteractiveBackend(HerdrTerminal terminal, InteractiveAgentKind kind, string stateRoot, TimeSpan? idleTimeout = null, Func<InteractiveRetentionSettings>? retentionSettings = null)
         : this(new HerdrAgentControl(terminal), new InteractiveTranscriptReader(terminal.Env), kind, stateRoot, idleTimeout: idleTimeout, retentionSettings: retentionSettings) { }
 
     // settleTimeout: how long an idle agent may go without native completion before the turn is uncertain.
     internal HerdrInteractiveBackend(IHerdrAgentControl control, IInteractiveTranscriptReader transcripts, InteractiveAgentKind kind, string stateRoot,
-        TimeSpan? settleTimeout = null, TimeSpan? startupTimeout = null, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null, Func<InteractiveRetentionSettings>? retentionSettings = null)
+        TimeSpan? settleTimeout = null, TimeSpan? startupTimeout = null, TimeSpan? idleTimeout = null, TimeProvider? timeProvider = null, Func<InteractiveRetentionSettings>? retentionSettings = null,
+        TimeSpan? backgroundWaitLimit = null)
     {
         _control = control;
         _transcripts = transcripts;
@@ -39,6 +41,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         _liveSessions = new RetainedSessions(control.StopOwned, idleTimeout, timeProvider, retentionSettings, isIdle: PaneIsIdleAsync);
         _settleTimeout = settleTimeout ?? TimeSpan.FromSeconds(60);
         _startupTimeout = startupTimeout ?? InteractiveStartup.Timeout;
+        _backgroundWaitLimit = backgroundWaitLimit ?? InteractiveBackgroundWait.DefaultLimit;
     }
 
     public void Dispose() => _liveSessions.Dispose();
@@ -59,7 +62,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             {
                 var reused = live with { StartupProgress = request.StartupProgress, LiveReuse = true, JobId = request.JobId };
                 if (_control is HerdrAgentControl control) { control.TransferOwnership(reused); }
-                return new Run(_control, _transcripts, request, reused, started, _settleTimeout, _startupTimeout, RememberSession, BindNativeSession, StopLaunch);
+                return new Run(_control, _transcripts, request, reused, started, _settleTimeout, _startupTimeout, _backgroundWaitLimit, RememberSession, BindNativeSession, StopLaunch);
             }
             StopLaunch(live);
         }
@@ -86,7 +89,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
         {
             throw new InvalidOperationException("interactive agent launch is uncertain: " + e.Message, e);
         }
-        return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout, RememberSession, BindNativeSession, StopLaunch);
+        return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout, _backgroundWaitLimit, RememberSession, BindNativeSession, StopLaunch);
     }
 
     /// <summary>
@@ -116,7 +119,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             ResumeSessionId = job.SessionId,
             WorkingDirectory = JobWorktree.WorkingDirectory(job),
         };
-        return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout,
+        return new Run(_control, _transcripts, request, launch, started, _settleTimeout, _startupTimeout, _backgroundWaitLimit,
             RememberSession, BindNativeSession, StopLaunch, recovered: true);
     }
 
@@ -449,7 +452,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
     }
 
     sealed class Run(IHerdrAgentControl control, IInteractiveTranscriptReader transcripts, BackendRequest request,
-        InteractiveLaunch launch, DateTimeOffset started, TimeSpan settleTimeout, TimeSpan startupTimeout, Action<string, InteractiveLaunch> rememberSession,
+        InteractiveLaunch launch, DateTimeOffset started, TimeSpan settleTimeout, TimeSpan startupTimeout, TimeSpan backgroundWaitLimit, Action<string, InteractiveLaunch> rememberSession,
         Action<string, InteractiveLaunch> bindNativeSession, Action<InteractiveLaunch> stopLaunch, bool recovered = false) : IBackendRun
     {
         bool _agentExited;
@@ -516,6 +519,7 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
             var goneSamples = 0;
             var blocked = false;
             var backgroundWait = false;
+            var backgroundExpiry = new InteractiveBackgroundWait(backgroundWaitLimit);
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -654,6 +658,13 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
                 {
                     backgroundWait = output.WaitingOnBackground;
                     yield return new BackendEvidence.BackgroundWait(output.WaitingOnBackground);
+                }
+                // A working pane or new transcript activity restarts the clock; only an idle wait expires.
+                if (backgroundExpiry.Expired(backgroundWait, status is InteractiveAgentStatus.Idle or InteractiveAgentStatus.Done,
+                    output?.LastActivityAt, DateTimeOffset.UtcNow))
+                {
+                    yield return backgroundExpiry.Error();
+                    yield break;
                 }
                 if (status == InteractiveAgentStatus.Gone)
                 {
