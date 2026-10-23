@@ -20,8 +20,11 @@ public static class SandboxedWorktrees
 {
     public const string TamperedReason = "sandbox_worktree_tampered";
 
-    /// <summary>A directory with an empty common dir is a validated "no git layout here" baseline: any <c>.git</c> that appears later is a mismatch.</summary>
-    sealed record Entry(string Root, string Common, string Admin)
+    /// <summary>
+    /// A directory with an empty common dir is a validated "no git layout here" baseline: any <c>.git</c> that appears later is a mismatch.
+    /// <paramref name="ConfigWorktree"/> is the SHA-256 of the admin dir's <c>config.worktree</c> when the record was made, null when absent.
+    /// </summary>
+    sealed record Entry(string Root, string Common, string Admin, string? ConfigWorktree = null)
     {
         public bool NoGit => Common.Length == 0;
     }
@@ -53,7 +56,7 @@ public static class SandboxedWorktrees
         {
             if ((string?)item["root"] is { } root && (string?)item["common"] is { } common && (string?)item["admin"] is { } admin)
             {
-                Entries.TryAdd(root, new(root, common, admin));
+                Entries.TryAdd(root, new(root, common, admin, (string?)item["configWorktree"]));
             }
         }
     }
@@ -96,6 +99,7 @@ public static class SandboxedWorktrees
     static bool Add(string root, string common, string admin, bool replace)
     {
         var entry = new Entry(Canonical(root), Canonical(common), Canonical(admin));
+        entry = entry with { ConfigWorktree = ConfigWorktreeHash(entry.Admin) };
         if (replace) { Entries[entry.Root] = entry; }
         else if (!Entries.TryAdd(entry.Root, entry)) { return true; }
         Persist();
@@ -112,7 +116,10 @@ public static class SandboxedWorktrees
 
     internal static void SaveTo(string file)
     {
-        var all = new JsonArray([.. Entries.Values.Select(e => (JsonNode)new JsonObject { ["root"] = e.Root, ["common"] = e.Common, ["admin"] = e.Admin })]);
+        var all = new JsonArray([.. Entries.Values.Select(e => (JsonNode)new JsonObject
+        {
+            ["root"] = e.Root, ["common"] = e.Common, ["admin"] = e.Admin, ["configWorktree"] = e.ConfigWorktree,
+        })]);
         PrivateFiles.CreateDirectory(Path.GetDirectoryName(file)!);
         var temporary = file + ".tmp";
         using (var stream = new FileStream(temporary, PrivateFiles.Options(FileMode.Create, FileAccess.Write)))
@@ -141,6 +148,9 @@ public static class SandboxedWorktrees
     }
 
     public static void ClearLive(string root) => Live.AddOrUpdate(root, 0, (_, count) => Math.Max(0, count - 1));
+
+    /// <summary>Whether an agent of the registered worktree containing <paramref name="directory"/> runs now (daemon git refuses there).</summary>
+    public static bool IsLive(string directory) => Find(directory) is { NoGit: false } entry && Live.TryGetValue(entry.Root, out var live) && live > 0;
 
     static Entry? Find(string directory)
     {
@@ -176,7 +186,9 @@ public static class SandboxedWorktrees
             if (Canonical(admin) != entry.Admin) { return "admin_dir_moved"; }
             var pointer = Path.Combine(admin, "commondir");
             if (!File.Exists(pointer) || IsLink(pointer) || Canonical(GitLayout.ResolveCommon(admin)) != entry.Common) { return "common_dir_changed"; }
-            if (File.Exists(Path.Combine(admin, "config.worktree"))) { return "config_worktree_present"; }
+            // Git reads config.worktree when the repository enables extensions.worktreeConfig. Claude's sandbox creates an empty one at start,
+            // and a worktree can have one before ATF records it; only content the agent added or changed is tampering.
+            if (ConfigWorktreeHash(admin) is { } config && config != entry.ConfigWorktree && config != EmptyHash) { return "config_worktree_present"; }
             return Directory.EnumerateFileSystemEntries(admin).Any(IsLink) ? "symlink_in_git_dir" : null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -197,6 +209,17 @@ public static class SandboxedWorktrees
         if (resolved is null) { return null; }
         resolved = Path.TrimEndingDirectorySeparator(resolved);
         return SandboxLaunch.Contains(root, resolved) ? resolved : null;
+    }
+
+    static readonly string EmptyHash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData([]));
+
+    /// <summary>SHA-256 of the admin dir's <c>config.worktree</c>, null when there is none. A link is never read through.</summary>
+    static string? ConfigWorktreeHash(string admin)
+    {
+        var file = Path.Combine(admin, "config.worktree");
+        if (!File.Exists(file)) { return null; }
+        if (IsLink(file)) { return "link"; }
+        return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(file)));
     }
 
     static bool IsLink(string path) => (File.Exists(path) || Directory.Exists(path)) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;

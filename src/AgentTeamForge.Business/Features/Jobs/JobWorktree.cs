@@ -57,6 +57,9 @@ public static partial class JobWorktree
         if (!IsCommitSha(startingSha)) { return false; }
         if (Directory.Exists(path))
         {
+            // A sandboxed agent works in this checkout now: it was checked before the agent started, daemon git refuses there until the
+            // agent ends, and the next preparation after that checks it again. In use is not lost.
+            if (SandboxedWorktrees.IsLive(path)) { return true; }
             return Git(path, QueryTimeout, "rev-parse", "--show-prefix") == string.Empty &&
                 Branch(path) == branch &&
                 Git(path, QueryTimeout, "merge-base", "--is-ancestor", startingSha, "HEAD") is not null &&

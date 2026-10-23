@@ -75,6 +75,53 @@ public sealed class SandboxedWorktreeTests : IDisposable
     }
 
     [Fact]
+    public void An_empty_config_worktree_such_as_claudes_sandbox_creates_still_validates()
+    {
+        // Claude Code's bubblewrap sandbox creates an empty, mode 600 config.worktree in the admin dir at agent start (A6 finding F1).
+        File.WriteAllText(Path.Combine(_admin, "config.worktree"), "");
+        Assert.Null(SandboxedWorktrees.Validate(_worktree));
+
+        File.WriteAllText(Path.Combine(_admin, "config.worktree"), "[core]\n\thooksPath = /tmp\n");
+        Assert.Equal("config_worktree_present", SandboxedWorktrees.Validate(_worktree));
+    }
+
+    [Fact]
+    public void A_config_worktree_that_existed_before_the_record_is_trusted_until_it_changes()
+    {
+        var existing = _dir.File("wt-config");
+        Git(_repo, "worktree", "add", "-b", "with-config", existing);
+        var admin = Path.Combine(_repo, ".git", "worktrees", "wt-config");
+        File.WriteAllText(Path.Combine(admin, "config.worktree"), "[core]\n\tsparseCheckout = false\n");
+        Assert.True(SandboxedWorktrees.RegisterCreated(existing, _repo));
+        Assert.Null(SandboxedWorktrees.Validate(existing));
+
+        // The recorded content survives a restart of the daemon.
+        var file = _dir.File("registry-config/worktrees.json");
+        SandboxedWorktrees.SaveTo(file);
+        SandboxedWorktrees.Forget(existing);
+        SandboxedWorktrees.LoadFrom(file);
+        Assert.Null(SandboxedWorktrees.Validate(existing));
+
+        File.AppendAllText(Path.Combine(admin, "config.worktree"), "\tfsmonitor = /tmp/evil\n");
+        Assert.Equal("config_worktree_present", SandboxedWorktrees.Validate(existing));
+    }
+
+    [Fact]
+    public void A_team_workspace_in_use_by_a_live_sandboxed_agent_is_not_lost()
+    {
+        var head = Git(_repo, "rev-parse", "HEAD").Trim();
+        Assert.True(JobWorktree.Prepare(_repo, _worktree, "atf/job-1", head, TestContext.Current.CancellationToken));
+        var root = SandboxedWorktrees.MarkLive(_worktree);
+        Assert.NotNull(root);
+        try
+        {
+            // Daemon git refuses while the agent runs (A6 finding F2), so the workspace check must not need it.
+            Assert.True(JobWorktree.Prepare(_repo, _worktree, "atf/job-1", head, TestContext.Current.CancellationToken));
+        }
+        finally { SandboxedWorktrees.ClearLive(root); }
+    }
+
+    [Fact]
     public void A_symlink_in_the_admin_dir_fails_validation()
     {
         File.CreateSymbolicLink(Path.Combine(_admin, "stray"), "/etc/passwd");
