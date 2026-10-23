@@ -127,10 +127,12 @@ public sealed class WakeTests
         Assert.True(team.Send(token, "agent one").Ok);
         await NotifyAsync(wake, coordinator, 1);
         Assert.True(team.SendFromOperator(lead.SessionId, lead.Workspace, "operator two", "op").Ok);
-        await NotifyAsync(wake, coordinator, 2);
+        Assert.Equal(2, Assert.Single(wake.PendingExternal()).Unread);
         Assert.True(team.Send(token, "agent three").Ok);
-        await NotifyAsync(wake, coordinator, 3);
-        Assert.Equal(3, poster.Delivered.Count);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(3, Assert.Single(wake.PendingExternal()).Unread);
+        // The first notice is still queued in the busy session and covers the newer messages.
+        Assert.Single(poster.Delivered);
     }
 
     [Fact]
@@ -1561,7 +1563,7 @@ public sealed class WakeTests
         Assert.Equal(3, poster.Attempts.Count);
     }
 
-    sealed class CodexExternal
+    sealed class ExternalLead
     {
         public DateTimeOffset Time = DateTimeOffset.UtcNow;
         public bool Accept = true;
@@ -1572,13 +1574,13 @@ public sealed class WakeTests
         readonly string token;
         readonly WakeCoordinator coordinator;
 
-        public CodexExternal(JobFixture fixture)
+        public ExternalLead(JobFixture fixture, string kind = "codex")
         {
             Poster = new FakePoster((_, _) => Accept);
             Wake = new WakeStore(fixture.Database);
             var sessions = new LeadSessionStore(fixture.Database);
             Lead = sessions.Start("/workspace/codex-held", "codex-held-lead");
-            var target = Wake.Register("codex:held", "codex", "thread", "", "/tmp");
+            var target = Wake.Register(kind + ":held", kind, "thread", "", "/tmp");
             sessions.BindWake(Lead.SessionId, target.Key, target.Generation);
             Team = new ExternalTeam(new ExternalMemberStore(fixture.Database), Wake, () => Time);
             token = Team.Join(Lead.SessionId, Team.CreateTicket(Lead.SessionId, Lead.Workspace, "worker", null).Ticket!.Token).Member!.MemberToken;
@@ -1588,9 +1590,11 @@ public sealed class WakeTests
         public Task Send(string text, TimeSpan after = default)
         {
             Time += after;
-            Assert.True(Team.Send(token, text).Ok);
+            Commit(text);
             return Tick();
         }
+
+        public void Commit(string text) => Assert.True(Team.Send(token, text).Ok);
 
         public Task Tick(TimeSpan after = default)
         {
@@ -1605,7 +1609,7 @@ public sealed class WakeTests
     public async Task Codex_external_notice_is_held_while_nothing_is_read_and_rearms_after_a_read()
     {
         using var fixture = new JobFixture();
-        var codex = new CodexExternal(fixture);
+        var codex = new ExternalLead(fixture);
         await codex.Send("one");
         foreach (var text in new[] { "two", "three", "four" }) { await codex.Send(text, TimeSpan.FromMinutes(1)); }
         Assert.Single(codex.Poster.Attempts);
@@ -1616,10 +1620,64 @@ public sealed class WakeTests
     }
 
     [Fact]
+    public async Task Claude_external_notice_is_held_while_nothing_is_read_and_rearms_after_a_read()
+    {
+        using var fixture = new JobFixture();
+        var claude = new ExternalLead(fixture, "claude");
+        await claude.Send("one");
+        foreach (var text in new[] { "two", "three" }) { await claude.Send(text, TimeSpan.FromSeconds(20)); }
+        Assert.Single(claude.Poster.Attempts);
+
+        claude.Read(50);
+        await claude.Send("four");
+        Assert.Equal(2, claude.Poster.Attempts.Count);
+    }
+
+    [Fact]
+    public async Task External_notice_is_dropped_when_a_read_lands_between_scan_and_post()
+    {
+        using var fixture = new JobFixture();
+        var claude = new ExternalLead(fixture, "claude");
+        claude.Commit("one");
+        Task ticking;
+        using (WakeRoutingGate.Enter())
+        {
+            ticking = claude.Tick();
+            claude.Read(50);
+        }
+        await ticking;
+        Assert.Empty(claude.Poster.Attempts);
+
+        // The dropped notice did not count as a post, so the next message still wakes the lead.
+        await claude.Send("two");
+        Assert.Contains("1 external message(s)", Assert.Single(claude.Poster.Attempts).Notice);
+    }
+
+    [Fact]
+    public async Task Claude_rejected_external_notice_is_not_held_and_retries_until_accepted()
+    {
+        using var fixture = new JobFixture();
+        var claude = new ExternalLead(fixture, "claude") { Accept = false };
+        await claude.Send("one");
+        await claude.Send("two", TimeSpan.FromSeconds(20));
+        Assert.Equal(2, claude.Poster.Attempts.Count);
+
+        // No post succeeded yet, so nothing is queued in the session and the retry must not be held.
+        claude.Accept = true;
+        await claude.Tick(TimeSpan.FromMinutes(1));
+        Assert.Equal(3, claude.Poster.Attempts.Count);
+        var pending = Assert.Single(claude.Wake.PendingExternal());
+        Assert.Equal(pending.LatestSeq, pending.NotifiedSeq);
+
+        await claude.Send("three", TimeSpan.FromSeconds(20));
+        Assert.Equal(3, claude.Poster.Attempts.Count);
+    }
+
+    [Fact]
     public async Task Codex_external_partial_read_counts_as_consumed()
     {
         using var fixture = new JobFixture();
-        var codex = new CodexExternal(fixture);
+        var codex = new ExternalLead(fixture);
         await codex.Send("one");
         await codex.Send("two", TimeSpan.FromSeconds(10));
         await codex.Send("three", TimeSpan.FromSeconds(10));
@@ -1634,7 +1692,7 @@ public sealed class WakeTests
     public async Task Held_codex_notice_reminds_on_the_doubling_cadence_with_the_latest_revision()
     {
         using var fixture = new JobFixture();
-        var codex = new CodexExternal(fixture);
+        var codex = new ExternalLead(fixture);
         await codex.Send("one");
         for (var minute = 1; minute <= 16; minute++) { await codex.Send("more " + minute, TimeSpan.FromMinutes(1)); }
         // Posts at +0, +5 and +15 minutes (reminders double), not once per message.
@@ -1647,7 +1705,7 @@ public sealed class WakeTests
     public async Task Codex_held_to_unheld_after_failed_reminders_wakes_without_waiting_for_backoff()
     {
         using var fixture = new JobFixture();
-        var codex = new CodexExternal(fixture);
+        var codex = new ExternalLead(fixture);
         await codex.Send("A");
         await codex.Send("B", TimeSpan.FromMinutes(1));
         codex.Accept = false;

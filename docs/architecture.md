@@ -217,6 +217,10 @@ control/result path. The user-facing rules are in
   I/O, and reserves incomplete writes until they drain (at most eight).
 - Reading the job through the registered bridge marks it read. Failed posts
   back off; outstanding unread work is re-notified.
+- External-message notices to Claude and Codex targets are held after a
+  successful post until the lead reads a message, because both hosts queue
+  notices during a busy turn. The doubling reminder still posts. Under the
+  routing gate, the coordinator checks for unread rows again before it posts.
 
 ## External members
 

@@ -21,6 +21,12 @@ extension.
 - Notices are coalesced (two seconds), re-sent for outstanding unread work
   after five minutes, and failed posts back off exponentially up to five
   minutes.
+- Claude Code and Codex queue a notice until the current turn ends. After a
+  successful external-message notice, the daemon holds newer notices for that
+  target until the lead reads at least one message; only the doubling
+  reminder posts while the hold is active. Just before a post, the daemon
+  checks again that unread messages exist, so a read during the scan does not
+  give a notice for an empty inbox.
 - Wake registrations carry a generation; a newer registration fences older
   ones. Child processes do not inherit wake credentials.
 - Manual `get_job`/`read_messages` is the explicit fallback where native wake
