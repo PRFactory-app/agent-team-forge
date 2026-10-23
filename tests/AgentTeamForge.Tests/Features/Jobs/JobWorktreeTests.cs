@@ -216,8 +216,11 @@ public sealed class JobWorktreeTests
         Assert.Equal(JobWorktree.Unavailable, JobWorktree.Prepare(f.Store.GetJob(parent.JobId)!, TestContext.Current.CancellationToken)?.Reason);
     }
 
-    [Fact]
-    public async Task A_linked_worktree_of_another_clone_at_the_job_path_is_refused()
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task A_linked_worktree_of_another_clone_at_the_job_path_is_refused(bool submittedCwdDeleted, bool legacyRow)
     {
         using var f = new JobFixture();
         using var source = new TempStateDir();
@@ -226,16 +229,61 @@ public sealed class JobWorktreeTests
         Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
         var (catalog, accept) = Fake(f);
         var parent = accept.Execute(new SubmitJobRequest("one", "first", null, false) { Cwd = source.Path, Worktree = true }).Job!;
+        Assert.Equal(Git(source.Path, "rev-parse", "--path-format=absolute", "--git-common-dir"), f.Store.GetJob(parent.JobId)!.WorktreeCommonDir);
         await Dispatch(f, catalog);
+        // A row accepted before v36 has no recorded repository and falls back to the submitted cwd.
+        if (legacyRow) { ForgetCommonDir(f, parent.JobId); }
 
         // The other clone holds the base and links its own worktree at the job path.
         Git(source.Path, "worktree", "remove", "--force", parent.WorktreePath!);
         var clone = Path.Combine(other.Path, "clone");
         Git(other.Path, "clone", "--quiet", source.Path, clone);
         Git(clone, "worktree", "add", "--quiet", "-b", "foreign", parent.WorktreePath!);
+        if (submittedCwdDeleted) { Directory.Delete(source.Path, recursive: true); }
         var refusal = JobWorktree.Prepare(f.Store.GetJob(parent.JobId)!, TestContext.Current.CancellationToken);
         Assert.Equal(JobWorktree.Unavailable, refusal?.Reason);
         Assert.Contains("not of the job's repository", refusal!.Detail);
+    }
+
+    [Fact]
+    public async Task A_legacy_row_whose_cwd_repository_query_times_out_is_retried_not_accepted()
+    {
+        // The slow git is a shell wrapper; Windows has no Unix execute bit for it.
+        if (OperatingSystem.IsWindows()) { return; }
+        using var f = new JobFixture();
+        using var source = new TempStateDir();
+        using var tools = new TempStateDir();
+        Git(source.Path, "init");
+        Git(source.Path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
+        var (catalog, accept) = Fake(f);
+        var parent = accept.Execute(new SubmitJobRequest("one", "first", null, false) { Cwd = source.Path, Worktree = true }).Job!;
+        await Dispatch(f, catalog);
+        ForgetCommonDir(f, parent.JobId);
+
+        // Only git in the submitted cwd answers after the deadline.
+        var slowGit = Path.Combine(tools.Path, "git");
+        File.WriteAllText(slowGit, $"#!/bin/sh\nif [ \"$2\" = '{source.Path}' ]; then sleep 3; fi\nexec git \"$@\"\n");
+        File.SetUnixFileMode(slowGit, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        JobWorktree.GitProgram.Value = slowGit;
+        JobWorktree.CheckTimeout.Value = TimeSpan.FromSeconds(1);
+        try
+        {
+            Assert.Throws<WorkspaceCheckIncompleteException>(() => JobWorktree.Prepare(f.Store.GetJob(parent.JobId)!, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            JobWorktree.GitProgram.Value = null;
+            JobWorktree.CheckTimeout.Value = null;
+        }
+    }
+
+    static void ForgetCommonDir(JobFixture f, string jobId)
+    {
+        using var connection = f.Database.OpenConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE jobs SET worktree_common_dir=NULL WHERE job_id=$id";
+        command.Parameters.AddWithValue("$id", jobId);
+        Assert.Equal(1, command.ExecuteNonQuery());
     }
 
     [Fact]

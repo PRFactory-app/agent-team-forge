@@ -62,7 +62,9 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         }
 
         var baseCommit = request.Worktree && cwd is not null ? JobWorktree.Head(cwd) : null;
-        if (request.Worktree && baseCommit is null)
+        // The repository the worktree will belong to: a follow-up proves identity with it after the cwd is gone.
+        var commonDir = baseCommit is not null ? JobWorktree.CommonDir(cwd!) : null;
+        if (request.Worktree && (baseCommit is null || commonDir is null))
         {
             return JobResult.Fail(JobErrors.CwdNotGitRepo);
         }
@@ -112,7 +114,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
         else if (request.HerdrPlacement is not null) { return JobResult.Fail("Herdr placement requires Herdr launch mode"); }
 
         return Admit(Operation, request.IdempotencyKey, request.Instruction, options, backend,
-            cwd, null, request.WakeKey, request.WakeGeneration, request.Worktree, baseCommit,
+            cwd, null, request.WakeKey, request.WakeGeneration, request.Worktree, baseCommit, worktreeCommonDir: commonDir,
             timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds, leadSessionId: request.LeadSessionId,
             targetAgent: request.TargetAgent, defaultAgent: backend + "-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(request.IdempotencyKey)))[..8]);
     }
@@ -172,7 +174,8 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
     internal JobResult Admit(string operation, string key, string instruction, string options, string backend, string? cwd, string? parentJobId,
         string? wakeKey = null, long? wakeGeneration = null, bool createWorktree = false, string? worktreeBase = null,
         string? worktreePath = null, string? worktreeBranch = null, int? timeoutSeconds = null, int? queueTtlSeconds = null,
-        bool interruptParent = false, Action<string>? cancelRunning = null, string? leadSessionId = null, string? targetAgent = null, string? defaultAgent = null, bool deferParent = false)
+        bool interruptParent = false, Action<string>? cancelRunning = null, string? leadSessionId = null, string? targetAgent = null, string? defaultAgent = null, bool deferParent = false,
+        string? worktreeCommonDir = null)
     {
         if (!admission.TryEnter())
         {
@@ -201,6 +204,7 @@ public sealed class AcceptJob(JobStore store, BoundPrincipal principal, SpikeLim
                 DeferParent = deferParent,
                 CreateWorktree = createWorktree,
                 WorktreeBase = worktreeBase,
+                WorktreeCommonDir = worktreeCommonDir,
                 WorktreePath = worktreePath,
                 WorktreeBranch = worktreeBranch,
                 LeadSessionId = leadSessionId,

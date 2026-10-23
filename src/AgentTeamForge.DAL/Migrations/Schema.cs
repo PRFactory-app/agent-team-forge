@@ -5,7 +5,7 @@ namespace AgentTeamForge.DAL.Migrations;
 
 static class Schema
 {
-    public const int CurrentVersion = 35;
+    public const int CurrentVersion = 36;
 
     internal const string V1 = """
         CREATE TABLE schema_migrations(
@@ -387,7 +387,10 @@ static class Schema
         UPDATE jobs SET requested_parent_job_id=parent_job_id;
         """;
 
-    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35];
+    /// <summary>v36: the repository a job worktree belongs to, so a follow-up can prove identity without the submitted cwd.</summary>
+    internal const string V36 = "ALTER TABLE jobs ADD COLUMN worktree_common_dir TEXT;";
+
+    static readonly string[] Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21, V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36];
 
     /// <summary>
     /// Checks the stored version before any write. A newer version is refused

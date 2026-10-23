@@ -43,6 +43,9 @@ public static partial class JobWorktree
         return root is null ? null : Git(cwd, QueryTimeout, "rev-parse", "--verify", "HEAD");
     }
 
+    /// <summary>The absolute common git dir: the repository that all of its linked worktrees share.</summary>
+    public static string? CommonDir(string cwd) => Git(cwd, QueryTimeout, "rev-parse", "--path-format=absolute", "--git-common-dir");
+
     public static string? Branch(string cwd) => Git(cwd, QueryTimeout, "symbolic-ref", "--quiet", "--short", "HEAD");
 
     public static async Task<string[]?> TrackedPathsAsync(string cwd, CancellationToken ct, string? rev = null)
@@ -163,11 +166,12 @@ public static partial class JobWorktree
             {
                 return new(Unavailable, $"{path} is not a linked worktree of the job's repository: it has its own repository");
             }
-            // The submitted cwd may be gone; while it is a repository, the worktree must belong to it.
-            if (job.Cwd is { } cwd && Directory.Exists(cwd)
-                && Git(cwd, QueryTimeout, "rev-parse", "--path-format=absolute", "--git-common-dir") is { } submitted && submitted != commonDir)
+            // The repository recorded at submit; a row accepted before it was recorded uses the submitted cwd while that still exists.
+            var expected = job.WorktreeCommonDir
+                ?? (job.Cwd is { } cwd && Directory.Exists(cwd) ? Check(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir") : null);
+            if (expected is not null && expected != commonDir)
             {
-                return new(Unavailable, $"{path} is a worktree of {commonDir}, not of the job's repository {submitted}");
+                return new(Unavailable, $"{path} is a worktree of {commonDir}, not of the job's repository {expected}");
             }
             return Check(path, "cat-file", "-e", baseSha + "^{commit}") is null
                 ? new(Unavailable, $"{path} is not a worktree of the job's repository: it does not hold the base commit {baseSha}")

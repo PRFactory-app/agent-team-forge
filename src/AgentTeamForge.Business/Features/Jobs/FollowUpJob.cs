@@ -179,7 +179,7 @@ public sealed class FollowUpJob(JobStore store, BoundPrincipal principal, Accept
         }
         return accept.Admit(Operation, request.IdempotencyKey, request.Instruction, options,
             parent.Backend, parent.Cwd, parent.JobId, request.WakeKey, request.WakeGeneration, worktreeBase: parent.WorktreeBase,
-            worktreePath: parent.WorktreePath, worktreeBranch: parent.WorktreeBranch,
+            worktreePath: parent.WorktreePath, worktreeBranch: parent.WorktreeBranch, worktreeCommonDir: parent.WorktreeCommonDir,
             timeoutSeconds: request.TimeoutSeconds, queueTtlSeconds: request.QueueTtlSeconds,
             interruptParent: interruptRunning, cancelRunning: cancelRunning, leadSessionId: request.LeadSessionId,
             targetAgent: parent.TargetAgent, deferParent: defer && !interruptRunning);

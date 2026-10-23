@@ -230,8 +230,9 @@ The agent owns its worktree: it can switch, create, rebase or reset branches
 there, also onto a base that does not contain the submit-time commit. Before a
 follow-up, revive or resume runs (native or launched), the daemon checks only
 that the path is still a linked worktree root of the job's repository: not a
-separate clone, the same repository as the submitted cwd while that still
-exists, and an object store that holds the submit-time base commit. A refused follow-up fails with one of
+separate clone, the same git common dir that submit recorded for the job, and
+an object store that holds the submit-time base commit. Jobs accepted before
+the common dir was recorded compare with the submitted cwd while it exists. A refused follow-up fails with one of
 these reason codes, and its result text gives the failed check and the next step:
 
 | Reason | Meaning |
