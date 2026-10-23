@@ -677,6 +677,37 @@ public sealed class SandboxedWorktreeTests : IDisposable
         return path;
     }
 
+    [Fact]
+    public void A_workspace_check_that_hits_its_deadline_is_transient()
+    {
+        JobWorktree.ReaderDelay.Value = TimeSpan.FromSeconds(3); // The reader catches up only after the deadline.
+        try
+        {
+            Assert.Throws<WorkspaceCheckIncompleteException>(() => JobWorktree.Check(_repo, TimeSpan.FromSeconds(1), "rev-parse", "--show-prefix"));
+        }
+        finally { JobWorktree.ReaderDelay.Value = TimeSpan.Zero; }
+    }
+
+    [Fact]
+    public void A_workspace_check_with_a_nonzero_exit_is_terminal() =>
+        Assert.Null(JobWorktree.Check(_dir.Path, TimeSpan.FromSeconds(10), "rev-parse", "--verify", "--quiet", "refs/heads/none"));
+
+    [Fact]
+    public void A_workspace_check_whose_git_cannot_start_is_terminal_not_a_timeout()
+    {
+        JobWorktree.GitProgram.Value = _dir.File("no-such-git");
+        try { Assert.Null(JobWorktree.Check(_repo, TimeSpan.FromSeconds(10), "rev-parse", "--show-prefix")); }
+        finally { JobWorktree.GitProgram.Value = null; }
+    }
+
+    [Fact]
+    public void A_workspace_check_in_a_tampered_worktree_is_terminal()
+    {
+        File.WriteAllText(Path.Combine(_admin, "config.worktree"), "[core]\n\tfsmonitor = /tmp/evil\n");
+
+        Assert.Null(JobWorktree.Check(_worktree, TimeSpan.FromSeconds(10), "rev-parse", "--show-prefix"));
+    }
+
     static string Git(string cwd, params string[] args)
     {
         var info = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true };

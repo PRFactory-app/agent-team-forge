@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using AgentTeamForge.Business;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Host.Hosting;
 
@@ -25,6 +26,18 @@ public sealed record ProfileFile
 
     /// <summary>Launch mode of local jobs that name none (<c>sandboxed</c> or <c>fullAccess</c>); null is fullAccess.</summary>
     public string? SafetyMode { get; init; }
+
+    /// <summary>Shell network access inside the sandbox of this machine; null or true keeps it on, false turns it off (per-machine opt-in).</summary>
+    public bool? SandboxNetwork { get; init; }
+
+    /// <summary>The domains sandboxed Claude reaches when the network is on; null is the default list.</summary>
+    public IReadOnlyList<string>? SandboxAllowedDomains { get; init; }
+
+    /// <summary>The package cache paths sandboxed Codex and Claude may write; null is the default list for this OS.</summary>
+    public IReadOnlyList<string>? SandboxCachePaths { get; init; }
+
+    [JsonIgnore]
+    public SandboxSettings Sandbox => SandboxSettings.From(SandboxNetwork, SandboxAllowedDomains, SandboxCachePaths);
 
     public const int MaxQueueLimit = 1_000;
     public const int MaxConcurrencyLimit = 64;
@@ -65,6 +78,17 @@ public sealed record ProfileFile
         if (profile.SafetyMode is not null && !Business.Features.Jobs.SafetyMode.Valid(profile.SafetyMode))
         {
             throw new StateDirectoryException("profile_invalid_safety_mode", $"{state.ProfileFile}: safety_mode must be \"sandboxed\" or \"fullAccess\"");
+        }
+
+        // Only lists the profile sets are checked: a default must never stop the daemon from starting. Null and NUL entries are errors here,
+        // not exceptions, so a bad hand edit is a StateDirectoryException that keeps the last good settings at runtime.
+        if (profile.SandboxAllowedDomains?.Count > SandboxConfiguration.MaxDomains || profile.SandboxCachePaths?.Count > SandboxConfiguration.MaxCachePaths)
+        {
+            throw new StateDirectoryException("profile_invalid_sandbox", $"{state.ProfileFile}: at most {SandboxConfiguration.MaxDomains} domains and {SandboxConfiguration.MaxCachePaths} cache paths");
+        }
+        if (new SandboxSettings(true, profile.SandboxAllowedDomains ?? [], profile.SandboxCachePaths ?? []).Errors(stateRoot: state.Path) is [_, ..] sandboxErrors)
+        {
+            throw new StateDirectoryException("profile_invalid_sandbox", $"{state.ProfileFile}: {string.Join("; ", sandboxErrors)}");
         }
 
         if (!LimitsAreValid(profile.QueueLimit, profile.MaxFakeRuntimeSeconds)

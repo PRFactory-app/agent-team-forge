@@ -32,6 +32,9 @@ public sealed record IpcRequest
     public int? MaxRetainedSessions { get; init; }
     public int? IdleCloseMinutes { get; init; }
     public bool ResetAllTiers { get; init; }
+    public bool? SandboxNetwork { get; init; }
+    public IReadOnlyList<string>? SandboxAllowedDomains { get; init; }
+    public IReadOnlyList<string>? SandboxCachePaths { get; init; }
     public string? Cwd { get; init; }
     public bool Worktree { get; init; }
     public bool Interrupt { get; init; }
@@ -81,7 +84,7 @@ public sealed record IpcRequest
     public string? CodexThreadId { get; init; }
 }
 
-public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, AgentTeamForge.DAL.Features.External.JoinTicket? Ticket = null, AgentTeamForge.DAL.Features.External.JoinedMember? Member = null, AgentTeamForge.DAL.Features.External.ExternalInbox? Inbox = null, JobActivityPage? Activity = null, bool? AlreadyLeft = null, string? LeftName = null, IReadOnlyCollection<string>? Backends = null, IReadOnlyDictionary<string, AgentModelOptions>? ModelOptions = null, string? ErrorDetail = null, IReadOnlyList<TierSetting>? Tiers = null, IReadOnlyDictionary<string, IReadOnlyCollection<string>>? ModelCatalog = null, string? HerdrPlacement = null, bool? HerdrMode = null, AgentTeamForge.DAL.Features.Wake.WakeRegistrationStatus? WakeStatus = null, IReadOnlyDictionary<string, bool>? BackendAvailability = null, IReadOnlyDictionary<string, bool>? BackendInstalled = null, IReadOnlyDictionary<string, string>? BackendSignIn = null, string? LaunchMode = null, AgentTeamForge.Business.Features.Wake.ClaudeWakeNotice? ClaudeNotice = null, string? Instruction = null, IReadOnlyList<AgentTeamForge.DAL.Features.External.ExternalMemberSummary>? ExternalMembers = null, NativeClaudeOffer? ClaudeDelivery = null, IReadOnlyList<WorktreeCleanupResult>? Worktrees = null, AgentTeamForge.Business.Features.Agents.Terminals.InteractiveRetentionSettings? RetentionSettings = null, IReadOnlyDictionary<string, AgentTeamForge.Business.Features.Usage.TokenUsage?>? LeadTokens = null, IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<string>>>? ModelEfforts = null, IReadOnlyDictionary<string, int>? Counts = null)
+public sealed record IpcResponse(bool Ok, string? Error = null, string? Outcome = null, JobView? Job = null, JobListPage? Page = null, long? WakeGeneration = null, int? PrunedJobs = null, JobOutput? Output = null, AgentTeamForge.DAL.Features.Sessions.LeadSessionInfo? Session = null, AgentTeamForge.DAL.Features.External.JoinTicket? Ticket = null, AgentTeamForge.DAL.Features.External.JoinedMember? Member = null, AgentTeamForge.DAL.Features.External.ExternalInbox? Inbox = null, JobActivityPage? Activity = null, bool? AlreadyLeft = null, string? LeftName = null, IReadOnlyCollection<string>? Backends = null, IReadOnlyDictionary<string, AgentModelOptions>? ModelOptions = null, string? ErrorDetail = null, IReadOnlyList<TierSetting>? Tiers = null, IReadOnlyDictionary<string, IReadOnlyCollection<string>>? ModelCatalog = null, string? HerdrPlacement = null, bool? HerdrMode = null, AgentTeamForge.DAL.Features.Wake.WakeRegistrationStatus? WakeStatus = null, IReadOnlyDictionary<string, bool>? BackendAvailability = null, IReadOnlyDictionary<string, bool>? BackendInstalled = null, IReadOnlyDictionary<string, string>? BackendSignIn = null, string? LaunchMode = null, AgentTeamForge.Business.Features.Wake.ClaudeWakeNotice? ClaudeNotice = null, string? Instruction = null, IReadOnlyList<AgentTeamForge.DAL.Features.External.ExternalMemberSummary>? ExternalMembers = null, NativeClaudeOffer? ClaudeDelivery = null, IReadOnlyList<WorktreeCleanupResult>? Worktrees = null, AgentTeamForge.Business.Features.Agents.Terminals.InteractiveRetentionSettings? RetentionSettings = null, IReadOnlyDictionary<string, AgentTeamForge.Business.Features.Usage.TokenUsage?>? LeadTokens = null, IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<string>>>? ModelEfforts = null, IReadOnlyDictionary<string, int>? Counts = null, AgentTeamForge.Host.Features.Setup.SandboxSettingsView? Sandbox = null)
 {
     public string? FencingJobId { get; init; }
     public JobRecovery? Recovery { get; init; }
@@ -130,6 +133,8 @@ public static class IpcProtocol
     public const string TierSettingsPut = "tier_settings_put";
     public const string HerdrPlacementGet = "herdr_placement_get";
     public const string HerdrPlacementPut = "herdr_placement_put";
+    public const string SandboxSettingsGet = "sandbox_settings_get";
+    public const string SandboxSettingsPut = "sandbox_settings_put";
     public const string JobGet = "job_get";
     public const string JobOutput = "job_output";
     public const string JobActivity = "get_job_activity";
@@ -186,6 +191,7 @@ public static class IpcProtocol
 [JsonSerializable(typeof(IpcRequest))]
 [JsonSerializable(typeof(IpcResponse))]
 [JsonSerializable(typeof(JobView))]
+[JsonSerializable(typeof(AgentTeamForge.Host.Features.Setup.SandboxSettingsView))]
 [JsonSerializable(typeof(WorktreeCleanupResult))]
 [JsonSerializable(typeof(AgentTeamForge.Business.Features.Usage.TokenUsage))]
 [JsonSerializable(typeof(JobListPage))]

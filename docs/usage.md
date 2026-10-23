@@ -120,10 +120,11 @@ Other `submit_job` options:
   (`safety_mode` in `profile.json`, `fullAccess` when absent). `sandboxed` replaces
   the bypass flags with the sandbox of [ADR 0013](adr/0013-sandboxed-launch-mode.md)
   for Codex and Claude on Linux: shell writes are confined to the job worktree, its
-  git data and a private temp directory, `~/.ssh` is unreadable, the agent gets an
-  allow-listed environment (no cloud or token variables), and the network is off. Reads elsewhere are not
-  confined. Where ATF cannot enforce it (Pi, Cursor and Droid, other platforms, a
-  any interactive launch) the job runs with full access and
+  git data, the package caches below and a private temp directory, `~/.ssh` is
+  unreadable, and the agent gets an allow-listed environment (no cloud or token
+  variables). Reads elsewhere are not confined. See "Sandbox settings" below for
+  the network and cache rules. Where ATF cannot enforce it (Pi, Cursor and Droid,
+  other platforms, any interactive launch) the job runs with full access and
   `get_job` reports `requested_safety_mode`, `effective_safety_mode` and
   `safety_downgrade_reason` (`sandbox_unsupported_backend` or `sandbox_unavailable`).
   Follow-ups and revives keep the mode, and a job that a sandboxed agent starts over
@@ -137,6 +138,54 @@ MCP tools for managed jobs: `submit_job`, `get_job`, `get_job_output`,
 `register_codex_wake`. `list_backends` reports executable availability and
 model/tier choices. `get_job.delivery` exposes durable delivery evidence. Coming from win-agent-teams? See the
 [migration guide](migrating-from-win-agent-teams.md).
+
+### Sandbox settings
+
+Each machine keeps three sandbox settings in `profile.json`. Edit them in the web
+console **Settings → Sandbox**, or in the file. A saved change applies at the next
+sandboxed job launch; running agents keep the settings they started with. No
+daemon restart is needed. An invalid hand edit stops the daemon at start
+(`profile_invalid_sandbox`). While the daemon runs, it keeps the last good
+settings; at first these are the settings it validated at start, never the
+defaults. The Settings page then shows the read error.
+
+- `sandbox_network` (default `true`). On: Codex has unrestricted network, and Claude
+  reaches only the domains in `sandbox_allowed_domains`. `false` turns the network
+  off for both.
+- `sandbox_allowed_domains`: Claude's domain list. The default lists the common git
+  hosts and package registries (GitHub, GitLab, Bitbucket, Azure DevOps, NuGet,
+  npm, yarn, PyPI, Go, crates.io, Maven Central). An entry is a host
+  (`github.com`) or a subdomain pattern (`*.github.com`) in lower case. Claude
+  refuses an allow-all entry. ATF's check is stricter than Claude's: it also
+  refuses `*.*`, a wildcard over a top-level domain (`*.com`), a scheme, a path,
+  a port, upper case and single-label hosts such as `localhost`.
+- `sandbox_cache_paths`: the package caches that both CLIs may write. An entry is
+  absolute or starts with `~/`. The Linux default is `~/.nuget/packages`,
+  `~/.local/share/NuGet`, `/tmp/.dotnet` (the .NET named-mutex directory that
+  restores need), `~/.npm`, `~/.cache/yarn`, `~/.cache/pip`, `~/.cargo/registry`,
+  `~/.cargo/git` and `~/go/pkg/mod`. macOS uses `~/Library/Caches/Yarn` and
+  `~/Library/Caches/pip`. Windows uses the `~/AppData/Local` equivalents, but the
+  sandbox does not apply there yet. `~/.dotnet` is not on the list on purpose:
+  write access there includes `~/.dotnet/tools`, where an agent could place an
+  executable on `PATH`. Restores work without it.
+
+Hard rule: `~/.ssh`, `~/.aws`, `~/.config/gh` and `~/.netrc` always stay denied.
+ATF refuses a cache path that is one of them, is inside one, or contains one (for
+example `~/.config` or `~`). ATF also refuses the file-system root, the home
+directory and a path that overlaps ATF's state directory. ATF compares both
+sides as written and as resolved through symlinks: a cache link into `~/.ssh` and
+a cache under the target of a symlinked `~/.ssh`, `~/.config`, home or state
+directory are both refused. A path that cannot be resolved is refused. The launch
+checks each entry again, so a hand-edited `profile.json` cannot make a secret
+writable. Both CLIs get the resolved physical path, not the configured spelling,
+so a link that is retargeted after the launch starts does not move the grant. A
+cache path inside the job workspace or inside another cache path is not granted
+separately, because the agent could replace one of its parents with a link.
+
+A cache path that does not exist on the machine is skipped at launch, and ATF does
+not create it: Codex refuses a nonexistent path, and ATF does not add directories
+for tools the machine does not use. Create the directory (for example
+`mkdir -p ~/.npm`) to enable it. The Settings page lists the skipped paths.
 
 ### Several leads and restarts
 

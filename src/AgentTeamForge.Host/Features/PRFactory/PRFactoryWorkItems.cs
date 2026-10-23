@@ -763,7 +763,14 @@ public sealed partial class PRFactoryWorkItems(
             }
             return; // A question is open: the answer resumes the saved session before completion.
         }
-        var failed = allJobs.FirstOrDefault(j => j.Status != JobStatus.Completed);
+        // Only a team whose every unfinished turn a daemon restart killed (no stop, no kill, no other failure) is retryable; any
+        // other unfinished turn decides the reported error, whatever the member order.
+        var killedTurns = teams.ManagedMembers(server, item.Id).Where(m => teams.IsManagedKilled(server, item.Id, m.Member))
+            .Select(m => m.JobId).ToHashSet(StringComparer.Ordinal);
+        bool RestartRetryable(JobRecord j) => j is { Status: JobStatus.Failed, ReasonCode: DaemonRestartAgentGone } && !killedTurns.Contains(j.JobId);
+        var unfinished = allJobs.Where(j => j.Status != JobStatus.Completed).ToList();
+        var failed = unfinished.FirstOrDefault(j => !RestartRetryable(j)) ?? unfinished.FirstOrDefault();
+        var retryable = unfinished.Count > 0 && unfinished.All(RestartRetryable);
         if (failed is null && workspace is { RepositoryPath: not null, ReadOnly: false } && managedMembers.Length > 0
             && teams.MemberJob(server, item.Id, "lead", FinalizeTurn) is null)
         {
@@ -775,7 +782,8 @@ public sealed partial class PRFactoryWorkItems(
                 : failed is { Status: JobStatus.Cancelled, IdempotencyKey: { } key } && key.StartsWith("prf-revive:", StringComparison.Ordinal)
                     ? "agent_gone: the agent exited again after one revive"
                 : failed?.ReasonCode ?? "job failed", repo?.Directory, ct,
-            lead.ResultText ?? (!waitForManaged ? "External members completed their work; replies are in the agent stream." : null));
+            lead.ResultText ?? (!waitForManaged ? "External members completed their work; replies are in the agent stream." : null),
+            retryable);
     }
 
     /// <summary>"KEY-1_refinement_lead": agent names allow only letters, digits, '-' and '_' and start with a letter or digit.
@@ -868,9 +876,17 @@ public sealed partial class PRFactoryWorkItems(
 
     static readonly string[] DeadAgentReasons = ["interactive_agent_exited", "backend_eof", "backend_not_started"];
 
+    /// <summary>Restart recovery found no live agent for a started turn (it kills a headless agent it marked) and failed the job.</summary>
+    internal const string DaemonRestartAgentGone = "daemon_restart_agent_gone";
+
+    /// <summary>Marks a frozen failure that PRFactory may retry; stripped before the failure is reported.</summary>
+    const string RetryableFailure = "retryable:";
+
     /// <summary>A quarantined member whose agent is provably gone (the stop reports NoRecord) is cancelled and resumed once in its
     /// session (follow-up keyed prf-revive:). The intent is persisted before the stop and replayed every tick until the successor is
-    /// mapped. A member with any earlier revive in its history, or whose stop closed something live, is left cancelled so the item fails.</summary>
+    /// mapped. A member with any earlier revive in its history, or whose stop closed something live, is left cancelled so the item fails.
+    /// A member that a daemon restart failed with <see cref="DaemonRestartAgentGone"/> needs no stop (recovery already proved the agent
+    /// gone) and is revived once the same way; the follow-up keeps the session's safety mode, so the claim and its mode stay unchanged.</summary>
     async Task<(bool Changed, bool Hold)> ReviveDeadMembersAsync(PRFactoryWorkItem item, CancellationToken ct)
     {
         var changed = false;
@@ -880,6 +896,8 @@ public sealed partial class PRFactoryWorkItems(
             var last = turns[^1];
             var job = getJob(last.JobId);
             if (job is null) { continue; }
+            // An operator's KillAgent closed this member: never start it again, even with an intent persisted before the kill.
+            if (teams.IsManagedKilled(server, item.Id, member)) { continue; }
             if (job.Status == JobStatus.NeedsReconciliation && DeadAgentReasons.Contains(job.ReasonCode)
                 && !turns.Any(t => t.JobId != job.JobId && teams.HasReviveIntent(t.JobId)))
             {
@@ -905,7 +923,14 @@ public sealed partial class PRFactoryWorkItems(
                 log?.Invoke($"PRFactory work item {item.Id:D} member {member} agent gone ({job.ReasonCode}); reporting failure");
                 continue;
             }
-            if (job.Status != JobStatus.Cancelled || !teams.HasReviveIntent(job.JobId)) { continue; }
+            var restartKilled = job is { Status: JobStatus.Failed, ReasonCode: DaemonRestartAgentGone };
+            if (restartKilled && !teams.HasReviveIntent(job.JobId) && !teams.ReviveRefused(job.JobId)
+                && !turns.Any(t => t.JobId != job.JobId && teams.HasReviveIntent(t.JobId)))
+            {
+                teams.SetReviveIntent(job.JobId, true);
+            }
+            // A durable refusal wins over an intent that survived a crash between the two writes.
+            if (!(job.Status == JobStatus.Cancelled || restartKilled) || !teams.HasReviveIntent(job.JobId) || teams.ReviveRefused(job.JobId)) { continue; }
             var revived = JobResult.Fail(JobErrors.DaemonUnhealthy);
             await Guard(item.Id, () =>
             {
@@ -926,7 +951,8 @@ public sealed partial class PRFactoryWorkItems(
             }
             else
             {
-                teams.SetReviveIntent(job.JobId, false);
+                if (restartKilled) { teams.RefuseRevive(job.JobId); }
+                else { teams.SetReviveIntent(job.JobId, false); }
                 log?.Invoke($"PRFactory work item {item.Id:D} member {member} agent gone; reporting failure (revive refused: {revived.Error})");
             }
         }
@@ -1471,7 +1497,7 @@ public sealed partial class PRFactoryWorkItems(
     }
 
     async Task FinishAsync(PRFactoryTeamRecord team, PRFactoryWorkItem item, bool success, string error,
-        string? cwd, CancellationToken ct, string? result = null)
+        string? cwd, CancellationToken ct, string? result = null, bool retryable = false)
     {
         var leadId = teams.ManagedMembers(server, item.Id).LastOrDefault(m => m.Member == "lead")?.JobId;
         var job = leadId is null ? null : getJob(leadId);
@@ -1527,10 +1553,15 @@ public sealed partial class PRFactoryWorkItems(
                     error = $"Cannot collect {item.Type ?? "work item"} artefacts: {ex.Message}. Lead job: {leadId ?? "none"}; worktree: {cwd ?? "none"}";
                 }
             }
-            teams.FreezeArtefacts(server, item.Id, payload, success ? null : error);
+            // The retry decision is frozen with the failure, so a replay after a lost response reports the same one.
+            teams.FreezeArtefacts(server, item.Id, payload, success ? null : retryable ? RetryableFailure + error : error);
             delivery = teams.ArtefactDelivery(server, item.Id)!;
         }
-        if (delivery.Failure is { } failure) { (success, error) = (false, failure); }
+        if (delivery.Failure is { } failure)
+        {
+            retryable = failure.StartsWith(RetryableFailure, StringComparison.Ordinal);
+            (success, error) = (false, retryable ? failure[RetryableFailure.Length..] : failure);
+        }
         if (success && !team.Uploaded)
         {
             try
@@ -1612,9 +1643,10 @@ public sealed partial class PRFactoryWorkItems(
         }
         else
         {
+            // A restart that killed the agent again after its one revive is not the work's fault: PRFactory retries it with the current mode.
+            var rateLimited = error.StartsWith("agent_rate_limited", StringComparison.Ordinal);
             await Guard(item.Id, () => client.FailAsync(item.Id, item.LeaseToken, error, ct,
-                error.StartsWith("agent_rate_limited", StringComparison.Ordinal),
-                    error.StartsWith("agent_rate_limited", StringComparison.Ordinal) ? RateLimitDetails(error) : ""), ct);
+                rateLimited || retryable, rateLimited ? RateLimitDetails(error) : ""), ct);
             StopManagedJobs(item.Id);
             teams.Finish(server, item.Id, error.StartsWith("multi-repository", StringComparison.Ordinal) ? "refused" : "failed");
             await Observe(item.Id, "completed", "failure_reported", ct);

@@ -21,7 +21,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     Func<string?, string?, string?, HumanInputRequestResult>? humanInput = null, ExternalMemberStore? externalMembers = null,
     GetJob? connectorGet = null, Func<string, string, AttemptClaim?>? takeNativeClaude = null,
     RemoveWorktree? removeWorktree = null, WorktreeCleanup? worktreeCleanup = null, Func<string?, string?, string, bool?>? agentLive = null, InteractiveRetentionConfiguration? retentionSettings = null, Action<string, string>? releaseNativeTurn = null, AgentTeamForge.Business.Features.Usage.SessionTokenUsage? usage = null,
-    StopIdleAgents? stopIdle = null, ArchiveJobs? archive = null)
+    StopIdleAgents? stopIdle = null, ArchiveJobs? archive = null, SandboxConfiguration? sandboxSettings = null)
 {
     JobResult ReadJob(IpcRequest request)
     {
@@ -236,6 +236,9 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
                 if (herdrPlacement is null || request.HerdrPlacement is null) { return new IpcResponse(false, JobErrors.InvalidRequest); }
                 try { herdrPlacement.Change(request.HerdrPlacement); return new IpcResponse(true, Outcome: "herdr_placement", HerdrPlacement: herdrPlacement.Default, HerdrMode: true); }
                 catch (ArgumentException e) { return new IpcResponse(false, JobErrors.InvalidRequest, ErrorDetail: "Invalid herdr_placement: " + e.Message); }
+            case IpcProtocol.SandboxSettingsGet:
+            case IpcProtocol.SandboxSettingsPut:
+                return sandboxSettings?.Handle(request) ?? new IpcResponse(false, JobErrors.InvalidRequest);
             case IpcProtocol.RetentionSettingsGet:
             case IpcProtocol.RetentionSettingsPut:
                 return retentionSettings?.Handle(request) ?? new IpcResponse(false, JobErrors.InvalidRequest);

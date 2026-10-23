@@ -28,6 +28,9 @@ public static partial class JobWorktree
     /// <summary>Test seam: holds each output reader back before its first read, as a loaded machine can.</summary>
     internal static readonly AsyncLocal<TimeSpan> ReaderDelay = new();
 
+    /// <summary>Test seam: the git program to start, as a machine where git is missing has it.</summary>
+    internal static readonly AsyncLocal<string?> GitProgram = new();
+
     /// <summary>Test seam: collects each output reader's completion, to prove a cut reader is released.</summary>
     internal static readonly AsyncLocal<List<Task>?> ReaderCompletions = new();
 
@@ -60,11 +63,11 @@ public static partial class JobWorktree
             // A sandboxed agent works in this checkout now: it was checked before the agent started, daemon git refuses there until the
             // agent ends, and the next preparation after that checks it again. In use is not lost.
             if (SandboxedWorktrees.IsLive(path)) { return true; }
-            return Git(path, QueryTimeout, "rev-parse", "--show-prefix") == string.Empty &&
-                Branch(path) == branch &&
-                Git(path, QueryTimeout, "merge-base", "--is-ancestor", startingSha, "HEAD") is not null &&
-                Git(path, QueryTimeout, "rev-parse", "--path-format=absolute", "--git-common-dir") ==
-                Git(repository, QueryTimeout, "rev-parse", "--path-format=absolute", "--git-common-dir");
+            return Check(path, "rev-parse", "--show-prefix") == string.Empty &&
+                Check(path, "symbolic-ref", "--quiet", "--short", "HEAD") == branch &&
+                Check(path, "merge-base", "--is-ancestor", startingSha, "HEAD") is not null &&
+                Check(path, "rev-parse", "--path-format=absolute", "--git-common-dir") ==
+                Check(repository, "rev-parse", "--path-format=absolute", "--git-common-dir");
         }
         PrivateFiles.CreateDirectory(Path.GetDirectoryName(path)!);
         var commonDir = Git(repository, QueryTimeout, "rev-parse", "--path-format=absolute", "--git-common-dir");
@@ -91,6 +94,22 @@ public static partial class JobWorktree
             }
             return Add(repository, "worktree", "add", "-b", branch, path, startingSha);
         }
+    }
+
+    /// <summary>
+    /// One validation query of an existing checkout: stdout on exit 0, otherwise null, which fails the checkout. Only a query that hit its
+    /// deadline (git still running, or its output not read in time) proves nothing: it throws <see cref="WorkspaceCheckIncompleteException"/>
+    /// and the caller tries again later. A nonzero exit, a tampered sandboxed worktree or a git that cannot start stays terminal.
+    /// </summary>
+    static string? Check(string cwd, params string[] args) => Check(cwd, QueryTimeout, args);
+
+    internal static string? Check(string cwd, TimeSpan timeout, params string[] args)
+    {
+        var (result, timedOut) = RunCoreAsync(cwd, timeout, CancellationToken.None, args).GetAwaiter().GetResult();
+        if (result is not null) { return result.ExitCode == 0 ? result.Output.Trim() : null; }
+        if (timedOut) { throw new WorkspaceCheckIncompleteException($"git {args[0]} in {cwd} did not finish within {timeout.TotalSeconds:0} s"); }
+        Console.Error.WriteLine($"[atf-daemon] git {args[0]} in {cwd} could not run; the checkout is not recovered");
+        return null;
     }
 
     /// <summary>A refused checkout fails the job; keep git's reason in the daemon log rather than on its raw stderr.</summary>
@@ -135,7 +154,7 @@ public static partial class JobWorktree
             if (created && sandboxed) { SandboxedWorktrees.RegisterCreated(job.WorktreePath, job.Cwd); }
             return created;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WorkspaceCheckIncompleteException)
         {
             return false;
         }
@@ -205,13 +224,20 @@ public static partial class JobWorktree
     }
 
     /// <summary>Exit code with bounded stdout and stderr; null when git could not run or hit the deadline.</summary>
-    internal static async Task<GitResult?> RunAsync(string cwd, TimeSpan timeout, CancellationToken cancellationToken, params string[] args)
+    internal static async Task<GitResult?> RunAsync(string cwd, TimeSpan timeout, CancellationToken cancellationToken, params string[] args) =>
+        (await RunCoreAsync(cwd, timeout, cancellationToken, args)).Result;
+
+    /// <summary>
+    /// Like <see cref="RunAsync"/>, and says why there is no result: <c>TimedOut</c> only when the deadline passed (git still running, or
+    /// its output not read in time). A git that could not start, an I/O error or a refused sandboxed worktree is not a timeout.
+    /// </summary>
+    static async Task<(GitResult? Result, bool TimedOut)> RunCoreAsync(string cwd, TimeSpan timeout, CancellationToken cancellationToken, params string[] args)
     {
         try
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(timeout);
-            var info = new ProcessStartInfo("git")
+            var info = new ProcessStartInfo(GitProgram.Value ?? "git")
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -230,7 +256,7 @@ public static partial class JobWorktree
             using var process = NonInteractiveProcess.Start(info);
             if (process is null)
             {
-                return null;
+                return (null, false);
             }
 
             // Each stream is read by its own thread, so a busy thread pool cannot delay reading git's output.
@@ -254,7 +280,7 @@ public static partial class JobWorktree
 
                 await Task.WhenAll(output.ReleaseAsync(), error.ReleaseAsync());
                 cancellationToken.ThrowIfCancellationRequested();
-                return null;
+                return (null, true);
             }
 
             // A hook descendant may keep stdout or stderr open after git exits; git's own output is already in the
@@ -270,16 +296,17 @@ public static partial class JobWorktree
             var complete = output.Complete(exited) && error.Complete(exited);
             await Task.WhenAll(output.ReleaseAsync(), error.ReleaseAsync());
             cancellationToken.ThrowIfCancellationRequested();
-            return complete ? new(process.ExitCode, output.Text, error.Text) : null;
+            // Incomplete output is only possible once the deadline passed.
+            return complete ? (new(process.ExitCode, output.Text, error.Text), false) : (null, true);
         }
         catch (TamperedWorktreeException ex)
         {
             Console.Error.WriteLine($"[atf-daemon] git {string.Join(' ', args)} not run: {ex.Message}");
-            return null;
+            return (null, false);
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or InvalidOperationException)
         {
-            return null;
+            return (null, false);
         }
     }
 
@@ -444,3 +471,6 @@ public static partial class JobWorktree
         public static partial uint GetCurrentThreadId();
     }
 }
+
+/// <summary>A git validation of an existing checkout did not finish: the checkout is not proven invalid, so the work is retried later.</summary>
+public sealed class WorkspaceCheckIncompleteException(string message) : TimeoutException(message);

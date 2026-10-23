@@ -188,12 +188,32 @@ public sealed partial class PRFactoryTeamStore(JobDatabase database)
         command.ExecuteNonQuery();
     }
 
-    public bool HasReviveIntent(string jobId)
+    public bool HasReviveIntent(string jobId) => HasEvent(jobId, "prf_revive_intent");
+
+    /// <summary>A revive the daemon refused: one transaction records the refusal and drops the intent, so a crash cannot keep both.</summary>
+    public void RefuseRevive(string jobId)
+    {
+        using var connection = database.OpenConnection();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "INSERT INTO events(job_id, kind, created_at) SELECT $job, 'prf_revive_refused', $now WHERE NOT EXISTS (SELECT 1 FROM events WHERE job_id=$job AND kind='prf_revive_refused');"
+            + "DELETE FROM events WHERE job_id=$job AND kind='prf_revive_intent'";
+        command.Parameters.AddWithValue("$job", jobId);
+        command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+        command.ExecuteNonQuery();
+        transaction.Commit();
+    }
+
+    public bool ReviveRefused(string jobId) => HasEvent(jobId, "prf_revive_refused");
+
+    bool HasEvent(string jobId, string kind)
     {
         using var connection = database.OpenConnection();
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT count(*) FROM events WHERE job_id=$job AND kind='prf_revive_intent'";
+        command.CommandText = "SELECT count(*) FROM events WHERE job_id=$job AND kind=$kind";
         command.Parameters.AddWithValue("$job", jobId);
+        command.Parameters.AddWithValue("$kind", kind);
         return Convert.ToInt32(command.ExecuteScalar()) > 0;
     }
 

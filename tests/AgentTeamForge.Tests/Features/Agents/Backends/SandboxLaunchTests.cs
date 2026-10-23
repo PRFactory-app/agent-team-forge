@@ -12,6 +12,9 @@ public sealed class SandboxLaunchTests : IDisposable
 
     public void Dispose() => _dir.Dispose();
 
+    /// <summary>A workspace beside the test homes: a cache inside the workspace is dropped (the agent can write its parents).</summary>
+    string Workspace => Directory.CreateDirectory(_dir.File("workspace")).FullName;
+
     SandboxLaunch ClaudeSandbox() => SandboxLaunch.Create(_dir.Path, BackendCatalog.Claude, _dir.File("sandbox"), "job-1", Home("ssh"));
 
     string Home(params string[] present)
@@ -40,6 +43,241 @@ public sealed class SandboxLaunchTests : IDisposable
         Assert.True((bool)settings["disableAllHooks"]!);
         Assert.Contains("mcp__agentteamforge", settings["permissions"]!["allow"]!.AsArray().Select(n => (string)n!));
         Assert.Null(settings["sandbox"]!["network"]?["allowUnixSockets"]);
+        // Network stays on by default: Claude's proxy reaches the listed git hosts and package registries.
+        var domains = settings["sandbox"]!["network"]!["allowedDomains"]!.AsArray().Select(n => (string)n!).ToList();
+        Assert.Contains("github.com", domains);
+        Assert.Contains("api.nuget.org", domains);
+        Assert.DoesNotContain("*", domains); // Claude rejects a bare "*" in allowedDomains.
+    }
+
+    [Fact]
+    public void Default_cache_paths_that_exist_are_writable_for_both_clis_and_missing_ones_are_skipped()
+    {
+        var home = Home("ssh");
+        var npm = Directory.CreateDirectory(Path.Combine(home, ".npm")).FullName;
+        var nuget = Directory.CreateDirectory(Path.Combine(home, ".nuget", "packages")).FullName;
+
+        var claude = SandboxLaunch.Create(Workspace, BackendCatalog.Claude, _dir.File("sandbox"), "job-caches", home);
+        var codex = SandboxLaunch.Create(Workspace, BackendCatalog.Codex, _dir.File("sandbox"), "job-caches-codex", home).CodexArguments(false)[1];
+
+        var allowWrite = JsonNode.Parse(File.ReadAllText(claude.ClaudeSettingsPath!))!["sandbox"]!["filesystem"]!["allowWrite"]!.AsArray()
+            .Select(n => (string)n!).ToList();
+        Assert.Contains(npm, allowWrite);
+        Assert.Contains(nuget, allowWrite);
+        Assert.DoesNotContain(Path.Combine(home, ".cargo", "registry"), allowWrite); // Not on this machine: skipped, not created.
+        Assert.False(Directory.Exists(Path.Combine(home, ".cargo")));
+        Assert.Contains($"'{npm}'='write'", codex);
+        Assert.Contains($"'{nuget}'='write'", codex);
+    }
+
+    [Fact]
+    public void Custom_domains_and_cache_paths_reach_the_claude_settings_and_the_codex_profile()
+    {
+        var home = Home();
+        var cache = Directory.CreateDirectory(Path.Combine(home, "build-cache")).FullName;
+        var settings = new SandboxSettings(true, ["example.com", "*.example.org"], ["~/build-cache"]);
+
+        var claude = SandboxLaunch.Create(Workspace, BackendCatalog.Claude, _dir.File("sandbox"), "job-custom", home, settings: settings);
+        var codex = SandboxLaunch.Create(Workspace, BackendCatalog.Codex, _dir.File("sandbox"), "job-custom-codex", home, settings: settings).CodexArguments(false);
+
+        var json = JsonNode.Parse(File.ReadAllText(claude.ClaudeSettingsPath!))!["sandbox"]!;
+        Assert.Equal(["example.com", "*.example.org"], json["network"]!["allowedDomains"]!.AsArray().Select(n => (string)n!));
+        Assert.Equal([cache], json["filesystem"]!["allowWrite"]!.AsArray().Select(n => (string)n!));
+        Assert.Contains($"'{cache}'='write'", codex[1]);
+        Assert.Contains("permissions.atf.network.enabled=true", codex); // Codex stays unrestricted: the domain list is Claude's.
+    }
+
+    [Theory]
+    [InlineData("*")]
+    [InlineData("*.*")]
+    [InlineData("*.com")]
+    [InlineData("https://github.com")]
+    [InlineData("github.com/org")]
+    [InlineData("github.com:443")]
+    [InlineData("api.*.com")]
+    [InlineData("GitHub.com")]
+    [InlineData("")]
+    public void Domain_validation_refuses_entries_claude_rejects_or_that_are_too_broad(string domain) =>
+        Assert.NotNull(SandboxPolicy.DomainError(domain));
+
+    [Theory]
+    [InlineData("github.com")]
+    [InlineData("*.github.com")]
+    [InlineData("registry.npmjs.org")]
+    public void Domain_validation_accepts_hosts_and_subdomain_patterns(string domain) => Assert.Null(SandboxPolicy.DomainError(domain));
+
+    [Theory]
+    [InlineData("~/.ssh")]
+    [InlineData("~/.ssh/keys")]
+    [InlineData("~/.aws")]
+    [InlineData("~/.config/gh")]
+    [InlineData("~/.config")] // A parent of ~/.config/gh.
+    [InlineData("~")]
+    [InlineData("/")]
+    [InlineData("relative/cache")]
+    [InlineData("~/.netrc")]
+    public void Cache_path_validation_refuses_secrets_their_parents_and_broad_paths(string entry) =>
+        Assert.NotNull(SandboxPolicy.CachePathError(entry, Home()));
+
+    [Fact]
+    public void Cache_path_validation_refuses_the_state_directory()
+    {
+        var home = Home();
+        Assert.NotNull(SandboxPolicy.CachePathError("~/.local/share", home, Path.Combine(home, ".local", "share", "atf")));
+        Assert.Null(SandboxPolicy.CachePathError("~/.local/share/NuGet", home, Path.Combine(home, ".local", "share", "atf")));
+    }
+
+    [Fact]
+    public void A_hand_edited_secret_or_a_link_into_one_never_becomes_writable_at_launch()
+    {
+        var home = Home("ssh", "aws");
+        var link = Path.Combine(home, "cache-link");
+        Directory.CreateSymbolicLink(link, Path.Combine(home, ".ssh"));
+        Directory.CreateDirectory(Path.Combine(home, ".npm"));
+        // A profile edited by hand skips the web console's validation; the launch checks again.
+        var settings = new SandboxSettings(true, ["*", "github.com"], ["~/.ssh", "~/.aws", "~/cache-link", "~", "~/.npm"]);
+
+        var claude = SandboxLaunch.Create(Workspace, BackendCatalog.Claude, _dir.File("sandbox"), "job-deny", home, settings: settings);
+        var codex = SandboxLaunch.Create(Workspace, BackendCatalog.Codex, _dir.File("sandbox"), "job-deny-codex", home, settings: settings).CodexArguments(false)[1];
+
+        var json = JsonNode.Parse(File.ReadAllText(claude.ClaudeSettingsPath!))!["sandbox"]!;
+        Assert.Equal([Path.Combine(home, ".npm")], json["filesystem"]!["allowWrite"]!.AsArray().Select(n => (string)n!));
+        Assert.Equal(["github.com"], json["network"]!["allowedDomains"]!.AsArray().Select(n => (string)n!));
+        Assert.Contains("'~/.ssh'='none'", codex);
+        Assert.DoesNotContain(".ssh'='write'", codex);
+        Assert.DoesNotContain("cache-link", codex);
+        Assert.DoesNotContain($"'{home}'='write'", codex);
+    }
+
+    [Theory]
+    [InlineData("target")]
+    [InlineData("target/keys")]
+    [InlineData("")] // The parent of the target.
+    public void A_cache_at_or_around_the_target_of_a_symlinked_secret_is_refused_and_never_granted(string relative)
+    {
+        var home = Home();
+        var data = Directory.CreateDirectory(_dir.File("data")).FullName;
+        var target = Directory.CreateDirectory(Path.Combine(data, "target", "keys")).Parent!.FullName;
+        Directory.CreateSymbolicLink(Path.Combine(home, ".ssh"), target);
+        var cache = relative.Length == 0 ? data : Path.Combine(data, relative);
+
+        Assert.NotNull(SandboxPolicy.CachePathError(cache, home));
+        var settings = new SandboxSettings(true, ["github.com"], [cache]);
+        var claude = SandboxLaunch.Create(_dir.Path, BackendCatalog.Claude, _dir.File("sandbox"), "job-link-" + relative.Length, home, settings: settings);
+        var codex = SandboxLaunch.Create(_dir.Path, BackendCatalog.Codex, _dir.File("sandbox"), "job-link-codex-" + relative.Length, home, settings: settings);
+        Assert.Empty(JsonNode.Parse(File.ReadAllText(claude.ClaudeSettingsPath!))!["sandbox"]!["filesystem"]!["allowWrite"]!.AsArray());
+        Assert.Empty(codex.CachePaths);
+        Assert.DoesNotContain(data, codex.CodexArguments(false)[1]);
+    }
+
+    [Fact]
+    public void A_cache_under_the_target_of_a_symlinked_config_parent_or_home_is_refused()
+    {
+        var real = Directory.CreateDirectory(_dir.File("real-config")).FullName;
+        var home = Home();
+        Directory.CreateSymbolicLink(Path.Combine(home, ".config"), real); // ~/.config/gh is then real-config/gh.
+        Assert.NotNull(SandboxPolicy.CachePathError(Path.Combine(real, "gh", "cache"), home));
+
+        var realHome = Directory.CreateDirectory(_dir.File("real-home")).FullName;
+        var linkedHome = _dir.File("linked-home");
+        Directory.CreateSymbolicLink(linkedHome, realHome);
+        Assert.NotNull(SandboxPolicy.CachePathError(Path.Combine(realHome, ".aws"), linkedHome)); // The physical ~/.aws.
+        Assert.NotNull(SandboxPolicy.CachePathError(realHome, linkedHome)); // The physical home.
+        Assert.Null(SandboxPolicy.CachePathError(Path.Combine(realHome, ".npm"), linkedHome));
+    }
+
+    [Fact]
+    public void A_cache_under_the_target_of_a_symlinked_state_directory_is_refused()
+    {
+        var home = Home();
+        var real = Directory.CreateDirectory(_dir.File("real-state")).FullName;
+        var state = _dir.File("state-link");
+        Directory.CreateSymbolicLink(state, real);
+
+        Assert.NotNull(SandboxPolicy.CachePathError(Path.Combine(real, "sandbox"), home, state));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("/bad\0path")]
+    [InlineData("~/bad\0path")]
+    public void A_null_or_nul_cache_entry_is_a_validation_error_not_an_exception(string? entry)
+    {
+        Assert.NotNull(SandboxPolicy.CachePathError(entry, Home()));
+        Assert.Empty(SandboxPolicy.ResolveCachePaths([entry], Home()));
+    }
+
+    [Fact]
+    public void A_null_domain_is_a_validation_error_not_an_exception() => Assert.NotNull(SandboxPolicy.DomainError(null));
+
+    [Fact]
+    public void A_cache_link_retargeted_after_the_launch_is_built_does_not_move_the_grant()
+    {
+        var home = Home("ssh");
+        var safe = Directory.CreateDirectory(Path.Combine(home, "real-cache")).FullName;
+        var alias = Path.Combine(home, "cache");
+        Directory.CreateSymbolicLink(alias, safe);
+        var settings = new SandboxSettings(true, [], ["~/cache"]);
+
+        var claude = SandboxLaunch.Create(Workspace, BackendCatalog.Claude, _dir.File("sandbox"), "job-retarget", home, settings: settings);
+        var codex = SandboxLaunch.Create(Workspace, BackendCatalog.Codex, _dir.File("sandbox"), "job-retarget-codex", home, settings: settings);
+        Directory.Delete(alias); // Another agent retargets the alias at ~/.ssh before the CLI starts its sandbox.
+        Directory.CreateSymbolicLink(alias, Path.Combine(home, ".ssh"));
+
+        // Both grants name the validated physical target, so the retargeted link is not writable.
+        Assert.Equal([safe], JsonNode.Parse(File.ReadAllText(claude.ClaudeSettingsPath!))!["sandbox"]!["filesystem"]!["allowWrite"]!.AsArray().Select(n => (string)n!));
+        Assert.Equal([safe], codex.CachePaths);
+        Assert.Contains($"'{safe}'='write'", codex.CodexArguments(false)[1]);
+        Assert.DoesNotContain($"'{alias}'", codex.CodexArguments(false)[1]);
+    }
+
+    [Fact]
+    public void A_cache_link_retargeted_between_check_and_grant_is_granted_as_the_checked_target()
+    {
+        var home = Home("ssh");
+        var safe = Directory.CreateDirectory(Path.Combine(home, "real-cache")).FullName;
+        var alias = Path.Combine(home, "cache");
+        Directory.CreateSymbolicLink(alias, safe);
+        var resolutions = 0;
+        // Each cache resolution sees the link as it is, then another process retargets it at ~/.ssh: a second resolution would find ~/.ssh.
+        SandboxPolicy.CacheResolver.Value = path =>
+        {
+            resolutions++;
+            var resolved = PhysicalPath.Resolve(path);
+            Directory.Delete(alias);
+            Directory.CreateSymbolicLink(alias, Path.Combine(home, ".ssh"));
+            return resolved;
+        };
+        try
+        {
+            Assert.Equal([safe], SandboxPolicy.ResolveCachePaths(["~/cache"], home));
+            Assert.Equal(1, resolutions);
+        }
+        finally { SandboxPolicy.CacheResolver.Value = null; }
+    }
+
+    [Fact]
+    public void A_cache_inside_the_workspace_or_inside_another_cache_is_not_granted_separately()
+    {
+        var home = Home();
+        var outer = Directory.CreateDirectory(Path.Combine(home, "outer")).FullName;
+        Directory.CreateDirectory(Path.Combine(outer, "inner"));
+        var inWorkspace = Directory.CreateDirectory(Path.Combine(Workspace, "cache")).FullName;
+
+        var caches = SandboxPolicy.ResolveCachePaths(["~/outer", "~/outer/inner", inWorkspace], home, writableRoots: [Workspace]);
+
+        Assert.Equal([outer], caches); // The agent can write the parents of the other two and swap a component for a link.
+    }
+
+    [Fact]
+    public void The_per_machine_opt_in_turns_claude_network_off()
+    {
+        var sandbox = SandboxLaunch.Create(_dir.Path, BackendCatalog.Claude, _dir.File("sandbox"), "job-off", Home("ssh"),
+            settings: SandboxSettings.Default with { Network = false });
+
+        var settings = JsonNode.Parse(File.ReadAllText(sandbox.ClaudeSettingsPath!))!;
+        Assert.False(sandbox.Network);
+        Assert.Null(settings["sandbox"]!["network"]); // No domain listed: the proxy denies every request under dontAsk.
     }
 
     [Theory]

@@ -210,7 +210,11 @@ public static class DaemonCommand
         var admission = new AdmissionGate();
         var externalTeam = new ExternalTeam(externalMembers, wakeStore);
         var childContext = new ManagedChildContext(store, externalTeam, state.Path, Environment.ProcessPath!);
-        using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs, childContext, stateRoot: state.Path);
+        var sandboxSettings = new SandboxConfiguration(state, profile.Sandbox, Log);
+        using var dispatcher = new DispatchJob(store, backends, limits, checkpoints, admission, Log, jobLogs, childContext, stateRoot: state.Path)
+        {
+            SandboxSettings = () => sandboxSettings.Current,
+        };
         SandboxedWorktrees.Configure(state.Path);
         SandboxedWorktrees.Restore(store);
         dispatcher.RestoreAfterRestart(store.RestartCandidates());
@@ -265,7 +269,7 @@ public static class DaemonCommand
                     || backends.Resolve(backend) is not IInteractiveSessionStop interactive) { return null; }
                 return interactive.HasLiveSession(session);
             }, retentionSettings, dispatcher.ReleaseNativeTurn, new AgentTeamForge.Business.Features.Usage.SessionTokenUsage(),
-            stopIdleAgents, new ArchiveJobs(store, profile.Bound));
+            stopIdleAgents, new ArchiveJobs(store, profile.Bound), sandboxSettings);
 
         var credential = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(StateDirectory.ReadPrivateFile(state.CredentialFile)).Trim());
         // The socket serves before dispatch resolves restart candidates; a request must not

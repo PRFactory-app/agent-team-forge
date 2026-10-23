@@ -19,6 +19,15 @@ public sealed class CodexSandboxArgumentTests : IDisposable
         return path;
     }
 
+    [Fact]
+    public void The_per_machine_opt_in_turns_codex_network_off()
+    {
+        var args = CodexExecBackend.BuildArguments(new BackendRequest("j", "c", "task", "") { Sandbox = Sandbox with { Network = false } });
+
+        Assert.Contains("permissions.atf.network.enabled=false", args);
+        Assert.DoesNotContain("permissions.atf.network.enabled=true", args);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -48,7 +57,7 @@ public sealed class CodexSandboxArgumentTests : IDisposable
         Assert.Contains("--ignore-user-config", args);
         Assert.Contains("--ignore-rules", args);
         Assert.Contains("default_permissions='atf'", args);
-        Assert.Contains("permissions.atf.network.enabled=false", args);
+        Assert.Contains("permissions.atf.network.enabled=true", args); // Network stays on unless the machine opts out.
         var filesystem = args.Single(a => a.StartsWith("permissions.atf.filesystem=", StringComparison.Ordinal));
         Assert.Contains("'/'='read'", filesystem);
         Assert.Contains("':workspace_roots'='write'", filesystem);
