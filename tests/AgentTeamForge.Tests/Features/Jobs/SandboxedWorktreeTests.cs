@@ -107,6 +107,32 @@ public sealed class SandboxedWorktreeTests : IDisposable
     }
 
     [Fact]
+    public void A_record_made_after_an_agent_ran_trusts_no_config_worktree_content()
+    {
+        // Recovery of an older daemon's job registers the worktree only now; content an agent left there must not become the baseline.
+        var recovered = _dir.File("wt-recovered");
+        Git(_repo, "worktree", "add", "-b", "recovered", recovered);
+        var admin = Path.Combine(_repo, ".git", "worktrees", "wt-recovered");
+        File.WriteAllText(Path.Combine(admin, "config.worktree"), "[credential]\n\thelper = /tmp/evil\n");
+        Assert.True(SandboxedWorktrees.RegisterFromOrigin(recovered, _repo));
+
+        Assert.Equal("config_worktree_present", SandboxedWorktrees.Validate(recovered));
+    }
+
+    [Fact]
+    public async Task A_fifo_or_oversized_config_worktree_fails_validation_without_blocking()
+    {
+        var fifo = Path.Combine(_admin, "config.worktree");
+        using (var mkfifo = Process.Start(new ProcessStartInfo("mkfifo", [fifo]))!) { await mkfifo.WaitForExitAsync(TestContext.Current.CancellationToken); }
+        var validation = Task.Run(() => SandboxedWorktrees.Validate(_worktree), TestContext.Current.CancellationToken);
+        Assert.Equal("config_worktree_present", await validation.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        File.Delete(fifo);
+
+        File.WriteAllText(fifo, new string('#', 70 * 1024));
+        Assert.Equal("config_worktree_present", SandboxedWorktrees.Validate(_worktree));
+    }
+
+    [Fact]
     public void A_team_workspace_in_use_by_a_live_sandboxed_agent_is_not_lost()
     {
         var head = Git(_repo, "rev-parse", "HEAD").Trim();
