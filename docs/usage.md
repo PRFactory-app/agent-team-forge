@@ -226,6 +226,24 @@ cannot contain control characters. An empty name clears it.
 branch; follow-ups reuse the checkout. Worktrees are never deleted
 automatically.
 
+The agent owns its worktree: it can switch, create, rebase or reset branches
+there, also onto a base that does not contain the submit-time commit. Before a
+follow-up, revive or resume runs (native or launched), the daemon checks only
+that the path is still a worktree root of the job's repository (its object
+store holds the submit-time base commit). A refused follow-up fails with one of
+these reason codes, and its result text gives the failed check and the next step:
+
+| Reason | Meaning |
+|---|---|
+| `worktree_missing` | The worktree directory is gone. A follow-up never creates it again. |
+| `worktree_unavailable` | The path is not a worktree root of the job's repository, or git could not create the root job's worktree. |
+| `sandbox_worktree_tampered` | A sandboxed worktree failed its tamper checks ([ADR 0013](adr/0013-sandboxed-launch-mode.md)). |
+
+If git does not answer the check in time (a loaded machine), the job goes back
+to the queue and the daemon tries again, up to three times. The chain cannot
+continue in a refused worktree: submit a new job and name the branch to continue
+from.
+
 ## Native wake
 
 When a job finishes, its result is stored first; then the lead's host gets a
@@ -375,5 +393,5 @@ or an already removed worktree fails `not_found`, a job submitted without a
 worktree fails `no_worktree`, and a removal git refuses (for example a locked
 worktree) is kept as `git_refused` with git's message in its details. The branch
 `atf/job-<id>` is deleted with the worktree; the job row is kept, so a later
-follow-up fails `worktree_unavailable`.
+follow-up fails `worktree_missing`.
 Worktrees are left for manual cleanup.

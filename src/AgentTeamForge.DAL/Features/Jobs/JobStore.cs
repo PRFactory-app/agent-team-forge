@@ -600,6 +600,33 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return true;
     });
 
+    /// <summary>
+    /// An ordinary attempt that ended before any backend effect (a workspace check did not finish) queues the job again, at most
+    /// <paramref name="maxTries"/> times for the same reason. False when the limit is reached or the job is no longer running.
+    /// </summary>
+    public bool RequeueUnstarted(RunRef run, string reason, int maxTries) => Write(connection =>
+    {
+        using var tx = connection.BeginTransaction(deferred: false);
+        if (Scalar(connection, tx, "SELECT count(*) FROM runs WHERE job_id=$id AND reason_code=$reason", ("$id", run.JobId), ("$reason", reason)) + 1 >= maxTries)
+        {
+            return false;
+        }
+        var now = Now();
+        if (Execute(connection, tx, "UPDATE runs SET state='failed',reason_code=$reason,finished_at=$now WHERE run_id=$run AND state='started'",
+                ("$run", run.RunId), ("$reason", reason), ("$now", now)) != 1
+            || Execute(connection, tx, "UPDATE jobs SET status='queued',updated_at=$now WHERE job_id=$id AND status='running'",
+                ("$id", run.JobId), ("$now", now)) != 1)
+        {
+            return false;
+        }
+        Execute(connection, tx, """
+            UPDATE dispatch_intents SET state='unattempted' WHERE job_id=$id;
+            INSERT INTO events(job_id, run_id, kind, created_at) VALUES ($id, $run, 'attempt_requeued', $now);
+            """, ("$id", run.JobId), ("$run", run.RunId), ("$now", now));
+        tx.Commit();
+        return true;
+    });
+
     /// <summary>The job's native attempt in any state, including a released one.</summary>
     public NativeCodexAttempt? NativeAttempt(string jobId) => Read(connection =>
     {

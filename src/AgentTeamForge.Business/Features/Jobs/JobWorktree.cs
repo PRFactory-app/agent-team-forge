@@ -31,6 +31,9 @@ public static partial class JobWorktree
     /// <summary>Test seam: the git program to start, as a machine where git is missing has it.</summary>
     internal static readonly AsyncLocal<string?> GitProgram = new();
 
+    /// <summary>Test seam: the deadline of a validation query of an existing checkout, shorter than a loaded machine needs.</summary>
+    internal static readonly AsyncLocal<TimeSpan?> CheckTimeout = new();
+
     /// <summary>Test seam: collects each output reader's completion, to prove a cut reader is released.</summary>
     internal static readonly AsyncLocal<List<Task>?> ReaderCompletions = new();
 
@@ -101,7 +104,7 @@ public static partial class JobWorktree
     /// deadline (git still running, or its output not read in time) proves nothing: it throws <see cref="WorkspaceCheckIncompleteException"/>
     /// and the caller tries again later. A nonzero exit, a tampered sandboxed worktree or a git that cannot start stays terminal.
     /// </summary>
-    static string? Check(string cwd, params string[] args) => Check(cwd, QueryTimeout, args);
+    static string? Check(string cwd, params string[] args) => Check(cwd, CheckTimeout.Value ?? QueryTimeout, args);
 
     internal static string? Check(string cwd, TimeSpan timeout, params string[] args)
     {
@@ -122,41 +125,64 @@ public static partial class JobWorktree
         return false;
     }
 
-    public static bool Prepare(JobRecord job, CancellationToken cancellationToken = default)
+    /// <summary>A job worktree that exists but cannot serve the job, or that git could not create.</summary>
+    public const string Unavailable = "worktree_unavailable";
+
+    /// <summary>A follow-up's worktree directory is gone; only the root job creates it.</summary>
+    public const string Missing = "worktree_missing";
+
+    /// <summary>
+    /// Null when the job's worktree is ready; otherwise the reason code and which check failed. A git query of an existing worktree that
+    /// did not finish throws <see cref="WorkspaceCheckIncompleteException"/>: the worktree is not proven unusable, so the caller tries again.
+    /// </summary>
+    public static WorktreeRefusal? Prepare(JobRecord job, CancellationToken cancellationToken = default)
     {
-        if (job.WorktreePath is null)
+        if (job.WorktreePath is not { } path)
         {
-            return true;
+            return null;
         }
 
         var sandboxed = JobSafety.Read(job.Options).EffectiveSandboxed;
-        if (Directory.Exists(job.WorktreePath))
+        if (Directory.Exists(path))
         {
             if (sandboxed) { SandboxedWorktrees.RegisterJob(job); }
             // A follow-up and a restarted daemon must preserve the existing checkout.
-            // The agent may have switched branches there; only require it to still be a worktree root.
-            return job.WorktreeBase is not null && IsCommitSha(job.WorktreeBase) &&
-                Git(job.WorktreePath, QueryTimeout, "rev-parse", "--show-prefix") == string.Empty &&
-                Git(job.WorktreePath, QueryTimeout, "merge-base", "--is-ancestor", job.WorktreeBase, "HEAD") is not null;
+            // The agent may have switched branches there, also to one cut from another base (git checkout -b x origin/main, a rebase).
+            // Only require a worktree root of the job's repository: one whose object store still holds the submit-time base.
+            if (job.WorktreeBase is not { } baseSha || !IsCommitSha(baseSha))
+            {
+                return new(Unavailable, "the job has no submit-time base commit");
+            }
+            if (Check(path, "rev-parse", "--show-prefix") != string.Empty)
+            {
+                return new(Unavailable, $"{path} is not the root of a git worktree");
+            }
+            return Check(path, "cat-file", "-e", baseSha + "^{commit}") is null
+                ? new(Unavailable, $"{path} is not a worktree of the job's repository: it does not hold the base commit {baseSha}")
+                : null;
         }
 
-        if (job.ParentJobId is not null || job.Cwd is null || job.WorktreeBranch is null || job.WorktreeBase is null)
+        if (job.ParentJobId is not null)
         {
-            return false;
+            return new(Missing, $"the worktree {path} was removed; a follow-up does not create it again");
+        }
+        if (job.Cwd is null || job.WorktreeBranch is null || job.WorktreeBase is null)
+        {
+            return new(Unavailable, "the job has no repository, branch or base to create its worktree from");
         }
 
         try
         {
-            var parent = Path.GetDirectoryName(job.WorktreePath)!;
+            var parent = Path.GetDirectoryName(path)!;
             PrivateFiles.CreateDirectory(parent);
 
-            var created = Prepare(job.Cwd, job.WorktreePath, job.WorktreeBranch, job.WorktreeBase, cancellationToken);
-            if (created && sandboxed) { SandboxedWorktrees.RegisterCreated(job.WorktreePath, job.Cwd); }
-            return created;
+            var created = Prepare(job.Cwd, path, job.WorktreeBranch, job.WorktreeBase, cancellationToken);
+            if (created && sandboxed) { SandboxedWorktrees.RegisterCreated(path, job.Cwd); }
+            return created ? null : new(Unavailable, $"git could not create the worktree {path} from {job.Cwd}; see the daemon log");
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WorkspaceCheckIncompleteException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return false;
+            return new(Unavailable, $"the worktree {path} could not be created: {ex.Message}");
         }
     }
 
@@ -471,6 +497,9 @@ public static partial class JobWorktree
         public static partial uint GetCurrentThreadId();
     }
 }
+
+/// <summary>Why a job's worktree cannot serve it: a reason code for the job and the failed check for the operator.</summary>
+public sealed record WorktreeRefusal(string Reason, string Detail);
 
 /// <summary>A git validation of an existing checkout did not finish: the checkout is not proven invalid, so the work is retried later.</summary>
 public sealed class WorkspaceCheckIncompleteException(string message) : TimeoutException(message);
