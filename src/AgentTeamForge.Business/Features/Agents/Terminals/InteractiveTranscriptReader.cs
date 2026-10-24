@@ -322,6 +322,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             var ended = false;
             var incomplete = false;
             var interrupted = false;
+            var unqualifiedAbort = false;
             DateTimeOffset? interruptedAt = null;
             var taskStarted = false;
             string? latestStartedTurn = null;
@@ -485,12 +486,16 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                             nativeEndMessage = Str(nativeEnd, "last_agent_message") ?? assistantLast;
                             nativeEndError = CodexLoginError(root) ?? CodexTurnError(root);
                         }
-                        interrupted |= matchesTurn && kind == InteractiveAgentKind.Codex && EventType(root) == "turn_aborted";
-                        if (interrupted)
+                        // Preserve ordinary abort diagnostics without ending the evidence scan.
+                        // Only a qualified target abort enters the post-interruption branch.
+                        unqualifiedAbort |= matchesTurn && EventType(root) == "turn_aborted";
+                        if (EventType(root) == "turn_aborted"
+                            && root.TryGetProperty("payload", out var abort) && Str(abort, "reason") == "interrupted"
+                            && nativeTurn is not null && Str(abort, "turn_id") == nativeTurn
+                            && DateTimeOffset.TryParse(Str(root, "timestamp"), out var at))
                         {
-                            if (root.TryGetProperty("payload", out var abort) && Str(abort, "reason") == "interrupted"
-                                && nativeTurn is not null && Str(abort, "turn_id") == nativeTurn
-                                && DateTimeOffset.TryParse(Str(root, "timestamp"), out var at)) { interruptedAt = at; }
+                            interrupted = true;
+                            interruptedAt = at;
                             continue;
                         }
                         if (completed && last is null && kind == InteractiveAgentKind.Codex
@@ -513,7 +518,7 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             {
                 WaitingOnBackground = pending && endedOnBackground,
                 LastActivityAt = lastActivity,
-                Interrupted = interrupted,
+                Interrupted = interrupted || unqualifiedAbort,
                 InterruptedAt = interruptedAt,
                 NativeTurnId = nativeTurn,
                 NativeTaskStarted = taskStarted,

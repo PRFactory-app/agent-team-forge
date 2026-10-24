@@ -705,11 +705,11 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return 0;
     });
 
-    public bool SettleNativeClaudeAttempt(string jobId, string correlation, string result, string status = JobStatus.Completed, string? reason = null, string? interruptRun = null) => Write(connection =>
+    public bool SettleNativeClaudeAttempt(string jobId, string correlation, string result, string status = JobStatus.Completed, string? reason = null, string? interruptRun = null, bool retainFence = false) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         if (NativeInterrupt(connection, tx, jobId) is { } intent
-            && (NativeClosePending(connection, tx, jobId, intent) || status != JobStatus.Completed && interruptRun != intent.RunId)) { return false; }
+            && (NativeClosePending(connection, tx, jobId, intent) || interruptRun != intent.RunId)) { return false; }
         if (Scalar(connection, tx, "SELECT count(*) FROM jobs WHERE job_id=$id AND status IN ('running','needs_reconciliation')", ("$id", jobId)) != 1) { return false; }
         if (Execute(connection, tx, "UPDATE native_claude_attempts SET state='settled' WHERE job_id=$id AND correlation=$corr AND state IN ('posting','posted','received')",
             ("$id", jobId), ("$corr", correlation)) != 1) { return false; }
@@ -717,8 +717,8 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         RearmWake(connection, tx, jobId);
         Execute(connection, tx, "UPDATE runs SET state=$status,reason_code=$reason,acked=1,acknowledged_at=coalesce(acknowledged_at,$now),finished_at=$now WHERE job_id=$id AND correlation=$corr",
             ("$id", jobId), ("$corr", correlation), ("$now", now), ("$status", status), ("$reason", reason));
-        Execute(connection, tx, "UPDATE jobs SET status=$status,session_fenced=0,reason_code=$reason,result_text=$result,updated_at=$now WHERE job_id=$id",
-            ("$id", jobId), ("$result", result), ("$now", now), ("$status", status), ("$reason", reason));
+        Execute(connection, tx, "UPDATE jobs SET status=$status,session_fenced=$fence,reason_code=$reason,result_text=$result,updated_at=$now WHERE job_id=$id",
+            ("$id", jobId), ("$result", result), ("$now", now), ("$status", status), ("$reason", reason), ("$fence", retainFence ? 1 : 0));
         Execute(connection, tx, "INSERT INTO events(job_id,kind,created_at) VALUES ($id,$status,$now)", ("$id", jobId), ("$now", now), ("$status", status), ("$reason", reason));
         ResolveNativeInterrupt(connection, tx, jobId, "native_interrupt_resolved");
         tx.Commit();
@@ -815,17 +815,17 @@ public sealed class JobStore(JobDatabase database, DurabilityCheckpoints checkpo
         return 0;
     });
 
-    public bool SettleNativeAttempt(string jobId, string correlation, string result, string status = JobStatus.Completed, string? reason = null, string? interruptRun = null) => Write(connection =>
+    public bool SettleNativeAttempt(string jobId, string correlation, string result, string status = JobStatus.Completed, string? reason = null, string? interruptRun = null, bool retainFence = false) => Write(connection =>
     {
         using var tx = connection.BeginTransaction(deferred: false);
         if (NativeInterrupt(connection, tx, jobId) is { } intent
-            && (NativeClosePending(connection, tx, jobId, intent) || status != JobStatus.Completed && interruptRun != intent.RunId)) { return false; }
+            && (NativeClosePending(connection, tx, jobId, intent) || interruptRun != intent.RunId)) { return false; }
         var now = Now();
         RearmWake(connection, tx, jobId);
         // An interrupt may have cancelled the job while the completion record was
         // being read. A quarantined native turn can still complete after restart.
-        if (Execute(connection, tx, "UPDATE jobs SET status=$status,session_fenced=0,reason_code=$reason,result_text=$result,updated_at=$now WHERE job_id=$id AND status IN ('running','needs_reconciliation')",
-            ("$id", jobId), ("$result", result), ("$now", now), ("$status", status), ("$reason", reason)) != 1) { return false; }
+        if (Execute(connection, tx, "UPDATE jobs SET status=$status,session_fenced=$fence,reason_code=$reason,result_text=$result,updated_at=$now WHERE job_id=$id AND status IN ('running','needs_reconciliation')",
+            ("$id", jobId), ("$result", result), ("$now", now), ("$status", status), ("$reason", reason), ("$fence", retainFence ? 1 : 0)) != 1) { return false; }
         if (Execute(connection, tx, "UPDATE native_codex_attempts SET state='settled' WHERE job_id=$id AND correlation=$corr AND state IN ('sent','received')",
             ("$id", jobId), ("$corr", correlation)) != 1) { return false; }
         Execute(connection, tx, "UPDATE runs SET state=$status,reason_code=$reason,acked=1,acknowledged_at=coalesce(acknowledged_at,$now),finished_at=$now WHERE job_id=$id AND correlation=$corr",

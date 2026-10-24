@@ -1275,6 +1275,7 @@ public sealed class DispatchJob : IDisposable
             return false;
         }
         var (status, reason, result) = NativeTurnOutcome(receipt);
+        checkpoints.Hit(DurabilityCheckpoints.NativeReconcileBeforeSettlement);
         var settled = store.SettleNativeAttempt(attempt.JobId, attempt.Correlation, result, status, reason);
         if (settled) { RememberNativeTurn(BackendCatalog.Codex, attempt.ThreadId); Signal(); }
         return settled;
@@ -1312,6 +1313,7 @@ public sealed class DispatchJob : IDisposable
         }
         _nativeBackgroundWaits.TryRemove(attempt.Correlation, out _);
         var (status, reason, result) = NativeTurnOutcome(receipt);
+        checkpoints.Hit(DurabilityCheckpoints.NativeReconcileBeforeSettlement);
         if (!store.SettleNativeClaudeAttempt(attempt.JobId, attempt.Correlation, result, status, reason)) { return false; }
         RememberNativeTurn(BackendCatalog.Claude, attempt.SessionId);
         Signal();
@@ -1345,14 +1347,10 @@ public sealed class DispatchJob : IDisposable
             if (job.Backend == BackendCatalog.Claude) { store.RecordNativeClaudeReceipt(jobId, intent.Correlation); }
             else { store.RecordNativeReceipt(jobId, intent.Correlation); }
         }
-        if (receipt?.FollowingInput == true || receipt?.Superseded == true)
-        {
-            store.AdvanceNativeInterrupt(jobId, intent.RunId, intent.Phase, "native_interrupt_misdirected");
-            return;
-        }
+        var newerInput = receipt?.FollowingInput == true || receipt?.Superseded == true;
         var naturalEnd = receipt is not null && (job.Backend != BackendCatalog.Codex || receipt.NativeEndMatched)
             && (receipt.Completed || receipt.ApiError?.TurnEnded == true);
-        if (receipt is { Incomplete: false } && (naturalEnd || receipt.Interrupted && receipt.InterruptedAt >= intent.RequestedAt))
+        if (receipt is { Incomplete: false } && (naturalEnd || !newerInput && receipt.Interrupted && receipt.InterruptedAt >= intent.RequestedAt))
         {
             if (job.Backend == BackendCatalog.Codex && naturalEnd)
             {
@@ -1362,12 +1360,17 @@ public sealed class DispatchJob : IDisposable
                 ? (JobStatus.Cancelled, intent.Interrupt ? "interrupted" : "stopped", receipt.Message ?? "")
                 : NativeTurnOutcome(receipt);
             var settled = job.Backend == BackendCatalog.Claude
-                ? store.SettleNativeClaudeAttempt(jobId, intent.Correlation, result, status, reason, intent.RunId)
-                : store.SettleNativeAttempt(jobId, intent.Correlation, result, status, reason, intent.RunId);
-            if (settled) { RememberNativeTurn(job.Backend, session); Signal(); }
+                ? store.SettleNativeClaudeAttempt(jobId, intent.Correlation, result, status, reason, intent.RunId, newerInput)
+                : store.SettleNativeAttempt(jobId, intent.Correlation, result, status, reason, intent.RunId, newerInput);
+            if (settled)
+            {
+                // The target ended, but the newer turn still owns the pane reservation and SQL fence.
+                if (!newerInput) { RememberNativeTurn(job.Backend, session); }
+                Signal();
+            }
             return;
         }
-        if (receipt?.Superseded == true || receipt is { Interrupted: true })
+        if (newerInput || receipt is { Interrupted: true })
         {
             store.AdvanceNativeInterrupt(jobId, intent.RunId, intent.Phase, "native_interrupt_misdirected");
             return;

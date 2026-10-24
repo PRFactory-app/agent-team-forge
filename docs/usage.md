@@ -92,6 +92,9 @@ cancellation. Idle status and successful Escape delivery do not confirm it.
 them queued. Natural completion keeps its actual result and reports that the
 stop arrived too late. Confirmed API failure retains the session under the
 normal idle and absolute retention limits.
+If newer input follows a proven target completion or terminal API failure,
+ATF records the original result and resolves the stop, while keeping the session
+fenced and reserved for the newer turn.
 
 | Native control reason/outcome | Meaning |
 | --- | --- |

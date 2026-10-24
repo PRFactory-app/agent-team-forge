@@ -13,6 +13,142 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 public sealed class NativeInterruptTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Native_key_failure_before_dispatch_claim_remains_retryable(bool codex)
+    {
+        using var f = await NativeInterruptFixture.Create(codex);
+        var failed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Func<Task> fail = () => { failed.TrySetResult(); throw new IOException("injected key failure"); };
+        f.Control.BeforeKey = fail;
+        f.Stop.Execute(f.Child);
+        f.Reconcile();
+        await failed.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await Bounded.Until(() => f.Store.GetJob(f.Child)!.ReasonCode == "native_interrupt_unconfirmed", "send failure persisted");
+        var reopened = f.Jobs.NewStore();
+        Assert.Equal("native_interrupt_requested", reopened.PendingNativeInterrupt(f.Child)!.Phase);
+        Assert.True(reopened.IsSessionFenced(f.Child));
+        f.Control.BeforeKey = null;
+        f.Control.AfterValidation = null;
+        using var dispatcher = new DispatchJob(reopened, f.Catalog, f.Jobs.Limits, DurabilityCheckpoints.None, f.Jobs.Admission, _ => { });
+        await Bounded.Until(() =>
+        {
+            if (codex) { dispatcher.ReconcileNativeCodex(); } else { dispatcher.ReconcileNativeClaude(); }
+            return reopened.PendingNativeInterrupt(f.Child)!.Phase == "native_interrupt_sent";
+        }, "reopened dispatch certainty");
+        Assert.Equal(1, f.Control.Escapes);
+        Assert.True(reopened.IsSessionFenced(f.Child));
+        Assert.Equal(0, f.Control.Closes);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Stop_intent_rejects_stale_ordinary_completion_transaction(bool codex, bool wrongId)
+    {
+        using var f = await NativeInterruptFixture.Create(codex);
+        f.Complete();
+        var observed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var resume = new ManualResetEventSlim();
+        using var dispatcher = new DispatchJob(f.Jobs.NewStore(), f.Catalog, f.Jobs.Limits,
+            new DurabilityCheckpoints(name =>
+            {
+                if (name != DurabilityCheckpoints.NativeReconcileBeforeSettlement) { return; }
+                observed.SetResult();
+                Assert.True(resume.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+            }), f.Jobs.Admission, _ => { });
+        var stale = Task.Run(() => { if (codex) { dispatcher.ReconcileNativeCodex(); } else { dispatcher.ReconcileNativeClaude(); } }, TestContext.Current.CancellationToken);
+        try
+        {
+            await observed.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            f.Stop.Execute(f.Child);
+            f.WriteInput(started: false);
+            File.AppendAllLines(f.Transcript, [codex
+                ? wrongId ? """{"type":"event_msg","payload":{"type":"task_complete","turn_id":"other"}}"""
+                    : """{"type":"event_msg","payload":{"type":"task_complete"}}"""
+                : wrongId ? """{"type":"assistant","sessionId":"other","message":{"stop_reason":"end_turn"}}"""
+                    : """{"type":"assistant","message":{"stop_reason":"tool_use"}}"""]);
+        }
+        finally { resume.Set(); }
+        await stale;
+        Assert.Equal(JobStatus.Running, f.Store.GetJob(f.Child)!.Status);
+        Assert.True(f.Store.IsSessionFenced(f.Child));
+        Assert.NotNull(f.Store.PendingNativeInterrupt(f.Child));
+        Assert.Single(codex ? f.Store.UnresolvedNativeAttempts().Select(a => a.JobId) : f.Store.UnresolvedNativeClaudeAttempts().Select(a => a.JobId));
+        Assert.False(codex
+            ? f.Store.SettleNativeAttempt(f.Child, f.Correlation, "stale", interruptRun: "different-run")
+            : f.Store.SettleNativeClaudeAttempt(f.Child, f.Correlation, "stale", interruptRun: "different-run"));
+        await f.Until(() => f.Store.GetJob(f.Child)!.ReasonCode == "native_interrupt_unconfirmed");
+        Assert.NotNull(f.Store.PendingNativeInterrupt(f.Child));
+        Assert.True(f.Store.IsSessionFenced(f.Child));
+        Assert.Single(codex ? f.Store.UnresolvedNativeAttempts().Select(a => a.JobId) : f.Store.UnresolvedNativeClaudeAttempts().Select(a => a.JobId));
+        f.Complete();
+        await f.Until(() => f.Store.GetJob(f.Child)!.Status == JobStatus.Completed);
+        Assert.Null(f.Store.PendingNativeInterrupt(f.Child));
+        Assert.False(f.Store.IsSessionFenced(f.Child));
+    }
+
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, false)]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    [InlineData(true, true, true)]
+    public async Task Proven_target_end_before_newer_input_settles_and_retains_ownership(bool codex, bool failure, bool beforeIntent)
+    {
+        using var f = await NativeInterruptFixture.Create(codex);
+        var descendant = f.Follow.Execute(new(f.Child, "later", "later") { Defer = true }).Job!;
+        if (!beforeIntent) { f.Stop.Execute(f.Child); }
+        if (!failure) { f.Complete(); }
+        else
+        {
+            File.AppendAllLines(f.Transcript, codex
+                ? ["""{"type":"event_msg","payload":{"type":"task_complete","turn_id":"target-turn","error":{"message":"Selected model is at capacity"}}}"""]
+                : [$$$"""{"type":"assistant","sessionId":"{{{f.Session}}}","isApiErrorMessage":true,"message":{"role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"API Error: Connection lost mid-response."}]}}""",
+                    $$$"""{"type":"system","sessionId":"{{{f.Session}}}","subtype":"turn_duration","durationMs":1000}"""]);
+        }
+        f.HumanInput();
+        if (codex) { File.AppendAllLines(f.Transcript, ["""{"type":"event_msg","payload":{"type":"task_started","turn_id":"newer"}}"""]); }
+        if (beforeIntent) { f.Stop.Execute(f.Child); }
+        await f.Until(() => f.Store.GetJob(f.Child)!.Status == (failure ? JobStatus.Failed : JobStatus.Completed));
+        Assert.Equal(failure ? "agent_api_error" : null, f.Store.GetJob(f.Child)!.ReasonCode);
+        Assert.Contains(failure ? codex ? "capacity" : "Connection lost" : "actual result", f.Store.GetJob(f.Child)!.ResultText);
+        Assert.Null(f.Store.PendingNativeInterrupt(f.Child));
+        Assert.Equal(JobStatus.Cancelled, f.Store.GetJob(descendant.JobId)!.Status);
+        Assert.True(f.Store.IsSessionFenced(f.Child));
+        Assert.False(f.Backend.HasIdleSession(f.Session));
+        Assert.Equal(0, f.Control.Escapes);
+        Assert.Equal(0, f.Control.Closes);
+        Assert.Equal(JobErrors.ParentNotReady, f.Follow.Execute(new(f.Child, "blocked", "blocked")).Error);
+    }
+
+    [Theory]
+    [InlineData("", false)]
+    [InlineData("", true)]
+    [InlineData(",\"turn_id\":\"target-turn\"", false)]
+    [InlineData(",\"turn_id\":\"target-turn\"", true)]
+    [InlineData(",\"turn_id\":\"target-turn\",\"reason\":\"other\"", false)]
+    [InlineData(",\"turn_id\":\"target-turn\",\"reason\":\"other\"", true)]
+    [InlineData(",\"reason\":\"interrupted\"", false)]
+    [InlineData(",\"reason\":\"interrupted\"", true)]
+    public async Task Ineligible_codex_abort_does_not_hide_later_eligible_end(string fields, bool abort)
+    {
+        using var f = await NativeInterruptFixture.Create(true);
+        f.Stop.Execute(f.Child);
+        File.AppendAllLines(f.Transcript, ["{\"type\":\"event_msg\",\"timestamp\":\"" + DateTimeOffset.UtcNow.ToString("O")
+            + "\",\"payload\":{\"type\":\"turn_aborted\"" + fields + "}}"]);
+        if (abort) { f.Confirm(); } else { f.Complete(); }
+        await f.Until(() => f.Store.GetJob(f.Child)!.Status == (abort ? JobStatus.Cancelled : JobStatus.Completed));
+        Assert.Null(f.Store.PendingNativeInterrupt(f.Child));
+        Assert.False(f.Store.IsSessionFenced(f.Child));
+    }
+
+    [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]
     [InlineData(true, false)]
@@ -163,53 +299,6 @@ public sealed class NativeInterruptTests
         Assert.NotEqual(JobStatus.Cancelled, f.Store.GetJob(f.Child)!.Status);
         Assert.True(f.Store.IsSessionFenced(f.Child));
         Assert.Equal(1, f.Control.Escapes);
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Restart_resumes_requested_native_interrupt_without_prompt_replay(bool codex)
-    {
-        using var f = await NativeInterruptFixture.Create(codex);
-        f.Stop.Execute(f.Child);
-        var restarted = f.Jobs.NewStore();
-        using var dispatcher = new DispatchJob(restarted, f.Catalog, f.Jobs.Limits, DurabilityCheckpoints.None, f.Jobs.Admission, _ => { });
-        restarted.QuarantineUncertainAttempts();
-        var run = restarted.GetRuns(f.Child)[^1];
-        Assert.True(restarted.ReattachQuarantined(new(f.Child, run.RunId, run.Generation, run.Correlation), f.Parent));
-        Assert.True(restarted.IsSessionFenced(f.Child));
-        await Bounded.Until(() =>
-        {
-            if (codex) { dispatcher.ReconcileNativeCodex(); } else { dispatcher.ReconcileNativeClaude(); }
-            return f.Control.Escapes == 1;
-        }, "restarted interrupt dispatch");
-        Assert.Equal(1, f.Control.Starts);
-        f.Confirm();
-        await f.Until(() => restarted.GetJob(f.Child)!.Status == JobStatus.Cancelled);
-    }
-
-    [Theory]
-    [InlineData(false, false)]
-    [InlineData(false, true)]
-    [InlineData(true, false)]
-    [InlineData(true, true)]
-    public async Task Restart_with_sent_or_ambiguous_dispatch_never_resends_escape(bool codex, bool sent)
-    {
-        using var f = await NativeInterruptFixture.Create(codex);
-        f.Stop.Execute(f.Child);
-        var intent = f.Store.PendingNativeInterrupt(f.Child)!;
-        Assert.True(f.Store.AdvanceNativeInterrupt(f.Child, intent.RunId, intent.Phase, "native_interrupt_dispatching"));
-        if (sent) { Assert.True(f.Store.AdvanceNativeInterrupt(f.Child, intent.RunId, "native_interrupt_dispatching", "native_interrupt_sent")); }
-        using var dispatcher = new DispatchJob(f.Jobs.NewStore(), f.Catalog, f.Jobs.Limits, DurabilityCheckpoints.None, f.Jobs.Admission, _ => { });
-        await Bounded.Until(() =>
-        {
-            if (codex) { dispatcher.ReconcileNativeCodex(); } else { dispatcher.ReconcileNativeClaude(); }
-            return f.Store.GetJob(f.Child)!.ReasonCode == "native_interrupt_unconfirmed";
-        }, "restarted observation only");
-        Assert.Equal(0, f.Control.Escapes);
-        Assert.True(f.Store.IsSessionFenced(f.Child));
-        f.Confirm();
-        await f.Until(() => f.Store.GetJob(f.Child)!.Status == JobStatus.Cancelled);
     }
 
     [Theory]

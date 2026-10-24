@@ -15,6 +15,109 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 /// </summary>
 public class HerdrTerminalTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task Restart_resumes_requested_native_interrupt_without_prompt_replay(bool codex) =>
+        RecoveredNativeStop(codex, "requested");
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public Task Restart_with_sent_or_ambiguous_dispatch_never_resends_escape(bool codex, bool sent) =>
+        RecoveredNativeStop(codex, sent ? "sent" : "dispatching");
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task Restart_refuses_replaced_native_pane_and_keeps_fence(bool codex) =>
+        RecoveredNativeStop(codex, "replaced");
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task Restart_after_uncertain_native_key_dispatch_never_retries(bool codex) =>
+        RecoveredNativeStop(codex, "uncertain");
+
+    static async Task RecoveredNativeStop(bool codex, string phase)
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var fake = new FakeHerdr { BootstrapFromTab = true };
+        var (oldBackend, _, accept, parent, transcript) = await CompletedParentWithLivePane(f, state, fake, codex: codex);
+        oldBackend.Dispose();
+        var child = new FollowUpJob(f.Store, JobFixture.Operator, accept).Execute(new(parent.JobId, "next", "next")).Job!;
+        var home = Path.Combine(state.Path, codex ? ".codex" : ".claude");
+        var claim = codex ? f.Store.BeginNativeCodexAttempt(_ => true, home)!
+            : f.Store.BeginNativeClaudeAttempt(parent.JobId, home, _ => true)!;
+        File.AppendAllLines(transcript, codex
+            ? [$$$$"""{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"atf-corr:{{{{claim.Correlation}}}}"}],"internal_chat_message_metadata_passthrough":{"turn_id":"target"}}}""",
+                """{"type":"event_msg","payload":{"type":"task_started","turn_id":"target"}}"""]
+            : [$$$"""{"type":"user","sessionId":"claude-native","message":{"role":"user","content":"atf-corr:{{{claim.Correlation}}}"}}"""]);
+        Assert.True(f.Store.RequestNativeInterrupt(child.JobId, false));
+        var intent = f.Store.PendingNativeInterrupt(child.JobId)!;
+        if (phase is "dispatching" or "sent")
+        {
+            Assert.True(f.Store.AdvanceNativeInterrupt(child.JobId, intent.RunId, intent.Phase, "native_interrupt_dispatching"));
+            if (phase == "sent") { Assert.True(f.Store.AdvanceNativeInterrupt(child.JobId, intent.RunId, "native_interrupt_dispatching", "native_interrupt_sent")); }
+        }
+        if (phase == "replaced") { fake.Replace(Replacement.NewTerminal); }
+        var nativeId = codex ? "codex-native" : "claude-native";
+        if (phase == "uncertain")
+        {
+            using var sendingBackend = new HerdrInteractiveBackend(Terminal(fake,
+                new Dictionary<string, string?>(Desktop) { ["HOME"] = state.Path, ["CODEX_HOME"] = home }),
+                codex ? InteractiveAgentKind.Codex : InteractiveAgentKind.Claude, state.Path)
+            { LiveSessionProbe = (_, _) => new HashSet<string> { nativeId } };
+            fake.SendKeysFail = true;
+            await Assert.ThrowsAsync<HerdrLaunchException>(() => sendingBackend.SendNativeInterruptAsync(nativeId,
+                [f.Store.GetJob(parent.JobId)!, f.Store.GetJob(child.JobId)!],
+                () => f.Store.AdvanceNativeInterrupt(child.JobId, intent.RunId, intent.Phase, "native_interrupt_dispatching")));
+            fake.SendKeysFail = false;
+            Assert.Equal("native_interrupt_dispatching", f.NewStore().PendingNativeInterrupt(child.JobId)!.Phase);
+        }
+        // New control, terminal, backend and store: only disk records survive the restart.
+        using var backend = new HerdrInteractiveBackend(Terminal(fake,
+            new Dictionary<string, string?>(Desktop) { ["HOME"] = state.Path, ["CODEX_HOME"] = home }),
+            codex ? InteractiveAgentKind.Codex : InteractiveAgentKind.Claude, state.Path)
+        { LiveSessionProbe = (_, _) => new HashSet<string> { nativeId } };
+        var catalog = new BackendCatalog().Register(codex ? BackendCatalog.Codex : BackendCatalog.Claude, () => backend);
+        var store = f.NewStore();
+        new AgentTeamForge.Business.Features.Recovery.RecoverOnStartup(store,
+            () => HerdrOwnedSessions.Recover(state.Path, store.FenceSession, _ => { })).Execute();
+        using var dispatcher = new DispatchJob(store, catalog, f.Limits, DurabilityCheckpoints.None, f.Admission, _ => { });
+        dispatcher.RestoreAfterRestart(store.RestartCandidates());
+        using var lifetime = new CancellationTokenSource();
+        var loop = dispatcher.RunAsync(lifetime.Token);
+        try
+        {
+            await dispatcher.RestartResolved.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            if (phase != "replaced")
+            {
+                await Bounded.Until(() => phase == "requested"
+                ? fake.Snapshot().Count(c => c.Args is ["agent", "send-keys", _, "esc"]) == 1
+                : store.GetJob(child.JobId)!.ReasonCode == "native_interrupt_unconfirmed", "recovered stop observation");
+            }
+            Assert.True(store.IsSessionFenced(child.JobId));
+            Assert.Equal(phase is "requested" or "uncertain" ? 1 : 0, fake.Snapshot().Count(c => c.Args is ["agent", "send-keys", _, "esc"]));
+            Assert.DoesNotContain(fake.Snapshot(), c => c.Args is ["agent", "start" or "prompt", ..] or ["pane" or "tab", "close", ..]);
+            if (phase == "replaced")
+            {
+                Assert.NotNull(store.PendingNativeInterrupt(child.JobId));
+                Assert.Equal(JobStatus.NeedsReconciliation, store.GetJob(child.JobId)!.Status);
+                return;
+            }
+            File.AppendAllLines(transcript, [codex
+                ? $$$"""{"type":"event_msg","timestamp":"{{{DateTimeOffset.UtcNow.ToString("O")}}}","payload":{"type":"turn_aborted","turn_id":"target","reason":"interrupted"}}"""
+                : $$$"""{"type":"user","sessionId":"claude-native","timestamp":"{{{DateTimeOffset.UtcNow.ToString("O")}}}","message":{"role":"user","content":"[Request interrupted by user]"}}"""]);
+            await Bounded.Until(() => store.GetJob(child.JobId)!.Status == JobStatus.Cancelled && backend.HasIdleSession(nativeId), "fresh backend settles stop");
+            Assert.False(store.IsSessionFenced(child.JobId));
+        }
+        finally { lifetime.Cancel(); await loop; }
+    }
+
     private const string Sentinel = "atf-credential-sentinel-d7";
     private const string Bootstrap = "/run/user/1000/atf/bootstrap-0001";
 
@@ -132,24 +235,27 @@ public class HerdrTerminalTests
     /// <summary>A completed Claude parent whose idle pane (and native transcript) outlived the daemon.</summary>
     private static async Task<(HerdrInteractiveBackend Backend, BackendCatalog Catalog, AcceptJob Accept, JobRecord Parent, string Transcript)>
         CompletedParentWithLivePane(JobFixture f, TempStateDir state, FakeHerdr fake, Func<IReadOnlySet<string>?>? liveSessions = null, string parentTurn = ParentTurnDone,
-            Action<InteractiveLaunch>? probed = null)
+            Action<InteractiveLaunch>? probed = null, bool codex = false)
     {
-        var terminal = Terminal(fake, new Dictionary<string, string?>(Desktop) { ["HOME"] = state.Path });
+        var nativeId = codex ? "codex-native" : "claude-native";
+        var kind = codex ? InteractiveAgentKind.Codex : InteractiveAgentKind.Claude;
+        var name = codex ? BackendCatalog.Codex : BackendCatalog.Claude;
+        var terminal = Terminal(fake, new Dictionary<string, string?>(Desktop) { ["HOME"] = state.Path, ["CODEX_HOME"] = Path.Combine(state.Path, ".codex") });
         // The /proc probe of the pane's live native session, which the fake pane cannot provide.
-        var backend = new HerdrInteractiveBackend(terminal, InteractiveAgentKind.Claude, state.Path)
+        var backend = new HerdrInteractiveBackend(terminal, kind, state.Path)
         {
             LiveSessionProbe = (launch, _) =>
             {
                 probed?.Invoke(launch);
-                return liveSessions is null ? new HashSet<string> { "claude-native" } : liveSessions();
+                return liveSessions is null ? new HashSet<string> { nativeId } : liveSessions();
             },
         };
-        var catalog = new BackendCatalog().Register(BackendCatalog.Claude, () => backend);
+        var catalog = new BackendCatalog().Register(name, () => backend);
         var accept = new AcceptJob(f.Store, JobFixture.Operator, f.Limits, f.TestProfile, f.Admission, catalog.Names);
-        var parent = accept.Execute(new SubmitJobRequest("parent", "work", null, false) { Backend = BackendCatalog.Claude }).Job!;
+        var parent = accept.Execute(new SubmitJobRequest("parent", "work", null, false) { Backend = name }).Job!;
         var parentClaim = f.Store.BeginNextAttempt()!;
         var parentRun = new RunRef(parent.JobId, parentClaim.RunId, parentClaim.Generation, parentClaim.Correlation);
-        Assert.True(f.Store.RecordSession(parentRun, "claude-native"));
+        Assert.True(f.Store.RecordSession(parentRun, nativeId));
         Assert.True(f.Store.Complete(parentRun, "ready"));
         // The parent's pane stays open; only the parent owns its record.
         var bootstrap = Path.Combine(state.Path, "herdr", "atftest.bootstrap");
@@ -158,10 +264,12 @@ public class HerdrTerminalTests
         var session = await terminal.StartSessionAsync(CancellationToken.None);
         var binding = await terminal.OpenAgentTabAsync(session, "claude: parent", state.Path, bootstrap,
             CancellationToken.None, onCreated: created => session = created);
-        HerdrOwnedSessions.Save(new InteractiveLaunch(InteractiveAgentKind.Claude, "atftest", state.Path, null, null, bootstrap)
+        HerdrOwnedSessions.Save(new InteractiveLaunch(kind, "atftest", state.Path, null, null, bootstrap)
         { JobId = parent.JobId }, session with { ShellPid = binding.ShellPid, ShellStartTicks = binding.ShellStartTicks });
-        var transcript = Path.Combine(Directory.CreateDirectory(Path.Combine(state.Path, ".claude", "projects", "scratch")).FullName, "claude-native.jsonl");
-        File.WriteAllLines(transcript,
+        var transcript = Path.Combine(Directory.CreateDirectory(Path.Combine(state.Path, codex ? ".codex" : ".claude", codex ? "sessions" : "projects", "scratch")).FullName,
+            codex ? "rollout-test-codex-native.jsonl" : "claude-native.jsonl");
+        File.WriteAllLines(transcript, codex
+        ? ["""{"type":"session_meta","payload":{"id":"codex-native","source":"cli"}}"""] :
         [
             """{"type":"user","isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"work atf-corr:""" + parentClaim.Correlation + "\"}}",
             .. parentTurn.Split('\n'),
@@ -2560,6 +2668,7 @@ public class HerdrTerminalTests
         public int? ForegroundProcessGroup { get; set; }
 
         public CapturedProcess? PromptResponse { get; init; }
+        public bool SendKeysFail { get; set; }
 
         public List<Call> Calls { get; } = [];
 
@@ -2638,7 +2747,7 @@ public class HerdrTerminalTests
                 ["agent", "start", ..] => AgentStartFails ? Err("agent_not_ready") : AgentStartBusy-- > 0 ? Err("agent_pane_busy") : Ok("{}"),
                 ["agent", "read", ..] => Ok((_prompted && ScreenAfterPrompt is { } prompted ? prompted : Screen) ?? "› Ask Codex\n? for shortcuts\n❯ Try a task\nbypass permissions on\n──────\n──────\n/tmp/work"),
                 ["agent", "get", ..] => AgentStatus(),
-                ["agent", "send-keys", "w1:p2", "esc"] => Ok("{}"),
+                ["agent", "send-keys", "w1:p2", "esc"] => SendKeysFail ? Err("injected_key_uncertainty") : Ok("{}"),
                 ["--session", _, "agent", "prompt", ..] => (_prompted = true) && PromptResponse is { } response ? response : Ok("""{"result":{"type":"agent_prompted"}}"""),
                 _ => Err("unexpected " + string.Join(' ', args)),
             };

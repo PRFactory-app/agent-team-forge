@@ -10,6 +10,7 @@ public sealed class DurabilityCheckpoints(Action<string>? onCheckpoint)
     public const string AcceptAfterCommit = "accept.after-commit";
     public const string AttemptAfterCommit = "attempt.after-commit";
     public const string CompleteBeforeCommit = "complete.before-commit";
+    public const string NativeReconcileBeforeSettlement = "native-reconcile.before-settlement";
 
     public static readonly DurabilityCheckpoints None = new(null);
 
