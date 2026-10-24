@@ -8,7 +8,7 @@ namespace AgentTeamForge.Business.Features.Jobs;
 public enum ReconcileStop { Refused, Stopped, NoRecord }
 
 /// <summary>Commits cancellation before asking the dispatcher to stop its owned backend run.</summary>
-public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<string> cancelRunning, Action<string>? closeUnclaimedFollowUp = null, Func<JobRecord, ReconcileStop>? stopReconciled = null, Action<JobRecord>? forgetReconciledOwnership = null, Action<string>? interruptRunning = null, Func<JobRecord, bool>? releaseNative = null)
+public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<string> cancelRunning, Action<string>? closeUnclaimedFollowUp = null, Func<JobRecord, ReconcileStop>? stopReconciled = null, Action<JobRecord>? forgetReconciledOwnership = null, Action<string>? interruptRunning = null, Func<JobRecord, bool>? releaseNative = null, Action? signal = null)
 {
     public const string AbsentOutcome = "stopped_absent";
 
@@ -16,7 +16,7 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
 
     /// <summary>Read-only capability; the release operation rechecks and never falls through to closing an agent.</summary>
     internal static bool ReleaseAvailable(JobStore store, string jobId, string status) =>
-        status == JobStatus.NeedsReconciliation
+        (status == JobStatus.NeedsReconciliation || store.PendingNativeInterrupt(jobId) is not null)
         && (store.NativeAttempt(jobId) is { Unresolved: true }
             || store.NativeClaudeAttempt(jobId) is { State: "posting" or "posted" or "received" });
 
@@ -38,14 +38,31 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
             {
                 return JobResult.Fail(JobErrors.NotFound, $"No job {jobId} for this principal/team.");
             }
-            // A native Codex or Claude mailbox turn owns no process here; stopping releases its N5 fence.
-            if (!interrupt && (!releaseOnly || ReleaseAvailable(store, jobId, current.Status)) && releaseNative?.Invoke(current) == true)
+            if (releaseOnly && ReleaseAvailable(store, jobId, current.Status) && releaseNative?.Invoke(current) == true)
             {
-                return JobResult.Ok(GetJob.ToView(store.GetJob(jobId)!), "native_released");
+                return JobResult.Ok(GetJob.ToView(store.GetJob(jobId)!), "native_released") with
+                { Detail = "Observation was released without a confirmed stop; the agent may still run. Use stop_agent to close its session." };
             }
             if (releaseOnly)
             {
                 return JobResult.Fail(JobErrors.NativeReleaseUnavailable, "This job cannot be released without stopping its agent; refresh its status.");
+            }
+            if (store.RequestNativeInterrupt(jobId, interrupt))
+            {
+                signal?.Invoke();
+                current = store.GetJob(jobId)!;
+                var intent = store.PendingNativeInterrupt(jobId);
+                if (intent is null) { return NativeFinished(store.GetJob(jobId)!, cancelledQueued: current.Attempts == 0); }
+                var nativeOutcome = current.ReasonCode is "native_interrupt_unconfirmed" or "native_interrupt_misdirected" or "native_interrupt_unsupported"
+                    ? current.ReasonCode : "native_interrupt_pending";
+                return JobResult.Ok(GetJob.ToView(current), nativeOutcome) with
+                { Detail = "No clean stop is confirmed; the agent may still run. The session remains fenced. Use stop_agent to close it, or explicitly release observation." };
+            }
+            current = store.GetJob(jobId)!;
+            if (current.Status is JobStatus.Completed or JobStatus.Cancelled or JobStatus.Failed
+                && (store.NativeAttempt(jobId) is not null || store.NativeClaudeAttempt(jobId) is not null))
+            {
+                return NativeFinished(current);
             }
             if (current.Status == JobStatus.NeedsReconciliation)
             {
@@ -93,5 +110,13 @@ public sealed class StopJob(JobStore store, BoundPrincipal principal, Action<str
         {
             return JobResult.Fail(JobErrors.FromStorage(ex), JobErrors.StorageDetail(ex));
         }
+    }
+
+    JobResult NativeFinished(JobRecord job, bool cancelledQueued = false)
+    {
+        var resolved = store.NativeInterruptResolved(job.JobId);
+        var outcome = (resolved || cancelledQueued) && job.ReasonCode is "stopped" or "interrupted" ? job.ReasonCode : "unchanged";
+        return JobResult.Ok(GetJob.ToView(job), outcome) with
+        { Detail = resolved && job.Status is JobStatus.Completed or JobStatus.Failed ? "The stop arrived after the turn ended; its actual result is preserved." : null };
     }
 }

@@ -81,8 +81,36 @@ this branch") or call the MCP tools directly:
    descendants are cancelled. Later turns originally addressed to an earlier
    job remain queued in order, even if they followed the stopped job. Use
    `interrupt_job` to interrupt without another prompt, `stop_agent` to
-   close an idle retained agent, and `revive_agent` to resume a dead session
+   close a retained agent, and `revive_agent` to resume a dead session
    with a new instruction and idempotency key.
+
+For a native follow-up child, `stop_job` and `interrupt_job` request a turn
+interrupt and keep the pane/session. The reply returns promptly; only the
+correlated Claude interrupt sentinel or Codex interrupted abort confirms
+cancellation. Idle status and successful Escape delivery do not confirm it.
+`stop_job` cancels deferred descendants on confirmation; `interrupt_job` keeps
+them queued. Natural completion keeps its actual result and reports that the
+stop arrived too late. Confirmed API failure retains the session under the
+normal idle and absolute retention limits.
+If newer input follows a proven target completion or terminal API failure,
+ATF records the original result and resolves the stop, while keeping the session
+fenced and reserved for the newer turn.
+
+| Native control reason/outcome | Meaning |
+| --- | --- |
+| `native_interrupt_pending` | Request committed; no clean stop confirmed; agent may still run |
+| `native_interrupt_unconfirmed` | Missing target/end evidence or uncertain key dispatch; chain stays fenced |
+| `native_interrupt_misdirected` | Another input/turn conflicts with the requested target; chain stays fenced |
+| `native_interrupt_unsupported` | Native interruption is unavailable on terminal-tab backends; chain stays fenced |
+| `native_released` | Observation explicitly abandoned; agent may still run |
+
+Pending or uncertain requests block new managed turns and wakes to that native
+session. `stop_agent` explicitly closes its verified owned session, including
+a pending native stop. As before, a logical stop can defer pane cleanup to the
+sweep; the existing acknowledgement does not distinguish deferred cleanup.
+Explicit release abandons observation without proving
+that execution ended. Neither unsupported control nor missing confirmation
+causes an automatic close or a second Escape after ambiguous dispatch.
 
 Idle interactive agents close automatically after 5 minutes (checked every 30 seconds),
 while native transcripts remain available for `follow_up` / `revive_agent` relaunch.
@@ -114,6 +142,9 @@ Other `submit_job` options:
   supported list.
 - `timeout_s` (1–86400): cancel with reason `timeout` that long after the job
   starts. `queue_ttl_s`: cancel with reason `queue_ttl` if not started in time.
+  Native follow-ups currently have no observation-lifetime `timeout_s`
+  enforcement; the Codex queue-call deadline does not bound observation.
+  Without final evidence, a native turn can stay non-terminal indefinitely.
 - `name`: agent name for the web console card.
 - `expected_outputs`: output-path metadata retained in `get_job` (not file verification).
 - `safety_mode`: `sandboxed` or `fullAccess`. Omit it for the profile default
@@ -361,8 +392,9 @@ longer than `ATF_BACKGROUND_WAIT_MINUTES` (default 45), the job fails with
 `needs_reconciliation` is never replayed automatically. A follow-up waits
 until the session is verified idle or stopped. For a live idle Herdr agent (before automatic idle close),
 ATF settles an acknowledged but unobserved (interrupted) turn as `failed` and resumes the next
-turn in the same session. `stop_job` cancels the fenced job, terminates only a
+turn in the same session. For ordinary jobs, `stop_job` cancels the fenced job, terminates only a
 verified owned process, and releases the fence once no marked process remains.
+For native children, the confirmed-interrupt rules above apply instead.
 For Herdr, if no ATF-owned agent remains it just cancels the job; if an owned agent
 exists but cannot be verified, it returns `owned_agent_not_verified` and leaves the
 fence. A cancelled job's worktree is then eligible for `remove_worktree` /

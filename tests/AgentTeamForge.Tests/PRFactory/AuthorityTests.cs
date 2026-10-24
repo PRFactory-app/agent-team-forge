@@ -12,6 +12,36 @@ namespace AgentTeamForge.Tests.PRFactory;
 
 public sealed class AuthorityTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Connector_authority_cancel_closes_despite_pending_native_stop(bool codex)
+    {
+        using var f = await AgentTeamForge.Tests.Features.Jobs.NativeInterruptFixture.Create(codex);
+        var (teams, rows, id) = Setup(f.Jobs);
+        teams.RecordMember(Server, id, "lead", 0, f.Parent);
+        teams.RecordMember(Server, id, "lead", 1, f.Child);
+        var backend = new AgentTeamForge.Tests.Features.Jobs.NativeCloseBackend();
+        f.Catalog.Register(codex ? "codex" : "claude", () => backend);
+        var close = new StopAgent(f.Store, JobFixture.Operator, f.Catalog, executionStopped: f.Dispatcher.ExecutionStopped);
+        f.Stop.Execute(f.Child);
+        using (var authority = new PRFactoryAuthority(Server, rows, teams, close.CancelAndClose, (_, _) => true, f.Dispatcher.ExecutionStopped))
+        {
+            await authority.ObserveAsync(id, "cancelled", ct: TestContext.Current.CancellationToken);
+            Assert.True(Assert.Single(rows.Read(Server)).Stopping);
+            Assert.NotNull(f.Store.PendingNativeInterrupt(f.Child));
+            Assert.NotEqual(JobStatus.Cancelled, f.Store.GetJob(f.Child)!.Status);
+        }
+        backend.AllowClose = true;
+        using var restarted = new PRFactoryAuthority(Server, rows, teams, close.CancelAndClose, (_, _) => true, f.Dispatcher.ExecutionStopped);
+        await restarted.RetryStopsAsync(TestContext.Current.CancellationToken);
+        Assert.False(Assert.Single(rows.Read(Server)).Stopping);
+        Assert.Equal(f.Session, backend.Session);
+        Assert.Equal(JobStatus.Cancelled, f.Store.GetJob(f.Child)!.Status);
+        Assert.Null(f.Store.PendingNativeInterrupt(f.Child));
+        Assert.Equal(0, f.Control.Escapes);
+    }
+
     const string Server = "https://example.test";
 
     [Fact]
@@ -20,7 +50,7 @@ public sealed class AuthorityTests
         using var f = new JobFixture();
         var (teams, rows, id) = Setup(f);
         using var authority = new PRFactoryAuthority(Server, rows, teams,
-            _ => throw new InvalidOperationException(), _ => throw new InvalidOperationException(), (_, _) => true, _ => true);
+            _ => throw new InvalidOperationException(), (_, _) => true, _ => true);
         await authority.ObserveAsync(id, "accepted", ct: TestContext.Current.CancellationToken);
         Assert.True(authority.MayLaunch(id));
         await authority.SuspendAsync(TestContext.Current.CancellationToken);
@@ -43,15 +73,14 @@ public sealed class AuthorityTests
         var job = f.Submit("owned");
         teams.RecordMember(Server, id, "lead", 0, job.JobId);
         var stopped = false;
-        var stop = new StopJob(f.Store, JobFixture.Operator, _ => { });
         using var authority = new PRFactoryAuthority(Server, rows, teams, jobId =>
         {
             Assert.Equal(disposition, rows.Read(Server).Single().Disposition);
             Assert.True(rows.Read(Server).Single().Stopping);
-            return stop.Execute(jobId);
-        }, new StopAgent(f.Store, JobFixture.Operator,
-            new BackendCatalog().Register(BackendCatalog.Fake, () => new RetainedBackend())).Execute,
-            (_, _) => true, _ => stopped);
+            return new StopAgent(f.Store, JobFixture.Operator,
+                new BackendCatalog().Register(BackendCatalog.Fake, () => new RetainedBackend()),
+                executionStopped: _ => stopped).CancelAndClose(jobId);
+        }, (_, _) => true, _ => stopped);
         await authority.ObserveAsync(id, disposition, ct: TestContext.Current.CancellationToken);
         Assert.True(rows.Read(Server).Single().Stopping);
         Assert.False(await authority.RunAsync(id, () => Task.CompletedTask, TestContext.Current.CancellationToken));
@@ -77,10 +106,9 @@ public sealed class AuthorityTests
             f.Store.EndUnsuccessfully(run, JobStatus.NeedsReconciliation, "interactive_delivery_not_confirmed");
             using var dispatcher = new DispatchJob(f.Store, new ScriptedBackend(_ => []), f.Limits,
                 DurabilityCheckpoints.None, f.Admission, _ => { });
-            var stop = new StopJob(f.Store, JobFixture.Operator, dispatcher.CancelRunning,
-                stopReconciled: dispatcher.StopReconciled);
-            using var authority = new PRFactoryAuthority(Server, rows, teams, stop.Execute,
-                new StopAgent(f.Store, JobFixture.Operator, new BackendCatalog().Register(BackendCatalog.Fake, () => new RetainedBackend())).Execute,
+            using var authority = new PRFactoryAuthority(Server, rows, teams,
+                new StopAgent(f.Store, JobFixture.Operator, new BackendCatalog().Register(BackendCatalog.Fake, () => new RetainedBackend()),
+                    executionStopped: _ => false).CancelAndClose,
                 (_, _) => true, _ => false);
             await authority.ObserveAsync(id, "cancelled", ct: TestContext.Current.CancellationToken);
             await authority.RetryStopsAsync(TestContext.Current.CancellationToken);
@@ -104,9 +132,9 @@ public sealed class AuthorityTests
             .Execute(new(parent.JobId, "later", "child") { Defer = true }).Job!;
         f.Store.Complete(run, "done");
         var backend = new RetainedBackend();
-        var stop = new StopAgent(f.Store, JobFixture.Operator, new BackendCatalog().Register(BackendCatalog.Fake, () => backend));
+        var stop = new StopAgent(f.Store, JobFixture.Operator, new BackendCatalog().Register(BackendCatalog.Fake, () => backend), executionStopped: _ => true);
         using var authority = new PRFactoryAuthority(Server, rows, teams,
-            new StopJob(f.Store, JobFixture.Operator, _ => { }).Execute, stop.Execute, (_, _) => true, _ => true);
+            stop.CancelAndClose, (_, _) => true, _ => true);
         await authority.ObserveAsync(id, "accepted", ct: TestContext.Current.CancellationToken);
         await authority.ObserveAsync(id, "cancelled", ct: TestContext.Current.CancellationToken);
         Assert.False(await authority.RunAsync(id, () => throw new InvalidOperationException("late follow-up/finalize"), TestContext.Current.CancellationToken));
@@ -173,7 +201,7 @@ public sealed class AuthorityTests
         Assert.Equal("accepted", rows.Read(Server).Single().Disposition);
         Assert.False(await authority.RunAsync(id, () => Task.CompletedTask, TestContext.Current.CancellationToken));
         using var restarted = new PRFactoryAuthority(Server, rows, teams,
-            _ => JobResult.Fail(JobErrors.OwnershipNotProven), _ => JobResult.Fail(JobErrors.OwnershipNotProven), (_, _) => true, _ => true);
+            _ => JobResult.Fail(JobErrors.OwnershipNotProven), (_, _) => true, _ => true);
         Assert.False(await restarted.RunAsync(id, () => Task.CompletedTask, TestContext.Current.CancellationToken));
         await restarted.ObserveAsync(id, "revoked", ct: TestContext.Current.CancellationToken);
         Assert.True(rows.Read(Server).Single().Stopping); // Foreign/reused PID is never forcibly killed.
@@ -194,7 +222,7 @@ public sealed class AuthorityTests
         teams.RecordExternal(Server, id, "human", "actual-human", "external-team", "ticket", DateTimeOffset.UtcNow.AddHours(1));
         var revoked = false;
         using var authority = new PRFactoryAuthority(Server, rows, teams,
-            _ => throw new InvalidOperationException("No managed process"), _ => throw new InvalidOperationException("No human process stop"),
+            _ => throw new InvalidOperationException("No managed process"),
             (team, member) => revoked = team == "external-team" && member == "actual-human", _ => true);
         await authority.ObserveAsync(id, "accepted", ct: TestContext.Current.CancellationToken);
         await authority.TransportFailureAsync(id, status, TestContext.Current.CancellationToken);
@@ -206,8 +234,9 @@ public sealed class AuthorityTests
     }
 
     static PRFactoryAuthority Authority(JobFixture f, PRFactoryTeamStore teams, PRFactoryAuthorityStore rows) =>
-        new(Server, rows, teams, new StopJob(f.Store, JobFixture.Operator, _ => { }).Execute,
-            new StopAgent(f.Store, JobFixture.Operator, new BackendCatalog().Register(BackendCatalog.Fake, () => new RetainedBackend())).Execute, (_, _) => true, _ => true);
+        new(Server, rows, teams,
+            new StopAgent(f.Store, JobFixture.Operator, new BackendCatalog().Register(BackendCatalog.Fake, () => new RetainedBackend()),
+                executionStopped: _ => true).CancelAndClose, (_, _) => true, _ => true);
 
     static (PRFactoryTeamStore, PRFactoryAuthorityStore, Guid) Setup(JobFixture f)
     {

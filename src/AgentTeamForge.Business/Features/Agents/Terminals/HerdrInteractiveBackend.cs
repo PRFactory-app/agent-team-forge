@@ -284,6 +284,27 @@ public sealed class HerdrInteractiveBackend : IJobBackend, IInteractiveSessionSt
 
     internal void RememberNativeTurn(string sessionId, bool pinned = false) => _liveSessions.RememberNativeTurn(sessionId, pinned);
     public void ReleaseNativeTurn(string sessionId) => _liveSessions.ReleaseNativeTurn(sessionId);
+
+    internal async Task<bool> SendNativeInterruptAsync(string sessionId, IReadOnlyList<JobRecord> peers, Func<bool> targetCurrent)
+    {
+        if (!_nativeSessions.TryGetValue(sessionId, out var launch))
+        {
+            lock (SessionStopGate)
+            {
+                if (ReattachNativeTurn(sessionId, peers, out _) is null) { return false; }
+                if (!_nativeSessions.TryGetValue(sessionId, out launch)) { return false; }
+            }
+        }
+        if (launch.NativeTranscript?.SessionId != sessionId) { return false; }
+        // The reservation survives I/O and is released only by confirmed settlement or explicit disposition.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        return await _control.SendInterruptKeyAsync(launch, () =>
+        {
+            if (_control.PaneShell(launch) is not { } shell) { return false; }
+            var live = LiveSessionProbe is { } probe ? probe(launch, shell.Pid) : _transcripts.LiveSessions(launch, shell.Pid);
+            return live is { Count: 1 } && live.Contains(sessionId) && targetCurrent();
+        }, timeout.Token);
+    }
     void StopLaunch(InteractiveLaunch launch) { _control.StopOwned(launch); _liveSessions.Closed(launch); }
 
     void RememberSession(string sessionId, InteractiveLaunch launch, bool pinned) => _liveSessions.Remember(sessionId, launch, pinned);
@@ -804,6 +825,7 @@ internal interface IHerdrAgentControl
     Task StartAsync(InteractiveLaunch launch, CancellationToken cancellationToken);
     Task PromptAsync(InteractiveLaunch launch, string prompt, CancellationToken cancellationToken);
     Task InterruptAsync(InteractiveLaunch launch, CancellationToken cancellationToken);
+    Task<bool> SendInterruptKeyAsync(InteractiveLaunch launch, Func<bool> targetCurrent, CancellationToken cancellationToken) => Task.FromResult(false);
     Task<InteractiveAgentStatus> StatusAsync(InteractiveLaunch launch, CancellationToken cancellationToken);
     void StopOwned(InteractiveLaunch launch);
 
@@ -841,6 +863,13 @@ internal sealed record InteractiveTranscript(string SessionId, string? Message, 
     public bool WaitingOnBackground { get; init; }
     public DateTimeOffset? LastActivityAt { get; init; }
     public bool Interrupted { get; init; }
+    public DateTimeOffset? InterruptedAt { get; init; }
+    public string? NativeTurnId { get; init; }
+    public bool NativeTaskStarted { get; init; }
+    public bool FollowingInput { get; init; }
+    public bool NativeEndMatched { get; init; }
+    public string? NativeEndMessage { get; init; }
+    public InteractiveApiError? NativeEndError { get; init; }
 
     public IReadOnlyList<string> Progress => Messages ?? [];
 

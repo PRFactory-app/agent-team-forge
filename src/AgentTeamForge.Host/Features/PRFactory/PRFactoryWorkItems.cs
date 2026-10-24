@@ -20,7 +20,8 @@ public sealed partial class PRFactoryWorkItems(
     bool allowRepoLess = false, PRFactoryHandoverStore? handovers = null,
     PRFactoryRepositorySet? repositorySets = null, Action<PRFactoryServerLimit?>? onLimit = null,
     PRFactoryPullRequests? pullRequests = null, Func<JobRecord, bool>? reconcileIdleInteractive = null,
-    Func<JobRecord, TokenUsage?>? sessionUsage = null, Func<string, string?>? sandboxDowngrade = null)
+    Func<JobRecord, TokenUsage?>? sessionUsage = null, Func<string, string?>? sandboxDowngrade = null,
+    Func<string, JobResult>? cancelAndClose = null)
 {
     // Parked turns share one account binding per backend until configured accounts exist.
     public const string DefaultAccount = "default";

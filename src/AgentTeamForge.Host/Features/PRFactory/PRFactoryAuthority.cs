@@ -11,7 +11,7 @@ namespace AgentTeamForge.Host.Features.PRFactory;
 /// </summary>
 public sealed class PRFactoryAuthority(
     string server, PRFactoryAuthorityStore store, PRFactoryTeamStore teams,
-    Func<string, JobResult> stopJob, Func<string, JobResult> stopAgent,
+    Func<string, JobResult> cancelAndClose,
     Func<string, string, bool> revokeMember, Func<string, bool> executionStopped) : IDisposable
 {
     readonly SemaphoreSlim gate = new(1, 1);
@@ -123,9 +123,8 @@ public sealed class PRFactoryAuthority(
                 {
                     try
                     {
-                        var cancelled = stopJob(job);
-                        var closed = stopAgent(job); // Includes completed/retained interactive sessions.
-                        complete &= cancelled.Error is null && closed.Error is null && executionStopped(job);
+                        var closed = cancelAndClose(job);
+                        complete &= closed.Error is null && executionStopped(job);
                     }
                     catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException)
                     {
@@ -146,4 +145,5 @@ public sealed class PRFactoryAuthority(
         }
         finally { gate.Release(); }
     }
+
 }

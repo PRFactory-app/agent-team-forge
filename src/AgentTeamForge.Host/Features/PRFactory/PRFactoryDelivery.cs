@@ -73,7 +73,7 @@ public sealed partial class PRFactoryWorkItems
                         outcome = JobResult.Fail("member_not_found");
                         foreach (var member in teams.ManagedMembers(server, item.Id).Where(m => m.Member == command.TargetAgentName).Reverse())
                         {
-                            outcome = stopJob?.Invoke(member.JobId) ?? JobResult.Fail(JobErrors.DaemonUnhealthy);
+                            outcome = cancelAndClose?.Invoke(member.JobId) ?? JobResult.Fail(JobErrors.DaemonUnhealthy);
                             if (outcome.Error is not null) { break; }
                         }
                     }

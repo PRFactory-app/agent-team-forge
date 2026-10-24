@@ -107,7 +107,12 @@ intake; local jobs continue.
   repositories (`multi-repo-v1`); an unmapped secondary repository fails the phase.
 - **Commands.** The daemon drains pending server commands. `SendMessage`
   becomes a `follow_up` for a managed member, or a message to an external
-  member. `KillAgent` stops a managed member's job, or closes the external team
+  member. `KillAgent` explicitly cancels and closes a managed member's owned
+  session, including running native turns and pending interrupts; acknowledgement
+  uses the same verified logical stop as `stop_agent`, including deferred pane
+  cleanup by the sweep. The existing result does not distinguish deferred close.
+  It uses the internal close workflow rather
+  than public per-turn `stop_job`. It otherwise closes the external team
   for that work item (which revokes membership without killing the user's
   session). Command IDs are deduplicated (`prfactory_command_receipts`).
 - **Output.** Job status, results and logs are uploaded through PRFactory's
@@ -169,7 +174,8 @@ artefact upload, push, completion, failure — is admitted individually and only
 while the team is freshly confirmed. The dispatcher launches a queued connector
 turn only under that confirmation, so restart, outage or fencing hold new turns.
 
-A cancel, revoke or completion from the server durably fences first, then stops
+A cancel, revoke or completion from the server durably fences first, then uses
+the explicit cancel-and-close workflow to stop
 every owned turn (including deferred follow-ups and retained interactive
 sessions) and revokes external members without touching their processes. Stops
 retry every tick and after restart until the dispatcher proves the run has

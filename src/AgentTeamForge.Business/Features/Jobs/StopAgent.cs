@@ -7,9 +7,67 @@ namespace AgentTeamForge.Business.Features.Jobs;
 
 /// <summary>Stops an owned interactive session after its turn, including quarantined restart ownership.</summary>
 public sealed class StopAgent(JobStore store, BoundPrincipal principal, BackendCatalog backends,
-    Func<JobRecord, bool>? settleCompletedInteractive = null, TimeSpan? settleWait = null)
+    Func<JobRecord, bool>? settleCompletedInteractive = null, TimeSpan? settleWait = null,
+    Action<string>? cancelRunning = null, Func<string, bool>? executionStopped = null)
 {
     readonly TimeSpan settleWait = settleWait ?? TimeSpan.FromSeconds(5);
+
+    /// <summary>Connector authority and KillAgent explicitly close execution, including active native turns.</summary>
+    public JobResult CancelAndClose(string jobId)
+    {
+        try
+        {
+            var job = store.GetJob(jobId);
+            if (job is null || job.Principal != principal.Principal || job.Team != principal.Team) { return JobResult.Fail(JobErrors.NotFound); }
+            var backend = backends.Resolve(job.Backend);
+            if (backend is HerdrInteractiveBackend herdr)
+            {
+                lock (herdr.SessionStopGate) { return Close(job, backend); }
+            }
+            return Close(job, backend);
+        }
+        catch (StorageException ex) { return JobResult.Fail(JobErrors.FromStorage(ex), JobErrors.StorageDetail(ex)); }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException or HerdrLaunchException)
+        { return JobResult.Fail(JobErrors.OwnershipNotProven, ex.Message); }
+    }
+
+    JobResult Close(JobRecord job, IJobBackend? backend)
+    {
+        var peers = store.GetSessionJobs(job.JobId);
+        if (peers.Select(store.GetJob).OfType<JobRecord>().Any(peer => peer.Principal != principal.Principal || peer.Team != principal.Team))
+        { return JobResult.Fail(JobErrors.OwnershipNotProven); }
+        store.FenceSessionForClose(job.JobId);
+        bool closed;
+        if (backend is HerdrInteractiveBackend herdr)
+        {
+            closed = herdr.StopOwnedJobs(peers) || executionStopped is not null && peers.All(executionStopped);
+        }
+        else if ((backend as WtInteractiveBackend ?? (backend as MacInteractiveBackend)?.Tabs) is { } tabs)
+        {
+            closed = false;
+            foreach (var peer in peers) { closed |= tabs.StopOwnedJob(peer); }
+            closed &= !peers.Any(tabs.OwnsLiveJob);
+        }
+        else if (job.SessionId is { } session && backend is IInteractiveSessionStop interactive)
+        {
+            closed = interactive.StopIdleSession(session) || executionStopped is not null && peers.All(executionStopped);
+        }
+        else
+        {
+            foreach (var peer in peers)
+            {
+                store.Cancel(peer, principal.Principal, principal.Team);
+                cancelRunning?.Invoke(peer);
+            }
+            closed = executionStopped is not null && peers.All(executionStopped);
+        }
+        if (!closed) { return JobResult.Fail(JobErrors.OwnershipNotProven, "Session close is unconfirmed; execution remains fenced. Retry stop_agent."); }
+        store.ConfirmSessionClosed(job.JobId);
+        // Retire owned observers and in-flight queue calls after the explicit logical stop commits.
+        foreach (var peer in peers) { cancelRunning?.Invoke(peer); }
+        if (backend is HerdrInteractiveBackend stopped) { stopped.ForgetStoppedJobs(peers); }
+        return JobResult.Ok(GetJob.ToView(store.GetJob(job.JobId)!), "agent_stopped");
+    }
 
     /// <summary>
     /// Bulk-cleanup stop: under the same gate ordinary stop uses, fences the session atomically (refused if any peer is
@@ -61,6 +119,7 @@ public sealed class StopAgent(JobStore store, BoundPrincipal principal, BackendC
             {
                 return JobResult.Fail(JobErrors.NotFound, $"No job {jobId} for this principal/team.");
             }
+            if (store.PendingNativeInterrupt(jobId) is not null) { return CancelAndClose(jobId); }
             if (job.Status == JobStatus.Queued)
             {
                 return JobResult.Fail(JobErrors.InvalidRequest, $"Job {jobId} is queued and has no agent yet; use stop_job to cancel it.");
@@ -80,7 +139,7 @@ public sealed class StopAgent(JobStore store, BoundPrincipal principal, BackendC
                 {
                     // Queued: a failed native follow-up delivery was reverted while waiting.
                     return JobResult.Fail(JobErrors.InvalidRequest, $"Job {jobId} is still {(job.Status == JobStatus.Running ? "running (its agent turn has not finished or the result is not recorded yet)" : "in flight (queued again)")}; "
-                        + "retry stop_agent in a few seconds, or use stop_job to cancel the turn and close the agent.");
+                        + "retry stop_agent after the turn ends. Native stop_job interrupts a turn and keeps its session; stop_agent closes it.");
                 }
             }
             // The whole session closes, so no deferred turn of any job on it may start afterwards.

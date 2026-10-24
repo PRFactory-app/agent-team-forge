@@ -17,6 +17,93 @@ namespace AgentTeamForge.Tests.Features.Wake;
 
 public sealed class WakeTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Pending_stop_wake_query_matches_native_session_and_home(bool codex)
+    {
+        using var f = await AgentTeamForge.Tests.Features.Jobs.NativeInterruptFixture.Create(codex);
+        var wake = new WakeStore(f.Jobs.Database);
+        var target = NativeTarget(f, wake);
+        NativeNotice(f, target);
+        f.Stop.Execute(f.Child);
+        Assert.True(f.Store.HasPendingNativeInterruptForWake(target.Kind, target.Address, target.Home));
+        Assert.False(f.Store.HasPendingNativeInterruptForWake(target.Kind, target.Address, target.Home + "other"));
+        Assert.False(f.Store.HasPendingNativeInterruptForWake(target.Kind, target.Address + "other", target.Home));
+        var clock = DateTimeOffset.UtcNow;
+        var poster = new FakePoster();
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, clock: () => clock, coalesce: TimeSpan.Zero,
+            claudeGone: _ => false, pendingNativeInterrupt: f.Store.HasPendingNativeInterruptForWake);
+        var before = Assert.Single(wake.Pending());
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(poster.Attempts);
+        Assert.Equal(before.NotifiedSeq, Assert.Single(wake.Pending()).NotifiedSeq);
+        Assert.Equal(before.Unread, Assert.Single(wake.Pending()).Unread);
+        f.Quarantine("native_interrupt_unconfirmed");
+        Assert.Equal("native_released", f.Stop.Release(f.Child).Outcome);
+        Assert.False(f.Store.HasPendingNativeInterruptForWake(target.Kind, target.Address, target.Home));
+        clock += TimeSpan.FromSeconds(3);
+        await coordinator.TickAsync(TestContext.Current.CancellationToken);
+        Assert.Single(poster.Attempts);
+        Assert.Equal(before.LatestSeq, Assert.Single(wake.Pending()).NotifiedSeq);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Pending_native_stop_defers_wake_and_detects_inflight_wake_race(bool codex)
+    {
+        using var f = await AgentTeamForge.Tests.Features.Jobs.NativeInterruptFixture.Create(codex);
+        var wake = new WakeStore(f.Jobs.Database);
+        var target = NativeTarget(f, wake);
+        NativeNotice(f, target);
+        var poster = new DelayedPoster();
+        var coordinator = new WakeCoordinator(wake, poster, _ => { }, coalesce: TimeSpan.Zero, claudeGone: _ => false,
+            pendingNativeInterrupt: f.Store.HasPendingNativeInterruptForWake);
+        var posting = coordinator.TickAsync(TestContext.Current.CancellationToken);
+        try
+        {
+            await poster.Started.Task.WaitAsync(Bounded.ScenarioDeadline, TestContext.Current.CancellationToken);
+            f.Stop.Execute(f.Child);
+            await f.Until(() => f.Control.Escapes == 1);
+            // This notice passed the last routing check before the durable stop was recorded.
+            f.HumanInput();
+            f.Confirm();
+        }
+        finally { poster.Release.TrySetResult(); await posting; }
+        await f.Until(() => f.Store.GetJob(f.Child)!.ReasonCode == "native_interrupt_misdirected");
+        Assert.True(f.Store.IsSessionFenced(f.Child));
+        Assert.NotEqual(JobStatus.Cancelled, f.Store.GetJob(f.Child)!.Status);
+        var unrelated = wake.Register("other", "codex", "other-session", "", "/other-home");
+        NativeNotice(f, unrelated, "unrelated");
+        var otherPoster = new FakePoster();
+        await new WakeCoordinator(wake, otherPoster, _ => { }, coalesce: TimeSpan.Zero, claudeGone: _ => false,
+            pendingNativeInterrupt: f.Store.HasPendingNativeInterruptForWake).TickAsync(TestContext.Current.CancellationToken);
+        Assert.Single(otherPoster.Attempts, attempt => attempt.Target.Key == unrelated.Key);
+    }
+
+    static WakeRegistration NativeTarget(AgentTeamForge.Tests.Features.Jobs.NativeInterruptFixture f, WakeStore wake)
+    {
+        var target = wake.Register("native", f.Codex ? "codex" : "claude", f.Codex ? f.Session : "/test/managed.sock", "secret", f.Codex ? f.Home : "123");
+        if (!f.Codex)
+        {
+            var sessions = new LeadSessionStore(f.Jobs.Database);
+            var lead = sessions.Start(f.Home, "managed-child:" + f.Parent);
+            sessions.BindWake(lead.SessionId, target.Key, target.Generation);
+        }
+        return target;
+    }
+
+    static void NativeNotice(AgentTeamForge.Tests.Features.Jobs.NativeInterruptFixture f, WakeRegistration target, string key = "notice")
+    {
+        var accepted = f.Accept.Execute(new(key, "notice source", null, false)
+        { Backend = f.Codex ? "codex" : "claude", TargetAgent = key, WakeKey = target.Key, WakeGeneration = target.Generation });
+        Assert.NotNull(accepted.Job);
+        var claim = f.Store.BeginNextAttempt()!;
+        Assert.Equal(accepted.Job.JobId, claim.Job.JobId);
+        Assert.True(f.Store.Complete(new(claim.Job.JobId, claim.RunId, claim.Generation, claim.Correlation), "done"));
+    }
+
     sealed class FakePoster(Func<WakeRegistration, string, bool>? send = null) : IWakePoster
     {
         public readonly List<(WakeRegistration Target, string Notice)> Attempts = [];

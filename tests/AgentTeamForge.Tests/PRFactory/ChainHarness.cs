@@ -19,6 +19,7 @@ sealed class ChainHarness : IDisposable
     public static readonly Guid Machine = Guid.Parse("0f7c3a55-1f8e-4a52-9c1c-2f7c2b9b1d11");
     static readonly BoundPrincipal Connector = new("prfactory", "connector", "connector-lead");
     readonly TempStateDir root = new();
+    readonly Func<string, JobResult> cancelAndClose;
 
     public ChainHarness(PRFactoryWorkItem item)
     {
@@ -40,8 +41,10 @@ sealed class ChainHarness : IDisposable
         FollowUp = new FollowUpJob(Store, Connector, accept);
         Stop = new StopJob(Store, Connector, _ => { },
             stopReconciled: _ => Reconcile);
-        var stopAgent = new StopAgent(Store, Connector, new BackendCatalog().Register("codex", () => new ScriptedBackend(_ => [])));
-        Authority = new PRFactoryAuthority(ChainServer.Url, Authorities, Teams, Stop.Execute, stopAgent.Execute,
+        var stopAgent = new StopAgent(Store, Connector, new BackendCatalog().Register("codex", () => new ScriptedBackend(_ => [])),
+            executionStopped: ExecutionStopped);
+        cancelAndClose = stopAgent.CancelAndClose;
+        Authority = new PRFactoryAuthority(ChainServer.Url, Authorities, Teams, stopAgent.CancelAndClose,
             (_, _) => true, id => Store.GetJob(id)?.Status is not (JobStatus.Queued or JobStatus.Running));
     }
 
@@ -64,8 +67,10 @@ sealed class ChainHarness : IDisposable
         FollowUp = new FollowUpJob(Store, Connector, accept);
         Stop = new StopJob(Store, Connector, _ => { },
             stopReconciled: _ => Reconcile);
-        var stopAgent = new StopAgent(Store, Connector, new BackendCatalog().Register("codex", () => new ScriptedBackend(_ => [])));
-        Authority = new PRFactoryAuthority(ChainServer.Url, Authorities, Teams, Stop.Execute, stopAgent.Execute,
+        var stopAgent = new StopAgent(Store, Connector, new BackendCatalog().Register("codex", () => new ScriptedBackend(_ => [])),
+            executionStopped: ExecutionStopped);
+        cancelAndClose = stopAgent.CancelAndClose;
+        Authority = new PRFactoryAuthority(ChainServer.Url, Authorities, Teams, stopAgent.CancelAndClose,
             (_, _) => true, id => Store.GetJob(id)?.Status is not (JobStatus.Queued or JobStatus.Running));
     }
 
@@ -89,6 +94,9 @@ sealed class ChainHarness : IDisposable
     public string WorkspaceRoot => root.File("workspaces");
     /// <summary>What the dispatcher's StopReconciled reports: NoRecord is the proof that no owned pane or marked process is left.</summary>
     public ReconcileStop Reconcile { get; set; } = ReconcileStop.Refused;
+    bool ExecutionStopped(string id) => Store.GetJob(id)?.Status is { } status
+        && (status is not (JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation)
+            || status == JobStatus.NeedsReconciliation && Reconcile != ReconcileStop.Refused);
     public AccountAdmission? Accounts { get; set; }
     public string[]? ExternalMembers { get; set; }
     public bool AllowRepoLess { get; set; }
@@ -125,7 +133,7 @@ sealed class ChainHarness : IDisposable
         handovers: baseWip ? new PRFactoryHandoverStore(Database) : null,
         repositorySets: SecondaryId is null ? null : new PRFactoryRepositorySet(new PRFactoryRepositorySetStore(Database),
             new PRFactoryWorkspace(Workspaces), new PRFactoryWorkspaceStore(Database), new PRFactoryHandoverStore(Database)),
-        sandboxDowngrade: sandboxDowngrade);
+        sandboxDowngrade: sandboxDowngrade, cancelAndClose: cancelAndClose);
 
     public Task TickAsync() => Adapter().TickAsync(Machine, CancellationToken.None);
 

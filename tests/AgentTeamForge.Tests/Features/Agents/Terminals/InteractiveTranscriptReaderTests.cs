@@ -6,6 +6,51 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 
 public sealed class InteractiveTranscriptReaderTests
 {
+    [Theory]
+    [InlineData("[Request interrupted by user]")]
+    [InlineData("[Request interrupted by user for tool use]")]
+    public void Claude_interrupt_sentinel_is_interrupted_not_superseded(string sentinel)
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Claude);
+        File.WriteAllLines(file,
+        [
+            ClaudeUser(Marker),
+            $$$"""{"type":"user","isSidechain":false,"sessionId":"claude-native","timestamp":"2026-10-24T08:00:00Z","message":{"role":"user","content":[{"type":"text","text":"{{{sentinel}}}"}]}}"""
+        ]);
+        var receipt = reader.Read(launch, Marker, DateTimeOffset.UtcNow.AddMinutes(-1));
+        Assert.NotNull(receipt);
+        Assert.True(receipt.Interrupted);
+        Assert.False(receipt.Superseded);
+    }
+
+    [Theory]
+    [InlineData("\"quoted [Request interrupted by user]\"")]
+    [InlineData("[{\"type\":\"text\",\"text\":\"[Request interrupted by user]\"},{\"type\":\"text\",\"text\":\"extra\"}]")]
+    [InlineData("[{\"type\":\"text\",\"text\":\"[Request interrupted by user] extra\"}]")]
+    [InlineData("[{\"type\":\"tool_result\",\"content\":\"[Request interrupted by user]\"}]")]
+    public void Claude_sentinel_must_be_the_whole_single_text_input(string content)
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Claude);
+        File.WriteAllLines(file, [ClaudeUser(Marker),
+            $$$"""{"type":"user","sessionId":"claude-native","message":{"role":"user","content":{{{content}}} } }"""]);
+        Assert.False(reader.Read(launch, Marker, DateTimeOffset.UtcNow)!.Interrupted);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Claude_interrupt_checks_native_message_linkage(bool matching)
+    {
+        using var state = new TempStateDir();
+        var (reader, launch, file) = Setup(state.Path, InteractiveAgentKind.Claude);
+        File.WriteAllLines(file, [ClaudeUser(Marker),
+            """{"type":"assistant","sessionId":"claude-native","uuid":"assistant-uuid","message":{"role":"assistant","id":"native-message","content":[]}}""",
+            $$$"""{"type":"user","sessionId":"claude-native","parentUuid":"assistant-uuid","interruptedMessageId":"{{{(matching ? "native-message" : "foreign-message")}}}","message":{"role":"user","content":"[Request interrupted by user]"}}"""]);
+        Assert.Equal(matching, reader.Read(launch, Marker, DateTimeOffset.UtcNow)!.Interrupted);
+    }
+
     const string Marker = "atf-corr:turn-1";
 
     static string ClaudeUser(string text) =>

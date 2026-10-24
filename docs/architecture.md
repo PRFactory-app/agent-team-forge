@@ -82,6 +82,17 @@ transaction. There are no repository ports or mediator layers.
 
 ## Job lifecycle
 
+Native-child stop intent commits before Escape. Reconciliation owns dispatch
+and confirmation, outside global claim locks. Run-correlated requested,
+dispatching and sent events preserve the chain fence across restart. An
+ambiguous dispatch is observed without automatic resend. Only the exact native
+interrupt or natural completion settles the attempt; natural completion keeps
+its actual result. WakeCoordinator defers new posts to a session with pending
+intent. Public turn controls keep the session; `stop_agent` and the connector's
+explicit cancel-and-close workflow close verified owned execution. Connector
+authority close retries after failure/restart and does not kill external user
+processes.
+
 1. **Accept.** The job, its idempotency record, an unattempted dispatch intent
    and (if the lead has a wake target) a wake row are committed in one
    transaction. Only then does the client get the `job_id`. The active-job
