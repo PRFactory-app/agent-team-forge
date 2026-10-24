@@ -150,9 +150,10 @@ public sealed class TeamWorkspace(PRFactoryWorkspaceStore store) : IDisposable
     static async Task ValidateRemote(string repo, string? expected)
     {
         // Strict identity is intentional: aliases must be approved in the mapping, not guessed.
-        if (string.IsNullOrWhiteSpace(expected) || await Git(repo, "remote", "get-url", "origin") != expected)
+        var actual = await Git(repo, "remote", "get-url", "origin");
+        if (string.IsNullOrWhiteSpace(expected) || actual != expected)
         {
-            throw new InvalidOperationException("Mapped repository remote identity mismatch.");
+            throw new InvalidOperationException($"Repository '{repo}': mapped remote expected '{RemoteDisplay.Redact(expected)}'; checkout origin actual '{RemoteDisplay.Redact(actual)}'. Set origin to the mapping URL (git remote set-url origin <url>) or approve the alias in the mapping.");
         }
     }
 
