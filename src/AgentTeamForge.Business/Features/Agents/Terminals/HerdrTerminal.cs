@@ -73,13 +73,19 @@ public sealed class HerdrTerminal
 
     HerdrTerminalOptions _options;
     readonly IHerdrProcessRunner _runner;
+    readonly TimeProvider _timeProvider;
+    readonly Func<TimeSpan, CancellationToken, Task> _pollDelay;
+
+    internal TimeProvider PollTimeProvider => _timeProvider;
+    internal Task PollDelayAsync(TimeSpan delay, CancellationToken cancellationToken) => _pollDelay(delay, cancellationToken);
 
     public HerdrTerminal(HerdrTerminalOptions options)
         : this(options, new HerdrProcessRunner())
     {
     }
 
-    internal HerdrTerminal(HerdrTerminalOptions options, IHerdrProcessRunner runner)
+    internal HerdrTerminal(HerdrTerminalOptions options, IHerdrProcessRunner runner,
+        TimeProvider? timeProvider = null, Func<TimeSpan, CancellationToken, Task>? pollDelay = null)
     {
         if (options.SessionPrefix.Length == 0 || !options.SessionPrefix.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-'))
         {
@@ -91,6 +97,8 @@ public sealed class HerdrTerminal
         else { environment["CODEX_HOME"] = codexHome; }
         _options = options with { Environment = environment };
         _runner = runner;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _pollDelay = pollDelay ?? Task.Delay;
     }
 
     public async Task<OwnedHerdrSession> StartSessionAsync(CancellationToken cancellationToken)
@@ -125,7 +133,7 @@ public sealed class HerdrTerminal
 
     async Task<(string Socket, ProcessIdentity Identity)> WaitForServerAsync(string name, CancellationToken cancellationToken)
     {
-        var clock = Stopwatch.StartNew();
+        var started = _timeProvider.GetTimestamp();
         while (true)
         {
             var listed = HerdrOwnership.Find(await GlobalAsync(cancellationToken, "session", "list", "--json"), name);
@@ -135,12 +143,12 @@ public sealed class HerdrTerminal
             {
                 return (socket, identity);
             }
-            if (clock.Elapsed >= _options.StartupTimeout)
+            if (_timeProvider.GetElapsedTime(started) >= _options.StartupTimeout)
             {
                 throw new HerdrLaunchException($"herdr session {name} did not start as one identifiable server within {_options.StartupTimeout}; " +
                     "nothing was stopped or deleted");
             }
-            await Task.Delay(_options.PollInterval, cancellationToken);
+            await _pollDelay(_options.PollInterval, cancellationToken);
         }
     }
 
@@ -276,7 +284,7 @@ public sealed class HerdrTerminal
         var terminal = Str(created, "result", "root_pane", "terminal_id");
         onCreated?.Invoke(session with { TabId = tab, PaneId = pane, TerminalId = terminal, TabLabel = label });
 
-        var clock = Stopwatch.StartNew();
+        var started = _timeProvider.GetTimestamp();
         var shellProofRequested = false;
         while (true)
         {
@@ -315,11 +323,11 @@ public sealed class HerdrTerminal
                         : throw new HerdrLaunchException($"bootstrap proof failed for tab {tab}: its shell does not carry this launch's bootstrap; the tab is left open");
                 }
             }
-            if (clock.Elapsed >= _options.StartupTimeout)
+            if (_timeProvider.GetElapsedTime(started) >= _options.StartupTimeout)
             {
                 throw new HerdrLaunchException($"bootstrap proof for tab {tab} timed out; the tab is left open");
             }
-            await Task.Delay(_options.PollInterval, cancellationToken);
+            await _pollDelay(_options.PollInterval, cancellationToken);
         }
     }
 

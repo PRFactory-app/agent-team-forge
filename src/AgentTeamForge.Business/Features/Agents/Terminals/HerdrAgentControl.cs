@@ -66,7 +66,7 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
             {
                 // Herdr samples a pane's foreground lazily: right after the macOS shell proof ran in it, `agent start`
                 // can still see a busy pane. It refuses before typing anything, so a short retry is safe.
-                var busyUntil = DateTimeOffset.UtcNow + PaneBusyGrace;
+                var busyStarted = terminal.PollTimeProvider.GetTimestamp();
                 while (true)
                 {
                     try
@@ -74,9 +74,9 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
                         await terminal.RunOwnedAsync(session, TimeSpan.FromMilliseconds(startTimeoutMs) + TimeSpan.FromSeconds(15), cancellationToken, [.. args]);
                         break;
                     }
-                    catch (HerdrLaunchException e) when (e.Message.Contains("agent_pane_busy", StringComparison.Ordinal) && DateTimeOffset.UtcNow < busyUntil)
+                    catch (HerdrLaunchException e) when (e.Message.Contains("agent_pane_busy", StringComparison.Ordinal) && terminal.PollTimeProvider.GetElapsedTime(busyStarted) < PaneBusyGrace)
                     {
-                        await Task.Delay(250, cancellationToken);
+                        await terminal.PollDelayAsync(TimeSpan.FromMilliseconds(250), cancellationToken);
                     }
                 }
             }
