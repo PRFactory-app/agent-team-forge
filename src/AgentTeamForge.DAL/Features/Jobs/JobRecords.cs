@@ -102,6 +102,8 @@ public sealed record CancelOutcome(JobRecord? Job, bool WasRunning, bool Changed
 
 public sealed record EventRecord(long Seq, string JobId, string? RunId, string Kind);
 
+public sealed record NativeInterruptIntent(string RunId, string Correlation, bool Interrupt, DateTimeOffset RequestedAt, string Phase);
+
 public sealed record RunRecord(string RunId, long Generation, string Correlation, string State, bool Acked, int? BackendPid, string? ReasonCode)
 {
     public string? FinishedAt { get; init; }

@@ -254,11 +254,12 @@ public static class DaemonCommand
         };
         var worktreeCleanup = new WorktreeCleanup(store, backends);
         var interactiveLaunch = launchMode is "herdr" or "terminal" or "wt";
-        var stopAgent = new StopAgent(store, profile.Bound, backends, dispatcher.SettleCompletedInteractive);
+        var stopAgent = new StopAgent(store, profile.Bound, backends, dispatcher.SettleCompletedInteractive,
+            cancelRunning: dispatcher.CancelRunning, executionStopped: dispatcher.ExecutionStopped);
         var stopIdleAgents = new StopIdleAgents(store, profile.Bound, backends, stopAgent);
         var endpoint = new JobsEndpoint(accept, new GetJob(store, profile.Bound, interactiveLaunch), new FollowUpJob(store, profile.Bound, accept, dispatcher.InterruptRunning, reconcileIdleInteractive: dispatcher.ReconcileIdleInteractive, hasIdleInteractive: dispatcher.HasIdleInteractive, settleCompletedInteractive: dispatcher.SettleCompletedInteractive),
             new ListJobs(store, profile.Bound, jobLogs, interactiveLaunch),
-            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning, dispatcher.ReleaseNative), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
+            new StopJob(store, profile.Bound, dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership, dispatcher.InterruptRunning, dispatcher.ReleaseNative, dispatcher.Signal), checkpoints, dispatcher.Signal, wakeStore, prune, jobLogs, store,
             leadSessions, externalTeam, stopAgent, backends.Names, tierMap, modelDiscovery, herdrPlacement, claudeMailbox, launchMode,
             (token, _, _) => PRFactoryInteraction.RequestFromManagedChild(externalTeam.ManagedChildName(token)),
             externalMembers, new GetJob(store, connectorPrincipal), dispatcher.TakeNativeClaude,
@@ -314,13 +315,15 @@ public static class DaemonCommand
         // fail-closed gate before starting dispatch; ordinary jobs remain independent.
         dispatcher.LaunchGate = id => store.GetJob(id)?.Principal != connectorPrincipal.Principal;
         var dispatching = dispatcher.RunAsync(lifetime.Token);
-        var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path, claudeMailbox), Log).RunAsync(lifetime.Token);
+        var waking = new WakeCoordinator(wakeStore, new NativeWakePoster(state.Path, claudeMailbox), Log,
+            pendingNativeInterrupt: store.HasPendingNativeInterruptForWake).RunAsync(lifetime.Token);
         var restoreSweep = herdrTerminal is null ? Task.CompletedTask : RunRestoreSweepAsync(herdrTerminal, state.Path, lifetime.Token);
         var pruning = profile.AutoPrune ? RunPruneAsync(prune, worktreeCleanup, profile.PruneOlderThanDays, lifetime.Token) : Task.CompletedTask;
         var connectorStop = new StopJob(store, connectorPrincipal,
             dispatcher.CancelRunning, dispatcher.CloseUnclaimedFollowUp, dispatcher.StopReconciled, dispatcher.ForgetReconciledOwnership,
             releaseNative: dispatcher.ReleaseNative);
-        var connectorStopAgent = new StopAgent(store, connectorPrincipal, backends, dispatcher.SettleCompletedInteractive);
+        var connectorStopAgent = new StopAgent(store, connectorPrincipal, backends, dispatcher.SettleCompletedInteractive,
+            cancelRunning: dispatcher.CancelRunning, executionStopped: dispatcher.ExecutionStopped);
         // The daemon is the sole writer of team workspaces; the singleton serializes Git mutations.
         var connectorWorkspaceStore = new PRFactoryWorkspaceStore(database);
         using var teamWorkspaces = new TeamWorkspace(connectorWorkspaceStore);
@@ -370,7 +373,7 @@ public static class DaemonCommand
                 {
                     authority?.Dispose();
                     authority = new PRFactoryAuthority(settings.Url, authorityRows, connectorTeams,
-                        connectorStop.Execute, connectorStopAgent.Execute, externalTeam.RevokeMember, dispatcher.ExecutionStopped);
+                        connectorStopAgent.CancelAndClose, externalTeam.RevokeMember, dispatcher.ExecutionStopped);
                 }
                 await new PRFactoryWorkItems(settings.Url, settings.Repositories, connectorTeams, client,
                     connectorAccept.Execute, store.GetJob, dispatcher.Signal,
@@ -384,6 +387,7 @@ public static class DaemonCommand
                         onLimit: limit => PRFactoryConnection.PublishLimit(state, limit),
                         sessionUsage: job => job.SessionId is null ? null : AgentTeamForge.Business.Features.Usage.SessionTokenUsage.ReadFinal(job.Backend, job.SessionId, null, job.Cwd),
                         sandboxDowngrade: backend => connectorAccept.SandboxDowngrade(backend, null),
+                        cancelAndClose: connectorStopAgent.CancelAndClose,
                         pullRequests: new PRFactoryPullRequests(settings.Url, settings.Repositories, settings.GitHubUser, client,
                             connectorPublications, Log)).TickAsync(machineId, ct);
                 PRFactoryConnection.PublishJoinTickets(state, connectorTeams, settings.Url);

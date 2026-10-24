@@ -37,7 +37,8 @@ public sealed class WakeBackoff
 /// <summary>Polls committed terminal rows and unacknowledged interactive parks.</summary>
 public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<string> log,
     Func<DateTimeOffset>? clock = null, TimeSpan? coalesce = null, TimeSpan? renotify = null,
-    Func<WakeRegistration, bool>? claudeGone = null)
+    Func<WakeRegistration, bool>? claudeGone = null,
+    Func<string, string, string, bool>? pendingNativeInterrupt = null)
 {
     sealed class State(long generation)
     {
@@ -159,6 +160,11 @@ public sealed class WakeCoordinator(WakeStore store, IWakePoster poster, Action<
             // A read between the scan and this check consumed the notice; do not announce an empty inbox. Reads do not
             // take the gate, so a read after this check or a notice already queued in the host can still arrive late.
             if (snapshot.External && snapshot.ParkJobId is null && !store.HasUnreadExternal(target.Key)) { continue; }
+            if (pendingNativeInterrupt?.Invoke(target.Kind, target.Address, target.Home) == true)
+            {
+                state.Backoff.Failed(now());
+                continue;
+            }
             // Notice-only: job IDs and result content stay in get_job. The external notice carries the inbox
             // revision because Claude Code silently drops a channel message repeating the previous body within 30s.
             var notice = snapshot.ParkJobId is not null

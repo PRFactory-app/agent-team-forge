@@ -3,6 +3,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using AgentTeamForge.Business;
+using AgentTeamForge.Business.Features.Agents.Backends;
 using AgentTeamForge.Business.Features.Jobs;
 using AgentTeamForge.Business.Features.Usage;
 using AgentTeamForge.DAL.Features.Jobs;
@@ -14,6 +15,33 @@ namespace AgentTeamForge.Tests.PRFactory;
 
 public sealed class DeliveryTests
 {
+    [Fact]
+    public async Task Connector_kill_agent_closes_session_with_running_native_child()
+    {
+        using var f = new Fixture();
+        await f.Adapter().TickAsync(null, CancellationToken.None);
+        var parent = f.Teams.MemberJob(Fixture.Url, f.Item.Id, "lead", 0)!;
+        f.Finish(parent, "ready", "native-kill-session");
+        f.Commands.Add(new(Guid.NewGuid(), "SendMessage", "lead", "native work"));
+        await f.Adapter().TickAsync(null, CancellationToken.None);
+        var child = Assert.Single(f.Jobs.ListJobs("prfactory", "connector", 10), j => j.ParentJobId == parent);
+        Assert.Equal(child.JobId, f.Jobs.BeginNativeCodexAttempt(_ => true, f.Dir.Path)!.Job.JobId);
+        var backend = new AgentTeamForge.Tests.Features.Jobs.NativeCloseBackend { AllowClose = true };
+        var close = new StopAgent(f.Jobs, new("prfactory", "connector", "connector-lead"),
+            new BackendCatalog().Register("codex", () => backend),
+            executionStopped: id => f.Jobs.GetJob(id)?.Status is not (JobStatus.Queued or JobStatus.Running or JobStatus.NeedsReconciliation));
+        f.CloseOverride = close.CancelAndClose;
+        var kill = new PRFactoryCommand(Guid.NewGuid(), "KillAgent", "lead", null);
+        f.Commands.Add(kill);
+        await f.Adapter().TickAsync(null, CancellationToken.None);
+        Assert.True(f.Acks[kill.CommandId].Accepted);
+        Assert.True(backend.CloseCalls > 0);
+        Assert.Equal("native-kill-session", backend.Session);
+        Assert.Equal(JobStatus.Cancelled, f.Jobs.GetJob(child.JobId)!.Status);
+        Assert.Equal("released", f.Jobs.NativeAttempt(child.JobId)!.State);
+        Assert.DoesNotContain(f.Jobs.GetEvents(child.JobId), e => e.Kind == "native_interrupt_requested");
+    }
+
     [Fact]
     public async Task Registration_poll_and_claim_advertise_single_repository_contract_version()
     {
@@ -198,8 +226,11 @@ public sealed class DeliveryTests
             http = PRFactoryClient.CreateHttpClient(Url, "token", new Handler(Reply));
             Client = new(http);
         }
+        public Func<string, JobResult>? CloseOverride { get; set; }
         public PRFactoryWorkItems Adapter(Func<JobRecord, TokenUsage?>? sessionUsage = null) => new(Url, [new(Item.RepositoryId!.Value, Dir.Path)], Teams, Client,
-            accept.Execute, Jobs.GetJob, () => { }, stopJob: stop.Execute, followUp: follow.Execute, jobLogs: Logs, sessionUsage: sessionUsage);
+            accept.Execute, Jobs.GetJob, () => { }, stopJob: stop.Execute, followUp: follow.Execute, jobLogs: Logs, sessionUsage: sessionUsage,
+            cancelAndClose: id => CloseOverride?.Invoke(id) ?? new StopAgent(Jobs, new("prfactory", "connector", "connector-lead"), new BackendCatalog(),
+                executionStopped: key => Jobs.GetJob(key)?.Status is not (JobStatus.Running or JobStatus.Queued)).CancelAndClose(id));
         public void Finish(string id, string result, string? session = null)
         {
             var run = Jobs.BeginNextAttempt()!;

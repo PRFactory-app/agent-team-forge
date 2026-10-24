@@ -25,8 +25,8 @@ public sealed class ReviewTurnQueueTests
         f.Store.RecordNativeClaudeReceipt(first.JobId, claim.Correlation);
         Assert.Equal(JobErrors.ParentNotReady, follow.Execute(new FollowUpRequest(root.JobId, "refused", "refused") { Defer = false }).Error);
         var next = follow.Execute(new FollowUpRequest(root.JobId, "next", "next") { Defer = true }).Job!;
-        // A carrier can finish before the independently observed native turn does.
-        f.Store.Complete(new RunRef(first.JobId, claim.RunId, 1, claim.Correlation), "carrier ended");
+        // An uncertain delivery observer may end without terminalizing the native turn.
+        f.Store.EndUnsuccessfully(new RunRef(first.JobId, claim.RunId, 1, claim.Correlation), JobStatus.NeedsReconciliation, "native_delivery_unresolved");
         Assert.Null(f.Store.BeginNativeClaudeAttempt(root.JobId, Path.GetTempPath(), _ => true));
         Assert.True(f.Store.SettleNativeClaudeAttempt(first.JobId, claim.Correlation, "turn ended"));
         Assert.Equal(next.JobId, f.Store.BeginNativeClaudeAttempt(root.JobId, Path.GetTempPath(), _ => true)!.Job.JobId);

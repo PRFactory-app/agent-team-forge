@@ -605,7 +605,7 @@ public sealed class JobsEndpoint(AcceptJob accept, GetJob get, FollowUpJob follo
     }
 
     static IpcResponse Map(JobResult result) =>
-        result.Error is null ? new IpcResponse(true, Outcome: result.Outcome, Job: result.Job) : new IpcResponse(false, result.Error, ErrorDetail: result.Detail) { FencingJobId = result.FencingJobId, Recovery = result.Recovery };
+        result.Error is null ? new IpcResponse(true, Outcome: result.Outcome, Job: result.Job, ErrorDetail: result.Detail) : new IpcResponse(false, result.Error, ErrorDetail: result.Detail) { FencingJobId = result.FencingJobId, Recovery = result.Recovery };
 
     static IpcResponse MapExternal(ExternalResult result) => new(result.Ok, result.Error,
         result.Ok ? "ok" : null, WakeGeneration: result.WakeGeneration, Ticket: result.Ticket,

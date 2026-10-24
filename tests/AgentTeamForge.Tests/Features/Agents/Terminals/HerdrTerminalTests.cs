@@ -194,8 +194,10 @@ public class HerdrTerminalTests
         Assert.Equal(Path.Combine(worktree, "sub"), Path.TrimEndingDirectorySeparator(rebound?.WorkingDirectory ?? ""));
     }
 
-    [Fact]
-    public async Task Restart_reattaches_a_native_follow_up_to_its_parents_live_pane_and_settles_it()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Restart_reattaches_a_native_follow_up_to_its_parents_live_pane_and_settles_it(bool pendingStop)
     {
         using var state = new TempStateDir();
         using var f = new JobFixture();
@@ -206,6 +208,8 @@ public class HerdrTerminalTests
         Assert.Equal(child.JobId, claim.Job.JobId);
         f.Store.RecordNativeClaudePost(child.JobId, claim.Correlation);
         f.Store.RecordNativeClaudeReceipt(child.JobId, claim.Correlation);
+        if (pendingStop) { Assert.True(f.Store.RequestNativeInterrupt(child.JobId, false)); }
+        var starts = fake.Calls.Count(c => c.Args is ["agent", "start", ..]);
         RecoverRecords(f, state);
         Assert.Equal(JobStatus.NeedsReconciliation, f.Store.GetJob(child.JobId)!.Status);
 
@@ -215,19 +219,31 @@ public class HerdrTerminalTests
         var loop = dispatcher.RunAsync(lifetime.Token);
         try
         {
-            Assert.Equal((JobStatus.Running, null), (f.Store.GetJob(child.JobId)!.Status, f.Store.GetJob(child.JobId)!.ReasonCode));
-            Assert.False(f.Store.IsSessionFenced(child.JobId)); // Nor the parent, a session peer.
+            if (pendingStop)
+            {
+                Assert.NotNull(f.Store.PendingNativeInterrupt(child.JobId));
+                Assert.True(f.Store.IsSessionFenced(child.JobId));
+            }
+            else
+            {
+                Assert.Equal((JobStatus.Running, null), (f.Store.GetJob(child.JobId)!.Status, f.Store.GetJob(child.JobId)!.ReasonCode));
+                Assert.False(f.Store.IsSessionFenced(child.JobId)); // Nor the parent, a session peer.
+            }
             Assert.Equal(JobStatus.Completed, f.Store.GetJob(parent.JobId)!.Status);
             Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane" or "tab", "close", ..]);
 
             File.AppendAllLines(transcript,
             [
                 """{"type":"user","isMeta":true,"isSidechain":false,"sessionId":"claude-native","message":{"role":"user","content":"Another Claude session sent a message:\nnext atf-corr:""" + claim.Correlation + "\"}}",
-                """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"answered"}]}}""",
+                pendingStop
+                    ? $$$"""{"type":"user","sessionId":"claude-native","timestamp":"{{{DateTimeOffset.UtcNow.ToString("O")}}}","message":{"role":"user","content":"[Request interrupted by user]"}}"""
+                    : """{"type":"assistant","isSidechain":false,"sessionId":"claude-native","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"answered"}]}}""",
             ]);
-            var deadline = DateTime.UtcNow.AddSeconds(10);
-            while (f.Store.GetJob(child.JobId)!.Status == JobStatus.Running && DateTime.UtcNow < deadline) { await Task.Delay(50, TestContext.Current.CancellationToken); }
-            Assert.Equal((JobStatus.Completed, "answered"), (f.Store.GetJob(child.JobId)!.Status, f.Store.GetJob(child.JobId)!.ResultText));
+            await Bounded.Until(() => f.Store.GetJob(child.JobId)!.Status == (pendingStop ? JobStatus.Cancelled : JobStatus.Completed)
+                && backend.HasIdleSession("claude-native"), "recovered native settlement");
+            if (pendingStop) { Assert.Equal("stopped", f.Store.GetJob(child.JobId)!.ReasonCode); }
+            else { Assert.Equal("answered", f.Store.GetJob(child.JobId)!.ResultText); }
+            Assert.Equal(starts, fake.Calls.Count(c => c.Args is ["agent", "start", ..]));
             // The pane is retained, bound to its exact native session, for the next native turn.
             Assert.True(backend.HasIdleClaudeSession("claude-native"));
             Assert.True(backend.HasIdleSession("claude-native"));
@@ -959,6 +975,76 @@ public class HerdrTerminalTests
         Assert.Single(fake.Calls, c => c.Args is ["pane", "close", "w1:p2"]);
         Assert.False(File.Exists(record));
         Assert.False(File.Exists(record + ".cleanup"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Deferred_close_matches_stop_agent_and_preserves_cleanup_marker(bool connectorClose)
+    {
+        using var state = new TempStateDir();
+        using var f = new JobFixture();
+        var job = f.Submit("deferred-close");
+        var claim = f.Store.BeginNextAttempt()!;
+        f.Store.RecordSession(new(job.JobId, claim.RunId, claim.Generation, claim.Correlation), "native");
+        f.Store.Complete(new(job.JobId, claim.RunId, claim.Generation, claim.Correlation), "done");
+        var (fake, _, control, launch) = await StartedRestoredLaunch(state.Path, job.JobId);
+        fake.Replace(Replacement.ServerRestarted);
+        fake.DefaultRunning = false; // RecoverOwnedSessionAsync returns false: the pane close is deferred.
+        using var backend = new HerdrInteractiveBackend(control, new InteractiveTranscriptReader(_ => state.Path), InteractiveAgentKind.Codex, state.Path);
+        var stop = new StopAgent(f.Store, JobFixture.Operator, new BackendCatalog().Register("fake", () => backend));
+        var outcome = connectorClose ? stop.CancelAndClose(job.JobId) : stop.Execute(job.JobId);
+        Assert.Equal("agent_stopped", outcome.Outcome);
+        Assert.Null(outcome.Error);
+        Assert.True(File.Exists(HerdrOwnedSessions.PathFor(launch) + ".deferred"));
+        Assert.True(File.Exists(HerdrOwnedSessions.PathFor(launch) + ".cleanup"));
+        Assert.Equal(JobStatus.Completed, f.Store.GetJob(job.JobId)!.Status);
+    }
+
+    [Fact]
+    public async Task Native_key_dispatch_reports_send_without_waiting_for_idle()
+    {
+        using var state = new TempStateDir();
+        var (fake, _, control, launch) = await StartedRestoredLaunch(state.Path);
+        var before = fake.Calls.Count;
+        Assert.True(await control.SendInterruptKeyAsync(launch, () => true, TestContext.Current.CancellationToken));
+        var dispatched = fake.Calls.Skip(before).ToList();
+        Assert.Single(dispatched, call => call.Args is ["agent", "send-keys", _, "esc"]);
+        Assert.DoesNotContain(dispatched, call => call.Args is ["agent", "wait", ..]);
+        before = fake.Calls.Count;
+        Assert.False(await control.SendInterruptKeyAsync(launch, () => false, TestContext.Current.CancellationToken));
+        Assert.DoesNotContain(fake.Calls.Skip(before), call => call.Args is ["agent", "send-keys", ..]);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Stop_agent_closes_after_native_interrupt_unconfirmed(bool codex, bool quarantined)
+    {
+        using var f = await AgentTeamForge.Tests.Features.Jobs.NativeInterruptFixture.Create(codex);
+        using var state = new TempStateDir();
+        var (_, _, control, launch) = await StartedRestoredLaunch(state.Path, f.Parent);
+        using var backend = new HerdrInteractiveBackend(control, new InteractiveTranscriptReader(_ => state.Path),
+            codex ? InteractiveAgentKind.Codex : InteractiveAgentKind.Claude, state.Path);
+        var stop = new StopAgent(f.Store, JobFixture.Operator, new BackendCatalog().Register(codex ? "codex" : "claude", () => backend));
+        var deferred = f.Follow.Execute(new(f.Child, "later", "deferred-close") { Defer = true }).Job!;
+        f.Stop.Execute(f.Child);
+        if (quarantined) { f.Quarantine("native_interrupt_unconfirmed"); }
+        var record = HerdrOwnedSessions.PathFor(launch);
+        var saved = File.ReadAllText(record);
+        File.WriteAllText(record, "{invalid");
+        var refused = stop.Execute(f.Child);
+        Assert.NotNull(refused.Error);
+        Assert.True(f.Store.IsSessionFenced(f.Child));
+        Assert.NotNull(f.Store.PendingNativeInterrupt(f.Child));
+        File.WriteAllText(record, saved);
+        Assert.Equal("agent_stopped", stop.Execute(f.Child).Outcome);
+        Assert.Equal(JobStatus.Cancelled, f.Store.GetJob(f.Child)!.Status);
+        Assert.Equal(JobStatus.Cancelled, f.Store.GetJob(deferred.JobId)!.Status);
+        Assert.Null(f.Store.PendingNativeInterrupt(f.Child));
+        Assert.False(f.Store.IsSessionFenced(f.Child));
     }
 
     [Fact]
@@ -2552,6 +2638,7 @@ public class HerdrTerminalTests
                 ["agent", "start", ..] => AgentStartFails ? Err("agent_not_ready") : AgentStartBusy-- > 0 ? Err("agent_pane_busy") : Ok("{}"),
                 ["agent", "read", ..] => Ok((_prompted && ScreenAfterPrompt is { } prompted ? prompted : Screen) ?? "› Ask Codex\n? for shortcuts\n❯ Try a task\nbypass permissions on\n──────\n──────\n/tmp/work"),
                 ["agent", "get", ..] => AgentStatus(),
+                ["agent", "send-keys", "w1:p2", "esc"] => Ok("{}"),
                 ["--session", _, "agent", "prompt", ..] => (_prompted = true) && PromptResponse is { } response ? response : Ok("""{"result":{"type":"agent_prompted"}}"""),
                 _ => Err("unexpected " + string.Join(' ', args)),
             };

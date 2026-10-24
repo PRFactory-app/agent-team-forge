@@ -32,8 +32,9 @@ public sealed class AuthorityWiringTests
         });
         var accept = new AcceptJob(store, Connector, new SpikeLimits(), true, new AdmissionGate(), ["codex"]);
         var stop = new StopJob(store, Connector, _ => { });
-        var stopAgent = new StopAgent(store, Connector, new BackendCatalog().Register("codex", () => new ScriptedBackend(_ => [])));
-        using var authority = new PRFactoryAuthority(ChainServer.Url, rows, teams, stop.Execute, stopAgent.Execute,
+        var stopAgent = new StopAgent(store, Connector, new BackendCatalog().Register("codex", () => new ScriptedBackend(_ => [])),
+            executionStopped: id => store.GetJob(id)?.Status is not (JobStatus.Queued or JobStatus.Running));
+        using var authority = new PRFactoryAuthority(ChainServer.Url, rows, teams, stopAgent.CancelAndClose,
             (_, _) => true, id => store.GetJob(id)?.Status is not (JobStatus.Queued or JobStatus.Running));
         var client = server.Client();
         PRFactoryWorkItems Adapter() => new(ChainServer.Url, [new RepositoryMapping(server.Item.RepositoryId!.Value, dir.Path)], teams, client,
@@ -77,8 +78,9 @@ public sealed class AuthorityWiringTests
         });
         var accept = new AcceptJob(store, Connector, new SpikeLimits(), true, new AdmissionGate(), ["codex"]);
         var stop = new StopJob(store, Connector, _ => { });
-        var stopAgent = new StopAgent(store, Connector, new BackendCatalog().Register("codex", () => new ScriptedBackend(_ => [])));
-        using var authority = new PRFactoryAuthority(ChainServer.Url, rows, teams, stop.Execute, stopAgent.Execute,
+        var stopAgent = new StopAgent(store, Connector, new BackendCatalog().Register("codex", () => new ScriptedBackend(_ => [])),
+            executionStopped: id => store.GetJob(id)?.Status is not (JobStatus.Queued or JobStatus.Running));
+        using var authority = new PRFactoryAuthority(ChainServer.Url, rows, teams, stopAgent.CancelAndClose,
             (_, _) => true, id => store.GetJob(id)?.Status is not (JobStatus.Queued or JobStatus.Running));
         var client = server.Client();
         var logs = new List<string>();

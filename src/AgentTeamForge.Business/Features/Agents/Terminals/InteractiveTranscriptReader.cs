@@ -49,6 +49,28 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
     internal static InteractiveTranscript? ReadClaudeSession(string home, string sessionId, string correlation) =>
         LocateSession(home, sessionId, InteractiveAgentKind.Claude, usage: false) is { } path
             ? Parse(path, InteractiveAgentKind.Claude, "atf-corr:" + correlation) : null;
+
+    /// <summary>Queue metadata diagnoses delivery; it never binds execution or proves interruption.</summary>
+    internal static string? ClaudeQueueDiagnostic(string home, string sessionId, string correlation)
+    {
+        if (LocateSession(home, sessionId, InteractiveAgentKind.Claude, usage: false) is not { } path) { return null; }
+        try
+        {
+            if (new FileInfo(path).Length > MaxTranscriptBytes) { return null; }
+            var enqueued = false;
+            foreach (var line in LiveFiles.ReadLines(path))
+            {
+                using var json = JsonDocument.Parse(line);
+                var root = json.RootElement;
+                if (Str(root, "type") != "queue-operation" || Str(root, "sessionId") != sessionId) { continue; }
+                if (Str(root, "operation") == "enqueue"
+                    && Str(root, "content")?.Contains("atf-corr:" + correlation, StringComparison.Ordinal) == true) { enqueued = true; }
+                else if (enqueued && Str(root, "operation") == "dequeue") { return "native_delivery_dequeued"; }
+            }
+            return enqueued ? "native_delivery_enqueued" : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return null; }
+    }
     public IReadOnlySet<string>? LiveSessions(InteractiveLaunch launch, int shellPid) =>
         LiveNativeSessions.Read(launch.Kind, shellPid,
             launch.Kind == InteractiveAgentKind.Claude ? ClaudeConfigRoot.Resolve(environment, Path.GetFullPath(launch.WorkingDirectory)) : null);
@@ -300,6 +322,16 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             var ended = false;
             var incomplete = false;
             var interrupted = false;
+            DateTimeOffset? interruptedAt = null;
+            var taskStarted = false;
+            string? latestStartedTurn = null;
+            var followingInput = false;
+            var messageIds = new HashSet<string>();
+            var recordIds = new HashSet<string>();
+            var nativeEndMatched = false;
+            string? nativeEndMessage = null;
+            InteractiveApiError? nativeEndError = null;
+            string? assistantLast = null;
             string? last = null;
             InteractiveApiError? apiError = null;
             DateTimeOffset? rateLimitReset = null;
@@ -327,17 +359,33 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                 using (json)
                 {
                     var root = json.RootElement;
+                    if (kind == InteractiveAgentKind.Claude && Str(root, "sessionId") is { } recordSession && recordSession != id) { continue; }
                     var userText = UserText(root, kind) ?? (kind == InteractiveAgentKind.Claude ? ClaudeInboxText(root) : null);
+                    if (interrupted)
+                    {
+                        if (kind == InteractiveAgentKind.Claude && Str(root, "type") == "queue-operation" && Str(root, "operation") == "dequeue")
+                        { followingInput = true; break; }
+                        if (userText is not null && !(kind == InteractiveAgentKind.Claude
+                            && TaskNotification(userText, backgroundTasks, knownTasks, out _))) { followingInput = true; break; }
+                        if (kind == InteractiveAgentKind.Codex && EventType(root) == "task_started"
+                            && root.TryGetProperty("payload", out var afterStart) && Str(afterStart, "turn_id") != nativeTurn)
+                        { followingInput = true; break; }
+                        continue;
+                    }
                     if (!markerSeen)
                     {
+                        if (kind == InteractiveAgentKind.Codex && EventType(root) == "task_started"
+                            && root.TryGetProperty("payload", out var beforeStart)) { latestStartedTurn = Str(beforeStart, "turn_id"); }
                         // Bind only on a native user record; echoes and metadata never bind.
                         markerSeen = userText?.Contains(marker, StringComparison.Ordinal) == true;
                         if (markerSeen && root.TryGetProperty("payload", out var input)
                             && input.TryGetProperty("internal_chat_message_metadata_passthrough", out var metadata))
                         {
                             nativeTurn = Str(metadata, "turn_id");
+                            taskStarted = nativeTurn is not null && nativeTurn == latestStartedTurn;
                         }
                         if (markerSeen && DateTimeOffset.TryParse(Str(root, "timestamp"), out var inputAt)) { lastActivity = inputAt; }
+                        if (markerSeen && Str(root, "uuid") is { } inputUuid) { recordIds.Add(inputUuid); }
                         continue;
                     }
                     if (DateTimeOffset.TryParse(Str(root, "timestamp"), out var activityAt)) { lastActivity = activityAt; }
@@ -368,8 +416,22 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                         {
                             continue;
                         }
+                        if (kind == InteractiveAgentKind.Claude && ClaudeInterruptSentinel(root)
+                            && (Str(root, "interruptedMessageId") is not { } interruptedId || messageIds.Contains(interruptedId))
+                            && (Str(root, "parentUuid") is not { } parentUuid || recordIds.Contains(parentUuid)))
+                        {
+                            interrupted = true;
+                            if (DateTimeOffset.TryParse(Str(root, "timestamp"), out var at)) { interruptedAt = at; }
+                            continue;
+                        }
                         ended = true;
                         break; // Next native user input: a new turn.
+                    }
+                    if (kind == InteractiveAgentKind.Codex && EventType(root) == "task_started"
+                        && root.TryGetProperty("payload", out var taskStart) && Str(taskStart, "turn_id") is { } taskId)
+                    {
+                        nativeTurn ??= taskId;
+                        taskStarted = taskId == nativeTurn;
                     }
                     // Some Codex versions write task_started after input without input turn metadata.
                     // A start record alone proves a different turn only when both IDs are known.
@@ -382,6 +444,9 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                     }
                     if (kind == InteractiveAgentKind.Claude)
                     {
+                        if (Str(root, "uuid") is { } uuid) { recordIds.Add(uuid); }
+                        if (Str(root, "type") == "assistant" && root.TryGetProperty("message", out var assistant)
+                            && Str(assistant, "id") is { } messageId) { messageIds.Add(messageId); }
                         if (Str(root, "type") == "rate_limit_event"
                             && root.TryGetProperty("rate_limit_info", out var limit)
                             && limit.ValueKind == JsonValueKind.Object
@@ -412,15 +477,30 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
                         var matchesTurn = nativeTurn is null || !root.TryGetProperty("payload", out var completion)
                             || Str(completion, "turn_id") is null || Str(completion, "turn_id") == nativeTurn;
                         completed |= matchesTurn && CompletedTurn(root, kind);
+                        if (kind == InteractiveAgentKind.Codex && EventType(root) == "task_complete"
+                            && nativeTurn is not null && root.TryGetProperty("payload", out var nativeEnd)
+                            && Str(nativeEnd, "turn_id") == nativeTurn)
+                        {
+                            nativeEndMatched = true;
+                            nativeEndMessage = Str(nativeEnd, "last_agent_message") ?? assistantLast;
+                            nativeEndError = CodexLoginError(root) ?? CodexTurnError(root);
+                        }
                         interrupted |= matchesTurn && kind == InteractiveAgentKind.Codex && EventType(root) == "turn_aborted";
-                        if (interrupted) { break; }
+                        if (interrupted)
+                        {
+                            if (root.TryGetProperty("payload", out var abort) && Str(abort, "reason") == "interrupted"
+                                && nativeTurn is not null && Str(abort, "turn_id") == nativeTurn
+                                && DateTimeOffset.TryParse(Str(root, "timestamp"), out var at)) { interruptedAt = at; }
+                            continue;
+                        }
                         if (completed && last is null && kind == InteractiveAgentKind.Codex
                             && root.TryGetProperty("payload", out var final)) { last = Str(final, "last_agent_message"); }
-                        if (kind == InteractiveAgentKind.Codex && (CodexLoginError(root) ?? CodexTurnError(root)) is { } turnError) { apiError = turnError; }
+                        if (matchesTurn && kind == InteractiveAgentKind.Codex && (CodexLoginError(root) ?? CodexTurnError(root)) is { } turnError) { apiError = turnError; }
                     }
                     if (AssistantText(root, kind) is { } text)
                     {
                         last = text;
+                        assistantLast = text;
                         progress.Add(text);
                         times.Add(Str(root, "timestamp"));
                     }
@@ -430,13 +510,33 @@ internal sealed class InteractiveTranscriptReader(Func<string, string?> environm
             if (!markerSeen) { return null; }
             return new(id, last is { Length: > MaxResultChars } ? last[^MaxResultChars..] : last, progress, completed, pending,
                 ApiError: backgroundTools.Count == 0 && backgroundTasks.Count == 0 ? apiError : null, Times: times, Superseded: ended, Incomplete: incomplete)
-            { WaitingOnBackground = pending && endedOnBackground, LastActivityAt = lastActivity, Interrupted = interrupted };
+            {
+                WaitingOnBackground = pending && endedOnBackground,
+                LastActivityAt = lastActivity,
+                Interrupted = interrupted,
+                InterruptedAt = interruptedAt,
+                NativeTurnId = nativeTurn,
+                NativeTaskStarted = taskStarted,
+                FollowingInput = followingInput,
+                NativeEndMatched = nativeEndMatched,
+                NativeEndMessage = nativeEndMessage,
+                NativeEndError = nativeEndError
+            };
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             WarnUnreadable(path, e);
             return null;
         }
+    }
+
+    static bool ClaudeInterruptSentinel(JsonElement root)
+    {
+        if (!root.TryGetProperty("message", out var message) || !message.TryGetProperty("content", out var content)) { return false; }
+        var text = content.ValueKind == JsonValueKind.String ? content.GetString()
+            : content.ValueKind == JsonValueKind.Array && content.GetArrayLength() == 1 && Str(content[0], "type") == "text"
+                ? Str(content[0], "text") : null;
+        return text is "[Request interrupted by user]" or "[Request interrupted by user for tool use]";
     }
 
     static InteractiveApiError? ApiError(JsonElement root, DateTimeOffset? reportedReset)

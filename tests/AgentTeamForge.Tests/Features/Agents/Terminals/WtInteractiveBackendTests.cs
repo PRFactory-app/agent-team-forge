@@ -18,6 +18,26 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 
 public sealed class WtInteractiveBackendTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Tab_native_interrupt_does_not_use_termination_fallback(bool codex)
+    {
+        using var f = await AgentTeamForge.Tests.Features.Jobs.NativeInterruptFixture.Create(codex);
+        var control = new FakeTabs();
+        using var tabs = new WtInteractiveBackend(control, new FakeReader(null),
+            codex ? InteractiveAgentKind.Codex : InteractiveAgentKind.Claude, f.Home);
+        f.Catalog.Register(codex ? "codex" : "claude", () => tabs);
+        f.Stop.Execute(f.Child, true);
+        await f.Until(() => f.Store.GetJob(f.Child)!.ReasonCode == "native_interrupt_unsupported");
+        Assert.Equal("native_interrupt_unsupported", f.Stop.Execute(f.Child).Outcome);
+        Assert.NotNull(f.Store.PendingNativeInterrupt(f.Child));
+        Assert.True(f.Store.IsSessionFenced(f.Child));
+        Assert.Equal(0, f.Control.Escapes);
+        Assert.Equal(0, f.Control.Closes);
+        Assert.Null(control.Launch);
+    }
+
     [Fact]
     public async Task Named_job_uses_display_label_and_keeps_recovery_identifier()
     {

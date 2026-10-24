@@ -216,18 +216,31 @@ internal sealed class HerdrAgentControl(HerdrTerminal terminal, TimeSpan? readin
 
     public async Task InterruptAsync(InteractiveLaunch launch, CancellationToken cancellationToken)
     {
+        await InterruptCoreAsync(launch, () => true, waitForIdle: true, cancellationToken);
+    }
+
+    public Task<bool> SendInterruptKeyAsync(InteractiveLaunch launch, Func<bool> targetCurrent, CancellationToken cancellationToken) =>
+        InterruptCoreAsync(launch, targetCurrent, waitForIdle: false, cancellationToken);
+
+    async Task<bool> InterruptCoreAsync(InteractiveLaunch launch, Func<bool> targetCurrent, bool waitForIdle, CancellationToken cancellationToken)
+    {
         var (session, binding) = Binding(launch);
-        if (await terminal.VerifyBindingAsync(binding, cancellationToken) is { } problem)
-        {
-            throw new HerdrLaunchException("refusing interrupt: " + problem);
-        }
         var gate = SubmitGate(launch);
         await gate.WaitAsync(cancellationToken);
         try
         {
+            if (await terminal.VerifyBindingAsync(binding, cancellationToken) is { } problem)
+            {
+                throw new HerdrLaunchException("refusing interrupt: " + problem);
+            }
+            if (!targetCurrent()) { return false; }
             await terminal.RunOwnedAsync(session, cancellationToken, "agent", "send-keys", binding.PaneId, "esc");
-            await terminal.RunOwnedAsync(session, cancellationToken, "agent", "wait", binding.PaneId,
-                "--until", "idle", "--until", "done", "--timeout", "15000");
+            if (waitForIdle)
+            {
+                await terminal.RunOwnedAsync(session, cancellationToken, "agent", "wait", binding.PaneId,
+                    "--until", "idle", "--until", "done", "--timeout", "15000");
+            }
+            return true;
         }
         finally { gate.Release(); }
     }

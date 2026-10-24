@@ -45,7 +45,7 @@ public sealed class NativeClaudeDeliveryTests
     }
 
     [Fact]
-    public async Task Stop_releases_a_stuck_claude_post_for_the_agent()
+    public async Task Explicit_release_abandons_a_stuck_claude_post_for_the_agent()
     {
         using var fixture = new JobFixture();
         var catalog = Catalog(new ScriptedBackend(request =>
@@ -64,7 +64,8 @@ public sealed class NativeClaudeDeliveryTests
         Assert.Equal(JobErrors.ParentNotReady, follow.Execute(new FollowUpRequest(parent.JobId, "retry", "retry")).Error);
 
         var stop = new StopJob(fixture.Store, JobFixture.Operator, dispatcher.CancelRunning, releaseNative: dispatcher.ReleaseNative);
-        Assert.Equal("native_released", stop.Execute(child.JobId).Outcome);
+        fixture.Store.EndUnsuccessfully(new(child.JobId, claim.RunId, claim.Generation, claim.Correlation), JobStatus.NeedsReconciliation, "native_delivery_unresolved");
+        Assert.Equal("native_released", stop.Release(child.JobId).Outcome);
         Assert.Equal(JobStatus.Cancelled, fixture.Store.GetJob(child.JobId)!.Status);
         Assert.Empty(fixture.Store.UnresolvedNativeClaudeAttempts());
         Assert.False(fixture.Store.SettleNativeClaudeAttempt(child.JobId, claim.Correlation, "late"));

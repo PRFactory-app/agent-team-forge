@@ -48,7 +48,7 @@ One row per accepted submit or follow-up.
 | `cwd` | Working directory |
 | `parent_job_id`, `session_id` | Follow-up parent and the backend's native session ID |
 | `worktree_path`, `worktree_branch`, `worktree_base`, `worktree_common_dir` | Per-job git worktree, if requested; the common dir (v36) is the repository it belongs to |
-| `timeout_s`, `queue_deadline` | Run timeout and queued expiry |
+| `timeout_s`, `queue_deadline` | Ordinary run timeout and queued expiry; native follow-up observation currently has no lifetime timeout enforcement |
 | `lead_session_id` | Owning lead session |
 | `status` | `queued`, `running`, `completed`, `failed`, `cancelled`, `needs_reconciliation` |
 | `reason_code`, `result_text` | Terminal reason and result |
@@ -76,6 +76,15 @@ state on their own.
 
 Append-only job history (`accepted`, `attempt_started`, `cancelled`,
 `needs_reconciliation`, terminal kinds), ordered by `seq`.
+
+Native interruption uses `native_interrupt_requested` (stop mode) or
+`native_turn_interrupt_requested` (interrupt mode), then
+`native_interrupt_dispatching` and `native_interrupt_sent`, all correlated by
+`run_id`. Diagnostics record unconfirmed, misdirected or unsupported control.
+Resolution, explicit release and accepted logical close record a run-correlated
+disposition so historical intent cannot rearm after restart. `stop_fenced`
+continues to denote explicit session close, whose pane cleanup may be deferred
+under the existing `stop_agent` semantics.
 
 ## Transaction rules
 
@@ -105,6 +114,12 @@ These are the atomic operations in `DAL/Features/Jobs/JobStore.cs`:
    the session stays fenced until that run is safely stopped or verified idle.
 
 ## Lead sessions and wake
+
+Native stop records intent and its session fence atomically before external
+effects. Cancellation requires matching native confirmation; sending Escape
+does not settle a job. Stop-mode deferred descendant cancellation and native
+settlement share one transaction; interrupt mode keeps descendants queued.
+An uncertain dispatch keeps the fence and is never automatically retried.
 
 | Table | Purpose |
 | --- | --- |

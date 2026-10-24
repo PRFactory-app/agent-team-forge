@@ -99,6 +99,10 @@ public static class JobErrors
         var detail = peer is { } fenced
             ? $"Session fenced by {jobId} ({fenced.Status}{(fenced.ReasonCode is null ? "" : ": " + fenced.ReasonCode)}); stop_job({{\"job_id\":\"{jobId}\"}}), then retry."
             : $"Parent {parentJobId} is not idle; wait for it to finish or stop_job({{\"job_id\":\"{jobId}\"}}), then retry.";
+        if (store.PendingNativeInterrupt(jobId) is not null)
+        {
+            detail = $"Native interrupt for {jobId} is not confirmed; the agent may still run. Poll get_job; stop_agent explicitly closes its session, or release observation explicitly. Follow-up remains fenced.";
+        }
         return JobResult.Fail(ParentNotReady, detail) with { FencingJobId = peer?.JobId, Recovery = recovery };
     }
 

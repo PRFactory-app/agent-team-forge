@@ -27,6 +27,7 @@ public sealed class DispatchJob : IDisposable
     readonly ConcurrentDictionary<string, ActiveRun> _running = new();
     readonly ConcurrentDictionary<string, IBackendRun> _reconciledWindows = new();
     readonly ConcurrentDictionary<string, InteractiveBackgroundWait> _nativeBackgroundWaits = new();
+    readonly ConcurrentDictionary<string, byte> _nativeInterruptDrivers = new();
 
     /// <summary>How long a native Claude turn may wait idle on its own background task (ATF_BACKGROUND_WAIT_MINUTES).</summary>
     internal TimeSpan NativeBackgroundWaitLimit { get; init; } = InteractiveBackgroundWait.DefaultLimit;
@@ -179,6 +180,7 @@ public sealed class DispatchJob : IDisposable
         {
             if (store.NativeAttempt(job.JobId) is not { } attempt) { return false; }
             if (attempt.State == "settled" || attempt.State is "sent" or "received" && TrySettleNativeCodex(attempt)) { return true; }
+            if (store.PendingNativeInterrupt(job.JobId) is not null) { return false; }
             // Receipt plus a sustained idle editor proves an interrupted native turn,
             // even when Escape did not flush a rollout end record.
             if (attempt.State != "received" || !HasIdleInteractive(job)) { return false; }
@@ -499,7 +501,8 @@ public sealed class DispatchJob : IDisposable
         var claude = store.NativeClaudeAttempt(job.JobId) is { State: "posting" or "posted" or "received" } pending ? pending : null;
         var codex = claude is null && store.NativeAttempt(job.JobId) is { Unresolved: true } sent ? sent : null;
         if ((claude?.SessionId ?? codex?.ThreadId) is not { } session) { return false; }
-        if (claude is not null ? TrySettleNativeClaude(claude) : TrySettleNativeCodex(codex!))
+        var interrupt = store.PendingNativeInterrupt(job.JobId);
+        if (interrupt is null && (claude is not null ? TrySettleNativeClaude(claude) : TrySettleNativeCodex(codex!)))
         {
             log($"recovery: {job.JobId} completed from its native transcript");
             return true;
@@ -521,7 +524,11 @@ public sealed class DispatchJob : IDisposable
         {
             log($"recovery: reattached native turn {job.JobId} to the live Herdr pane of {owner}");
         }
-        else { ReleaseNativeTurn(job.Backend, session); }
+        else if (interrupt is null) { ReleaseNativeTurn(job.Backend, session); }
+        if (interrupt is not null)
+        {
+            if (claude is not null) { TrySettleNativeClaude(claude); } else { TrySettleNativeCodex(codex!); }
+        }
         return true;
     }
 
@@ -546,6 +553,7 @@ public sealed class DispatchJob : IDisposable
             log($"recovery: {job.JobId} remains fenced; its native turn's terminal tab is still live");
             return true;
         }
+        if (store.PendingNativeInterrupt(job.JobId) is not null) { return true; }
         store.FailUnattached(job.JobId, releaseNative: true);
         log($"recovery: {job.JobId} failed; no verified live run");
         return true;
@@ -1246,13 +1254,19 @@ public sealed class DispatchJob : IDisposable
         }
     }
 
-    void ReconcileNativeCodex()
+    internal void ReconcileNativeCodex()
     {
         foreach (var attempt in store.UnresolvedNativeAttempts()) { TrySettleNativeCodex(attempt); }
     }
 
     bool TrySettleNativeCodex(NativeCodexAttempt attempt)
     {
+        if (store.PendingNativeInterrupt(attempt.JobId) is { } intent)
+        {
+            QueueNativeInterrupt(attempt.JobId, attempt.ThreadId, intent,
+                () => InteractiveTranscriptReader.ReadCodexThread(attempt.CodexHome, attempt.ThreadId, attempt.Correlation));
+            return false;
+        }
         var receipt = InteractiveTranscriptReader.ReadCodexThread(attempt.CodexHome, attempt.ThreadId, attempt.Correlation);
         if (receipt is not null) { store.RecordNativeReceipt(attempt.JobId, attempt.Correlation); }
         if (receipt is null || !(receipt.Completed || receipt.Interrupted || receipt.Superseded || receipt.ApiError?.TurnEnded == true))
@@ -1273,6 +1287,12 @@ public sealed class DispatchJob : IDisposable
 
     bool TrySettleNativeClaude(NativeClaudeAttempt attempt)
     {
+        if (store.PendingNativeInterrupt(attempt.JobId) is { } intent)
+        {
+            QueueNativeInterrupt(attempt.JobId, attempt.SessionId, intent,
+                () => InteractiveTranscriptReader.ReadClaudeSession(attempt.ClaudeHome, attempt.SessionId, attempt.Correlation));
+            return false;
+        }
         var receipt = InteractiveTranscriptReader.ReadClaudeSession(attempt.ClaudeHome, attempt.SessionId, attempt.Correlation);
         if (receipt is not null) { store.RecordNativeClaudeReceipt(attempt.JobId, attempt.Correlation); }
         if (receipt is null || !(receipt.Completed || receipt.Interrupted || receipt.Superseded || receipt.ApiError?.TurnEnded == true))
@@ -1296,6 +1316,103 @@ public sealed class DispatchJob : IDisposable
         RememberNativeTurn(BackendCatalog.Claude, attempt.SessionId);
         Signal();
         return true;
+    }
+
+    void QueueNativeInterrupt(string jobId, string session, NativeInterruptIntent intent, Func<InteractiveTranscript?> read)
+    {
+        if (!_nativeInterruptDrivers.TryAdd(intent.RunId, 0)) { return; }
+        _ = Task.Run(async () =>
+        {
+            try { await DriveNativeInterruptAsync(jobId, session, intent, read); }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                log($"{jobId}: native interrupt unconfirmed: {ex.Message}");
+                if (store.PendingNativeInterrupt(jobId) is { } current)
+                {
+                    store.AdvanceNativeInterrupt(jobId, current.RunId, current.Phase, "native_interrupt_unconfirmed");
+                }
+            }
+            finally { _nativeInterruptDrivers.TryRemove(intent.RunId, out _); }
+        });
+    }
+
+    async Task DriveNativeInterruptAsync(string jobId, string session, NativeInterruptIntent intent, Func<InteractiveTranscript?> read)
+    {
+        var job = store.GetJob(jobId)!;
+        var receipt = read();
+        if (receipt is not null)
+        {
+            if (job.Backend == BackendCatalog.Claude) { store.RecordNativeClaudeReceipt(jobId, intent.Correlation); }
+            else { store.RecordNativeReceipt(jobId, intent.Correlation); }
+        }
+        if (receipt?.FollowingInput == true || receipt?.Superseded == true)
+        {
+            store.AdvanceNativeInterrupt(jobId, intent.RunId, intent.Phase, "native_interrupt_misdirected");
+            return;
+        }
+        var naturalEnd = receipt is not null && (job.Backend != BackendCatalog.Codex || receipt.NativeEndMatched)
+            && (receipt.Completed || receipt.ApiError?.TurnEnded == true);
+        if (receipt is { Incomplete: false } && (naturalEnd || receipt.Interrupted && receipt.InterruptedAt >= intent.RequestedAt))
+        {
+            if (job.Backend == BackendCatalog.Codex && naturalEnd)
+            {
+                receipt = receipt with { Message = receipt.NativeEndMessage, ApiError = receipt.NativeEndError };
+            }
+            var (status, reason, result) = !naturalEnd && receipt.Interrupted
+                ? (JobStatus.Cancelled, intent.Interrupt ? "interrupted" : "stopped", receipt.Message ?? "")
+                : NativeTurnOutcome(receipt);
+            var settled = job.Backend == BackendCatalog.Claude
+                ? store.SettleNativeClaudeAttempt(jobId, intent.Correlation, result, status, reason, intent.RunId)
+                : store.SettleNativeAttempt(jobId, intent.Correlation, result, status, reason, intent.RunId);
+            if (settled) { RememberNativeTurn(job.Backend, session); Signal(); }
+            return;
+        }
+        if (receipt?.Superseded == true || receipt is { Interrupted: true })
+        {
+            store.AdvanceNativeInterrupt(jobId, intent.RunId, intent.Phase, "native_interrupt_misdirected");
+            return;
+        }
+        if (backends.Resolve(job.Backend) is not HerdrInteractiveBackend herdr)
+        {
+            store.AdvanceNativeInterrupt(jobId, intent.RunId, intent.Phase, "native_interrupt_unsupported");
+            return;
+        }
+        if (intent.Phase is not ("native_interrupt_requested" or "native_turn_interrupt_requested"))
+        {
+            if (intent.Phase is "native_interrupt_dispatching" or "native_interrupt_sent")
+            {
+                store.AdvanceNativeInterrupt(jobId, intent.RunId, intent.Phase, "native_interrupt_unconfirmed");
+            }
+            return;
+        }
+        if (receipt is null || receipt.Incomplete || job.Backend == BackendCatalog.Codex && !receipt.NativeTaskStarted)
+        {
+            // A queued CLI input is not the executing target. Keep requested so a later exact start can be observed.
+            if (job.Backend == BackendCatalog.Claude && store.NativeClaudeAttempt(jobId) is { } attempt
+                && InteractiveTranscriptReader.ClaudeQueueDiagnostic(attempt.ClaudeHome, session, intent.Correlation) is { } delivery
+                && !store.GetEvents(jobId).Any(e => e.RunId == intent.RunId && e.Kind == delivery))
+            {
+                store.AdvanceNativeInterrupt(jobId, intent.RunId, intent.Phase, delivery);
+            }
+            store.AdvanceNativeInterrupt(jobId, intent.RunId, intent.Phase, "native_interrupt_unconfirmed");
+            return;
+        }
+        var peers = store.GetSessionJobs(jobId).Select(store.GetJob).OfType<JobRecord>().ToList();
+        var sent = await herdr.SendNativeInterruptAsync(session, peers, () =>
+        {
+            var current = read();
+            return current is { Completed: false, Interrupted: false, Superseded: false, Incomplete: false }
+                && current.SessionId == session && current.NativeTurnId == receipt.NativeTurnId
+                && store.AdvanceNativeInterrupt(jobId, intent.RunId, intent.Phase, "native_interrupt_dispatching");
+        });
+        if (sent)
+        {
+            store.AdvanceNativeInterrupt(jobId, intent.RunId, "native_interrupt_dispatching", "native_interrupt_sent");
+        }
+        else if (store.PendingNativeInterrupt(jobId) is { } current)
+        {
+            store.AdvanceNativeInterrupt(jobId, current.RunId, current.Phase, "native_interrupt_unconfirmed");
+        }
     }
 
     /// <summary>
@@ -1354,7 +1471,7 @@ public sealed class DispatchJob : IDisposable
             }
             if (!NativeWorkspaceReady(job))
             {
-                if (!RetryBusy(() => store.RevertNativeAttempt(run))) { RetryBusy(() => store.ReleaseNativeAttempt(job.JobId, job.Principal, job.Team)); }
+                if (!RetryBusy(() => store.RevertNativeAttempt(run)) && store.PendingNativeInterrupt(job.JobId) is null) { RetryBusy(() => store.ReleaseNativeAttempt(job.JobId, job.Principal, job.Team)); }
                 Signal();
                 return;
             }
@@ -1371,7 +1488,7 @@ public sealed class DispatchJob : IDisposable
                 if (!submission.Started)
                 {
                     if (RetryBusy(() => store.RevertNativeAttempt(run))) { log($"codex queue did not start for {run.JobId}; resuming instead"); }
-                    else { RetryBusy(() => store.ReleaseNativeAttempt(job.JobId, job.Principal, job.Team)); }
+                    else if (store.PendingNativeInterrupt(job.JobId) is null) { RetryBusy(() => store.ReleaseNativeAttempt(job.JobId, job.Principal, job.Team)); }
                     Signal();
                     return;
                 }
@@ -1397,12 +1514,12 @@ public sealed class DispatchJob : IDisposable
         }
         finally
         {
-            if (!awaitingSettlement) { ReleaseNativeTurn(BackendCatalog.Codex, attempt.ThreadId); }
+            if (!awaitingSettlement && store.PendingNativeInterrupt(run.JobId) is null) { ReleaseNativeTurn(BackendCatalog.Codex, attempt.ThreadId); }
         }
     }
 
     /// <summary>
-    /// stop_job on a native attempt that is not mid-submit: release N5 and end the job.
+    /// Explicitly abandon observation of a native attempt that is not mid-submit.
     /// The queued message cannot be retracted and may still be presented.
     /// </summary>
     public bool ReleaseNative(JobRecord job)
