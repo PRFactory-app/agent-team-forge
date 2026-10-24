@@ -222,12 +222,12 @@ public sealed class PRFactoryRepositorySet(PRFactoryRepositorySetStore store, PR
             var actualRemote = await TeamWorkspace.OriginAsync(path);
             if (mapping.Remote is not null && mapping.Remote != actualRemote)
             {
-                throw new InvalidOperationException("Approved mapping remote differs from checkout origin.");
+                throw new InvalidOperationException($"Repository {id:D}: approved mapping remote expected '{RemoteDisplay.Redact(mapping.Remote)}'; checkout origin actual '{RemoteDisplay.Redact(actualRemote)}'. Set origin to the mapping URL (git remote set-url origin <url>) or approve the alias in the mapping.");
             }
             var remote = mapping.Remote ?? actualRemote;
             if (cloneUrl is { Length: > 0 } && cloneUrl != remote)
             {
-                throw new InvalidOperationException("Secondary clone URL differs from approved remote.");
+                throw new InvalidOperationException($"Repository {id:D}: PRFactory clone URL expected '{RemoteDisplay.Redact(cloneUrl)}'; approved remote actual '{RemoteDisplay.Redact(remote)}'. Set origin and the mapping to exactly the PRFactory clone URL, or correct the PRFactory clone URL.");
             }
             var remoteIdentity = remote.StartsWith("file://", StringComparison.Ordinal) ? new Uri(remote).LocalPath : remote;
             if (Path.IsPathRooted(remoteIdentity)) { remoteIdentity = Path.GetFullPath(remoteIdentity); }

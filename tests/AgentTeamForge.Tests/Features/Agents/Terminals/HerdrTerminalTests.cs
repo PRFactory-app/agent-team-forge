@@ -41,7 +41,7 @@ public class HerdrTerminalTests
             StartupTimeout = TimeSpan.FromMilliseconds(400),
             PollInterval = TimeSpan.FromMilliseconds(10),
             NewSessionName = fake.Preexisting ? () => FakeHerdr.TakenName : null,
-        }, fake);
+        }, fake, fake.Clock, fake.Clock.DelayAsync);
 
     [Fact]
     public void UnreadableLiveServerPidRemainsUnverified()
@@ -696,7 +696,36 @@ public class HerdrTerminalTests
         await new HerdrAgentControl(Terminal(fake)).StartAsync(launch, CancellationToken.None);
 
         Assert.Equal(3, fake.Calls.Count(c => c.Args is ["agent", "start", "atftest", ..]));
+        Assert.Equal(2, fake.Clock.Polls);
         Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane" or "tab", "close", ..]);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AgentStart_BusyGraceFollowsUtcClockSteps(bool forward)
+    {
+        using var state = new TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, AgentStartBusy = 1, SharedWorkspaceLabel = Path.GetFileName(state.Path) };
+        fake.OnAgentStart = () =>
+        {
+            fake.OnAgentStart = null;
+            if (forward) { fake.Clock.StepUtc(TimeSpan.FromSeconds(6)); }
+            else
+            {
+                fake.Clock.Advance(TimeSpan.FromSeconds(6));
+                fake.Clock.StepUtc(TimeSpan.FromSeconds(-12));
+            }
+        };
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("herdr/bootstrap"))
+        { JobId = "job-clock-step", HerdrPlacement = "herdr-session:default" };
+        var start = new HerdrAgentControl(Terminal(fake)).StartAsync(launch, CancellationToken.None);
+
+        if (forward) { await Assert.ThrowsAsync<BackendNotStartedException>(() => start); }
+        else { await start; }
+
+        Assert.Equal(forward ? 1 : 2, fake.Calls.Count(c => c.Args is ["agent", "start", "atftest", ..]));
+        Assert.Equal(forward ? 0 : 1, fake.Clock.Polls);
     }
 
     [Fact]
@@ -737,6 +766,7 @@ public class HerdrTerminalTests
         Assert.Single(fake.Detached);
         Assert.Equal(sessions[0].ServerPid, sessions[1].ServerPid);
         Assert.All(sessions, session => Assert.True(session.Shared));
+        Assert.Equal(3, fake.Clock.Polls);
         Assert.Null(terminal.CheckSharedSession("default"));
     }
 
@@ -1370,6 +1400,7 @@ public class HerdrTerminalTests
 
         Assert.Equal(fake.ShellPid, binding.ShellPid);
         Assert.True(fake.AbsentEnvironmentPolls == 0);
+        Assert.Equal(3, fake.Clock.Polls);
     }
 
     [Fact]
@@ -1489,7 +1520,7 @@ public class HerdrTerminalTests
             Environment = new Dictionary<string, string?>(Desktop) { ["HERDR_CONFIG_PATH"] = Path.Combine(config, "config.toml") },
             StartupTimeout = TimeSpan.FromMilliseconds(400),
             PollInterval = TimeSpan.FromMilliseconds(10),
-        }, fake);
+        }, fake, fake.Clock, fake.Clock.DelayAsync);
 
         var first = Shared(new FakeHerdr { SharedRunning = true });
         await first.OpenAgentTabAsync(await first.ExistingSessionAsync("default", CancellationToken.None), "agent-a", "/work", Bootstrap, CancellationToken.None);
@@ -2352,9 +2383,38 @@ public class HerdrTerminalTests
         public long Timestamp { get; } = Stopwatch.GetTimestamp();
     }
 
+    // Only requested polling advances time; scheduler delays cannot consume a fake's readiness budget.
+    private sealed class PollClock : TimeProvider
+    {
+        long _timestamp;
+        long _utcTicks;
+        public int Polls { get; private set; }
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => Interlocked.Read(ref _timestamp);
+        public override DateTimeOffset GetUtcNow() => DateTimeOffset.UnixEpoch.AddTicks(Interlocked.Read(ref _utcTicks));
+
+        public void Advance(TimeSpan elapsed)
+        {
+            Interlocked.Add(ref _timestamp, elapsed.Ticks);
+            StepUtc(elapsed);
+        }
+
+        public void StepUtc(TimeSpan change) => Interlocked.Add(ref _utcTicks, change.Ticks);
+
+        public async Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Advance(delay);
+            Polls++;
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+    }
+
     /// <summary>Scripted Herdr CLI and /proc view; records every command and never runs a process.</summary>
     private sealed class FakeHerdr : IHerdrProcessRunner
     {
+        public PollClock Clock { get; } = new();
         public bool AgentStartFails { get; init; }
         /// <summary>How many `agent start` calls Herdr refuses as agent_pane_busy before the pane reads as a free shell.</summary>
         public int AgentStartBusy { get; set; }

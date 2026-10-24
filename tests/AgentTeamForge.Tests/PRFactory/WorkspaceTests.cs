@@ -10,6 +10,26 @@ namespace AgentTeamForge.Tests.PRFactory;
 
 public sealed class WorkspaceTests
 {
+    [Theory]
+    [InlineData("https://github.com/o/r.git", "https://github.com/o/r")]
+    [InlineData("https://x-access-token:SECRET@github.com/o/r.git", "https://user:SECRET@github.com/o/other.git")]
+    [InlineData("ssh://user:SECRET@github.com/o/r.git", "ssh://user:SECRET@github.com/o/other.git")]
+    [InlineData("http://user:SECRET@github.com/o/r.git", "http://user:SECRET@github.com/o/other.git")]
+    public async Task Mapped_remote_refusal_names_both_remotes_and_remedy(string expected, string actual)
+    {
+        using var f = new WorkspaceFixture();
+        Git(f.Repo, "remote", "set-url", "origin", actual);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            f.Workspaces.PrepareAsync(f.Request with { Remote = expected }));
+        Assert.Contains(f.Repo, error.Message);
+        Assert.Contains(expected.Replace("x-access-token:SECRET@", "").Replace("user:SECRET@", ""), error.Message);
+        Assert.Contains(actual.Replace("user:SECRET@", ""), error.Message);
+        Assert.Contains("git remote set-url origin <url>", error.Message);
+        Assert.DoesNotContain("SECRET", error.Message);
+        Assert.DoesNotContain("x-access-token", error.Message);
+        Assert.Null(f.Store.Get(f.Request.Key));
+    }
+
     [Fact]
     public async Task Moving_base_refreshes_clean_owned_lead_without_touching_mapped_checkout()
     {
