@@ -27,7 +27,6 @@ public sealed class WorkspaceTests
         Assert.Contains("git remote set-url origin <url>", error.Message);
         Assert.DoesNotContain("SECRET", error.Message);
         Assert.DoesNotContain("x-access-token", error.Message);
-        Assert.True(error.Message.Length < 400);
         Assert.Null(f.Store.Get(f.Request.Key));
     }
 

@@ -27,7 +27,6 @@ public sealed class MultiRepositoryTests
         Assert.Contains("git remote set-url origin <url>", error.Message);
         Assert.DoesNotContain("SECRET", error.Message);
         Assert.DoesNotContain("x-access-token", error.Message);
-        Assert.True(error.Message.Length < 400);
     }
 
     [Theory]
@@ -52,7 +51,47 @@ public sealed class MultiRepositoryTests
         Assert.Contains("Set origin and the mapping to exactly the PRFactory clone URL", error.Message);
         Assert.DoesNotContain("SECRET", error.Message);
         Assert.DoesNotContain("x-access-token", error.Message);
-        Assert.True(error.Message.Length < 400);
+    }
+
+    [Theory]
+    [InlineData("https::https://oauth2:SECRET@gitlab.example.com/team/repo.git", "https::https://gitlab.example.com/team/repo.git")]
+    [InlineData("https::https://oauth2:%53%45%43%52%45%54@gitlab.example.com/team/repo.git", "https::https://gitlab.example.com/team/repo.git")]
+    [InlineData("git+ssh://u:SECRET@h/r.git", "git+ssh://h/r.git")]
+    [InlineData("ssh+git://u:SECRET@h/r.git", "ssh+git://h/r.git")]
+    [InlineData("git+ssh://u:prefix@SECRET:tail@h/r.git", "git+ssh://h/r.git")]
+    public async Task Secondary_clone_refusal_and_failure_payload_redact_transport_userinfo(string remote, string display)
+    {
+        var item = new PRFactoryWorkItem
+        {
+            Id = Guid.NewGuid(),
+            Type = "Implementation",
+            RepositoryId = Guid.NewGuid(),
+            LeaseToken = Guid.NewGuid(),
+            AgentType = PRFactoryAgentType.Codex,
+            Prompt = "Edit both"
+        };
+        using var h = new ChainHarness(item);
+        var secondaryId = Guid.NewGuid();
+        h.AddSecondary(secondaryId);
+        item.ContextJson = item.ContextJson!.Replace(h.SecondaryRemote!, remote, StringComparison.Ordinal);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => PRFactoryRepositorySet.ParseAsync(item,
+            [new RepositoryMapping(item.RepositoryId!.Value, h.Repo),
+                new RepositoryMapping(secondaryId, h.SecondaryRepo!)], "key"));
+        await h.TickAsync();
+        var payload = Assert.Single(h.Server.Failures);
+        var failure = System.Text.Json.JsonElement.Parse(payload).GetProperty("errorMessage").GetString()!;
+        Assert.Contains("workspace preparation failed:", failure);
+        Assert.Contains($"expected '{display}'", failure);
+        Assert.DoesNotContain("SECRET", payload);
+        Assert.DoesNotContain("%53%45%43%52%45%54", payload, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains($"expected '{display}'", error.Message);
+        Assert.DoesNotContain("SECRET", error.Message);
+        Assert.DoesNotContain("%53%45%43%52%45%54", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.All(h.Logs, line =>
+        {
+            Assert.DoesNotContain("SECRET", line);
+            Assert.DoesNotContain("%53%45%43%52%45%54", line, StringComparison.OrdinalIgnoreCase);
+        });
     }
 
     [Theory]

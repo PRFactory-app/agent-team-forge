@@ -7,6 +7,6 @@ public static partial class RemoteDisplay
 {
     public static string Redact(string? remote) => remote is null ? "(unset)" : UserInfo().Replace(remote, "$1://");
 
-    [GeneratedRegex(@"^(https?|ssh)://[^/?#]*@", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"([A-Za-z][A-Za-z0-9+.-]*)://[^/?#]*@")]
     private static partial Regex UserInfo();
 }
