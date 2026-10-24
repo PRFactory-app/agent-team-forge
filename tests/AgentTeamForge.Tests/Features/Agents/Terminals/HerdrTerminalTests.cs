@@ -700,6 +700,34 @@ public class HerdrTerminalTests
         Assert.DoesNotContain(fake.Calls, c => c.Args is ["pane" or "tab", "close", ..]);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AgentStart_BusyGraceFollowsUtcClockSteps(bool forward)
+    {
+        using var state = new TempStateDir();
+        var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, AgentStartBusy = 1, SharedWorkspaceLabel = Path.GetFileName(state.Path) };
+        fake.OnAgentStart = () =>
+        {
+            fake.OnAgentStart = null;
+            if (forward) { fake.Clock.StepUtc(TimeSpan.FromSeconds(6)); }
+            else
+            {
+                fake.Clock.Advance(TimeSpan.FromSeconds(6));
+                fake.Clock.StepUtc(TimeSpan.FromSeconds(-12));
+            }
+        };
+        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, "atftest", state.Path, null, null, state.File("herdr/bootstrap"))
+        { JobId = "job-clock-step", HerdrPlacement = "herdr-session:default" };
+        var start = new HerdrAgentControl(Terminal(fake)).StartAsync(launch, CancellationToken.None);
+
+        if (forward) { await Assert.ThrowsAsync<BackendNotStartedException>(() => start); }
+        else { await start; }
+
+        Assert.Equal(forward ? 1 : 2, fake.Calls.Count(c => c.Args is ["agent", "start", "atftest", ..]));
+        Assert.Equal(forward ? 0 : 1, fake.Clock.Polls);
+    }
+
     [Fact]
     public async Task ResumeLaunch_UsesLongerStartTimeoutAndSurvivesASlowStartWhilePaneLives()
     {
@@ -2359,14 +2387,24 @@ public class HerdrTerminalTests
     private sealed class PollClock : TimeProvider
     {
         long _timestamp;
+        long _utcTicks;
         public int Polls { get; private set; }
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
         public override long GetTimestamp() => Interlocked.Read(ref _timestamp);
+        public override DateTimeOffset GetUtcNow() => DateTimeOffset.UnixEpoch.AddTicks(Interlocked.Read(ref _utcTicks));
+
+        public void Advance(TimeSpan elapsed)
+        {
+            Interlocked.Add(ref _timestamp, elapsed.Ticks);
+            StepUtc(elapsed);
+        }
+
+        public void StepUtc(TimeSpan change) => Interlocked.Add(ref _utcTicks, change.Ticks);
 
         public async Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Interlocked.Add(ref _timestamp, delay.Ticks);
+            Advance(delay);
             Polls++;
             await Task.Yield();
             cancellationToken.ThrowIfCancellationRequested();
