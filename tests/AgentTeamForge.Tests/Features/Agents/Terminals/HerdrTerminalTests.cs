@@ -15,6 +15,23 @@ namespace AgentTeamForge.Tests.Features.Agents.Terminals;
 /// </summary>
 public class HerdrTerminalTests
 {
+    internal static async Task<JobResult> StopVerifiedOwnedSession(JobStore store, string ownerJobId, string jobId, bool codex)
+    {
+        using var state = new TempStateDir();
+        var (fake, _, control, launch) = await StartedRestoredLaunch(state.Path, ownerJobId,
+            codex ? InteractiveAgentKind.Codex : InteractiveAgentKind.Claude);
+        using var backend = new HerdrInteractiveBackend(control, new InteractiveTranscriptReader(_ => state.Path),
+            codex ? InteractiveAgentKind.Codex : InteractiveAgentKind.Claude, state.Path);
+        var stop = new StopAgent(store, JobFixture.Operator,
+            new BackendCatalog().Register(codex ? BackendCatalog.Codex : BackendCatalog.Claude, () => backend));
+        var record = HerdrOwnedSessions.PathFor(launch);
+        Assert.True(File.Exists(record));
+        var result = stop.Execute(jobId);
+        Assert.False(File.Exists(record));
+        Assert.Single(fake.Snapshot(), c => c.Args is ["pane", "close", ..]);
+        return result;
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -979,12 +996,12 @@ public class HerdrTerminalTests
         Assert.False(File.Exists(HerdrOwnedSessions.PathFor(launch)));
     }
 
-    static async Task<(FakeHerdr Fake, HerdrTerminal Terminal, HerdrAgentControl Control, InteractiveLaunch Launch)> StartedRestoredLaunch(string state, string jobId = "job-leak")
+    static async Task<(FakeHerdr Fake, HerdrTerminal Terminal, HerdrAgentControl Control, InteractiveLaunch Launch)> StartedRestoredLaunch(string state, string jobId = "job-leak", InteractiveAgentKind kind = InteractiveAgentKind.Codex)
     {
         var fake = new FakeHerdr { SharedRunning = true, BootstrapFromTab = true, SharedWorkspaceLabel = Path.GetFileName(state) };
         var terminal = Terminal(fake);
         var control = new HerdrAgentControl(terminal);
-        var launch = new InteractiveLaunch(InteractiveAgentKind.Codex, RestoredAgent, state, null, null, Path.Combine(state, "herdr", RestoredAgent + ".bootstrap"))
+        var launch = new InteractiveLaunch(kind, RestoredAgent, state, null, null, Path.Combine(state, "herdr", RestoredAgent + ".bootstrap"))
         { JobId = jobId, HerdrPlacement = "herdr-session:default" };
         await control.StartAsync(launch, CancellationToken.None);
         return (fake, terminal, control, launch);

@@ -124,7 +124,23 @@ public sealed class NativeInterruptTests
         Assert.False(f.Backend.HasIdleSession(f.Session));
         Assert.Equal(0, f.Control.Escapes);
         Assert.Equal(0, f.Control.Closes);
-        Assert.Equal(JobErrors.ParentNotReady, f.Follow.Execute(new(f.Child, "blocked", "blocked")).Error);
+        var refused = f.Follow.Execute(new(f.Child, "blocked", "blocked"));
+        Assert.Equal(JobErrors.ParentNotReady, refused.Error);
+        Assert.Equal(f.Child, refused.FencingJobId);
+        Assert.Equal("stop_agent", refused.Recovery!.Tool);
+        Assert.Equal(f.Child, refused.Recovery.Arguments.JobId);
+        Assert.Contains("stop_agent", refused.Detail);
+        Assert.Contains("explicitly closes", refused.Detail);
+        Assert.Contains(f.Child, refused.Detail);
+        var terminal = f.Store.GetJob(f.Child)!;
+        Assert.Equal("unchanged", f.Stop.Execute(f.Child).Outcome);
+        Assert.True(f.Store.IsSessionFenced(f.Child));
+        Assert.Equal("agent_stopped", (await Features.Agents.Terminals.HerdrTerminalTests.StopVerifiedOwnedSession(
+            f.Store, f.Parent, refused.Recovery.Arguments.JobId!, codex)).Outcome);
+        Assert.False(f.Store.IsSessionFenced(f.Child));
+        Assert.Equal(terminal.Status, f.Store.GetJob(f.Child)!.Status);
+        Assert.Equal(terminal.ResultText, f.Store.GetJob(f.Child)!.ResultText);
+        Assert.Equal(terminal.ReasonCode, f.Store.GetJob(f.Child)!.ReasonCode);
     }
 
     [Theory]
