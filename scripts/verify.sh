@@ -81,7 +81,8 @@ cleanup_tmp() {
   exit "$status"
 }
 trap 'cleanup_tmp $?' EXIT
-step test;     "$DOTNET" test AgentTeamForge.slnx -c Release --no-build --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type none
+# MTP rejects build-server/node switches; pass the supported MSBuild property.
+step test;     "$DOTNET" test --solution AgentTeamForge.slnx -c Release --no-build -p:UseSharedCompilation=false --hangdump --hangdump-timeout 10m --hangdump-type None
 step publish-aot
 mkdir -p artifacts
 PUBLISH_DIR="$(mktemp -d "$ROOT/artifacts/$RID-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"

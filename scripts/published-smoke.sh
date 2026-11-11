@@ -41,8 +41,10 @@ cleanup_tmp() {
   exit "$status"
 }
 trap 'cleanup_tmp $?' EXIT
-ATF_HOST_BINARY="$BIN" "$DOTNET" test AgentTeamForge.slnx -c Release --no-build \
-  --filter "Category=Scenario" --logger "trx;LogFileName=published-scenarios.trx" \
+ATF_HOST_BINARY="$BIN" "$DOTNET" test --solution AgentTeamForge.slnx -c Release --no-build \
+  -p:UseSharedCompilation=false \
+  --filter-trait "Category=Scenario" --report-xunit-trx --report-xunit-trx-filename published-scenarios.trx \
+  --hangdump --hangdump-timeout 10m --hangdump-type None \
   --results-directory "$EVIDENCE_DIR/test-results"
 
 # An empty filter match must not look green.
