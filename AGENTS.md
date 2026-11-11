@@ -2,6 +2,11 @@
 
 ## Working principles (read first; these override older ceremony elsewhere)
 
+- **Opus implements, Codex reviews.** Every code change (production code,
+  tests, scripts, CI) is written by a Claude Code worker on model `opus`
+  (effort `medium`, `low` if trivial). Every code review is done by Codex
+  (tier `high`). Codex does not write the code it reviews and Claude does not
+  review its own code. This overrides any older staffing note.
 - **KISS, DRY, good enough.** The goal is a tool that runs on Linux within
   hours, not a pile of contracts first. Ship working code, then improve it.
 - **Copy the reference model.** The owner's win-agent-teams MCP
@@ -21,8 +26,7 @@
 - **Plans:** a short slice list is enough. No multi-round plan/contract reviews
   for normal features. Only genuinely risky changes (data loss, security holes)
   get a plan review — one round, more only if a real bug is found.
-- **Code review:** one opposite-family review per slice (Claude code → Codex;
-  GPT code → Claude), focused on real bugs — not prose, hypothetical edge cases
+- **Code review:** one Codex review per slice (tier `high`), focused on real bugs — not prose, hypothetical edge cases
   or process. Reviewers must not block on "missing contract/owner decision":
   flag it and approve if the code works and is tested.
 - **Tests:** a few focused tests on critical behavior (job state, durability,
@@ -66,15 +70,15 @@
 ## Team workflow
 
 - A Claude Code orchestrator (Opus) leads and does no hands-on work; it keeps
-  up to 14 useful agents busy on small slices, spawned via win-agent-teams
-  `spawn_agent`:
+  up to 14 useful agents busy on small slices, started via the AgentTeamForge MCP
+  `submit_job`:
   - Planning/research: backend `pi`, tier `max`.
-  - Implementation: backend `claude-code`, model `opus`, effort `medium`
+  - Implementation: backend `claude`, model `opus`, effort `medium`
     (`low` if trivial).
   - Review, integration, combined test runs: backend `codex`, tier `high`.
 - One fresh worker per slice, own branch and worktree. Workers report
   `DONE/FAILED`, commit sha and test results to `team-lead` via
-  `send_message`; then the orchestrator calls `kill_agent`.
+  `send_message`; then the orchestrator calls `stop_agent`.
 - The Codex integrator merges reviewed slices and runs the build/tests. It may
   fix mechanical conflicts; semantic fixes go to a Claude writer. Never resolve
   a conflict by dropping tests.

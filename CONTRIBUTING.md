@@ -161,8 +161,8 @@ its predecessor, win-agent-teams):
   only risky changes (data loss, security) get a one-round plan review.
 - **Implementation:** Claude Code (Opus), one fresh worker per slice on its own
   branch and git worktree, test-first where it matters.
-- **Review:** one review per slice by the opposite model family (Claude code is
-  reviewed by Codex; GPT code by Claude), focused on real bugs.
+- **Review:** one review per slice by Codex at tier `high`, focused on real
+  bugs. Codex does not write code; Claude does not review its own code.
 - **Integration:** a Codex integrator merges reviewed slices and runs the full
   build and tests. It may fix mechanical conflicts; semantic fixes go back to a
   writer. Conflicts are never resolved by dropping tests.
