@@ -41,7 +41,7 @@ cleanup_tmp() {
   exit "$status"
 }
 trap 'cleanup_tmp $?' EXIT
-ATF_HOST_BINARY="$BIN" "$DOTNET" test AgentTeamForge.slnx -c Release --no-build --disable-build-servers -nodeReuse:false -m:2 \
+ATF_HOST_BINARY="$BIN" "$DOTNET" test AgentTeamForge.slnx -c Release --no-build \
   --filter "Category=Scenario" --logger "trx;LogFileName=published-scenarios.trx" \
   --results-directory "$EVIDENCE_DIR/test-results"
 

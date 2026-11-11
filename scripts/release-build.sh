@@ -39,7 +39,7 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf -- "$work"' EXIT
 
-"$DOTNET" publish src/AgentTeamForge.Host/AgentTeamForge.Host.csproj --disable-build-servers -nodeReuse:false -m:2 -c Release -r "$RID" \
+"$DOTNET" publish src/AgentTeamForge.Host/AgentTeamForge.Host.csproj -m:1 -c Release -r "$RID" \
   --self-contained true -p:PublishAot=true -p:TreatWarningsAsErrors=true \
   -p:Version="$VERSION" -p:InformationalVersion="$VERSION" -o "$work/publish" ${PUBLISH_ARGS[@]+"${PUBLISH_ARGS[@]}"}
 mkdir -p "$work/package/extensions/pi-wake"
@@ -61,7 +61,7 @@ tar --no-xattrs -C "$work/package" -czf "$OUTPUT/$archive" .
 mkdir "$work/extracted"
 tar -C "$work/extracted" -xzf "$OUTPUT/$archive"
 "$work/extracted/atf" --version | grep -Fx "atf $VERSION"
-"$DOTNET" build AgentTeamForge.slnx --disable-build-servers -nodeReuse:false -m:2 -c Release -warnaserror
+"$DOTNET" build AgentTeamForge.slnx -m:1 -c Release -warnaserror
 # Debug symbols ship as a separate asset: atf.dbg on Linux, the atf.dSYM bundle (a directory) on macOS.
 symbols=()
 if [[ -f "$work/publish/atf.dbg" ]]; then
