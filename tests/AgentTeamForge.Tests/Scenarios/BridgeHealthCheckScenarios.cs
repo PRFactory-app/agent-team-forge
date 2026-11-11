@@ -24,6 +24,7 @@ public sealed class BridgeHealthCheckScenarios
         // The binary under test may be a stamped release (ATF_HOST_BINARY), so compare with its own --version.
         var (exit, version, _) = await rig.RunToExitAsync(["--version"]);
         Assert.Equal(0, exit);
+        Assert.NotNull(client.ServerInfo);
         Assert.Equal(version.Trim(), "atf " + client.ServerInfo.Version);
         var tools = await client.ListToolsAsync(cancellationToken: TestContext.Current.CancellationToken);
         Assert.Contains(tools, tool => tool.Name == "submit_job");

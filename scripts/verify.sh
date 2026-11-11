@@ -45,7 +45,7 @@ if [[ "$actual" != "$PIN" ]]; then
 fi
 
 step() { echo "== $*"; }
-MSBUILD_ARGS=(-m:1 -nodeReuse:false -p:UseSharedCompilation=false)
+MSBUILD_ARGS=(--disable-build-servers -m:2 -nodeReuse:false -p:UseSharedCompilation=false)
 PUBLISH_ARGS=()
 # On a Mac with only the Command Line Tools, the ILCompiler's `xcodebuild -version`
 # probe prints an error that fails the publish; skip it (it only selects -ld_classic for Xcode 15/16).
@@ -81,7 +81,7 @@ cleanup_tmp() {
   exit "$status"
 }
 trap 'cleanup_tmp $?' EXIT
-step test;     "$DOTNET" test AgentTeamForge.slnx -c Release --no-build --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type none
+step test;     "$DOTNET" test AgentTeamForge.slnx -c Release --no-build --disable-build-servers -nodeReuse:false -m:2 --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type none
 step publish-aot
 mkdir -p artifacts
 PUBLISH_DIR="$(mktemp -d "$ROOT/artifacts/$RID-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"

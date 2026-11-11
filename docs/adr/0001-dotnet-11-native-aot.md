@@ -13,7 +13,7 @@ lifecycle) that fit a process supervisor.
 ## Decision
 
 - Target .NET 11. The SDK is pinned in `global.json`
-  (`11.0.100-rc.2.26504.105`, no roll-forward) and kept project-local in
+  (`11.0.100`, no roll-forward) and kept project-local in
   `.tools/dotnet11/`.
 - Publish the Host as a Native AOT apphost (`atf`). Use explicit service
   registration and source-generated JSON so trimming stays safe.
@@ -31,4 +31,4 @@ lifecycle) that fit a process supervisor.
   There is no cross-compilation.
 - Each bundle carries its native SQLite library; the target machine needs no
   .NET runtime.
-- The pinned RC SDK must be upgraded deliberately when .NET 11 ships.
+- The pinned GA SDK is upgraded deliberately after build, test and Native AOT verification.
