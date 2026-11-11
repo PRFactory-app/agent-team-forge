@@ -43,7 +43,31 @@ jobs:
         with:
           dotnet-version: 11.0.100
       - name: Native AOT dependencies
-        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+        run: |
+          if command -v clang >/dev/null && [[ -f /usr/include/zlib.h ]]; then
+            clang --version
+            exit 0
+          fi
+          install_dependencies() {
+            sudo apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update &&
+              sudo apt-get -o Acquire::Retries=3 install -y clang zlib1g-dev
+          }
+          for attempt in 1 2; do
+            if install_dependencies; then
+              clang --version
+              exit 0
+            fi
+            if [[ "$attempt" == 1 ]]; then sleep 5; fi
+          done
+          echo "Retrying native dependencies with archive.ubuntu.com"
+          echo 'http://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.{list,sources}; do
+            if [[ -f "$source" ]]; then
+              sudo sed -i -E 's#https?://(azure.archive|archive|security)\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu#g' "$source"
+            fi
+          done
+          install_dependencies
+          clang --version
       - name: Gates
         run: scripts/verify.sh
       - name: Bundle
