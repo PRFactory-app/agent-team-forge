@@ -78,9 +78,9 @@ cleanup_tmp() {
 }
 trap 'cleanup_tmp $?' EXIT
 status=0
-env ${binary_env[@]+"${binary_env[@]}"} "$TIMEOUT" --kill-after=10 "$TEST_TIMEOUT" "$DOTNET" test AgentTeamForge.slnx \
-  -c Release --no-build --filter "FullyQualifiedName=$SCENARIO" \
-  --logger "trx;LogFileName=demo.trx" --results-directory "$RUN_DIR" \
+env ${binary_env[@]+"${binary_env[@]}"} "$TIMEOUT" --kill-after=10 "$TEST_TIMEOUT" "$DOTNET" test --solution AgentTeamForge.slnx \
+  -c Release --no-build -p:UseSharedCompilation=false --filter-method "$SCENARIO" \
+  --report-xunit-trx --report-xunit-trx-filename demo.trx --results-directory "$RUN_DIR" \
   > "$RUN_DIR/test.log" 2>&1 || status=$?
 
 # Require exactly one executed, passed test: an empty filter match must not look green.
