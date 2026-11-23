@@ -20,6 +20,28 @@ public sealed class TierMapTests
     }
 
     [Fact]
+    public void Fallback_row_shows_what_resolve_launches_and_saving_it_stays_built_in()
+    {
+        using var state = new TempStateDir();
+        static IReadOnlyCollection<string> WithoutTerra(string _) => ["gpt-6-luna", "gpt-6.1-sol"];
+        var map = new TierMap(state.Path, WithoutTerra);
+        TierSetting row(string tier) => map.Settings().Single(item => item.Backend == "codex" && item.Tier == tier);
+
+        foreach (var tier in new[] { "low", "medium" })
+        {
+            var launched = ModelSelection.Resolve("codex", tier, null, WithoutTerra, map);
+            Assert.Equal(launched, (row(tier).Model, row(tier).Effort));
+        }
+        Assert.Equal(("gpt-6.1-sol", "low"), (row("medium").Model, row("medium").Effort));
+
+        // Saving the displayed pair matches the active built-in default, so no override is stored.
+        map.Change("codex", "medium", row("medium").Model, row("medium").Effort);
+        Assert.False(row("medium").Custom);
+        Assert.Null(map.Override("codex", "medium"));
+        Assert.Equal(("gpt-6.1-sol", "low"), ModelSelection.Resolve("codex", "medium", null, WithoutTerra, map));
+    }
+
+    [Fact]
     public void Save_is_private_durable_and_changes_admission_only_for_selected_backend()
     {
         using var state = new TempStateDir();
