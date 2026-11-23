@@ -5,21 +5,34 @@ public sealed record AgentModelOptions(IReadOnlyList<string> Models, IReadOnlyLi
 /// <summary>Resolve the caller's model choice once, before the job is accepted.</summary>
 public static class ModelSelection
 {
-    // Each family lists its current slug first. A known catalog without that slug gets the first older slug it lists.
+    // A tier lists its built-in choices, preferred first. A known catalog gets the first choice it lists.
     static readonly string[] SolCandidates = ["gpt-6.2-sol", "gpt-6.1-sol", "gpt-6-sol"];
     static readonly string[] AstraCandidates = ["gpt-6.2-astra", "gpt-6-astra"];
-    static readonly string[][] ModelFamilies = [SolCandidates, AstraCandidates];
+    const string Terra = "gpt-6.1-terra";
 
-    static readonly Dictionary<string, (string Model, string Effort)> Tiers =
+    static (string Model, string Effort)[] Each(string[] models, string effort) => [.. models.Select(model => (model, effort))];
+
+    static readonly Dictionary<string, (string Model, string Effort)[]> Tiers =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            ["cheapest"] = ("gpt-6-luna", "low"),
-            ["low"] = ("gpt-6-luna", "medium"),
-            ["medium"] = (SolCandidates[0], "low"),
-            ["high"] = (SolCandidates[0], "medium"),
-            ["xhigh"] = (SolCandidates[0], "high"),
-            ["max"] = (AstraCandidates[0], "low"),
+            ["cheapest"] = [("gpt-6-luna", "low")],
+            ["low"] = [("gpt-6-luna", "medium")],
+            ["medium"] = Each(SolCandidates, "low"),
+            ["high"] = Each(SolCandidates, "medium"),
+            ["xhigh"] = Each(SolCandidates, "high"),
+            ["max"] = Each(AstraCandidates, "low"),
         };
+
+    // Codex differs from pi in the lower tiers; without Terra in the catalog it keeps the shared choices.
+    static readonly Dictionary<string, (string Model, string Effort)[]> CodexTiers =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["cheapest"] = [("gpt-6-luna", "medium")],
+            ["low"] = [(Terra, "medium"), .. Tiers["low"]],
+            ["medium"] = [(Terra, "high"), .. Tiers["medium"]],
+        };
+
+    static readonly (string Model, string Effort)[] PiMediumFast = Each(SolCandidates, "medium");
 
     static readonly string[] SharedTierOrder = [.. Tiers.Keys];
     static readonly string[] DroidEfforts = ["none", "low", "medium", "high", "xhigh", "max"];
@@ -27,12 +40,18 @@ public static class ModelSelection
         ? [.. SharedTierOrder.Take(3), "medium-fast", .. SharedTierOrder.Skip(3)]
         : backend is "codex" or "cursor" or "droid" ? SharedTierOrder : [];
 
+    static (string Model, string Effort)[]? Candidates(string backend, string tier) => backend switch
+    {
+        "codex" => CodexTiers.GetValueOrDefault(tier) ?? Tiers.GetValueOrDefault(tier),
+        "pi" => tier == "medium-fast" ? PiMediumFast : Tiers.GetValueOrDefault(tier),
+        _ => null,
+    };
+
     public static (string Model, string Effort) DefaultTier(string backend, string tier) =>
-        backend == "pi" && tier == "medium-fast" ? (SolCandidates[0], "medium")
-        : backend == "cursor" && SharedTierOrder.Contains(tier) ? ("auto", "none")
+        backend == "cursor" && SharedTierOrder.Contains(tier) ? ("auto", "none")
         : backend == "droid" && Array.IndexOf(SharedTierOrder, tier) is var index and >= 0
             ? ("claude-opus-5", DroidEfforts[index])
-        : backend is "codex" or "pi" && Tiers.TryGetValue(tier, out var value) ? value
+        : Candidates(backend, tier) is { } candidates ? candidates[0]
         : throw new ArgumentException("Unknown backend or tier");
 
     /// <summary>Built-in default for a tier: prefer the current model when the catalog is unknown.</summary>
@@ -44,11 +63,12 @@ public static class ModelSelection
             return (model, effort);
         }
 
-        if (backend is "codex" or "pi" && Array.Find(ModelFamilies, family => family[0] == model) is { } candidates)
+        var listed = Candidates(backend, tier)?.FirstOrDefault(candidate => backend == "pi"
+            ? PiCatalogModel(candidate.Model, available) is not null
+            : available.Contains(candidate.Model));
+        if (listed is { Model: not null } choice)
         {
-            model = candidates.FirstOrDefault(candidate => backend == "pi"
-                ? PiCatalogModel(candidate, available) is not null
-                : available.Contains(candidate)) ?? model;
+            (model, effort) = choice;
         }
         return (Canonical(backend, model, available), effort);
     }

@@ -81,19 +81,25 @@ remove overrides.
 
 Built-in Codex and Pi defaults (Pi adds the `openai-codex/` provider):
 
-| Tier | Model | Effort |
-| --- | --- | --- |
-| `cheapest` | `gpt-6-luna` | `low` |
-| `low` | `gpt-6-luna` | `medium` |
-| `medium` | `gpt-6.2-sol` | `low` |
-| `medium-fast` (Pi only) | `gpt-6.2-sol` | `medium` |
-| `high` | `gpt-6.2-sol` | `medium` |
-| `xhigh` | `gpt-6.2-sol` | `high` |
-| `max` | `gpt-6.2-astra` | `low` |
+| Tier | Codex model | Codex effort | Pi model | Pi effort |
+| --- | --- | --- | --- | --- |
+| `cheapest` | `gpt-6-luna` | `medium` | `gpt-6-luna` | `low` |
+| `low` | `gpt-6.1-terra` | `medium` | `gpt-6-luna` | `medium` |
+| `medium` | `gpt-6.1-terra` | `high` | `gpt-6.2-sol` | `low` |
+| `medium-fast` | (Pi only) | | `gpt-6.2-sol` | `medium` |
+| `high` | `gpt-6.2-sol` | `medium` | `gpt-6.2-sol` | `medium` |
+| `xhigh` | `gpt-6.2-sol` | `high` | `gpt-6.2-sol` | `high` |
+| `max` | `gpt-6.2-astra` | `low` | `gpt-6.2-astra` | `low` |
 
-If the cached catalog does not list `gpt-6.2-sol`, a Sol tier uses the first
-listed of `gpt-6.1-sol` and `gpt-6-sol`. If it does not list `gpt-6.2-astra`,
-`max` uses `gpt-6-astra`. A changed tier in Settings never falls back.
+If the cached catalog does not list the preferred model, the tier uses the
+first listed fallback:
+
+- `gpt-6.2-sol`: `gpt-6.1-sol`, then `gpt-6-sol`.
+- `gpt-6.2-astra`: `gpt-6-astra`.
+- Codex `low` without `gpt-6.1-terra`: `gpt-6-luna` / `medium`.
+- Codex `medium` without `gpt-6.1-terra`: the Sol model / `low`.
+
+A changed tier in Settings never falls back.
 
 - The daemon resolves a tier when it accepts a job. Existing jobs, and
   follow-ups that inherit their parent's selection, keep their stored model

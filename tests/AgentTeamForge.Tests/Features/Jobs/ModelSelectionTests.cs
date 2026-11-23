@@ -8,7 +8,7 @@ namespace AgentTeamForge.Tests.Features.Jobs;
 
 public sealed class ModelSelectionTests
 {
-    static IReadOnlyCollection<string> AllModels(string _) => ["gpt-6-luna", "gpt-6.2-sol", "gpt-6.2-astra"];
+    static IReadOnlyCollection<string> AllModels(string _) => ["gpt-6-luna", "gpt-6.1-terra", "gpt-6.2-sol", "gpt-6.2-astra"];
 
     [Fact]
     public void Console_choices_match_resolved_tiers_and_backend_effort_rules()
@@ -30,16 +30,17 @@ public sealed class ModelSelectionTests
     }
 
     [Theory]
-    [InlineData("cheapest", "gpt-6-luna", "low")]
-    [InlineData("low", "gpt-6-luna", "medium")]
-    [InlineData("medium", "gpt-6.2-sol", "low")]
-    [InlineData("high", "gpt-6.2-sol", "medium")]
-    [InlineData("xhigh", "gpt-6.2-sol", "high")]
-    [InlineData("max", "gpt-6.2-astra", "low")]
-    public void Shared_tiers_resolve_to_exact_backend_arguments(string tier, string model, string effort)
+    [InlineData("cheapest", "gpt-6-luna", "medium", "gpt-6-luna", "low")]
+    [InlineData("low", "gpt-6.1-terra", "medium", "gpt-6-luna", "medium")]
+    [InlineData("medium", "gpt-6.1-terra", "high", "gpt-6.2-sol", "low")]
+    [InlineData("high", "gpt-6.2-sol", "medium", "gpt-6.2-sol", "medium")]
+    [InlineData("xhigh", "gpt-6.2-sol", "high", "gpt-6.2-sol", "high")]
+    [InlineData("max", "gpt-6.2-astra", "low", "gpt-6.2-astra", "low")]
+    public void Shared_tiers_resolve_to_exact_backend_arguments(string tier, string codexModel, string codexEffort, string piModel, string piEffort)
     {
         foreach (var backend in new[] { "codex", "pi" })
         {
+            var (model, effort) = backend == "codex" ? (codexModel, codexEffort) : (piModel, piEffort);
             var selected = ModelSelection.Resolve(backend, tier, "ultra", AllModels);
             Assert.Equal((model, effort), selected);
             var request = new BackendRequest("job", "corr", "task", $"model={selected.Model};effort={selected.Effort}");
@@ -261,6 +262,19 @@ public sealed class ModelSelectionTests
     }
 
     [Fact]
+    public void Codex_terra_tiers_fall_back_to_the_previous_defaults_without_terra_in_the_catalog()
+    {
+        static IReadOnlyCollection<string> WithTerra(string _) => ["gpt-6-luna", "gpt-6.1-terra", "gpt-6.1-sol"];
+        static IReadOnlyCollection<string> WithoutTerra(string _) => ["gpt-6-luna", "gpt-6.1-sol"];
+        Assert.Equal(("gpt-6.1-terra", "medium"), ModelSelection.Resolve("codex", "low", null, WithTerra));
+        Assert.Equal(("gpt-6.1-terra", "high"), ModelSelection.Resolve("codex", "medium", null, WithTerra));
+        Assert.Equal(("gpt-6-luna", "medium"), ModelSelection.Resolve("codex", "low", null, WithoutTerra));
+        Assert.Equal(("gpt-6.1-sol", "low"), ModelSelection.Resolve("codex", "medium", null, WithoutTerra));
+        Assert.Equal(("gpt-6.1-terra", "high"), ModelSelection.Resolve("codex", "medium", null, _ => []));
+        Assert.Equal(("gpt-6.1-sol", "low"), ModelSelection.Resolve("pi", "medium", null, WithTerra));
+    }
+
+    [Fact]
     public void Saving_a_tier_compares_with_the_shown_default()
     {
         using var state = new TempStateDir();
@@ -334,7 +348,7 @@ public sealed class ModelSelectionTests
         var unavailable = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f4") { Model = "gpt-7" });
         var changedTier = followUp.Execute(new FollowUpRequest(parent.JobId, "again", "f5") { Model = "cheapest" }).Job!;
 
-        Assert.Equal(("gpt-6-luna", "low"), (inherited.Model, inherited.Effort));
+        Assert.Equal(("gpt-6-luna", "medium"), (inherited.Model, inherited.Effort));
         Assert.Equal("codex-named", fixture.Store.GetJob(inherited.JobId)!.TargetAgent);
         Assert.Equal(("gpt-6-luna", "low"), (effortOnly.Model, effortOnly.Effort));
         Assert.Equal(("gpt-6.2-astra", "low"), (tier.Model, tier.Effort));
