@@ -79,6 +79,22 @@ tier. Defaults are built in; changed tiers are stored owner-only in
 `<state>/tier-map.json` (replaced atomically). Reset a row or all rows to
 remove overrides.
 
+Built-in Codex and Pi defaults (Pi adds the `openai-codex/` provider):
+
+| Tier | Model | Effort |
+| --- | --- | --- |
+| `cheapest` | `gpt-6-luna` | `low` |
+| `low` | `gpt-6-luna` | `medium` |
+| `medium` | `gpt-6.2-sol` | `low` |
+| `medium-fast` (Pi only) | `gpt-6.2-sol` | `medium` |
+| `high` | `gpt-6.2-sol` | `medium` |
+| `xhigh` | `gpt-6.2-sol` | `high` |
+| `max` | `gpt-6.2-astra` | `low` |
+
+If the cached catalog does not list `gpt-6.2-sol`, a Sol tier uses the first
+listed of `gpt-6.1-sol` and `gpt-6-sol`. If it does not list `gpt-6.2-astra`,
+`max` uses `gpt-6-astra`. A changed tier in Settings never falls back.
+
 - The daemon resolves a tier when it accepts a job. Existing jobs, and
   follow-ups that inherit their parent's selection, keep their stored model
   and effort. A follow-up that names a tier uses the current mapping.

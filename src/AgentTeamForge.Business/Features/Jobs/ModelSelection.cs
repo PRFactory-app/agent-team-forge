@@ -5,15 +5,20 @@ public sealed record AgentModelOptions(IReadOnlyList<string> Models, IReadOnlyLi
 /// <summary>Resolve the caller's model choice once, before the job is accepted.</summary>
 public static class ModelSelection
 {
+    // Each family lists its current slug first. A known catalog without that slug gets the first older slug it lists.
+    static readonly string[] SolCandidates = ["gpt-6.2-sol", "gpt-6.1-sol", "gpt-6-sol"];
+    static readonly string[] AstraCandidates = ["gpt-6.2-astra", "gpt-6-astra"];
+    static readonly string[][] ModelFamilies = [SolCandidates, AstraCandidates];
+
     static readonly Dictionary<string, (string Model, string Effort)> Tiers =
         new(StringComparer.OrdinalIgnoreCase)
         {
             ["cheapest"] = ("gpt-6-luna", "low"),
             ["low"] = ("gpt-6-luna", "medium"),
-            ["medium"] = ("gpt-6.1-sol", "low"),
-            ["high"] = ("gpt-6.1-sol", "medium"),
-            ["xhigh"] = ("gpt-6.1-sol", "high"),
-            ["max"] = ("gpt-6-astra", "low"),
+            ["medium"] = (SolCandidates[0], "low"),
+            ["high"] = (SolCandidates[0], "medium"),
+            ["xhigh"] = (SolCandidates[0], "high"),
+            ["max"] = (AstraCandidates[0], "low"),
         };
 
     static readonly string[] SharedTierOrder = [.. Tiers.Keys];
@@ -22,14 +27,8 @@ public static class ModelSelection
         ? [.. SharedTierOrder.Take(3), "medium-fast", .. SharedTierOrder.Skip(3)]
         : backend is "codex" or "cursor" or "droid" ? SharedTierOrder : [];
 
-    // Use the previous slug only when a known catalog lists it instead of the current model.
-    static readonly string[] SolCandidates = ["gpt-6.1-sol", "gpt-6-sol"];
-
-    static bool IsSolTier(string backend, string tier) =>
-        backend == "pi" && tier == "medium-fast" || backend is "codex" or "pi" && tier is "medium" or "high" or "xhigh";
-
     public static (string Model, string Effort) DefaultTier(string backend, string tier) =>
-        backend == "pi" && tier == "medium-fast" ? ("gpt-6.1-sol", "medium")
+        backend == "pi" && tier == "medium-fast" ? (SolCandidates[0], "medium")
         : backend == "cursor" && SharedTierOrder.Contains(tier) ? ("auto", "none")
         : backend == "droid" && Array.IndexOf(SharedTierOrder, tier) is var index and >= 0
             ? ("claude-opus-5", DroidEfforts[index])
@@ -45,9 +44,9 @@ public static class ModelSelection
             return (model, effort);
         }
 
-        if (IsSolTier(backend, tier))
+        if (backend is "codex" or "pi" && Array.Find(ModelFamilies, family => family[0] == model) is { } candidates)
         {
-            model = SolCandidates.FirstOrDefault(candidate => backend == "pi"
+            model = candidates.FirstOrDefault(candidate => backend == "pi"
                 ? PiCatalogModel(candidate, available) is not null
                 : available.Contains(candidate)) ?? model;
         }
