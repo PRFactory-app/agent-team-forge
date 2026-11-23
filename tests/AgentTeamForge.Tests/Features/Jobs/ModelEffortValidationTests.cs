@@ -46,7 +46,7 @@ public sealed class ModelEffortValidationTests
     [InlineData("claude", "opus", "max", "opus", "max")]
     [InlineData("codex", "gpt-6.1-sol", "ultra", "gpt-6.1-sol", "ultra")]
     [InlineData("codex", "gpt-6-astra", "xhigh", "gpt-6-astra", "xhigh")]
-    [InlineData("codex", "cheapest", "ultra", "gpt-6-luna", "low")]
+    [InlineData("codex", "cheapest", "ultra", "gpt-6-luna", "medium")]
     [InlineData("droid", null, "ultra", null, "ultra")]
     public void Supported_effort_and_tier_effort_pass(string backend, string? model, string effort, string? resolvedModel, string resolvedEffort) =>
         Assert.Equal((resolvedModel, resolvedEffort), ModelSelection.Resolve(backend, model, effort, Codex));

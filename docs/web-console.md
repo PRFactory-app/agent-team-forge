@@ -79,6 +79,28 @@ tier. Defaults are built in; changed tiers are stored owner-only in
 `<state>/tier-map.json` (replaced atomically). Reset a row or all rows to
 remove overrides.
 
+Built-in Codex and Pi defaults (Pi adds the `openai-codex/` provider):
+
+| Tier | Codex model | Codex effort | Pi model | Pi effort |
+| --- | --- | --- | --- | --- |
+| `cheapest` | `gpt-6-luna` | `medium` | `gpt-6-luna` | `low` |
+| `low` | `gpt-6.1-terra` | `medium` | `gpt-6-luna` | `medium` |
+| `medium` | `gpt-6.1-terra` | `high` | `gpt-6.2-sol` | `low` |
+| `medium-fast` | (Pi only) | | `gpt-6.2-sol` | `medium` |
+| `high` | `gpt-6.2-sol` | `medium` | `gpt-6.2-sol` | `medium` |
+| `xhigh` | `gpt-6.2-sol` | `high` | `gpt-6.2-sol` | `high` |
+| `max` | `gpt-6.2-astra` | `low` | `gpt-6.2-astra` | `low` |
+
+If the cached catalog does not list the preferred model, the tier uses the
+first listed fallback:
+
+- `gpt-6.2-sol`: `gpt-6.1-sol`, then `gpt-6-sol`.
+- `gpt-6.2-astra`: `gpt-6-astra`.
+- Codex `low` without `gpt-6.1-terra`: `gpt-6-luna` / `medium`.
+- Codex `medium` without `gpt-6.1-terra`: the Sol model / `low`.
+
+A changed tier in Settings never falls back.
+
 - The daemon resolves a tier when it accepts a job. Existing jobs, and
   follow-ups that inherit their parent's selection, keep their stored model
   and effort. A follow-up that names a tier uses the current mapping.

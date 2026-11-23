@@ -77,9 +77,11 @@ public sealed class TierMap
                 var (defaultModel, defaultEffort) = ModelSelection.DefaultTier(backend, tier);
                 var row = _overrides.Find(item => item.Backend == backend && item.Tier == tier);
                 var catalog = _catalog(backend);
-                var (activeModel, _) = ModelSelection.DefaultTier(backend, tier, catalog);
-                var model = row is null ? activeModel : ModelSelection.Canonical(backend, row.Model, catalog);
-                return new TierSetting(backend, tier, model, row?.Effort ?? defaultEffort,
+                // Without an override the row shows what Resolve() launches: the catalog-aware default pair.
+                var (model, effort) = row is null
+                    ? ModelSelection.DefaultTier(backend, tier, catalog)
+                    : (ModelSelection.Canonical(backend, row.Model, catalog), row.Effort);
+                return new TierSetting(backend, tier, model, effort,
                     defaultModel, defaultEffort, row is not null, ModelSelection.Efforts(backend, model, catalog));
             }))];
         }
